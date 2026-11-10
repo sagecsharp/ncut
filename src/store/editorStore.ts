@@ -30,7 +30,7 @@ import type {
   Transform,
   VideoClip,
 } from '../types';
-import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip, trackKindForClip } from '../types';
+import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isCameraClip, isTimedClip, isVisualClip, trackKindForClip } from '../types';
 import {
   DEFAULT_CAMERA_DURATION,
   DEFAULT_EFFECT_DURATION,
@@ -322,6 +322,42 @@ function relinkIn(project: Project, idMap: ReadonlyMap<string, string>, original
   );
   const byId = new Map(copies.map((c) => [c.id, c]));
   return { ...project, clips: project.clips.map((c) => byId.get(c.id) ?? c) };
+}
+
+/**
+ * after a split: clips that are not part of the cut (neither a left nor a right half) but link to a cut
+ * clip (parent, look target, camera target, effect target) and lie at or after the cut follow the right
+ * half, so a plain split changes nothing in the picture. one that ends before the cut stays on the left
+ * half. one that straddles the cut (it sits on a locked track and could not be cut) goes to the half that
+ * covers more of it, ties stay left. rightOf: original (left half) id -> right half id.
+ */
+export function repointSplitDependents(clips: Clip[], rightOf: ReadonlyMap<string, string>, time: number): Clip[] {
+  if (rightOf.size === 0) return clips;
+  const rights = new Set(rightOf.values());
+  const eps = 1e-6;
+  return clips.map((c0) => {
+    if (rightOf.has(c0.id) || rights.has(c0.id)) return c0;
+    const end = clipEnd(c0);
+    const after = c0.start >= time - eps || (c0.start < time && end > time && end - time > time - c0.start + eps);
+    if (!after) return c0;
+    const map = (id: string | null | undefined): string | undefined => (id ? rightOf.get(id) : undefined);
+    let c = c0;
+    if (isVisualClip(c)) {
+      const parent = map(c.parent);
+      const look = map(c.lookTarget);
+      if (parent) c = { ...c, parent } as Clip;
+      if (look) c = { ...c, lookTarget: look } as Clip;
+    }
+    if (isCameraClip(c)) {
+      const t = map(c.target);
+      if (t) c = { ...c, target: t } as Clip;
+    }
+    if (c.type === 'effect') {
+      const t = map(c.target);
+      if (t) c = { ...c, target: t } as Clip;
+    }
+    return c;
+  });
 }
 
 function replaceClip(project: Project, clip: Clip): Project {
@@ -1076,7 +1112,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         }
         created.push(...extraCreated);
         if (created.length === 0) return null;
-        const linked = repointSplitHalves(clips, rightOf);
+        const linked = repointSplitDependents(repointSplitHalves(clips, rightOf), rightOf, time);
         if (rightGroups.size === 0) return { ...p, clips: linked };
         // a group of one is no group
         const size = new Map<string, number>();
@@ -1169,6 +1205,29 @@ export const useEditor = create<EditorState>()((set, get) => {
         for (const c of originals) {
           const copy = structuredClone(c);
           copy.id = uid('clp');
+          if (opts?.sameTime) {
+            const home = next.tracks.findIndex((t) => t.id === c.trackId);
+            const kind = next.tracks[home]?.kind ?? trackKindForClip(c.type);
+            let above: Track | undefined;
+            for (let i = home - 1; i >= 0; i--) {
+              const t = next.tracks[i]!;
+              if (t.kind === kind && !t.locked && isRangeFree(next, t.id, c.start, c.duration)) {
+                above = t;
+                break;
+              }
+            }
+            if (!above) {
+              const made = withNewTrack(next, kind, Math.max(0, home));
+              next = made.project;
+              above = made.track;
+            }
+            copy.trackId = above.id;
+            copy.start = c.start;
+            created.push(copy.id);
+            idMap.set(c.id, copy.id);
+            next = { ...next, clips: [...next.clips, copy] };
+            continue;
+          }
           let trackId = c.trackId;
           if (isLocked(next, trackId)) {
             const kind = trackKindForClip(c.type);
