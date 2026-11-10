@@ -5,8 +5,10 @@
  *
  * a video export is rendered in parts: a few web workers each draw and encode a stretch of the timeline
  * (segment.ts, parallel.ts, exportWorker.ts) and this thread joins their packets in order and adds the sound.
- * a gif is drawn on this thread, but the slow part of each frame (palette lookup, dithering, lzw) runs in a
- * few web workers (gifPool.ts): the same bytes, made side by side.
+ * a gif is made in parts too: after its palette is found on this thread, a few web workers each draw a stretch
+ * of the timeline and compress its frames (segment.ts renderGifSegment), and the frames are written here in
+ * playing order. where a project cannot be drawn in a worker the gif is drawn on this thread and only the slow
+ * part of each frame (palette lookup, dithering, lzw) runs in workers (gifPool.ts). the bytes are the same.
  *
  * the plain way (every frame on this thread, one encoder) is still here: gifs, exports too short to gain,
  * pictures only an <img> can read, and anything that goes wrong in the parts fall back to it.
@@ -40,10 +42,10 @@ import { collectFontKit } from '../../lib/fontKit';
 import { projectDuration } from '../../lib/timelineOps';
 import { buildPalette, createGifEncoder, gifDelayCs, indexFrame } from '../../lib/gif';
 import { gifExportFps, gifSizeWarning, paletteSampleFrames, sampleSize } from './gifPlan';
-import { GifPoolError, createGifPool, gifWorkerCount } from './gifPool';
+import { GifPoolError, createGifPool, gifPartWorkers, gifWorkerCount, planGifParts } from './gifPool';
 import { type TimeRange, clampRange, rangeFrameCount } from './range';
 import { createFrameSources } from './sources';
-import { KEYFRAME_SECONDS } from './segment';
+import { KEYFRAME_SECONDS, unpackGifFrames } from './segment';
 import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './parallel';
 import type { SegmentPool } from './parallel';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
@@ -638,7 +640,8 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     if (signal?.aborted) throw abortError();
 
     // ---- gif: pass 1 samples a few small frames for one global palette, pass 2 encodes every frame ----
-    const exportGifFrames = async (allowPool: boolean): Promise<Blob> => {
+    const exportGifFrames = async (mode: 'parts' | 'pool' | 'plain'): Promise<Blob> => {
+      const allowPool = mode !== 'plain';
       // increasing order: the pass-1 feeds hold only these frames, so nothing in between is decoded
       const sampleList = [...new Set(paletteSampleFrames(totalFrames))].sort((a, b) => a - b);
       const sampleFrames = new Set(sampleList);
@@ -669,14 +672,71 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       releaseRenderResources('export');
       if (signal?.aborted) throw abortError();
 
+      const encoder = createGifEncoder({ width, height, palette, loop: 0 });
+      const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+
+      // ---- in parts: workers draw and compress stretches of the timeline, this thread writes them in order ----
+      const partWorkers = options.workers ?? gifPartWorkers(cores, width * height, totalFrames);
+      // video pictures reach a cpu canvas through the gpu, one at a time: more threads drawing them gain nothing
+      // (measured), so a project with video is drawn here and only its frames' number work goes to workers
+      const hasVideo = project.clips.some((c) => c.type === 'video');
+      const partsAble =
+        typeof OffscreenCanvas !== 'undefined' && typeof Worker !== 'undefined' && !hooks.onFrame && !hasVideo && !needsMainThread(project);
+      if (mode === 'parts' && partWorkers > 1 && (partsAble || options.partsOnMain)) {
+        const segments = planGifParts(totalFrames, partWorkers);
+        const fontKit = options.partsOnMain ? null : await collectFontKit(project);
+        if (signal?.aborted) throw abortError();
+        lastYield = performance.now();
+        const parts = startSegments({
+          project,
+          base: { container: 'gif', gifPalette: palette, codec: 'avc', bitrate: 0, width, height, fps, rangeStart, totalFrames },
+          segments,
+          workers: partWorkers,
+          warmup: 0,
+          onMain: !!options.partsOnMain,
+          blobOf: getAssetBlob,
+          fontKit,
+          missingFonts,
+          loadImageElement,
+          breathe: () => (performance.now() - lastYield > 14 ? yieldToUi() : undefined),
+          onWarning,
+          onFrames: (done) => report('video', 0.2 + 0.78 * (done / totalFrames), done, false),
+          signal,
+        });
+        try {
+          let i = 0;
+          for (let s = 0; s < segments.length; s++) {
+            const part = await parts.result(s);
+            if (signal?.aborted) throw abortError();
+            const frames = unpackGifFrames(part.buffer);
+            if (part.from !== i || frames.length !== part.to - part.from) throw new Error('a rendered part lost frames');
+            for (const lzw of frames) encoder.addEncodedFrame(lzw, gifDelayCs(i++, fps));
+            stats.decodeMs += part.stats.decodeMs;
+            stats.renderMs += part.stats.renderMs;
+            stats.encodeMs += part.stats.encodeMs;
+            if (performance.now() - lastYield > 14) await yieldToUi();
+          }
+          if (i !== totalFrames) throw new Error('a rendered part lost frames');
+          stats.workerStartMs = parts.startTimes();
+        } finally {
+          parts.dispose();
+          if (options.partsOnMain) releaseRenderResources('export');
+        }
+        if (signal?.aborted) throw abortError();
+        report('finalizing', 0.99, totalFrames);
+        await yieldToUi();
+        const blob = new Blob(encoder.finishParts() as BlobPart[], { type: 'image/gif' });
+        finish(Math.min(partWorkers, segments.length));
+        report('finalizing', 1, totalFrames);
+        return blob;
+      }
+
       await sources.open();
       const gifCanvas = new OffscreenCanvas(width, height);
       const gctx = gifCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
       if (!gctx) throw new Error('2d canvas is not available');
       gctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
-      const encoder = createGifEncoder({ width, height, palette, loop: 0 });
       // the slow part of a frame (palette lookup, dithering, lzw) goes to web workers when that pays off
-      const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
       const gifWorkers = allowPool ? (options.workers ?? gifWorkerCount(cores, width * height, totalFrames)) : 1;
       const pool = gifWorkers > 1 ? createGifPool(gifWorkers, width, palette) : null;
       const made: Promise<Uint8Array>[] = [];
@@ -731,18 +791,24 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
     // ---- output ----
     if (container === 'gif') {
-      try {
-        return await exportGifFrames(true);
-      } catch (err) {
-        if (signal?.aborted || isAbort(err) || !(err instanceof GifPoolError)) throw err;
-        // the workers failed: the gif is made again on this thread, so the user still gets the file
-        console.warn('[export] gif workers failed, encoding on one thread:', err.message);
-        hooks.onFallback?.(err.message);
-        await sources.dispose();
-        releaseRenderResources('export');
-        for (const k of ['decodeMs', 'renderMs', 'encodeMs'] as const) stats[k] = 0;
-        return await exportGifFrames(false);
+      // each way that fails (not a cancel) hands over to the next simpler one, so the user still gets the file
+      let lastError: unknown = null;
+      for (const mode of ['parts', 'pool', 'plain'] as const) {
+        try {
+          return await exportGifFrames(mode);
+        } catch (err) {
+          if (signal?.aborted || isAbort(err)) throw abortError();
+          if (mode === 'plain' || (mode === 'pool' && !(err instanceof GifPoolError))) throw err;
+          lastError = err;
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn('[export] gif workers failed, trying a simpler way:', reason);
+          hooks.onFallback?.(reason);
+          await sources.dispose();
+          releaseRenderResources('export');
+          for (const k of ['decodeMs', 'renderMs', 'encodeMs'] as const) stats[k] = 0;
+        }
       }
+      throw lastError;
     }
     await sources.open();
     const format =

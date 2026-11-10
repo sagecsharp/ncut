@@ -9,6 +9,7 @@ import type { VideoCodec } from 'mediabunny';
 import type { Project } from '../../types';
 import { renderFrame } from '../../engine/draw';
 import type { DrawSource } from '../../engine/draw';
+import { encodeGifFrame } from '../../lib/gif';
 import { createFrameSources } from './sources';
 
 /** seconds between key frames (not frames: 240 fps would otherwise get one every 0.1 s) */
@@ -16,7 +17,10 @@ export const KEYFRAME_SECONDS = 2;
 
 export interface SegmentJob {
   id: number;
-  container: 'mp4' | 'webm';
+  /** 'gif': the part is drawn on a cpu canvas and every frame becomes lzw data (needs gifPalette), no video encoder */
+  container: 'mp4' | 'webm' | 'gif';
+  /** gif only: the one palette of the whole file */
+  gifPalette?: Uint8Array;
   codec: VideoCodec;
   bitrate: number;
   width: number;
@@ -59,7 +63,7 @@ export interface SegmentResult {
   to: number;
   /** the frame the file starts with: `from` minus the run-in frames */
   first: number;
-  /** a complete video file holding the frames [first, to), starting at time 0 */
+  /** a complete video file holding the frames [first, to), starting at time 0. gif: the frames' lzw data (packGifFrames). */
   buffer: ArrayBuffer;
   stats: SegmentStats;
 }
@@ -81,7 +85,101 @@ function abortError(): DOMException {
   return new DOMException('export cancelled', 'AbortError');
 }
 
+/** the lzw data of some gif frames in one buffer: [count][length of each][the bytes of each], numbers as u32 */
+export function packGifFrames(frames: readonly Uint8Array[]): ArrayBuffer {
+  let size = 4 + frames.length * 4;
+  for (const f of frames) size += f.length;
+  const out = new Uint8Array(size);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, frames.length, true);
+  let at = 4 + frames.length * 4;
+  frames.forEach((f, k) => {
+    view.setUint32(4 + k * 4, f.length, true);
+    out.set(f, at);
+    at += f.length;
+  });
+  return out.buffer;
+}
+
+/** the frames of packGifFrames again (views into the buffer, nothing is copied). throws on a buffer that is not one. */
+export function unpackGifFrames(buffer: ArrayBuffer): Uint8Array[] {
+  if (buffer.byteLength < 4) throw new Error('not a packed gif part');
+  const view = new DataView(buffer);
+  const count = view.getUint32(0, true);
+  let at = 4 + count * 4;
+  if (at > buffer.byteLength) throw new Error('not a packed gif part');
+  const frames: Uint8Array[] = [];
+  for (let k = 0; k < count; k++) {
+    const len = view.getUint32(4 + k * 4, true);
+    if (at + len > buffer.byteLength) throw new Error('not a packed gif part');
+    frames.push(new Uint8Array(buffer, at, len));
+    at += len;
+  }
+  if (at !== buffer.byteLength) throw new Error('not a packed gif part');
+  return frames;
+}
+
+/** a part of a gif: drawn the way the one-thread gif export draws (a cpu canvas read back), each frame compressed here */
+async function renderGifSegment(project: Project, job: SegmentJob, env: SegmentEnv): Promise<SegmentResult> {
+  const { fps, from, to, width, height } = job;
+  const palette = job.gifPalette;
+  if (!palette) throw new Error('a gif part needs the palette');
+  const stats: SegmentStats = { wallMs: 0, firstFrameMs: 0, openMs: 0, decodeMs: 0, renderMs: 0, encodeMs: 0, finalizeMs: 0 };
+  const startedAt = performance.now();
+  const sources = createFrameSources({
+    project,
+    fps,
+    rangeStart: job.rangeStart,
+    totalFrames: job.totalFrames,
+    from,
+    to,
+    blobOf: env.blobOf,
+    loadImageElement: env.loadImageElement,
+    strictImages: env.strictImages,
+    onWarning: env.onWarning,
+    signal: env.signal,
+    stats,
+  });
+  const canvas = new OffscreenCanvas(width, height);
+  try {
+    const t0 = performance.now();
+    await sources.open();
+    if (env.signal?.aborted) throw abortError();
+    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!ctx) throw new Error('2d canvas is not available');
+    ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+    stats.openMs = performance.now() - t0;
+    const frames: Uint8Array[] = [];
+    let scratch: Uint8Array | undefined;
+    for (let i = from; i < to; i++) {
+      if (env.signal?.aborted) throw abortError();
+      await sources.step(i, (t) => {
+        const a = performance.now();
+        renderFrame(ctx, project, t, sources.resolver);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        const b = performance.now();
+        if (!scratch || scratch.length !== data.length >> 2) scratch = new Uint8Array(data.length >> 2);
+        frames.push(encodeGifFrame(data, width, palette, scratch));
+        stats.renderMs += b - a;
+        stats.encodeMs += performance.now() - b;
+        if (i === from) stats.firstFrameMs = performance.now() - a;
+      });
+      env.onProgress?.(i + 1 - from);
+      const pause = env.breathe?.();
+      if (pause) await pause;
+    }
+    if (env.signal?.aborted) throw abortError();
+    stats.wallMs = performance.now() - startedAt;
+    return { id: job.id, from, to, first: from, buffer: packGifFrames(frames), stats };
+  } finally {
+    await sources.dispose();
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
 export async function renderSegment(project: Project, job: SegmentJob, env: SegmentEnv): Promise<SegmentResult> {
+  if (job.container === 'gif') return renderGifSegment(project, job, env);
   const { fps, from, to, width, height } = job;
   const first = Math.max(0, from - Math.max(0, Math.floor(job.warmup ?? 0)));
   // the key frame rhythm of the whole export (one every KEYFRAME_SECONDS of its own time), whatever part this is

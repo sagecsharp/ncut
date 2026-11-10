@@ -26,6 +26,38 @@ export function gifWorkerCount(cores: number, pixelsPerFrame: number, totalFrame
   return Math.max(1, Math.min(GIF_POOL_MAX_WORKERS, Math.floor(cores) - 2, totalFrames));
 }
 
+/** below this many frames a gif is not split into parts */
+export const GIF_PARTS_MIN_FRAMES = 24;
+export const GIF_PARTS_MAX_WORKERS = 8;
+
+/**
+ * how many workers draw a gif in parts (segment.ts renderGifSegment). 1 = it is drawn on the calling thread.
+ * drawing a gif is cpu work (a cpu canvas that is read back), so it scales with cores, not with the gpu.
+ */
+export function gifPartWorkers(cores: number, pixelsPerFrame: number, totalFrames: number): number {
+  if (!(cores >= 4) || !(totalFrames >= GIF_PARTS_MIN_FRAMES)) return 1;
+  if (pixelsPerFrame * totalFrames < GIF_POOL_MIN_PIXELS * 2) return 1;
+  return Math.max(1, Math.min(GIF_PARTS_MAX_WORKERS, Math.floor(cores) - 2, Math.floor(totalFrames / 8)));
+}
+
+/**
+ * the parts of a gif: a few per worker (so a slow part does not leave the others waiting), each at least 8 frames.
+ * gif frames do not depend on each other, so a part can start anywhere.
+ */
+export function planGifParts(totalFrames: number, workers: number): Array<{ from: number; to: number }> {
+  const total = Math.max(0, Math.floor(totalFrames));
+  if (total === 0) return [];
+  const size = Math.max(8, Math.ceil(total / (Math.max(1, workers) * 3)));
+  const out: Array<{ from: number; to: number }> = [];
+  for (let from = 0; from < total; from += size) out.push({ from, to: Math.min(total, from + size) });
+  // a short tail joins the part before it
+  if (out.length > 1 && out[out.length - 1]!.to - out[out.length - 1]!.from < 4) {
+    const tail = out.pop()!;
+    out[out.length - 1]!.to = tail.to;
+  }
+  return out;
+}
+
 /** frames that may be waiting or in work at once: every worker busy and one more ready behind it */
 export function gifPoolDepth(workers: number): number {
   return Math.max(1, workers) * 2;
