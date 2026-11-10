@@ -28,7 +28,7 @@ export interface ArrangeOpts {
   depthGap?: number;
   /** fan: angle from the first to the last card (degrees) */
   spread?: number;
-  /** ring / spiral: clips face away from the middle (true, default) or toward it */
+  /** ring / spiral / sphere: clips face away from the middle (true, default) or toward it */
   outward?: boolean;
   /** row / grid: size of one clip (px), the pitch is size + gap. missing = 0 */
   itemW?: number;
@@ -62,6 +62,20 @@ export const ARRANGE_SLIDERS: Record<ArrangeKind, { key: ArrangeKey; label: stri
 /** layouts with a second slider: the size of the box scatter fills (the radius of the other layouts) */
 export const ARRANGE_EXTRA_SLIDERS: Partial<Record<ArrangeKind, { key: ArrangeKey; label: string; min: number; max: number; step: number; suffix: string }>> = {
   scatter: { key: 'radius', label: 'size', min: 50, max: 2000, step: 10, suffix: 'px' },
+};
+
+/** the layouts that read the `outward` option (the switch is only shown for these) */
+export const ARRANGE_READS_OUTWARD: Record<ArrangeKind, boolean> = {
+  ring: true,
+  row: false,
+  stack: false,
+  fan: false,
+  grid: false,
+  spiral: true,
+  sphere: true,
+  scatter: false,
+  wave: false,
+  stairs: false,
 };
 
 /** fan: distance from the pivot (below the cards) to the cards */
@@ -156,7 +170,8 @@ export function arrange(kind: ArrangeKind, count: number, opts: ArrangeOpts = {}
     }
   } else if (kind === 'sphere') {
     // fibonacci sphere: even points from the top down, the golden angle apart. the middle of the ball is
-    // `radius` behind the first clip's depth; point 0 is turned to the front. every clip faces outward.
+    // `radius` behind the first clip's depth; point 0 is turned to the front. every clip faces outward, or
+    // inward (turned 180 degrees around y, tilt negated) when `outward` is false.
     const golden = Math.PI * (3 - Math.sqrt(5));
     for (let i = 0; i < n; i++) {
       const up = 1 - (2 * (i + 0.5)) / n; // 1 = top, -1 = bottom
@@ -165,9 +180,9 @@ export function arrange(kind: ArrangeKind, count: number, opts: ArrangeOpts = {}
       const ox = ring * Math.cos(a);
       const oy = -up; // y is down
       const oz = ring * Math.sin(a);
-      out.push(
-        pose(radius * ox, radius * oy, radius * (1 + oz), Math.atan2(ox, -oz) / DEG, 0, Math.asin(Math.max(-1, Math.min(1, -oy))) / DEG),
-      );
+      const turn = Math.atan2(ox, -oz) / DEG;
+      const tilt = Math.asin(Math.max(-1, Math.min(1, -oy))) / DEG;
+      out.push(pose(radius * ox, radius * oy, radius * (1 + oz), outward ? turn : turn + 180, 0, outward ? tilt : -tilt));
     }
   } else if (kind === 'scatter') {
     const rnd = seeded(opts.seed ?? ARRANGE_DEFAULTS.seed);
