@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, X } from 'lucide-react';
+import { Download, FolderOpen, X } from 'lucide-react';
+import { exportProgressToShell, shell } from '../../lib/shell';
 import { Dialog } from '../../components/ui/Dialog';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -111,6 +112,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const [elapsed, setElapsed] = useState(0);
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [error, setError] = useState('');
+  /** desktop app: the name the last export was saved under (the folder is known only to the shell) */
+  const [savedName, setSavedName] = useState<string | null>(null);
 
   // frame rate + resolution of the group (gif / video) that is not showing right now
   const groupRef = useRef<PrefGroup>(groupOf(saved.container ?? 'mp4') ?? 'video');
@@ -197,6 +200,17 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setBusy('export', 'an export is still running');
     return () => setBusy('export', null);
   }, [phase]);
+
+  // desktop app: taskbar progress, no sleep while exporting, and the name a finished file was saved under
+  useEffect(() => {
+    if (phase !== 'exporting') return;
+    shell.keepAwake(true);
+    return () => {
+      shell.keepAwake(false);
+      exportProgressToShell(null);
+    };
+  }, [phase]);
+  useEffect(() => shell.onSaved((name) => setSavedName(name)), []);
 
   // elapsed clock while exporting (2 ticks per second, not per frame)
   useEffect(() => {
@@ -286,6 +300,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     startRef.current = performance.now();
     lastUiRef.current = 0;
     setElapsed(0);
+    setSavedName(null);
     setProgress({ phase: 'audio', progress: 0, frame: 0, totalFrames });
     setPhase('exporting');
     const name = `${sanitizeName(fileName || project.name)}.${container}`;
@@ -300,6 +315,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             if (!warnings.includes(m)) warnings.push(m);
           },
           onProgress: (p) => {
+            exportProgressToShell(p.progress);
             const now = performance.now();
             if (now - lastUiRef.current < 100 && p.progress < 1) return;
             lastUiRef.current = now;
@@ -315,6 +331,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
       doneUrlRef.current = url;
       setDone({ url, size: blob.size, seconds: (performance.now() - startRef.current) / 1000, fileName: name, warnings });
       setPhase('done');
+      shell.attention();
       triggerDownload(url, name);
     } catch (err) {
       if (ac.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
@@ -605,6 +622,12 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
         <button className="btn" onClick={onClose} title="close">
           close
         </button>
+        {shell.available && savedName && (
+          <button className="btn" onClick={() => void shell.revealLastSave()} title={`show ${savedName} in its folder`}>
+            <FolderOpen size={14} />
+            show in folder
+          </button>
+        )}
         <button
           className="btn btn-primary"
           onClick={() => triggerDownload(done.url, done.fileName)}
