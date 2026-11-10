@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Toasts } from './components/ui/Toasts';
-import { EditorLayout } from './features/editor/EditorLayout';
+import { loadEditorLayout, preloadEditor } from './features/editor/loadEditor';
 import { ProjectsScreen } from './features/projects/ProjectsScreen';
+import { signalShellReady } from './features/shell/openShellFile';
 import { useEditor } from './store/editorStore';
 import { closeProject, openProjectById, projectIdFromHash } from './store/session';
+
+// the editor is its own chunk (the projects screen is all that is needed to start). preloadEditor() is called as soon as
+// a project is known to open, so the chunk loads while the project's data is read
+const EditorLayout = lazy(() => loadEditorLayout().then((m) => ({ default: m.EditorLayout })));
 
 /** routes between the projects screen and the editor based on the url hash (#/project/<id>) */
 export function App() {
@@ -28,6 +33,16 @@ export function App() {
       if (!cancelled) setBooting(false);
     };
     void sync();
+    // a pointer going down on a project card: the project will open, fetch the editor now (the data read takes longer)
+    const warmEditor = (e: PointerEvent) => {
+      if (e.target instanceof Element && e.target.closest('.projects-card')) preloadEditor();
+    };
+    window.addEventListener('pointerdown', warmEditor, true);
+    // the first screen is on its way to the glass: the desktop shell may show its window and hand over a file
+    let frame = requestAnimationFrame(() => {
+      frame = 0;
+      setTimeout(signalShellReady, 0);
+    });
     // a file dropped outside a drop zone would make the browser open it and leave the editor
     const blockFileNav = (e: DragEvent) => {
       if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
@@ -38,6 +53,8 @@ export function App() {
     window.addEventListener('hashchange', sync);
     return () => {
       cancelled = true;
+      window.removeEventListener('pointerdown', warmEditor, true);
+      if (frame) cancelAnimationFrame(frame);
       window.removeEventListener('dragover', blockFileNav);
       window.removeEventListener('drop', blockFileNav);
       window.removeEventListener('popstate', sync);
@@ -47,7 +64,15 @@ export function App() {
 
   return (
     <>
-      {booting ? <div className="empty">loading...</div> : hasProject ? <EditorLayout /> : <ProjectsScreen />}
+      {booting ? (
+        <div className="empty">loading...</div>
+      ) : hasProject ? (
+        <Suspense fallback={<div className="empty">loading...</div>}>
+          <EditorLayout />
+        </Suspense>
+      ) : (
+        <ProjectsScreen />
+      )}
       <Toasts />
     </>
   );

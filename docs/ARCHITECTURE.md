@@ -249,19 +249,38 @@ add it locally and mention it in your report.
 
 ## desktop shell (electron/)
 
-the exe is the built web app (`dist/`) in one electron window. nothing in `src/` knows about electron.
+the exe is the built web app (`dist/`) in one electron window. the only code in `src/` that knows about electron is
+`src/lib/shell.ts`.
 
 - `electron/main.cjs` the main process: registers the `app://ncut` origin and serves `dist/` from it (never a file
   outside the folder), sends the content security policy with the page, creates the window, remembers its place
   and the last save folder in `window.json` (userData).
 - `electron/rules.cjs` every decision as a pure function (url to file, what may navigate, permissions, file names,
   window placement, shell keys), tested in `electron/rules.test.mjs`.
-- the page has no node access, no preload script and no network (csp `connect-src 'self' blob: data:`). it may ask
+- the page has no node access and no network (csp `connect-src 'self' blob: data:`, no inline scripts). it may ask
   for two permissions only: full screen and the installed fonts. new windows and navigation away are refused,
   web links open in the system browser.
-- two globals are the whole bridge, set in `store/session.ts`: `window.__ncutBusy()` returns a sentence while work
+- `electron/preload.cjs` (sandboxed) exposes one frozen object, `window.ncutShell`: taskbar progress, keep awake,
+  flash the taskbar button, show the last saved file, a callback when a download was saved, a callback for a project
+  file the app was opened with, and `ready()`. the page only sends numbers and booleans, never a path or a url.
+  every ipc handler in `main.cjs` goes through `trustedWindow()`: the sender must be the top frame of the app origin
+  (`rules.isTrustedSender`), bad input is dropped, nothing throws.
+- `src/lib/shell.ts` is the only page-side entry to it. in a browser tab `shell.available` is false and every call is
+  a no-op, so no feature may touch `window.ncutShell` anywhere else.
+- two globals are the rest of the bridge, set in `store/session.ts`: `window.__ncutBusy()` returns a sentence while work
   would be lost (`lib/busy.ts`, the export dialog marks itself) and `window.__ncutBeforeClose()` writes the last
   autosave. the shell calls both when the window closes. in a browser tab `beforeunload` uses the same busy flag.
+- the window is shown when the page says `ready()` after its first screen was painted (`App`), not at
+  `ready-to-show` (the empty page), and after `SHOW_FALLBACK_MS` (1.5 s) anyway or when the load fails, so a broken
+  page never leaves an invisible window.
+- `.ncut` is a registered file type (electron-builder `fileAssociations`). a double click, a file dropped on the exe or a
+  second start passes the path on the command line; `main.cjs` reads it (regular file, `.ncut`, size cap) and holds it
+  until the page called `ready()`, then sends `{ name, bytes }`. `main.tsx` subscribes with `shell.onOpenFile` first
+  (`features/shell/openShellFile.ts`), `App` calls `ready()` later. the file goes through `importProjectFile` like
+  the projects screen's "import project" and the new project opens with `openProjectById` (which saves the one that is
+  open). a failure is the same error toast as a failed import.
+- files the app serves: `rules.cacheControlFor` gives html `no-cache` and the content hashed files under `assets/`
+  `public, max-age=31536000, immutable`. nothing else gets a cache header. the csp is sent with every html file.
 - files the app hands out (`<a download>` on a blob) become a save dialog through `will-download`.
 - packaging: `electron-builder` config in `package.json` (`build`): only `dist/`, `electron/` and `package.json` go
   into the asar, fuses turn off run-as-node / node options / inspect and turn on asar integrity.

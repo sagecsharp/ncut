@@ -1,12 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Download, Keyboard, Redo2, Search, Settings, Undo2 } from 'lucide-react';
 import { useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { closeProject, useSaveState } from '../../store/session';
 import type { SaveStatus } from '../../store/session';
 import { useUi } from '../../store/ui';
-import { CommandPalette } from './CommandPalette';
-import { openPalette } from './paletteStore';
+import { loadCommandPalette } from './lazyDialogs';
+import { closePalette, openPalette, usePalette } from './paletteStore';
 import './shell.css';
+
+const CommandPalette = lazy(() => loadCommandPalette().then((m) => ({ default: m.CommandPalette })));
+
+/** the palette's code is loaded the first time it opens (idle time after the editor opened, or the first ctrl+k) */
+function PaletteHost() {
+  const open = usePalette((s) => s.open);
+  // leaving the editor with the palette open must not leave it open for the next project
+  useEffect(() => closePalette, []);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <CommandPalette />
+    </Suspense>
+  );
+}
 
 const SAVE_LABEL: Record<SaveStatus, string> = {
   saved: 'saved',
@@ -142,7 +157,7 @@ export function Header() {
           export
         </button>
       </div>
-      <CommandPalette />
+      <PaletteHost />
     </header>
   );
 }

@@ -12,6 +12,8 @@ import { checkEffects, renderEffects } from './engine/effects/runner';
 import { drawTestPattern } from './engine/effects/testPattern';
 import { TRANSITIONS } from './engine/transitions/registry';
 import { checkTransitions, renderTransition } from './engine/transitions/runner';
+import { preloadEditor } from './features/editor/loadEditor';
+import { attachShellOpenFile } from './features/shell/openShellFile';
 import { initAppearance } from './lib/appearance';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
@@ -19,6 +21,8 @@ import { usePlayback } from './store/playback';
 import * as session from './store/session';
 import { useUi } from './store/ui';
 
+// a url that names a project: start loading the editor now, before indexeddb and the first render
+if (session.projectIdFromHash() !== null) preloadEditor();
 initAppearance();
 // the canvas (preview + export) can only draw a web font once it is loaded, so fetch both weights up front
 if (document.fonts) {
@@ -26,6 +30,17 @@ if (document.fonts) {
   void document.fonts.load('700 16px "Kode Mono"');
 }
 session.startAutosave();
+// a .ncut file the desktop app was started with: imported and opened like the projects screen's "import project".
+// subscribed here, once; the shell only sends a file after App calls ready() (after its first paint)
+attachShellOpenFile(
+  {
+    importFile: session.importProjectFile,
+    openProject: session.openProjectById,
+    toast: (message, kind) => useUi.getState().toast(message, kind),
+    log: (e) => console.error(e),
+  },
+  preloadEditor,
+);
 
 // handy for poking at the app from the devtools console (dev builds only)
 if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {

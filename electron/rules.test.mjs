@@ -259,3 +259,38 @@ describe('the bridge rules', () => {
     expect(rules.isTrustedSender(undefined, true, null)).toBe(false);
   });
 });
+
+describe('cache headers and showing the window', () => {
+  const IMMUTABLE = 'public, max-age=31536000, immutable';
+
+  it('hashed files under assets/ are kept for good', () => {
+    expect(rules.cacheControlFor('assets/index-DAURsuPe.js')).toBe(IMMUTABLE);
+    expect(rules.cacheControlFor('assets/index-kSe7rnxU.css')).toBe(IMMUTABLE);
+    expect(rules.cacheControlFor('assets/exportWorker-DHN7ARXX.js')).toBe(IMMUTABLE);
+    expect(rules.cacheControlFor('assets/400-3FVO97uO.css')).toBe(IMMUTABLE);
+    // a hash may start with or contain - and _
+    expect(rules.cacheControlFor('assets/kode-mono-latin-400-normal-_-aXATzQ.woff2')).toBe(IMMUTABLE);
+    expect(rules.cacheControlFor('assets/ExportDialog-D_-aXATz.js')).toBe(IMMUTABLE);
+  });
+
+  it('html is always asked for again', () => {
+    expect(rules.cacheControlFor('index.html')).toBe('no-cache');
+    expect(rules.cacheControlFor('assets/page-DAURsuPe.html')).toBe('no-cache');
+  });
+
+  it('files without a content hash in the name get no header', () => {
+    expect(rules.cacheControlFor('favicon.svg')).toBeNull();
+    expect(rules.cacheControlFor('assets/logo.svg')).toBeNull();
+    expect(rules.cacheControlFor('assets/short-abc.js')).toBeNull();
+    // not under assets/: even a hashed looking name stays uncached
+    expect(rules.cacheControlFor('other/index-DAURsuPe.js')).toBeNull();
+    expect(rules.cacheControlFor('index-DAURsuPe.js')).toBeNull();
+    expect(rules.cacheControlFor(undefined)).toBeNull();
+    expect(rules.cacheControlFor(null)).toBeNull();
+  });
+
+  it('the window waits a short while for the page, never long', () => {
+    expect(rules.SHOW_FALLBACK_MS).toBeGreaterThanOrEqual(1000);
+    expect(rules.SHOW_FALLBACK_MS).toBeLessThanOrEqual(2000);
+  });
+});

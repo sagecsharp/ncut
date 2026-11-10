@@ -13,6 +13,8 @@ import { rememberTransition, transitionFor } from './transitionApply';
 import { calmPool, planShuffle } from './transitionBatch';
 import { FavoriteStar } from './FavoriteStar';
 import { pickFavorites, useFavorites } from './favorites';
+import { createStillCache } from './stillCache';
+import { observeNear } from './nearViewport';
 import { renderTransition } from '../../engine/transitions/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -27,6 +29,8 @@ const LOOP_MS = 1200;
 let pictures: { a: HTMLCanvasElement; b: HTMLCanvasElement } | null = null;
 /** true while the tab is unmounted / being torn down: nothing is rendered (it would rebuild the pictures) */
 let disposed = false;
+/** the finished stills: kept while the tab is switched away, released after a while or when the project closes */
+const stills = createStillCache<ImageBitmap>();
 
 function bigLetter(ctx: CanvasRenderingContext2D, letter: string): void {
   ctx.save();
@@ -99,22 +103,44 @@ function pump(): void {
   if (first.done) return;
   const [canvas, def] = first.value;
   queue.delete(canvas);
-  drawFrame(def, canvas, 0.5);
+  paintStill(def, canvas);
   if (queue.size > 0) pumpRaf = requestAnimationFrame(pump);
 }
 
+/** the cached still when we have it, otherwise render it once (halfway through the blend) and cache it */
+function paintStill(def: TransitionDef, canvas: HTMLCanvasElement): void {
+  if (disposed) return;
+  const cached = stills.get(def.id);
+  if (cached) {
+    canvas.getContext('2d')?.drawImage(cached, 0, 0, canvas.width, canvas.height);
+    return;
+  }
+  drawFrame(def, canvas, 0.5);
+  const ticket = stills.begin(def.id);
+  if (ticket === null) return;
+  void createImageBitmap(canvas)
+    .then((bmp) => stills.finish(def.id, ticket, bmp))
+    .catch(() => stills.fail(def.id));
+}
+
 function requestStill(def: TransitionDef, canvas: HTMLCanvasElement): void {
+  if (stills.has(def.id)) {
+    paintStill(def, canvas);
+    return;
+  }
   queue.set(canvas, def);
   if (!pumpRaf) pumpRaf = requestAnimationFrame(pump);
 }
 
-function releaseThumbs(): void {
+function closeTab(): void {
   disposed = true;
   if (pumpRaf) cancelAnimationFrame(pumpRaf);
   pumpRaf = 0;
   queue.clear();
   stopActive?.();
   pictures = null;
+  // the stills stay for the next visit. a closing project takes them with it, otherwise they go after a while
+  stills.close(useEditor.getState().project === null);
 }
 
 /* ---------- apply ---------- */
@@ -174,8 +200,13 @@ const TransitionCard = memo(function TransitionCard({ def }: { def: TransitionDe
   useEffect(() => {
     const canvas = refs.canvas;
     if (!canvas) return;
-    requestStill(def, canvas);
+    // only a card near the visible part of the list renders its still (the rest wait until they are scrolled close)
+    const unobserve = observeNear(refs.card, (near) => {
+      if (near) requestStill(def, canvas);
+      else queue.delete(canvas);
+    });
     return () => {
+      unobserve();
       queue.delete(canvas);
       refs.stop?.();
     };
@@ -206,7 +237,7 @@ const TransitionCard = memo(function TransitionCard({ def }: { def: TransitionDe
       refs.card?.classList.remove('is-live');
       if (refs.stop === stop) refs.stop = null;
       if (stopActive === stop) stopActive = null;
-      drawFrame(def, canvas, 0.5);
+      paintStill(def, canvas);
     };
     document.addEventListener('visibilitychange', onVisibility);
     refs.stop = stop;
@@ -273,7 +304,8 @@ export function TransitionsTab() {
 
   useEffect(() => {
     disposed = false;
-    return releaseThumbs;
+    stills.open();
+    return closeTab;
   }, []);
 
   const q = query.trim().toLowerCase();

@@ -1,19 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { FpsCounter } from '../../components/ui/FpsCounter';
 import { clamp } from '../../lib/time';
 import { useUi } from '../../store/ui';
-import { ExportDialog } from '../export/ExportDialog';
 import { MediaPanel } from '../media/MediaPanel';
 import { Preview } from '../preview/Preview';
 import { PropertiesPanel } from '../properties/PropertiesPanel';
 import { Header } from '../shell/Header';
-import { ProjectSettingsDialog } from '../shell/ProjectSettingsDialog';
-import { ShortcutsDialog } from '../shell/ShortcutsDialog';
+import { loadExportDialog, loadProjectSettingsDialog, loadShortcutsDialog, preloadDialogsWhenIdle } from '../shell/lazyDialogs';
 import { useShortcuts } from '../shell/useShortcuts';
 import { Timeline } from '../timeline/Timeline';
 import { LAYOUT_RESET_EVENT, LAYOUT_STORAGE_KEY as STORAGE_KEY } from './layoutReset';
 import './editor.css';
+
+// dialogs are chunks of their own, fetched when first opened (and early, in idle time). a key that opens one only
+// sets the store's dialog name, so the first press is never lost: the dialog shows as soon as its code is there
+const ExportDialog = lazy(() => loadExportDialog().then((m) => ({ default: m.ExportDialog })));
+const ProjectSettingsDialog = lazy(() => loadProjectSettingsDialog().then((m) => ({ default: m.ProjectSettingsDialog })));
+const ShortcutsDialog = lazy(() => loadShortcutsDialog().then((m) => ({ default: m.ShortcutsDialog })));
 
 interface Sizes {
   left: number;
@@ -77,6 +81,7 @@ export function EditorLayout() {
   const drag = useRef<{ edge: Edge; startPos: number; startSize: number } | null>(null);
 
   useShortcuts();
+  useEffect(() => preloadDialogsWhenIdle(), []);
 
   useEffect(() => {
     try {
@@ -158,9 +163,11 @@ export function EditorLayout() {
       </div>
 
       <FpsCounter />
-      <ExportDialog open={dialog === 'export'} onClose={closeDialog} />
-      <ProjectSettingsDialog open={dialog === 'settings'} onClose={closeDialog} />
-      <ShortcutsDialog open={dialog === 'shortcuts'} onClose={closeDialog} />
+      <Suspense fallback={null}>
+        {dialog === 'export' ? <ExportDialog open onClose={closeDialog} /> : null}
+        {dialog === 'settings' ? <ProjectSettingsDialog open onClose={closeDialog} /> : null}
+        {dialog === 'shortcuts' ? <ShortcutsDialog open onClose={closeDialog} /> : null}
+      </Suspense>
     </div>
   );
 }

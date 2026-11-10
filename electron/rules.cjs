@@ -49,6 +49,21 @@ const MIME = {
   wasm: 'application/wasm',
 };
 
+/**
+ * the cache header of a file of dist/, or null for none. the files vite puts in assets/ carry a hash of their
+ * content in the name (name-<8 chars>.ext), so a name never changes its bytes and may be kept for good. the html
+ * must always be asked for again (it names the current hashed files). everything else gets no header, as before.
+ */
+function cacheControlFor(rel) {
+  if (typeof rel !== 'string') return null;
+  if (rel.endsWith('.html')) return 'no-cache';
+  if (rel.startsWith('assets/') && /-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/.test(rel)) return 'public, max-age=31536000, immutable';
+  return null;
+}
+
+/** how long the window waits for the page to say it painted its first screen, then shows anyway (ms) */
+const SHOW_FALLBACK_MS = 1500;
+
 /** content type by file extension. unknown = bytes (never guessed as a script). */
 function mimeFor(rel) {
   const dot = rel.lastIndexOf('.');
@@ -251,6 +266,8 @@ function isTrustedSender(frameUrl, isMainFrame, devUrl) {
 }
 
 module.exports = {
+  cacheControlFor,
+  SHOW_FALLBACK_MS,
   PROJECT_EXT,
   MAX_OPEN_BYTES,
   clampProgress,
