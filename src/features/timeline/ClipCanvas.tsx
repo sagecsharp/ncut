@@ -179,9 +179,20 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
         schedule();
       },
     };
+    /** would draw() do anything now? the same tests as its first lines, without the rAF and without touching the canvas */
+    const needsWork = (): boolean => {
+      const p = latest.current;
+      const clipW = p.clip.duration * p.zoom;
+      const vs = view.scrollLeft - p.clip.start * p.zoom;
+      const ve = vs + view.width;
+      if (ve < -MARGIN || vs > clipW + MARGIN || clipW <= 0) return drawn !== null; // far away: only a release is left
+      if (force || !drawn || drawnGen !== getAppearanceGen()) return true;
+      return !(Math.max(0, vs) >= drawn.a - 0.5 && Math.min(clipW, ve) <= drawn.b + 0.5);
+    };
+    // every scroll / resize tick reaches every mounted canvas: do nothing unless there is something to draw
     const onView = () => {
       checkNear();
-      schedule();
+      if (!raf && needsWork()) schedule();
     };
     const unsub = subscribeView(onView);
     draw();
