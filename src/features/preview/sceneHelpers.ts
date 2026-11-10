@@ -32,6 +32,28 @@ export function sectionCorners(rig: RigAxes, distance: number): [Vec3, Vec3, Vec
   return [at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)];
 }
 
+/**
+ * a convex polygon (world points) cut at the near plane: only the part at least `nearDist` in front of the eye along
+ * `forward` stays. an empty array when nothing is in front. (one pass of sutherland-hodgman)
+ */
+export function clipPolygonNear(poly: ReadonlyArray<Vec3>, eye: Vec3, forward: Vec3, nearDist: number): Vec3[] {
+  const out: Vec3[] = [];
+  const n = poly.length;
+  const depth = (p: Vec3) => (p[0] - eye[0]) * forward[0] + (p[1] - eye[1]) * forward[1] + (p[2] - eye[2]) * forward[2];
+  for (let i = 0; i < n; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % n]!;
+    const da = depth(a);
+    const db = depth(b);
+    if (da >= nearDist) out.push(a);
+    if ((da >= nearDist) !== (db >= nearDist)) {
+      const t = (nearDist - da) / (db - da);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+    }
+  }
+  return out;
+}
+
 export interface FocusPlane {
   distance: number;
   kind: 'focus' | 'near' | 'far';
@@ -213,6 +235,19 @@ export function moveReadout(d: Vec3, lock: AxisLock): string {
   const parts: string[] = [];
   for (let i = 0; i < 3; i++) if (Math.abs(d[i]!) >= 0.005) parts.push(`${AXIS_LETTERS[i]} ${signed(d[i]!)}`);
   return parts.length > 0 ? parts.join(' ') : 'x 0';
+}
+
+/** the readout of a move that leaves a copy behind: "x +240 copy" */
+export function copyReadout(text: string): string {
+  return `${text} copy`;
+}
+
+/** true for the elements that take typed text: scene keys must leave them alone */
+export function isTypingTarget(t: { tagName?: string; isContentEditable?: boolean } | null | undefined): boolean {
+  if (!t) return false;
+  if (t.isContentEditable) return true;
+  const tag = (t.tagName ?? '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
 }
 
 /** a turn: "tilt +15deg" (the change since the grab) */

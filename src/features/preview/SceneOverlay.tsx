@@ -28,9 +28,12 @@ import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from
 import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
 import {
   type AxisLock,
+  clipPolygonNear,
+  copyReadout,
   floorGrid,
   focusFromDrag,
   focusPlanes,
+  isTypingTarget,
   lockForKey,
   moveReadout,
   nextLock,
@@ -125,6 +128,8 @@ type SceneGesture =
       rig: CameraRig;
       /** a 2d clip moved along z becomes 3d the moment z is the moved axis */
       to3d: boolean;
+      /** alt was held on the grab: the drag leaves a copy behind and moves the copy */
+      copy: boolean;
     }
   | {
       kind: 'focus';
@@ -181,7 +186,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener(
     'keydown',
     (e) => {
-      if (keyHook && !e.ctrlKey && !e.metaKey && !e.altKey) keyHook(e);
+      if (keyHook && !e.ctrlKey && !e.metaKey) keyHook(e);
     },
     true,
   );
@@ -328,6 +333,8 @@ export function SceneOverlay() {
   const dragShift = useRef(false);
   /** ctrl / cmd held at the last pointer event (arrows snap to the grid, rings to 15 degree steps) */
   const dragCtrl = useRef(false);
+  /** the selection when the running drag began (escape puts it back) */
+  const selBefore = useRef<string[]>([]);
   const tool = useSceneTool((s) => s.tool);
   const setTool = useSceneTool((s) => s.setTool);
   const gridOn = useSceneGrid((s) => s.on);
@@ -404,8 +411,9 @@ export function SceneOverlay() {
             const plane = planes[k];
             let pts = '';
             if (plane) {
-              const corners = sectionCorners(cr, plane.distance);
-              for (let ci = 0; ci < 4; ci++) {
+              // cut at the scene camera's near plane, so a rectangle that reaches behind the view still shows its front part
+              const corners = clipPolygonNear(sectionCorners(cr, plane.distance), rig.eye, rig.forward, rig.near);
+              for (let ci = 0; ci < corners.length; ci++) {
                 const c = corners[ci]!;
                 const sp = projectPoint(rig, c[0], c[1], c[2], project.width, project.height);
                 if (!sp.visible) {
@@ -462,7 +470,7 @@ export function SceneOverlay() {
           handle.classList.toggle('is-active', gestureRef.current?.kind === 'focus');
           const title = fh.disabled
             ? 'focus distance: the focus follows the camera target. turn off follow target in the inspector to drag it'
-            : 'focus distance: drag along the view axis';
+            : 'focus distance: drag along the view axis. the focus distance field in the inspector does the same';
           if (handle.title !== title) handle.title = title;
         }
       }
@@ -924,6 +932,12 @@ export function SceneOverlay() {
       if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
+      if (g.kind === 'axis' && g.copy) {
+        // alt: leave a copy over the original and drag the copy (still the same single undo step)
+        const copies = store.duplicateClips([g.id], { sameTime: true, skipHistory: true });
+        if (copies[0]) g.id = copies[0];
+        else g.copy = false;
+      }
       // dragging tilt or turn of a 2d clip turns it 3d; a plain click never does (z does it below, once z is the moved axis)
       if (g.kind === 'ring' && g.to3d) store.updateClip(g.id, { threeD: true }, { skipHistory: true });
       if (g.kind === 'focus') {
@@ -972,7 +986,8 @@ export function SceneOverlay() {
       if (!hit || !g.p0) return;
       for (let i = 0; i < 3; i++) D[i] = snapDelta(g.v3[i]!, hit[i]! - g.p0[i]!, dragCtrl.current, dragShift.current);
     }
-    readout.current = moveReadout(D, eff >= 0 ? (eff as AxisLock) : null);
+    const mr = moveReadout(D, eff >= 0 ? (eff as AxisLock) : null);
+    readout.current = g.copy ? copyReadout(mr) : mr;
     // a 2d clip moved along z becomes 3d the moment z is the moved axis
     if (g.to3d && eff === 2) {
       store.updateClip(g.id, { threeD: true }, { skipHistory: true });
@@ -1021,6 +1036,32 @@ export function SceneOverlay() {
     }
   };
 
+  /** escape: drop the running drag. a drag that already changed things is undone (its one history step) */
+  const cancelGesture = () => {
+    const g = gestureRef.current;
+    if (!g) return;
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+    pendingRef.current = null;
+    lastPointer.current = null;
+    gestureRef.current = null;
+    keyHook = null;
+    readout.current = '';
+    endPreviewGesture();
+    const root = rootRef.current;
+    if (root && root.hasPointerCapture(g.pointerId)) root.releasePointerCapture(g.pointerId);
+    if (g.kind === 'orbit' || g.kind === 'pan') {
+      useSceneCamera.getState().set(g.o0);
+    } else if (g.started) {
+      const store = useEditor.getState();
+      store.undo();
+      // the step is gone, not something to redo
+      useEditor.setState({ future: [] });
+      store.select(selBefore.current.filter((id) => useEditor.getState().project?.clips.some((c) => c.id === id)), 'replace');
+    }
+    redrawRef.current();
+  };
+
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const root = rootRef.current;
     const project = useEditor.getState().project;
@@ -1039,8 +1080,31 @@ export function SceneOverlay() {
 
     const begin = (g: SceneGesture) => {
       gestureRef.current = g;
-      root.setPointerCapture(e.pointerId);
+      selBefore.current = useEditor.getState().selection;
+      try {
+        root.setPointerCapture(e.pointerId);
+      } catch {
+        // the pointer is already gone: pointerup / lostpointercapture will not come, the next pointerdown starts clean
+      }
       beginPreviewGesture();
+      // escape cancels the drag; the move tool also takes x / y / z (never while typing in a field)
+      keyHook = (ev) => {
+        if (isTypingTarget(ev.target as HTMLElement | null)) return;
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          cancelGesture();
+          return;
+        }
+        const k = lockForKey(ev.key);
+        if (k === null || g.kind !== 'axis') return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (ev.repeat || gestureRef.current !== g) return;
+        g.lock = nextLock(g.lock, k);
+        const last = lastPointer.current;
+        if (last) apply(last);
+      };
     };
 
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
@@ -1048,15 +1112,17 @@ export function SceneOverlay() {
       return;
     }
     if (e.button !== 0) return;
-    if (e.altKey) {
-      begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
-      return;
-    }
 
     const lx = e.clientX - rect.left;
     const ly = e.clientY - rect.top;
     const h = handleAt(lx, ly);
     const target = gizmo.current.target;
+    // alt orbits, except on a move handle: there it leaves a copy behind
+    const copy = e.altKey && !!h && !!target && (h.kind === 'axis' || h.kind === 'center');
+    if (e.altKey && !copy) {
+      begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
+      return;
+    }
     if (h && h.kind === 'focus') {
       // the focus handle of the camera in charge: slide along its view axis
       const fh = focusHandle.current;
@@ -1099,19 +1165,9 @@ export function SceneOverlay() {
             v3: [target.v[0], target.v[1], target.v[2]],
             rig,
             to3d: target.kind === 'clip' && !target.threeD,
+            copy,
           };
           begin(mv);
-          // x / y / z lock the move to that axis (the same key again lets go)
-          keyHook = (e) => {
-            const k = lockForKey(e.key);
-            if (k === null) return;
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            if (e.repeat || gestureRef.current !== mv || mv.kind !== 'axis') return;
-            mv.lock = nextLock(mv.lock, k);
-            const last = lastPointer.current;
-            if (last) apply(last);
-          };
           redrawRef.current();
           return;
         }
@@ -1281,6 +1337,7 @@ export function SceneOverlay() {
       onPointerLeave={onPointerLeave}
       onPointerUp={endGesture}
       onPointerCancel={endGesture}
+      onLostPointerCapture={endGesture}
       onWheel={onWheel}
       onDoubleClick={onDoubleClick}
       onContextMenu={(e) => e.preventDefault()}
@@ -1420,7 +1477,7 @@ export function SceneOverlay() {
           <Grid3x3 size={14} />
         </button>
       </div>
-      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap   x y z: lock axis</div>
+      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap   x y z: lock axis   alt drag arrow: copy   esc: cancel</div>
     </div>
   );
 }

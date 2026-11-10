@@ -12,6 +12,9 @@ import {
   moveReadout,
   niceStep,
   nextLock,
+  clipPolygonNear,
+  copyReadout,
+  isTypingTarget,
   parseGridOn,
   rotateReadout,
   scaleReadout,
@@ -184,5 +187,38 @@ describe('parseGridOn', () => {
     expect(parseGridOn(null)).toBe(true);
     expect(parseGridOn('1')).toBe(true);
     expect(parseGridOn('0')).toBe(false);
+  });
+});
+
+describe('clipPolygonNear', () => {
+  const eye: [number, number, number] = [0, 0, 0];
+  const fwd: [number, number, number] = [0, 0, 1];
+  const sq = (z0: number, z1: number): Array<[number, number, number]> => [
+    [-1, -1, z0],
+    [1, -1, z0],
+    [1, 1, z1],
+    [-1, 1, z1],
+  ];
+  it('keeps a polygon fully in front', () => {
+    expect(clipPolygonNear(sq(5, 5), eye, fwd, 1)).toHaveLength(4);
+  });
+  it('drops a polygon fully behind', () => {
+    expect(clipPolygonNear(sq(-5, -2), eye, fwd, 1)).toHaveLength(0);
+  });
+  it('cuts one that crosses the near plane', () => {
+    const out = clipPolygonNear(sq(-3, 5), eye, fwd, 1);
+    expect(out.length).toBe(4);
+    for (const p of out) expect(p[2]).toBeGreaterThanOrEqual(1 - 1e-9);
+    expect(out.some((p) => Math.abs(p[2] - 1) < 1e-9)).toBe(true);
+  });
+});
+
+describe('copy and typing helpers', () => {
+  it('adds copy to a readout', () => expect(copyReadout('x +20')).toBe('x +20 copy'));
+  it('knows text fields', () => {
+    expect(isTypingTarget({ tagName: 'INPUT' })).toBe(true);
+    expect(isTypingTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
+    expect(isTypingTarget({ tagName: 'DIV' })).toBe(false);
+    expect(isTypingTarget(null)).toBe(false);
   });
 });
