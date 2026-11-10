@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { Camera, Focus, Grid3x3 } from 'lucide-react';
+import { ArrowUpRight, Camera, Focus, Grid3x3, Image as ImageIcon, Scan } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { resolveClip } from '../../lib/anim';
-import { clipEnd } from '../../lib/timelineOps';
-import { isVisualClip } from '../../types';
-import type { VisualClip } from '../../types';
 import { useSceneCamera } from './sceneCamera';
+import type { ViewPreset } from './sceneCamera';
+import { useSceneTool, TOOL_KEYS } from './sceneTool';
+import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
 import { GuidesOverlay } from './GuidesOverlay';
 import { useGuides } from './guides';
-import { frameFileName, nudgeDelta } from './nudge';
+import { frameFileName, movableClipsAt, nudgeDelta } from './nudge';
 import { PreviewEngine } from './PreviewEngine';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
 import './preview.css';
+
+const VIEW_BUTTONS: ReadonlyArray<{ label: string; title: string; run: () => void }> = [
+  ...(['front', 'top', 'side'] as ViewPreset[]).map((name) => ({ label: name, title: `${name} view`, run: () => setViewPreset(name) })),
+  { label: 'camera', title: 'look through the project camera at the playhead', run: viewThroughCamera },
+];
 
 function readPayload(e: DragEvent): DragPayload | null {
   const live = getDragPayload();
@@ -129,18 +134,29 @@ export function Preview() {
   // arrows nudge the selected visual clips by 1 px (shift = 10) through setClipValue, so keyframes are honoured.
   // left / right fall through to the global frame stepping when nothing can be nudged.
   const onStageKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // scene view tools: w e r pick the tool, f frames the selection. only while the scene view has the focus
+    // (e and r are global shortcuts: stop them here so they do not also fire)
+    const fromTools = e.target instanceof Element && !!e.target.closest('.scene-tools');
+    if (useUi.getState().previewMode === 'scene' && !e.shiftKey && (e.target === e.currentTarget || fromTools) && !e.repeat) {
+      const key = e.key.toLowerCase();
+      const tool = TOOL_KEYS[key];
+      if (tool || key === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (tool) useSceneTool.getState().setTool(tool);
+        else frameSelected();
+        return;
+      }
+    }
+    if (e.target !== e.currentTarget) return;
     const d = nudgeDelta(e.key, e.shiftKey);
     if (!d) return;
     const store = useEditor.getState();
     const project = store.project;
     if (!project || store.selection.length === 0) return;
     const time = usePlayback.getState().time;
-    const targets = project.clips.filter((c): c is VisualClip => {
-      if (!store.selection.includes(c.id) || !isVisualClip(c)) return false;
-      const track = project.tracks.find((t) => t.id === c.trackId);
-      return !!track && !track.locked && time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
-    });
+    const targets = movableClipsAt(project, store.selection, time);
     if (targets.length === 0) return;
     e.preventDefault();
     // the first press is one undo step, held-key repeats join it
@@ -192,9 +208,25 @@ export function Preview() {
       <div className="panel-header">
         <span className="panel-title">preview</span>
         {mode === 'scene' && (
-          <button className="icon-btn" title="reset view" aria-label="reset view" onClick={() => useSceneCamera.getState().reset()}>
-            <Focus size={14} />
-          </button>
+          <>
+            <button className="icon-btn" title="reset view" aria-label="reset view" onClick={() => useSceneCamera.getState().reset()}>
+              <Focus size={14} />
+            </button>
+            <div className="preview-seg" role="group" aria-label="view">
+              {VIEW_BUTTONS.map(({ label, title, run }) => (
+                <button key={label} type="button" className="preview-seg-btn" title={title} onClick={run}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button className="icon-btn" title="frame selected (f)" aria-label="frame selected" onClick={frameSelected}>
+              <Scan size={14} />
+            </button>
+            <button className="icon-btn preview-camview" title="move the camera to this view" aria-label="move the camera to this view" onClick={cameraToView}>
+              <Camera size={14} />
+              <ArrowUpRight size={9} className="preview-camview-arrow" />
+            </button>
+          </>
         )}
         <button
           className={`icon-btn${guidesOn ? ' is-active' : ''}`}
@@ -206,7 +238,7 @@ export function Preview() {
           <Grid3x3 size={14} />
         </button>
         <button className="icon-btn" title="save frame as png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
-          <Camera size={14} />
+          <ImageIcon size={14} />
         </button>
         <div className="preview-seg" role="group" aria-label="preview mode">
           {(['output', 'scene'] as const).map((m) => (

@@ -1,7 +1,7 @@
 /** geometry helpers shared by the output overlay and the scene overlay. pure, no dom. */
-import { type ClipBox, getClipBox } from '../../engine/draw';
+import { type ClipBox, getClipBox, normalizeCrop } from '../../engine/draw';
 import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from '../../engine/scene3d/camera';
-import { type Vec3, cross, dot, sub } from '../../engine/scene3d/math';
+import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
 import type { Crop, Project, VisualClip } from '../../types';
@@ -33,11 +33,23 @@ export interface Quad {
   cy: number;
 }
 
+/**
+ * the model matrix of what stays visible of a cropped plane: the renderer (draw.ts planeFor) shrinks a plane to the
+ * kept rectangle and offsets it inside the clip's local box so it stays in place under rotation. box / sphere /
+ * cylinder wraps keep their full geometry (the crop only picks a window of the picture), so they are unchanged.
+ */
+export function keptPlaneModel(model: Mat4, crop: Crop | null | undefined, shape: string | undefined): Mat4 {
+  if ((shape ?? 'plane') !== 'plane') return model;
+  const c = normalizeCrop(crop);
+  if (!c) return model;
+  return mul(mul(model, translation((c.left - c.right) / 2, (c.top - c.bottom) / 2, 0)), scaling(1 - c.left - c.right, 1 - c.top - c.bottom, 1));
+}
+
 /** the projected outline of a (keyframe resolved) 3d clip through a camera rig */
 export function clipQuad(project: Project, raw: VisualClip, time: number, rig: CameraRig, out?: Quad): Quad {
   const clip = resolveClip(raw, time);
   const box = getClipBox(project, clip);
-  const model = clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye);
+  const model = keptPlaneModel(clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye), clip.crop, clip.shape);
   const world = planeCorners(model);
   const q: Quad = out ?? { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world, cx: 0, cy: 0 };
   q.world = world;
@@ -246,4 +258,32 @@ export function edgeResize(s: EdgeStart, edge: Edge, px: number, py: number, min
     height = nb / sc;
   }
   return { width, height, dx: shiftX * c - shiftY * sn, dy: shiftX * sn + shiftY * c };
+}
+
+/* ---------- rotation drag ---------- */
+
+/** shortest signed step from one angle to another, degrees, in (-180, 180]. crosses the atan2 branch cut cleanly. */
+export function unwrapStep(prev: number, next: number): number {
+  let d = (next - prev) % 360;
+  if (d > 180) d -= 360;
+  else if (d <= -180) d += 360;
+  return d;
+}
+
+/**
+ * the rotation a drag ends on: the start value plus the unwrapped pointer delta (never normalized, so a clip
+ * that already turned twice stays at two turns). snaps to every 90 degrees within 3 (counted on the unwrapped value,
+ * so 720 snaps to 720 and not to 0), shift snaps to 15 degree steps.
+ */
+export function rotateValue(r0: number, accumulated: number, shift: boolean): number {
+  const raw = r0 + accumulated;
+  if (shift) return Math.round(raw / 15) * 15;
+  const nearest = Math.round(raw / 90) * 90;
+  return Math.abs(raw - nearest) <= 3 ? nearest : raw;
+}
+
+/** a clip as the scene view shows it: a 2d clip lies flat on the canvas plane (z = 0, no tilt or turn) */
+export function asScenePlane(clip: VisualClip): VisualClip {
+  if (clip.threeD) return clip;
+  return { ...clip, threeD: true, lookAt: undefined, transform: { ...clip.transform, z: 0, rotX: 0, rotY: 0 } };
 }

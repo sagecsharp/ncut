@@ -20,6 +20,7 @@ import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { neededImageAssets } from './imageWindow';
 import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 
 type LineColor = [number, number, number, number];
@@ -37,6 +38,8 @@ const HOLD_MAX_MS = 500;
 const LOAD_HOLD_MS = 1000;
 /** image bitmaps kept alive beyond the ones needed around the playhead */
 const IMAGE_LRU = 8;
+/** the eviction pass runs again when the playhead moved this far (seconds), or the project / image count changed */
+const EVICT_STEP = 0.5;
 
 type RvfcElement = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: () => void) => number;
@@ -98,6 +101,11 @@ export class PreviewEngine {
   private gen = 0;
   private disposed = false;
   private holdSince = 0;
+  private holdTimer = 0;
+  private readonly neededScratch = new Set<string>();
+  private evictProject: Project | null = null;
+  private evictTime = -Infinity;
+  private evictSize = 0;
   private drawQueued = false;
   private imageTick = 0;
   private dprOff: (() => void) | null = null;
@@ -252,6 +260,7 @@ export class PreviewEngine {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     this.rafId = 0;
+    this.clearHoldTimer();
     for (const u of this.unsubs) u();
     this.unsubs.length = 0;
     for (const entry of Array.from(this.pool.values())) this.destroyEntry(entry);
@@ -293,9 +302,14 @@ export class PreviewEngine {
     if (this.hasDrawn && this.anySeeking(project, time)) {
       const now = performance.now();
       if (this.holdSince === 0) this.holdSince = now;
-      if (now - this.holdSince < HOLD_MAX_MS) return false;
+      if (now - this.holdSince < HOLD_MAX_MS) {
+        // nothing else may invalidate when a seek never completes: draw once more when the hold runs out
+        this.armHoldTimer(HOLD_MAX_MS - (now - this.holdSince) + 1);
+        return false;
+      }
     }
     this.holdSince = 0;
+    this.clearHoldTimer();
 
     const k = canvas.width / project.width;
     ctx.setTransform(k, 0, 0, canvas.height / project.height, 0, 0);
@@ -309,6 +323,20 @@ export class PreviewEngine {
     this.hasDrawn = true;
     if (!playing) this.flushWants();
     return true;
+  }
+
+  private armHoldTimer(ms: number): void {
+    if (this.holdTimer || this.disposed) return;
+    this.holdTimer = window.setTimeout(() => {
+      this.holdTimer = 0;
+      if (!this.disposed) this.draw();
+    }, ms);
+  }
+
+  private clearHoldTimer(): void {
+    if (!this.holdTimer) return;
+    window.clearTimeout(this.holdTimer);
+    this.holdTimer = 0;
   }
 
   /** the theme's text color as straight rgba 0..1 (cached until the theme changes) */
@@ -468,11 +496,11 @@ export class PreviewEngine {
   /** keep only the bitmaps near the playhead plus a small lru; the rest is decoded again on demand */
   private evictImages(project: Project, time: number): void {
     if (this.images.size <= IMAGE_LRU) return;
-    const needed = new Set<string>();
-    for (const clip of project.clips) {
-      if (clip.type !== 'image') continue;
-      if (time >= clip.start - LOOKAHEAD && time < clip.start + clip.duration + LINGER) needed.add(clip.assetId);
-    }
+    // sync() runs on every clock tick: only look again when the answer can have changed
+    if (project === this.evictProject && this.images.size === this.evictSize && Math.abs(time - this.evictTime) < EVICT_STEP) return;
+    this.evictProject = project;
+    this.evictTime = time;
+    const needed = neededImageAssets(project, time, transitionHolds(project), LOOKAHEAD, LINGER, this.neededScratch);
     const candidates = Array.from(this.images).filter(([id]) => !needed.has(id));
     candidates.sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     let over = this.images.size - IMAGE_LRU;
@@ -482,6 +510,7 @@ export class PreviewEngine {
       this.images.delete(id);
       over--;
     }
+    this.evictSize = this.images.size;
   }
 
   private pruneImages(project: Project | null): void {

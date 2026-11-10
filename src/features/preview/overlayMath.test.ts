@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { boxBounds, edgeResize, hasCrop, hitTestKept, keptBox, snapAxis } from './overlayMath';
+import { boxBounds, edgeResize, hasCrop, hitTestKept, keptBox, keptPlaneModel, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import type { ClipBox } from '../../engine/draw';
 
 const box = (over: Partial<ClipBox> = {}): ClipBox => ({ cx: 500, cy: 300, width: 200, height: 100, rotation: 0, ...over });
@@ -89,5 +90,67 @@ describe('edgeResize', () => {
     expect(r.width).toBeCloseTo(125);
     expect(r.dx).toBeCloseTo(0);
     expect(r.dy).toBeCloseTo(25);
+  });
+});
+
+describe('rotation drag', () => {
+  it('unwraps across the branch cut', () => {
+    expect(unwrapStep(170, -170)).toBeCloseTo(20);
+    expect(unwrapStep(-170, 170)).toBeCloseTo(-20);
+    expect(unwrapStep(10, 40)).toBeCloseTo(30);
+  });
+  it('keeps two turns when grabbing a clip at 720', () => {
+    // pointer starts at 30 degrees and moves 10 degrees on: 720 -> 730, not 1 -> 11
+    let acc = 0;
+    let last = 30;
+    for (const a of [35, 40]) {
+      acc += unwrapStep(last, a);
+      last = a;
+    }
+    expect(rotateValue(720, acc, false)).toBeCloseTo(730);
+  });
+  it('accumulates a spin through the branch cut', () => {
+    let acc = 0;
+    let last = 150;
+    for (const a of [170, -170, -150]) {
+      acc += unwrapStep(last, a);
+      last = a;
+    }
+    expect(acc).toBeCloseTo(60);
+    expect(rotateValue(0, acc, false)).toBeCloseTo(60);
+  });
+  it('snaps to 90s on the unwrapped value, 15s with shift', () => {
+    expect(rotateValue(720, 1.5, false)).toBe(720);
+    expect(rotateValue(720, 88, false)).toBe(810);
+    expect(rotateValue(0, 20, false)).toBeCloseTo(20);
+    expect(rotateValue(720, 9, true)).toBe(735);
+  });
+});
+
+describe('cropped 3d outline', () => {
+  const b: ClipBox = { cx: 500, cy: 300, width: 200, height: 100, rotation: 0 };
+  const t = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: 0 };
+  const model = clipModelMatrix(b, t, 'none', [0, 0, -1000]);
+  it('shrinks a plane to the kept rectangle like the 2d box does', () => {
+    const crop = { left: 0.25, top: 0, right: 0, bottom: 0.5 };
+    const c = planeCorners(keptPlaneModel(model, crop, 'plane'));
+    const k = keptBox(b, crop);
+    expect(c[0][0]).toBeCloseTo(k.cx - k.width / 2);
+    expect(c[1][0]).toBeCloseTo(k.cx + k.width / 2);
+    expect(c[0][1]).toBeCloseTo(k.cy - k.height / 2);
+    expect(c[2][1]).toBeCloseTo(k.cy + k.height / 2);
+  });
+  it('keeps a rotated plane in place', () => {
+    const m = clipModelMatrix({ ...b, rotation: 90 }, t, 'none', [0, 0, -1000]);
+    const c = planeCorners(keptPlaneModel(m, { left: 0.5, top: 0, right: 0, bottom: 0 }, undefined));
+    const k = keptBox({ ...b, rotation: 90 }, { left: 0.5, top: 0, right: 0, bottom: 0 });
+    const cx = (c[0][0] + c[2][0]) / 2;
+    const cy = (c[0][1] + c[2][1]) / 2;
+    expect(cx).toBeCloseTo(k.cx);
+    expect(cy).toBeCloseTo(k.cy);
+  });
+  it('wraps and uncropped planes keep their full size', () => {
+    expect(keptPlaneModel(model, { left: 0.5, top: 0, right: 0, bottom: 0 }, 'box')).toBe(model);
+    expect(keptPlaneModel(model, null, 'plane')).toBe(model);
   });
 });

@@ -402,3 +402,78 @@
   stroke-width: 1;
   stroke-dasharray: 4 3;
 }
+
+/* ---------- scene view tools ---------- */
+
+.scene-tools {
+  position: absolute;
+  left: var(--space-2);
+  top: var(--space-2);
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  cursor: default;
+}
+.scene-tools .icon-btn.is-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.preview-camview {
+  position: relative;
+}
+.preview-camview-arrow {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+}
+
+/* rotation rings and the scale handle. hover = accent line, active (dragging) = thicker + filled */
+.scene-ring-under {
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 4;
+}
+.scene-ring-line {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 2;
+}
+.scene-ring .scene-axis-label {
+  opacity: 0;
+}
+.scene-ring.is-hover .scene-ring-line,
+.scene-ring.is-active .scene-ring-line {
+  stroke: var(--accent);
+}
+.scene-ring.is-active .scene-ring-line {
+  stroke-width: 3;
+}
+.scene-ring.is-hover .scene-axis-label,
+.scene-ring.is-active .scene-axis-label {
+  opacity: 1;
+  fill: var(--accent);
+}
+.scene-axis.is-hover .scene-axis-line,
+.scene-scale.is-hover .scene-axis-line {
+  stroke: var(--accent);
+}
+.scene-axis.is-hover .scene-axis-tip,
+.scene-scale.is-hover .scene-axis-tip {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+.scene-axis.is-hover .scene-axis-label {
+  fill: var(--accent);
+}
+.scene-scale.is-active .scene-axis-line {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+.scene-scale.is-active .scene-axis-tip {
+  fill: var(--accent);
+  stroke: var(--accent);
+}

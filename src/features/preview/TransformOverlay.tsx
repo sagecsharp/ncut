@@ -20,7 +20,9 @@ import type { ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeResize, hasCrop, hitTestKept, keptBox, pointInQuad, projectRig, snapAxis } from './overlayMath';
+import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeResize, hasCrop, hitTestKept, keptBox, pointInQuad, projectRig, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
+import { movableClipsAt } from './nudge';
 
 const SNAP_PX = 6;
 const DRAG_THRESHOLD_PX = 2;
@@ -37,10 +39,7 @@ interface View {
   fns: Set<() => void>;
 }
 
-function normalizeAngle(a: number): number {
-  const r = ((((a + 180) % 360) + 360) % 360) - 180;
-  return r === -180 ? 180 : r;
-}
+const inRangeAt = (c: Clip, time: number) => time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
 
 const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: View }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -277,7 +276,21 @@ type Gesture =
       started: boolean;
     }
   | { kind: 'scale'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean }
-  | { kind: 'rotate'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; a0: number; r0: number; started: boolean };
+  | {
+      kind: 'rotate';
+      pointerId: number;
+      startX: number;
+      startY: number;
+      id: string;
+      cx: number;
+      cy: number;
+      /** pointer angle at the last step, degrees (atan2 range) */
+      last: number;
+      /** unwrapped pointer rotation since the grab, degrees */
+      acc: number;
+      r0: number;
+      started: boolean;
+    };
 
 interface PointerSnapshot {
   x: number;
@@ -360,6 +373,7 @@ function OutputOverlay() {
   useEffect(
     () => () => {
       cancelAnimationFrame(rafRef.current);
+      endPreviewGesture();
     },
     [],
   );
@@ -452,6 +466,12 @@ function OutputOverlay() {
       return;
     }
 
+    if (g.kind === 'rotate') {
+      // follow the pointer's angle step by step so the total is unwrapped (no jump at the atan2 branch cut)
+      const a = (Math.atan2(py - g.cy, px - g.cx) * 180) / Math.PI;
+      g.acc += unwrapStep(g.last, a);
+      g.last = a;
+    }
     if (!g.started) {
       // a plain click on a handle must not start a gesture (wipes redo, snaps the value)
       if (Math.hypot(snap.x - g.startX, snap.y - g.startY) < DRAG_THRESHOLD_PX) return;
@@ -475,18 +495,7 @@ function OutputOverlay() {
       store.setClipValue(g.id, 'scale', time, Math.round(scale * 1000) / 1000, { skipHistory: true });
       return;
     }
-    const a = (Math.atan2(py - g.cy, px - g.cx) * 180) / Math.PI;
-    let r = normalizeAngle(g.r0 + (a - g.a0));
-    if (snap.shift) {
-      r = normalizeAngle(Math.round(r / 15) * 15);
-    } else {
-      for (const t of [0, 90, 180, -90]) {
-        if (Math.abs(normalizeAngle(r - t)) <= 3) {
-          r = t;
-          break;
-        }
-      }
-    }
+    const r = rotateValue(g.r0, g.acc, snap.shift);
     store.setClipValue(g.id, 'rotation', time, Math.round(r * 100) / 100, { skipHistory: true });
   };
 
@@ -524,7 +533,8 @@ function OutputOverlay() {
     if (handle) {
       const raw = project.clips.find((c) => c.id === handle.dataset.clip);
       const track = raw ? project.tracks.find((t) => t.id === raw.trackId) : undefined;
-      if (raw && isVisualClip(raw) && track && !track.locked) {
+      // only a clip that is on screen now (it has a selection box) can be dragged by its handles
+      if (raw && isVisualClip(raw) && track && !track.locked && !track.hidden && inRangeAt(raw, time)) {
         const clip = resolveClip(raw, time);
         const box = getClipBox(project, clip);
         let cx = box.cx;
@@ -572,12 +582,14 @@ function OutputOverlay() {
             id: clip.id,
             cx,
             cy,
-            a0: (Math.atan2(py - cy, px - cx) * 180) / Math.PI,
+            last: (Math.atan2(py - cy, px - cx) * 180) / Math.PI,
+            acc: 0,
             r0: clip.transform.rotation,
             started: false,
           };
         }
         root.setPointerCapture(e.pointerId);
+        beginPreviewGesture();
       }
       return;
     }
@@ -597,10 +609,9 @@ function OutputOverlay() {
     const sel = useEditor.getState().selection;
     const ray = screenRay(rig, px, py, project.width, project.height);
     const items: MoveItem[] = [];
-    for (const raw of project.clips) {
-      if (!sel.includes(raw.id) || !isVisualClip(raw)) continue;
-      const track = project.tracks.find((t) => t.id === raw.trackId);
-      if (!track || track.locked) continue;
+    // selected clips that are not on screen at the playhead stay out of the drag: moving them would write
+    // a stray keyframe outside their range
+    for (const raw of movableClipsAt(project, sel, time)) {
       const clip = resolveClip(raw, time);
       const z = clip.transform.z ?? 0;
       const p0 = raw.threeD ? rayPlane(ray.origin, ray.dir, [0, 0, z], [0, 0, 1]) : null;
@@ -622,6 +633,7 @@ function OutputOverlay() {
     if (items.length === 0) return;
     gestureRef.current = { kind: 'move', pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, started: false, primary: hit.id, items, rig };
     root.setPointerCapture(e.pointerId);
+    beginPreviewGesture();
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -644,6 +656,7 @@ function OutputOverlay() {
     if (e.type === 'pointerup') pendingRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey, alt: e.altKey };
     flush();
     gestureRef.current = null;
+    endPreviewGesture();
     showGuides(null, null);
     const root = rootRef.current;
     if (root && root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
@@ -670,5 +683,7 @@ function OutputOverlay() {
 
 export function TransformOverlay() {
   const mode = useUi((s) => s.previewMode);
+  // swallow keyboard shortcuts while a drag runs (undo in the middle of a drag corrupts the history)
+  useEffect(() => installGestureGuard(), []);
   return mode === 'scene' ? <SceneOverlay /> : <OutputOverlay />;
 }
