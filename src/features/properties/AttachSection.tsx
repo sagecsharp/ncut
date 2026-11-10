@@ -18,6 +18,7 @@ export function ParentSelect({
   value,
   options,
   onPick,
+  noneLabel = 'nothing',
 }: {
   label: string;
   title: string;
@@ -25,6 +26,8 @@ export function ParentSelect({
   value: string | null;
   options: ParentOption[];
   onPick: (id: string | null) => void;
+  /** text of the empty choice */
+  noneLabel?: string;
 }) {
   const near = options.filter((o) => o.overlaps);
   const far = options.filter((o) => !o.overlaps);
@@ -43,7 +46,7 @@ export function ParentSelect({
             various
           </option>
         ) : null}
-        <option value="">nothing</option>
+        <option value="">{noneLabel}</option>
         {!known ? <option value={value}>missing clip</option> : null}
         {near.length > 0 ? (
           <optgroup label="at the same time">

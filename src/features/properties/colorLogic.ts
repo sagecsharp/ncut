@@ -1,5 +1,5 @@
 import { DEFAULT_ADJUST, isAdjustActive } from '../../engine/clipLook';
-import type { ClipAdjust, ClipMotionBlur } from '../../types';
+import type { ClipAdjust, ClipMotionBlur, MotionBlurStyle } from '../../types';
 
 export type AdjustKey = keyof ClipAdjust;
 
@@ -22,4 +22,11 @@ export function setBlurValue(blur: ClipMotionBlur | null | undefined, key: keyof
   return key === 'shutter'
     ? { ...base, shutter: round3(Math.min(2, Math.max(0, value))) }
     : { ...base, samples: Math.round(Math.min(32, Math.max(2, value))) };
+}
+
+/** the motion blur with another kind. 'even' is the default, so it is stored as no style at all. */
+export function setBlurStyle(blur: ClipMotionBlur | null | undefined, style: MotionBlurStyle): ClipMotionBlur {
+  const { style: _old, ...rest } = blur ?? DEFAULT_MOTION_BLUR;
+  void _old;
+  return style === 'even' ? rest : { ...rest, style };
 }

@@ -213,3 +213,26 @@
 .props-crop .number-field {
   width: 100%;
 }
+
+/* ---------- effects on one clip, links ---------- */
+.props-link {
+  max-width: 100%;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.props-fx {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.props-fx-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}

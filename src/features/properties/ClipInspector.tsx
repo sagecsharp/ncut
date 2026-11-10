@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
@@ -9,6 +9,8 @@ import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
+import { AlignButtons } from './AlignButtons';
+import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
 import { LookSection } from './LookSection';
@@ -101,6 +103,7 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
 /* ---------- transform ---------- */
 
 const TransformSection = memo(function TransformSection({ id }: { id: string }) {
+  const ids = useMemo(() => [id], [id]);
   // fill: scale so the clip's box (media, text or shape) covers the whole canvas
   const fill = () => {
     const p = actions().project;
@@ -117,6 +120,7 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
       <AnimField id={id} prop="scale" label="scale" title="scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
       <AnimField id={id} prop="rotation" label="rotation" title="rotation (degrees)" suffix="deg" min={-3600} max={3600} step={1} precision={1} />
       <AnimField id={id} prop="opacity" label="opacity" title="opacity (%)" scale={100} suffix="%" min={0} max={100} step={1} precision={0} slider />
+      <AlignButtons ids={ids} />
       <div className="props-buttons">
         <button type="button" className="btn btn-sm" title="center on the canvas" onClick={() => setValuesNow(id, { x: 0, y: 0 })}>
           <Crosshair size={14} />
@@ -409,7 +413,7 @@ export function ClipInspector({ id }: { id: string }) {
           mediaKind={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null}
         />
         {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
-        {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} /> : null}
+        {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
         {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
         {clip.type === 'text' ? (
           <TextSection
@@ -445,6 +449,7 @@ export function ClipInspector({ id }: { id: string }) {
         {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
         {isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
         {isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
+        {isVisualClip(clip) ? <ClipEffectsSection clip={clip} /> : null}
         {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}

@@ -1,9 +1,13 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { RotateCcw, Shuffle } from 'lucide-react';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import { EFFECTS, effectParamValue, getEffect } from '../../engine/effects/registry';
 import { useEditor } from '../../store/editorStore';
+import { isVisualClip } from '../../types';
+import { ParentSelect } from './AttachSection';
 import { AnimField } from './AnimField';
+import { overlapsInTime } from './clipEffects';
+import { effectTargetOptions } from './parentOptions';
 import { Row, Section } from './controls';
 
 const actions = () => useEditor.getState();
@@ -19,6 +23,54 @@ interface EffectSectionProps {
   name: string;
   effect: string;
   params: Record<string, number>;
+  /** the one clip this effect is put on (missing / null = everything below) */
+  target?: string | null;
+}
+
+/** "applies to": everything below the effect's track, or one visual clip. a clip that is gone can be cleared. */
+function AppliesTo({ id, target }: { id: string; target: string | null }) {
+  const clips = useEditor((s) => s.project?.clips);
+  const options = useMemo(() => (clips ? effectTargetOptions({ clips }, id) : []), [clips, id]);
+  const self = clips?.find((c) => c.id === id);
+  const picked = target ? clips?.find((c) => c.id === target) : undefined;
+  const found = !!picked && isVisualClip(picked);
+  const label = options.find((o) => o.id === target)?.label ?? '';
+  const set = (next: string | null) => actions().updateClip(id, { target: next });
+  return (
+    <>
+      <ParentSelect
+        label="applies to"
+        title="put this effect on one clip, or on everything below it"
+        noneLabel="everything below"
+        value={target ?? ''}
+        options={options}
+        onPick={set}
+      />
+      {target && found ? (
+        <>
+          <button
+            type="button"
+            className="btn btn-sm props-link"
+            title="select this clip"
+            onClick={() => actions().select([target])}
+          >
+            {label || picked.name || picked.type}
+          </button>
+          {self && !overlapsInTime(self, picked) ? (
+            <div className="props-hint">this effect and its clip are never on screen together</div>
+          ) : null}
+        </>
+      ) : null}
+      {target && !found ? (
+        <div className="props-buttons">
+          <span className="props-hint">missing clip, the effect does nothing</span>
+          <button type="button" className="btn btn-sm" title="go back to everything below" onClick={() => set(null)}>
+            clear
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 /** back to defaults in one undo step: animated params lose their keys, then the static values reset */
@@ -33,7 +85,7 @@ function resetEffect(id: string): void {
   st.updateClip(id, { params: {}, amount: 1 }, { skipHistory: true });
 }
 
-export const EffectSection = memo(function EffectSection({ id, name, effect, params }: EffectSectionProps) {
+export const EffectSection = memo(function EffectSection({ id, name, effect, params, target }: EffectSectionProps) {
   const def = getEffect(effect);
 
   if (!def) {
@@ -72,6 +124,7 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
         </select>
       </Row>
       <div className="props-hint">{def.description}</div>
+      <AppliesTo id={id} target={target ?? null} />
       <AnimField
         slider
         id={id}
