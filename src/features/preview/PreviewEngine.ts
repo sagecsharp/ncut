@@ -19,6 +19,7 @@ import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playback';
+import { blocksPaint, isScrubbing, onSeekedAction } from './previewSync';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
 import { backingSize, usePreviewQuality } from './quality';
@@ -78,6 +79,8 @@ interface MediaEntry {
   holdUntil: number;
   /** the clock runs backwards / too fast for audio: this element stays silent */
   rateMute: boolean;
+  /** a running clock drives this video by seeks (backwards / unplayable rate): see previewSync */
+  scrub: boolean;
   cleanup: () => void;
 }
 
@@ -316,7 +319,7 @@ export class PreviewEngine {
     if (!project || canvas.width <= 0) return false;
 
     // keep the last picture until in-flight seeks / loads land (no flash of background), but never for long
-    if (this.hasDrawn && this.anySeeking(project, time)) {
+    if (this.hasDrawn && this.anySeeking(project, time, playing)) {
       const now = performance.now();
       if (this.holdSince === 0) this.holdSince = now;
       if (now - this.holdSince < HOLD_MAX_MS) {
@@ -396,7 +399,7 @@ export class PreviewEngine {
     }
   }
 
-  private anySeeking(project: Project, time: number): boolean {
+  private anySeeking(project: Project, time: number, playing = false): boolean {
     const now = performance.now();
     for (const clip of project.clips) {
       if (clip.type !== 'video') continue;
@@ -405,7 +408,16 @@ export class PreviewEngine {
       if (!entry || entry.failed) continue;
       const el = entry.el;
       // a new element is not "seeking" yet but has nothing to show until its first frame loads
-      if (el.seeking || (el.readyState < 2 && now - entry.createdAt < LOAD_HOLD_MS)) return true;
+      if (
+        blocksPaint({
+          seeking: el.seeking,
+          readyState: el.readyState,
+          loading: now - entry.createdAt < LOAD_HOLD_MS,
+          scrubbing: entry.scrub,
+          playing,
+        })
+      )
+        return true;
     }
     return false;
   }
@@ -646,6 +658,11 @@ export class PreviewEngine {
   ): void {
     const el = entry.el;
     entry.rateMute = false;
+    const wasScrub = entry.scrub;
+    entry.scrub = false;
+    // leaving a scrub (shuttle changed or stopped, clip no longer under the playhead): drop the stale deferred
+    // target, the normal path aims again
+    if (wasScrub && (!active || !playing || rate === 1)) entry.want = null;
     // seek tolerance: half a timeline frame, in source seconds (depends on the clip speed)
     const halfFrame = Math.max(0.001, (0.5 / (project.fps || 30)) * clip.speed);
     if (entry.failed) return;
@@ -677,6 +694,7 @@ export class PreviewEngine {
       pr = mediaPlaybackRate(clip.speed, rate);
       entry.rateMute = pr === 0 || !rateAudible(rate);
       if (pr === 0) {
+        entry.scrub = isScrubbing(playing, rate, pr, entry.kind === 'video');
         if (!el.paused) el.pause();
         this.seek(entry, target, halfFrame);
         return;
@@ -764,6 +782,7 @@ export class PreviewEngine {
       seekCost: 0.1,
       holdUntil: 0,
       rateMute: false,
+      scrub: false,
       cleanup: () => undefined,
     };
 
@@ -775,21 +794,16 @@ export class PreviewEngine {
       }
       entry.holdUntil = now + 400;
       const w = entry.want;
-      if (w !== null) {
-        if (!usePlayback.getState().playing) {
-          // scrubbing: paint the frame that just landed before chasing the newer target, otherwise a
-          // moving playhead replaces every landed frame and nothing is ever shown. draw() issues the
-          // deferred seek itself once it painted (or later, if another video is still seeking).
-          this.draw();
-          return;
-        }
-        entry.want = null;
-        if (Math.abs(el.currentTime - w) > 0.01) {
-          this.assignTime(entry, w);
-          return;
-        }
-      }
-      this.invalidate();
+      const playing = usePlayback.getState().playing;
+      const act = onSeekedAction({ playing, scrubbing: entry.scrub, want: w, current: el.currentTime });
+      // paused scrub: paint the frame that just landed before chasing the newer target, otherwise a moving
+      // playhead replaces every landed frame and nothing is ever shown. draw() issues the deferred seek itself
+      // once it painted (or later, if another video is still seeking).
+      // running clock scrub (backwards shuttle): same, paint first, then chase the target here
+      if (playing) entry.want = null;
+      if (act.draw) this.draw();
+      if (act.seek && w !== null) this.assignTime(entry, w);
+      if (act.invalidate) this.invalidate();
     };
     const onReady = () => {
       this.invalidate();
