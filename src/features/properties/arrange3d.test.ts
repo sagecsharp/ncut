@@ -3,7 +3,7 @@ import { ARRANGE_SLIDERS, arrange, arrangeTargets, wrapDegrees } from './arrange
 import type { ArrangeKind } from './arrange3d';
 import type { Clip, Project } from '../../types';
 
-const KINDS: ArrangeKind[] = ['ring', 'row', 'stack', 'fan', 'grid', 'spiral'];
+const KINDS: ArrangeKind[] = ['ring', 'row', 'stack', 'fan', 'grid', 'spiral', 'sphere', 'scatter', 'wave', 'stairs'];
 const flat = { x: 0, y: 0, z: 0, rotY: 0, rotation: 0 };
 
 describe('arrange', () => {
@@ -73,6 +73,64 @@ describe('arrange', () => {
   });
   it('every layout has a slider', () => {
     for (const k of KINDS) expect(ARRANGE_SLIDERS[k].max).toBeGreaterThan(ARRANGE_SLIDERS[k].min);
+  });
+});
+
+describe('new layouts', () => {
+  const NEW: ArrangeKind[] = ['sphere', 'scatter', 'wave', 'stairs'];
+  it('no NaN for any count, and the same input gives the same poses', () => {
+    for (const k of NEW) {
+      for (const n of [1, 2, 3, 7, 40, 200]) {
+        const a = arrange(k, n, { itemW: 100, itemH: 80 });
+        expect(a).toEqual(arrange(k, n, { itemW: 100, itemH: 80 }));
+        for (const q of a) for (const v of Object.values(q)) expect(Number.isFinite(v)).toBe(true);
+      }
+    }
+  });
+  it('sphere: every clip is the radius from the middle and faces outward', () => {
+    const p = arrange('sphere', 30, { radius: 300 });
+    for (const q of p) {
+      expect(Math.hypot(q.x, q.y, q.z - 300)).toBeCloseTo(300, 0);
+      // the front face points along (sin rotY cos rotX, -sin rotX, -cos rotY cos rotX)
+      const rx = (q.rotX! * Math.PI) / 180;
+      const ry = (q.rotY * Math.PI) / 180;
+      const f = [Math.sin(ry) * Math.cos(rx), -Math.sin(rx), -Math.cos(ry) * Math.cos(rx)];
+      expect(f[0]! * q.x + f[1]! * q.y + f[2]! * (q.z - 300)).toBeCloseTo(300, 0);
+    }
+    expect(Math.min(...p.map((q) => q.y))).toBeLessThan(0);
+    expect(Math.max(...p.map((q) => q.y))).toBeGreaterThan(0);
+  });
+  it('sphere: spread evenly, the first clip is at the top front', () => {
+    const p = arrange('sphere', 4, { radius: 100 });
+    expect(p[0]!.x).toBeCloseTo(0, 1);
+    expect(p[0]!.y).toBeLessThan(0);
+  });
+  it('scatter: the seed changes it, stays inside the box and never behind the canvas plane', () => {
+    const a = arrange('scatter', 20, { seed: 1, radius: 400 });
+    const b = arrange('scatter', 20, { seed: 2, radius: 400 });
+    expect(a).not.toEqual(b);
+    for (const q of [...a, ...b]) {
+      expect(q.z).toBeGreaterThanOrEqual(0);
+      expect(Math.abs(q.x)).toBeLessThanOrEqual(600);
+      expect(Math.abs(q.y)).toBeLessThanOrEqual(320);
+      expect(q.z).toBeLessThanOrEqual(600);
+    }
+  });
+  it('wave: a row whose y and z follow a sine, centered', () => {
+    const p = arrange('wave', 5, { gap: 10, itemW: 90, amplitude: 100 });
+    expect(p.map((q) => q.x)).toEqual([-200, -100, 0, 100, 200]);
+    expect(p[2]).toMatchObject({ y: 0, z: 0 });
+    expect(p.some((q) => q.y !== 0)).toBe(true);
+    expect(p.every((q) => q.z >= 0)).toBe(true);
+    expect(arrange('wave', 5, { amplitude: 0 }).every((q) => q.y === 0 && q.z === 0)).toBe(true);
+  });
+  it('stairs: each clip a step up and back', () => {
+    const p = arrange('stairs', 4, { step: 100 });
+    for (let i = 1; i < 4; i++) {
+      expect(p[i]!.z - p[i - 1]!.z).toBe(100);
+      expect(p[i]!.y).toBeLessThan(p[i - 1]!.y);
+    }
+    expect(p[0]!.y + p[3]!.y).toBe(0);
   });
 });
 

@@ -49,6 +49,7 @@ export function arrangeSelection(ids: readonly string[], kind: ArrangeKind, opts
     st.setClipValue(c.id, 'x', t, pose.x, skip);
     st.setClipValue(c.id, 'y', t, pose.y, skip);
     st.setClipValue(c.id, 'z', t, pose.z, skip);
+    st.setClipValue(c.id, 'rotX', t, pose.rotX ?? 0, skip);
     st.setClipValue(c.id, 'rotY', t, pose.rotY, skip);
     st.setClipValue(c.id, 'rotation', t, pose.rotation, skip);
   });
