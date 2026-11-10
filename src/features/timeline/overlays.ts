@@ -21,6 +21,8 @@ export class Overlays {
   private zoneTop: HTMLElement | null = null;
   private zoneBottom: HTMLElement | null = null;
   private hot: 'top' | 'bottom' | null = null;
+  private gapEl: HTMLElement | null = null;
+  private gapY = NaN;
   private snapX = NaN;
 
   readonly refSnap = (el: HTMLElement | null): void => {
@@ -34,6 +36,9 @@ export class Overlays {
   };
   readonly refReadout = (el: HTMLElement | null): void => {
     this.readoutEl = el;
+  };
+  readonly refGap = (el: HTMLElement | null): void => {
+    this.gapEl = el;
   };
   readonly refZoneTop = (el: HTMLElement | null): void => {
     this.zoneTop = el;
@@ -110,6 +115,22 @@ export class Overlays {
     if (el.hidden) el.hidden = false;
   }
 
+  /** show the "new track" line at a border (lanes area y), or hide it */
+  setGap(y: number | null): void {
+    const el = this.gapEl;
+    if (!el) return;
+    if (y === null) {
+      if (!el.hidden) el.hidden = true;
+      this.gapY = NaN;
+      return;
+    }
+    if (y !== this.gapY) {
+      this.gapY = y;
+      el.style.transform = `translate3d(0,${y - 1}px,0)`;
+    }
+    if (el.hidden) el.hidden = false;
+  }
+
   /** highlight a new-track zone while a clip is held over it */
   setHot(where: 'top' | 'bottom' | null): void {
     if (where === this.hot) return;
@@ -124,5 +145,6 @@ export class Overlays {
     this.setMarquee(null);
     this.setReadout(0, 0, null);
     this.setHot(null);
+    this.setGap(null);
   }
 }

@@ -22,7 +22,8 @@ import type { ClipSpan } from './effectFollow';
 import { planGroupTrim } from './groupTrim';
 import { hitKey } from './keyGeometry';
 import { groupIds, marqueeReplaceList, pressedSelection } from './selectionRules';
-import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
+import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitGap, hitLane } from './layout';
+import { gapForMove, singleTrack } from './moveGap';
 import { hitMarker, markerTimes, timelineSnapPoints } from './markers';
 import type { MarkerMenuRequest } from './MarkerUi';
 import type { Layout } from './layout';
@@ -83,6 +84,8 @@ interface MoveGesture extends Base {
   lastKey: string;
   delta: number;
   zone: 'top' | 'bottom' | null;
+  /** index of the new track a border under the pointer opens, when the move may open one */
+  gap: number | null;
   /** effect clips that follow the moving clips, and the clips as they were when the drag started */
   follow: EffectClip[];
   baseClips: Clip[];
@@ -412,7 +415,12 @@ export function createGestures(env: GestureEnv) {
     const tracks = project.tracks;
     let trackFor = (o: MoveItem): string => o.trackId;
     let zone: 'top' | 'bottom' | null = null;
-    if (hit.type === 'lane') {
+    const ly = laneY(m.geo, m.cy);
+    const movedY = m.cy - m.startY + (view.scrollTop - m.startScrollTop);
+    const gap = gapForMove(project.tracks, m.baseClips, m.items, hitGap(m.layout, ly), movedY);
+    if (gap !== null) {
+      // over a border the clips stay on their own track and follow the pointer in time
+    } else if (hit.type === 'lane') {
       const di = hit.index - m.leader.trackIdx;
       if (di !== 0) {
         let valid = true;
@@ -425,12 +433,15 @@ export function createGestures(env: GestureEnv) {
         }
         if (valid) trackFor = (o) => tracks[o.trackIdx + di]!.id;
       }
-    } else if (m.items.length === 1) {
-      const kind = trackKindForClip(m.leader.type);
-      if ((hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio')) zone = hit.where;
+    } else {
+      const one = singleTrack(project.tracks, m.items);
+      const kind = one?.kind;
+      if (one && (hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio')) zone = hit.where;
     }
     m.zone = zone;
+    m.gap = gap;
     env.overlays.setHot(zone);
+    env.overlays.setGap(gap === null ? null : m.layout.tops[gap]!);
 
     {
       const li = project.tracks.findIndex((t) => t.id === trackFor(m.leader));
@@ -506,12 +517,13 @@ export function createGestures(env: GestureEnv) {
       if (m.deferSingle) st.select(m.deferSingle, 'replace');
       return;
     }
-    if (m.zone && m.items.length === 1) {
-      const o = m.leader;
-      const kind = trackKindForClip(o.type);
-      const trackId = st.addTrack(kind, { skipHistory: true, index: m.zone === 'top' ? 0 : undefined });
+    const one = m.zone || m.gap !== null ? singleTrack(st.project?.tracks ?? [], m.items) : null;
+    if (one) {
+      // the clips go to a new track (above, below or between tracks), part of the same undo step
+      const index = m.gap !== null ? m.gap : m.zone === 'top' ? 0 : undefined;
+      const trackId = st.addTrack(one.kind, { skipHistory: true, index });
       if (trackId) {
-        const lead: ClipMove[] = [{ id: o.id, trackId, start: Math.max(0, o.start + m.delta) }];
+        const lead: ClipMove[] = m.items.map((o) => ({ id: o.id, trackId, start: Math.max(0, o.start + m.delta) }));
         if (!(m.follow.length > 0 && st.moveClips([...lead, ...followMoves(m, lead)], { skipHistory: true }))) {
           st.moveClips(lead, { skipHistory: true });
         }
@@ -853,6 +865,7 @@ export function createGestures(env: GestureEnv) {
           lastKey: '',
           delta: 0,
           zone: null,
+          gap: null,
           follow: [],
           baseClips: project.clips,
         },

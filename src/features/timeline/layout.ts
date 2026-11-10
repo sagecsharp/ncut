@@ -56,3 +56,22 @@ export function hitLane(layout: Layout, y: number): LaneHit {
   }
   return { type: 'zone', where: 'bottom' };
 }
+
+/** half the height of the band around a border between two tracks that opens a new track */
+export const GAP_PX = 7;
+
+/** the index a new track would get when y is near an inner border between two tracks, else null */
+export function hitGap(layout: Layout, y: number): number | null {
+  for (let i = 1; i < layout.tops.length; i++) {
+    const border = layout.tops[i]!;
+    if (y >= border - GAP_PX && y <= border + GAP_PX) return i;
+  }
+  return null;
+}
+
+/** a new track of this kind may go at this index and keep every video track before every audio track */
+export function gapAllows(tracks: Pick<Track, 'kind'>[], index: number, kind: TrackKind): boolean {
+  let videos = 0;
+  for (const t of tracks) if (t.kind === 'video') videos++;
+  return kind === 'video' ? index <= videos : index >= videos;
+}

@@ -20,7 +20,7 @@
 
 ## features
 
-- **timeline** with video, image, text, shape and audio tracks, drop clips inbetween others
+- **timeline** with video, image, text, shape and audio tracks, drop clips inbetween others, drop a clip on the border between two tracks and a new track opens there
 - **real time preview**, move / scale / rotate right on the picture
 - **keyframes** on nearly every number, each one with its own keys
 - **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat, and effects can pulse and lock their rhythm to it

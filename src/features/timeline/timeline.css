@@ -415,6 +415,26 @@
   width: 1px;
   background: var(--snap-line);
 }
+.timeline-gap {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.timeline-gap-label {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  padding: 0 4px;
+  color: var(--text);
+  background: var(--accent-muted);
+  font-size: var(--font-size-xs);
+  line-height: 14px;
+  white-space: nowrap;
+}
 .timeline-ghost {
   position: absolute;
   left: 0;
@@ -525,6 +545,7 @@
 }
 .timeline-snap[hidden],
 .timeline-readout[hidden],
+.timeline-gap[hidden],
 .timeline-ghost[hidden],
 .timeline-marquee[hidden] {
   display: none;

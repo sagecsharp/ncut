@@ -27,7 +27,7 @@ import { importFiles } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
-import { CLIP_INSET, HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
+import { CLIP_INSET, HEADER_W, RULER_H, SNAP_PX, computeLayout, gapAllows, hitGap, hitLane } from './layout';
 import type { Layout } from './layout';
 import type { GhostKind, Overlays } from './overlays';
 import { view } from './view';
@@ -46,6 +46,8 @@ interface Target {
   /** lane under the pointer regardless of kind */
   hitIndex?: number;
   zone?: 'top' | 'bottom';
+  /** index of a new track opened on the border between two tracks */
+  gap?: number;
   /** set when the drop opens a hole inbetween clips of the lane */
   plan?: DropPlan;
 }
@@ -130,6 +132,7 @@ export function createDnd(env: DndEnv) {
     }
     env.overlays.setGhost(null);
     env.overlays.setHot(null);
+    env.overlays.setGap(null);
     env.overlays.setSnap(null, 1);
   }
 
@@ -165,8 +168,12 @@ export function createDnd(env: DndEnv) {
       else if (b.hit !== null) start = Math.max(0, b.time - duration);
     }
     start = snapToFrame(start, project.fps);
-    const hit = hitLane(layout, cy - geo.top - RULER_H + view.scrollTop);
+    const ly = cy - geo.top - RULER_H + view.scrollTop;
+    const hit = hitLane(layout, ly);
     const kind = payload ? kindOfPayload(payload, project.assets) : null;
+    // on the border between two tracks: a new track opens right there
+    const gap = kind ? hitGap(layout, ly) : null;
+    if (kind && gap !== null && gapAllows(project.tracks, gap, kind)) return { start, duration, gap };
     if (hit.type === 'zone') {
       const ok = kind && ((hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio'));
       return { start, duration, zone: ok ? hit.where : undefined };
@@ -251,6 +258,7 @@ export function createDnd(env: DndEnv) {
     if (on && layout) {
       const zoom = useEditor.getState().zoom;
       env.overlays.setHot(null);
+      env.overlays.setGap(null);
       env.overlays.setGhost(
         {
           x: Math.round(on.clip.start * zoom),
@@ -267,6 +275,7 @@ export function createDnd(env: DndEnv) {
     if (swap && layout) {
       const zoom = useEditor.getState().zoom;
       env.overlays.setHot(null);
+      env.overlays.setGap(null);
       env.overlays.setGhost(
         {
           x: Math.round(swap.clip.start * zoom),
@@ -282,6 +291,7 @@ export function createDnd(env: DndEnv) {
     if (last.payload?.kind === 'transition') {
       const hit = resolveTransition(last.cx, last.cy);
       env.overlays.setHot(null);
+      env.overlays.setGap(null);
       if (!hit || !layout) {
         env.overlays.setGhost(null);
         return;
@@ -304,9 +314,24 @@ export function createDnd(env: DndEnv) {
     if (!target || !layout) {
       env.overlays.setGhost(null);
       env.overlays.setHot(null);
+      env.overlays.setGap(null);
       return;
     }
     env.overlays.setHot(target.zone ?? null);
+    if (target.gap !== undefined) {
+      // the line shows the new track, a thin bar on it shows where in time the clip lands
+      const y = layout.tops[target.gap]!;
+      env.overlays.setGap(y);
+      if (target.duration > 0) {
+        env.overlays.setGhost(
+          { x: Math.round(target.start * zoom), y: y - 4, w: target.duration * zoom, h: 8 },
+          ghostKind(last.payload),
+          '',
+        );
+      } else env.overlays.setGhost(null);
+      return;
+    }
+    env.overlays.setGap(null);
     if (target.laneIndex !== undefined && target.duration > 0) {
       const top = layout.tops[target.laneIndex]!;
       env.overlays.setGhost(
@@ -405,15 +430,12 @@ export function createDnd(env: DndEnv) {
     if (payload && target) {
       const kind = kindOfPayload(payload, st.project.assets);
       if (!kind) return;
-      const index = target.zone === 'top' ? 0 : undefined;
-      if (target.zone) {
+      if (target.zone || target.gap !== undefined) {
+        // a new track (above, below or between tracks) and the clip on it: one undo step
         st.pushHistory();
+        const index = target.gap ?? (target.zone === 'top' ? 0 : undefined);
         const trackId = st.addTrack(kind, { skipHistory: true, index });
-        if (payload.kind === 'asset') st.insertAsset(payload.assetId, { trackId, start: target.start, skipHistory: true });
-        else if (payload.kind === 'effect') st.addEffect(payload.effect, { trackId, start: target.start, skipHistory: true });
-        else if (payload.kind === 'camera') st.addCamera({ trackId, start: target.start, skipHistory: true });
-        else if (payload.kind === 'shape') st.addShape({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
-        else st.addText({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
+        placeOnLane(payload, trackId, target.start, true);
       } else if (target.plan?.insert) {
         // one undo step: the clips after the insert point move right, then the new clip goes in the hole
         st.pushHistory();

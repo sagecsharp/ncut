@@ -323,6 +323,9 @@ function TimelineInner() {
                 <div ref={overlays.refGhost} className="timeline-ghost" hidden>
                   <span className="timeline-ghost-label" />
                 </div>
+                <div ref={overlays.refGap} className="timeline-gap" hidden>
+                  <span className="timeline-gap-label">new track</span>
+                </div>
                 <div ref={overlays.refMarquee} className="timeline-marquee" hidden />
                 <div ref={overlays.refReadout} className="timeline-readout" hidden />
               </div>
