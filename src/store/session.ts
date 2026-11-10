@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { Project } from '../types';
 import type { CanvasPreset } from '../lib/factory';
 import { createProject } from '../lib/factory';
+import { addFontFiles, importedFontFiles } from '../lib/fonts';
 import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
@@ -115,6 +116,15 @@ export async function closeProject(): Promise<void> {
   setHash('');
 }
 
+/** a copy failed half way: drop the media blobs already stored under its id. never throws (the original error wins). */
+async function discardPartialCopy(projectId: string): Promise<void> {
+  try {
+    await dbDeleteProject(projectId);
+  } catch {
+    /* nothing more to do */
+  }
+}
+
 /** deep copy a stored project including its media blobs. returns the new project id. */
 export async function duplicateProject(id: string): Promise<string | null> {
   const source = await loadProject(id);
@@ -126,17 +136,22 @@ export async function duplicateProject(id: string): Promise<string | null> {
   copy.createdAt = now;
   copy.updatedAt = now;
   const idMap = new Map<string, string>();
-  for (const asset of copy.assets) {
-    const newId = uid('ast');
-    idMap.set(asset.id, newId);
-    const blob = await getMediaBlob(asset.id);
-    if (blob) await putMediaBlob(copy.id, newId, blob);
-    asset.id = newId;
+  try {
+    for (const asset of copy.assets) {
+      const newId = uid('ast');
+      idMap.set(asset.id, newId);
+      const blob = await getMediaBlob(asset.id);
+      if (blob) await putMediaBlob(copy.id, newId, blob);
+      asset.id = newId;
+    }
+    for (const clip of copy.clips) {
+      if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
+    }
+    await saveProject(copy);
+  } catch (e) {
+    await discardPartialCopy(copy.id);
+    throw e;
   }
-  for (const clip of copy.clips) {
-    if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
-  }
-  await saveProject(copy);
   copyPoster(id, copy.id);
   return copy.id;
 }
@@ -152,7 +167,10 @@ export async function exportProjectFile(id: string): Promise<{ blob: Blob; fileN
     const blob = await getMediaBlob(asset.id);
     if (blob) media.set(asset.id, blob);
   }
-  return { blob: packProject(project, media), fileName: projectFileName(project.name) };
+  const families = new Set<string>();
+  for (const c of project.clips) if (c.type === 'text' && c.fontFamily) families.add(c.fontFamily);
+  const fonts = await importedFontFiles(families);
+  return { blob: packProject(project, media, fonts), fileName: projectFileName(project.name) };
 }
 
 /**
@@ -161,23 +179,37 @@ export async function exportProjectFile(id: string): Promise<{ blob: Blob; fileN
  * the file is not a project.
  */
 export async function importProjectFile(file: Blob): Promise<string> {
-  const { project: source, media } = await unpackProject(file);
+  const { project: source, media, fonts } = await unpackProject(file);
+  // fonts first, so the text looks right the moment the project opens. a failure here never fails the import
+  try {
+    if (fonts.length > 0) {
+      const files = await Promise.all(fonts.map(async (f) => ({ family: f.family, weight: f.weight, italic: f.italic, bytes: await f.blob.arrayBuffer() })));
+      await addFontFiles(files);
+    }
+  } catch {
+    /* the text falls back to another font */
+  }
   const now = Date.now();
   const copy: Project = structuredClone(source);
   copy.id = uid('prj');
   copy.updatedAt = now;
   const idMap = new Map<string, string>();
-  for (const asset of copy.assets) {
-    const newId = uid('ast');
-    idMap.set(asset.id, newId);
-    const blob = media.get(asset.id);
-    if (blob) await putMediaBlob(copy.id, newId, blob);
-    asset.id = newId;
+  try {
+    for (const asset of copy.assets) {
+      const newId = uid('ast');
+      idMap.set(asset.id, newId);
+      const blob = media.get(asset.id);
+      if (blob) await putMediaBlob(copy.id, newId, blob);
+      asset.id = newId;
+    }
+    for (const clip of copy.clips) {
+      if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
+    }
+    await saveProject(copy);
+  } catch (e) {
+    await discardPartialCopy(copy.id);
+    throw e;
   }
-  for (const clip of copy.clips) {
-    if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
-  }
-  await saveProject(copy);
   return copy.id;
 }
 
