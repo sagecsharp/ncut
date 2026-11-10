@@ -23,6 +23,7 @@ import type {
   ImageClip,
   MediaAsset,
   Project,
+  ShapeClip,
   TextClip,
   Track,
   TrackKind,
@@ -33,11 +34,13 @@ import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip, tra
 import {
   DEFAULT_CAMERA_DURATION,
   DEFAULT_EFFECT_DURATION,
+  DEFAULT_SHAPE_DURATION,
   DEFAULT_TEXT_DURATION,
   MAX_FPS,
   createCameraClip,
   createClipFromAsset,
   createEffectClip,
+  createShapeClip,
   createTextClip,
   createTrack,
 } from '../lib/factory';
@@ -88,7 +91,19 @@ export type ClipPatch = Partial<Omit<VideoClip, LockedKeys>> &
   Partial<Omit<CameraClip, LockedKeys>>;
 
 /** fields that may be missing on a stored clip but can still be set through updateClip */
-const SPATIAL_KEYS = ['threeD', 'lookAt', 'shape', 'shapeDepth', 'transition'] as const;
+const SPATIAL_KEYS = [
+  'threeD',
+  'lookAt',
+  'shape',
+  'shapeDepth',
+  'transition',
+  'blend',
+  'crop',
+  'radius',
+  'motionIn',
+  'motionOut',
+  'motionLoop',
+] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   video: SPATIAL_KEYS,
   image: SPATIAL_KEYS,
@@ -104,7 +119,12 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'animIn',
     'animOut',
     'animLoop',
+    'gradient',
+    'curve',
+    'wrapWidth',
   ],
+  shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
+  camera: ['target'],
 };
 
 export interface ClipMove {
@@ -166,6 +186,12 @@ export interface EditorState {
   insertAsset(assetId: string, opts?: ActionOpts & { trackId?: string; start?: number }): string | null;
   /** add a text clip. same placement rules as insertAsset. returns the new clip id. */
   addText(opts?: ActionOpts & { trackId?: string; start?: number; duration?: number; preset?: Partial<TextClip> }): string;
+  /** add a shape clip. same placement rules as insertAsset. returns the new clip id. */
+  addShape(opts?: ActionOpts & { trackId?: string; start?: number; duration?: number; preset?: Partial<ShapeClip> }): string;
+  /** add a marker at a time (timeline seconds). a marker already within 1ms of it is returned instead. returns the marker id. */
+  addMarker(time: number, name?: string, opts?: ActionOpts): string;
+  updateMarker(id: string, patch: { time?: number; name?: string }, opts?: ActionOpts): void;
+  removeMarker(id: string, opts?: ActionOpts): void;
   /**
    * add an effect clip (an adjustment layer that changes everything below its track).
    * - trackId + start: placed on that video track at the nearest free spot to start
@@ -538,6 +564,56 @@ export const useEditor = create<EditorState>()((set, get) => {
       }, opts);
       if (id) set({ selection: [id] });
       return id;
+    },
+
+    addShape(opts) {
+      let id = '';
+      mutate((p) => {
+        const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? opts?.preset?.duration ?? DEFAULT_SHAPE_DURATION);
+        const placed = resolvePlacement(p, 'video', duration, opts?.trackId, opts?.start);
+        const draft = createShapeClip(placed.trackId, placed.start, { ...opts?.preset, duration });
+        // never let a preset override identity/placement
+        draft.trackId = placed.trackId;
+        draft.start = placed.start;
+        draft.type = 'shape';
+        const clip = clampFades(draft);
+        id = clip.id;
+        return { ...placed.project, clips: [...placed.project.clips, clip] };
+      }, opts);
+      if (id) set({ selection: [id] });
+      return id;
+    },
+
+    addMarker(time, name, opts) {
+      const t = Math.max(0, time);
+      const existing = get().project?.markers?.find((m) => Math.abs(m.time - t) <= 1e-3);
+      if (existing) return existing.id;
+      const id = uid('mrk');
+      mutate((p) => {
+        const markers = [...(p.markers ?? []), { id, time: t, name: name ?? '' }].sort((a, b) => a.time - b.time);
+        return { ...p, markers };
+      }, opts);
+      return id;
+    },
+    updateMarker(id, patch, opts) {
+      mutate((p) => {
+        const old = p.markers?.find((m) => m.id === id);
+        if (!old) return null;
+        const next = {
+          ...old,
+          time: typeof patch.time === 'number' && Number.isFinite(patch.time) ? Math.max(0, patch.time) : old.time,
+          name: typeof patch.name === 'string' ? patch.name : old.name,
+        };
+        if (next.time === old.time && next.name === old.name) return null;
+        const markers = (p.markers ?? []).map((m) => (m.id === id ? next : m)).sort((a, b) => a.time - b.time);
+        return { ...p, markers };
+      }, opts);
+    },
+    removeMarker(id, opts) {
+      mutate((p) => {
+        if (!p.markers?.some((m) => m.id === id)) return null;
+        return { ...p, markers: p.markers.filter((m) => m.id !== id) };
+      }, opts);
     },
 
     addEffect(effect, opts) {

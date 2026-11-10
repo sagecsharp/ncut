@@ -12,6 +12,7 @@ interface Summary {
   image: number;
   audio: number;
   text: number;
+  shape: number;
   effect: number;
   camera: number;
   visual: number;
@@ -35,6 +36,7 @@ function summarize(ids: string[]): Summary {
     image: 0,
     audio: 0,
     text: 0,
+    shape: 0,
     effect: 0,
     camera: 0,
     visual: 0,

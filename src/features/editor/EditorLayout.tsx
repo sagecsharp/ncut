@@ -28,7 +28,7 @@ const DEFAULTS: Sizes = { left: 300, right: 300, bottom: 320 };
 function clampSizes(s: Sizes): Sizes {
   const fin = (v: number, d: number) => (Number.isFinite(v) ? v : d);
   return {
-    left: clamp(fin(s.left, DEFAULTS.left), 200, Math.max(200, window.innerWidth * 0.4)),
+    left: clamp(fin(s.left, DEFAULTS.left), 240, Math.max(240, window.innerWidth * 0.4)),
     right: clamp(fin(s.right, DEFAULTS.right), 280, Math.max(280, window.innerWidth * 0.4)),
     bottom: clamp(fin(s.bottom, DEFAULTS.bottom), 140, Math.max(140, window.innerHeight - 220)),
   };

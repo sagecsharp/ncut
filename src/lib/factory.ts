@@ -1,4 +1,16 @@
-import type { AudioClip, CameraClip, EffectClip, ImageClip, MediaAsset, Project, TextClip, Track, TrackKind, VideoClip } from '../types';
+import type {
+  AudioClip,
+  CameraClip,
+  EffectClip,
+  ImageClip,
+  MediaAsset,
+  Project,
+  ShapeClip,
+  TextClip,
+  Track,
+  TrackKind,
+  VideoClip,
+} from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { uid } from './id';
 
@@ -121,6 +133,28 @@ export function createTextClip(trackId: string, start: number, overrides: Partia
     color: '#ffffff',
     background: null,
     align: 'center',
+    transform: { ...DEFAULT_TRANSFORM },
+    ...overrides,
+  };
+}
+
+export const DEFAULT_SHAPE_DURATION = 4;
+
+/** a shape clip: a white square by default */
+export function createShapeClip(trackId: string, start: number, overrides: Partial<ShapeClip> = {}): ShapeClip {
+  return {
+    id: uid('clp'),
+    type: 'shape',
+    trackId,
+    start,
+    duration: DEFAULT_SHAPE_DURATION,
+    name: overrides.kind ?? 'rect',
+    fadeIn: 0,
+    fadeOut: 0,
+    kind: 'rect',
+    width: 400,
+    height: 400,
+    color: '#ffffff',
     transform: { ...DEFAULT_TRANSFORM },
     ...overrides,
   };

@@ -1,6 +1,14 @@
 .media-panel {
   height: 100%;
 }
+/* four tabs share the narrow panel: tighter padding, equal stretch, no clipped label */
+.media-panel > .tabs > .tab {
+  flex: 1 1 auto;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 6px;
+  white-space: nowrap;
+}
 
 .media-tab {
   position: relative;

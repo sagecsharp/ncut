@@ -5,7 +5,7 @@
  */
 import type { DragEvent as ReactDragEvent } from 'react';
 import type { MediaAsset, TrackKind } from '../../types';
-import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
+import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_SHAPE_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { getEffect } from '../../engine/effects/registry';
@@ -41,7 +41,7 @@ interface Target {
 }
 
 function kindOfPayload(payload: DragPayload, assets: MediaAsset[]): TrackKind | null {
-  if (payload.kind === 'text' || payload.kind === 'effect' || payload.kind === 'camera') return 'video';
+  if (payload.kind === 'text' || payload.kind === 'shape' || payload.kind === 'effect' || payload.kind === 'camera') return 'video';
   // transitions go on a clip, not on a lane
   if (payload.kind === 'transition') return null;
   const asset = assets.find((a) => a.id === payload.assetId);
@@ -54,6 +54,10 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
     const d = payload.preset?.duration;
     return typeof d === 'number' && d > 0 ? d : DEFAULT_TEXT_DURATION;
   }
+  if (payload.kind === 'shape') {
+    const d = payload.preset?.duration;
+    return typeof d === 'number' && d > 0 ? d : DEFAULT_SHAPE_DURATION;
+  }
   if (payload.kind === 'effect') return DEFAULT_EFFECT_DURATION;
   if (payload.kind === 'camera') return DEFAULT_CAMERA_DURATION;
   if (payload.kind === 'transition') return 1;
@@ -65,6 +69,7 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
 function ghostLabel(payload: DragPayload | null): string {
   if (!payload) return '';
   if (payload.kind === 'camera') return 'camera';
+  if (payload.kind === 'shape') return payload.preset?.kind ?? 'shape';
   if (payload.kind === 'transition') return getTransition(payload.transition)?.name ?? payload.transition;
   if (payload.kind !== 'effect') return '';
   return getEffect(payload.effect)?.name ?? payload.effect;
@@ -298,6 +303,7 @@ export function createDnd(env: DndEnv) {
         if (payload.kind === 'asset') st.insertAsset(payload.assetId, { trackId, start: target.start, skipHistory: true });
         else if (payload.kind === 'effect') st.addEffect(payload.effect, { trackId, start: target.start, skipHistory: true });
         else if (payload.kind === 'camera') st.addCamera({ trackId, start: target.start, skipHistory: true });
+        else if (payload.kind === 'shape') st.addShape({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
         else st.addText({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
       } else if (payload.kind === 'asset') {
         st.insertAsset(payload.assetId, { trackId: target.trackId, start: target.start });
@@ -305,6 +311,8 @@ export function createDnd(env: DndEnv) {
         st.addEffect(payload.effect, { trackId: target.trackId, start: target.start });
       } else if (payload.kind === 'camera') {
         st.addCamera({ trackId: target.trackId, start: target.start });
+      } else if (payload.kind === 'shape') {
+        st.addShape({ trackId: target.trackId, start: target.start, preset: payload.preset });
       } else {
         st.addText({ trackId: target.trackId, start: target.start, preset: payload.preset });
       }

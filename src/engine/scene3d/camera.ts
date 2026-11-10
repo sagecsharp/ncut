@@ -6,6 +6,7 @@
 import { valueAt } from '../../lib/anim';
 import { clipEnd } from '../../lib/timelineOps';
 import type { CameraClip, Project } from '../../types';
+import { isVisualClip } from '../../types';
 import { DEG, type Mat4, type Vec3, add, cross, dot, mul, normalize, rotateAround, scale, transformPoint } from './math';
 
 export interface Camera3D {
@@ -132,7 +133,7 @@ export function uses3dAt(project: Project, time: number): boolean {
   for (const clip of project.clips) {
     if (time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
     if (clip.type === 'camera') return true;
-    if ((clip.type === 'video' || clip.type === 'image' || clip.type === 'text') && clip.threeD) return true;
+    if (isVisualClip(clip) && clip.threeD) return true;
   }
   return false;
 }

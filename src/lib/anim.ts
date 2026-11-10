@@ -181,6 +181,7 @@ export function animProps(clip: Clip): AnimPropInfo[] {
       return [...VISUAL_PROPS, VOLUME_PROP];
     case 'image':
     case 'text':
+    case 'shape':
       return VISUAL_PROPS;
     case 'audio':
       return [VOLUME_PROP];
@@ -197,6 +198,7 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
     case 'video':
     case 'image':
     case 'text':
+    case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? 0;
       if (prop === 'volume' && clip.type === 'video') return clip.volume;
       return undefined;
@@ -217,6 +219,7 @@ export function withBaseValue<T extends Clip>(clip: T, prop: string, v: number):
     case 'video':
     case 'image':
     case 'text':
+    case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return { ...clip, transform: { ...clip.transform, [prop]: v } };
       if (prop === 'volume' && clip.type === 'video') return { ...clip, volume: v };
       return clip;

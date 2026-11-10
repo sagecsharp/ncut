@@ -114,7 +114,9 @@ export function Preview() {
           ? store.addEffect(payload.effect, { start })
           : payload.kind === 'camera'
             ? store.addCamera({ start })
-            : store.addText({ start, preset: payload.preset });
+            : payload.kind === 'shape'
+              ? store.addShape({ start, preset: payload.preset })
+              : store.addText({ start, preset: payload.preset });
     if (id) store.select([id], 'replace');
   };
 

@@ -3,13 +3,15 @@
  * html5 drag events hide the payload until `drop`, so the source also stores it here
  * and drop targets read it during dragover to draw an accurate ghost.
  */
-import type { TextClip } from '../types';
+import type { ShapeClip, TextClip } from '../types';
 
 export const DND_MIME = 'application/x-ncut';
 
 export type DragPayload =
   | { kind: 'asset'; assetId: string }
   | { kind: 'text'; preset?: Partial<TextClip> }
+  /** dropped on the timeline / preview: adds a shape clip */
+  | { kind: 'shape'; preset?: Partial<ShapeClip> }
   | { kind: 'effect'; effect: string }
   /** dropped on a visual clip: becomes that clip's transition (types.ts Transition) */
   | { kind: 'transition'; transition: string }

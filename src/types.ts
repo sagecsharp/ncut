@@ -113,7 +113,34 @@ export interface Transition {
   duration: number;
 }
 
-/** shared by the clips that draw a picture (video, image, text) */
+/**
+ * how a clip's picture mixes with what is already under it. 'normal' = plain alpha.
+ * 2d clips use the canvas composite operation of the same idea; 3d clips support them through the
+ * gl blend state where possible (see engine/draw.ts).
+ */
+export type BlendMode = 'normal' | 'add' | 'screen' | 'multiply' | 'overlay' | 'darken' | 'lighten' | 'difference';
+
+export const BLEND_MODES: BlendMode[] = ['normal', 'add', 'screen', 'multiply', 'overlay', 'darken', 'lighten', 'difference'];
+
+/** how much of each edge of a clip's picture is cut off, as a fraction of its own width / height (0..1) */
+export interface Crop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * a ready-made motion for a whole clip (video, image, shape, text). `id` is a motion in engine/clipAnim.
+ * in / out: `duration` = how long the entrance / exit takes (seconds). loop: seconds per cycle.
+ * it is applied on top of the clip's own transform / keyframes and never changes the stored values.
+ */
+export interface ClipAnim {
+  id: string;
+  duration: number;
+}
+
+/** shared by the clips that draw a picture (video, image, text, shape) */
 interface Spatial {
   transform: Transform;
   /**
@@ -128,6 +155,16 @@ interface Spatial {
   shapeDepth?: number;
   /** transition into this clip. null / missing = a plain cut. */
   transition?: Transition | null;
+  /** missing = 'normal' */
+  blend?: BlendMode;
+  /** cut the edges off. the picture keeps its place: cropping never moves or stretches what is left. */
+  crop?: Crop | null;
+  /** corner roundness of the (cropped) picture, 0..1. 1 = fully round ends (a circle for a square). */
+  radius?: number;
+  /** ready-made motion when the clip appears / leaves / while it is on screen (engine/clipAnim) */
+  motionIn?: ClipAnim | null;
+  motionOut?: ClipAnim | null;
+  motionLoop?: ClipAnim | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -188,6 +225,14 @@ export interface TextAnim {
   duration: number;
 }
 
+/** fill the letters with a gradient instead of one color */
+export interface TextGradient {
+  from: string;
+  to: string;
+  /** degrees. 0 = left to right, 90 = top to bottom. */
+  angle: number;
+}
+
 export interface TextClip extends ClipBase, Spatial {
   type: 'text';
   text: string;
@@ -213,10 +258,58 @@ export interface TextClip extends ClipBase, Spatial {
   backgroundRadius?: number;
   /** space between the text and the edge of its box as a fraction of the font size. missing = 0.3 */
   backgroundPadding?: number;
+  /** gradient fill across the whole text block. null / missing = the plain `color`. */
+  gradient?: TextGradient | null;
+  /**
+   * bend the text along a circle: degrees of arc one line spans. + = an arch (ends hang down),
+   * - = a smile (ends rise). 0 / missing = straight. 360 = a full ring.
+   */
+  curve?: number;
+  /** wrap lines longer than this (canvas pixels at scale 1). 0 / missing = only break at line breaks. */
+  wrapWidth?: number;
   /* ---- animation ---- */
   animIn?: TextAnim | null;
   animOut?: TextAnim | null;
   animLoop?: TextAnim | null;
+}
+
+export type ShapeKind = 'rect' | 'ellipse' | 'triangle' | 'polygon' | 'star' | 'heart' | 'arrow' | 'line';
+
+export const SHAPE_KINDS: ShapeKind[] = ['rect', 'ellipse', 'triangle', 'polygon', 'star', 'heart', 'arrow', 'line'];
+
+/** outline of a shape */
+export interface ShapeStroke {
+  color: string;
+  /** canvas pixels at scale 1 */
+  width: number;
+}
+
+/**
+ * a drawn shape: a solid or gradient filled figure. it is a visual clip like an image (transform,
+ * 3d, transitions, crop, blend all work). a full-canvas rect is a solid background.
+ * `radius` (Spatial) rounds the corners of a rect.
+ */
+export interface ShapeClip extends ClipBase, Spatial {
+  type: 'shape';
+  kind: ShapeKind;
+  /** size of the shape's box in canvas pixels at scale 1 */
+  width: number;
+  height: number;
+  /** fill color. also the first gradient color. */
+  color: string;
+  /** second gradient color. null / missing = flat fill. */
+  color2?: string | null;
+  /** degrees. 0 = left to right, 90 = top to bottom. missing = 90. */
+  gradientAngle?: number;
+  /** true = the gradient runs from the center outwards */
+  gradientRadial?: boolean;
+  /** false = no fill, only the outline. missing = true. */
+  filled?: boolean;
+  stroke?: ShapeStroke | null;
+  /** polygon: number of corners (3..12, missing = 6). star: number of points (3..12, missing = 5). */
+  points?: number;
+  /** star: inner radius as a fraction of the outer one (0.1..0.95, missing = 0.45) */
+  inner?: number;
 }
 
 /**
@@ -253,11 +346,24 @@ export interface CameraClip extends ClipBase {
   roll: number;
   /** vertical field of view in degrees (home = 50). smaller zooms in. */
   fov: number;
+  /**
+   * id of a visual clip the camera keeps looking at (its center, wherever it moves). pan / tilt are
+   * added on top as an offset. null / missing / unknown id = no target.
+   */
+  target?: string | null;
 }
 
-export type Clip = VideoClip | ImageClip | AudioClip | TextClip | EffectClip | CameraClip;
+/** a named point on the timeline (snaps, jump with shortcuts) */
+export interface Marker {
+  id: string;
+  /** timeline seconds */
+  time: number;
+  name: string;
+}
+
+export type Clip = VideoClip | ImageClip | AudioClip | TextClip | ShapeClip | EffectClip | CameraClip;
 export type ClipType = Clip['type'];
-export type VisualClip = VideoClip | ImageClip | TextClip;
+export type VisualClip = VideoClip | ImageClip | TextClip | ShapeClip;
 export type MediaClip = VideoClip | ImageClip | AudioClip;
 /** clips that read from a timed source (have trimStart/speed/volume) */
 export type TimedClip = VideoClip | AudioClip;
@@ -276,6 +382,8 @@ export interface Project {
   assets: MediaAsset[];
   tracks: Track[];
   clips: Clip[];
+  /** sorted by time. missing = none. */
+  markers?: Marker[];
 }
 
 /** lightweight row for the projects screen */
@@ -298,7 +406,10 @@ export const MIN_SPEED = 0.25;
 export const MAX_SPEED = 4;
 
 export function isVisualClip(c: Clip): c is VisualClip {
-  return c.type === 'video' || c.type === 'image' || c.type === 'text';
+  return c.type === 'video' || c.type === 'image' || c.type === 'text' || c.type === 'shape';
+}
+export function isShapeClip(c: Clip): c is ShapeClip {
+  return c.type === 'shape';
 }
 export function isCameraClip(c: Clip): c is CameraClip {
   return c.type === 'camera';

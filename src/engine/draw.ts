@@ -5,7 +5,7 @@
  * it does not know where pixels come from: the caller passes a resolver that returns the
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
-import type { EffectClip, ImageClip, Project, TextClip, Transform, VideoClip, VisualClip } from '../types';
+import type { EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
@@ -18,6 +18,7 @@ import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, 
 import { mul, scaling } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, renderScene } from './scene3d/renderer';
+import { drawShape, shapeSignature, shapeSpill } from './shape';
 import { drawText, measureText, textSpill } from './text';
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
@@ -70,6 +71,9 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
     const m = measureText(clip);
     width = m.width * t.scale;
     height = m.height * t.scale;
+  } else if (clip.type === 'shape') {
+    width = Math.max(1, clip.width) * t.scale;
+    height = Math.max(1, clip.height) * t.scale;
   } else {
     let nat = natural;
     if (!nat) {
@@ -315,6 +319,56 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
   return entry;
 }
 
+/* ---------- shape clips as textures (3d) ---------- */
+
+interface ShapeTexture {
+  sig: string;
+  canvas: AnyCanvas;
+  key: string;
+  /** room around the shape for its outline, in canvas pixels at scale 1 */
+  margin: number;
+}
+const shapeTextures = new Map<string, ShapeTexture>();
+let shapeTextureSerial = 0;
+const SHAPE_TEXTURE_MAX = 2048;
+
+function shapeTexture(clip: ShapeClip): ShapeTexture | null {
+  const margin = Math.ceil(shapeSpill(clip));
+  const fullW = Math.max(1, clip.width) + margin * 2;
+  const fullH = Math.max(1, clip.height) + margin * 2;
+  // drawn at the size it has on screen at scale 1, capped so a huge shape stays a sane texture
+  const q = Math.min(2, SHAPE_TEXTURE_MAX / Math.max(fullW, fullH));
+  const w = Math.max(1, Math.ceil(fullW * q));
+  const h = Math.max(1, Math.ceil(fullH * q));
+  const sig = shapeSignature(clip) + '|' + w + 'x' + h;
+  const hit = shapeTextures.get(clip.id);
+  if (hit && hit.sig === sig) return hit;
+  let canvas: AnyCanvas | null = hit && hit.canvas.width === w && hit.canvas.height === h ? hit.canvas : null;
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
+    else if (typeof document !== 'undefined') {
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+    } else return null;
+  }
+  const c = canvas.getContext('2d') as Ctx | null;
+  if (!c) return null;
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1;
+  c.clearRect(0, 0, w, h);
+  c.translate(w / 2, h / 2);
+  c.scale(q, q);
+  drawShape(c, clip, Math.max(1, clip.width), Math.max(1, clip.height), 1);
+  const entry: ShapeTexture = { sig, canvas, key: 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
+  shapeTextures.set(clip.id, entry);
+  if (shapeTextures.size > 64) {
+    const first = shapeTextures.keys().next().value;
+    if (first !== undefined) shapeTextures.delete(first);
+  }
+  return entry;
+}
+
 function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | null {
   const { clip, source } = layer;
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
@@ -325,6 +379,13 @@ function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | n
     const t = textTexture(clip, layer.time);
     if (!t) return null;
     // the texture has room around the text for outlines, shadows and moving letters
+    box.width += t.margin * 2 * clip.transform.scale;
+    box.height += t.margin * 2 * clip.transform.scale;
+    image = t.canvas;
+    cacheKey = t.key;
+  } else if (clip.type === 'shape') {
+    const t = shapeTexture(clip);
+    if (!t) return null;
     box.width += t.margin * 2 * clip.transform.scale;
     box.height += t.margin * 2 * clip.transform.scale;
     image = t.canvas;
@@ -448,6 +509,8 @@ function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSou
   if (box.rotation) ctx.rotate((box.rotation * Math.PI) / 180);
   if (clip.type === 'text') {
     drawText(ctx, clip, time - clip.start);
+  } else if (clip.type === 'shape') {
+    drawShape(ctx, clip, box.width, box.height, clip.transform.scale);
   } else if (source) {
     try {
       ctx.drawImage(source.image, -box.width / 2, -box.height / 2, box.width, box.height);
@@ -464,7 +527,7 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
   const alpha = clip.transform.opacity * fadeFactor(clip, time);
   if (alpha <= 0.001) return false;
   let source: DrawSource | null = null;
-  if (raw.type !== 'text') {
+  if (raw.type === 'video' || raw.type === 'image') {
     source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
     if (!source) return false;
   }
@@ -608,7 +671,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     const alpha = clip.transform.opacity * fadeFactor(clip, time);
     if (alpha <= 0.001) continue;
     let source: DrawSource | null = null;
-    if (raw.type !== 'text') {
+    if (raw.type === 'video' || raw.type === 'image') {
       source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
       if (!source) continue;
     }
@@ -665,7 +728,7 @@ export function renderSceneView(
     const alpha = clip.transform.opacity * fadeFactor(clip, time);
     if (alpha <= 0.001) continue;
     let source: DrawSource | null = null;
-    if (raw.type !== 'text') {
+    if (raw.type === 'video' || raw.type === 'image') {
       source = resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
       if (!source) continue;
     }

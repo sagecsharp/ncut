@@ -73,7 +73,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         onChange={(v) => actions().updateClip(id, { letterSpacing: v }, liveOpts())}
       />
       <Pct
-        label="line height"
+        label="line gap"
         title="space between lines (% of the font size)"
         value={clip.lineHeight ?? 1.25}
         min={50}
