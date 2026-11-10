@@ -13,7 +13,7 @@ export const DISTORT_EFFECTS: EffectDef[] = [
       { key: 'bulge', label: 'bulge', min: 0, max: 60, step: 1, default: 25, unit: '%' },
       { key: 'blur', label: 'blur', min: 0, max: 100, step: 1, default: 60, unit: '%' },
       { key: 'dispersion', label: 'dispersion', min: 0, max: 100, step: 1, default: 60, unit: '%' },
-      { key: 'pulse', label: 'pulse', min: 0, max: 100, step: 1, default: 0, unit: '%' },
+      { key: 'pulse', label: 'pulse', min: 0, max: 100, step: 1, default: 30, unit: '%' },
     ],
     glsl: `
 vec4 effect(vec2 uv) {
@@ -57,7 +57,7 @@ vec4 effect(vec2 uv) {
     sync: { param: 'speed', cycles: 0.25 },
     params: [
       { key: 'strength', label: 'strength', min: -100, max: 100, step: 1, default: 55, unit: '%' },
-      { key: 'breathe', label: 'breathe', min: 0, max: 100, step: 1, default: 0, unit: '%' },
+      { key: 'breathe', label: 'breathe', min: 0, max: 100, step: 1, default: 30, unit: '%' },
       { key: 'speed', label: 'speed', min: 0, max: 5, step: 0.1, default: 1, unit: 'hz' },
     ],
     glsl: `

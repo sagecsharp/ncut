@@ -6,6 +6,41 @@ export const COLOR_EFFECTS: EffectDef[] = [
     id: 'duotone-strobe',
     name: 'duotone strobe',
     category: 'color',
+    description: 'two color gradient map that changes color pair on a fast beat',
+    posterTime: 0.3,
+    sync: { param: 'rate', cycles: 1 },
+    params: [
+      { key: 'rate', label: 'rate', min: 1, max: 30, step: 0.5, default: 8, unit: 'hz' },
+      { key: 'contrast', label: 'contrast', min: 20, max: 300, step: 5, default: 100, unit: '%' },
+      { key: 'saturation', label: 'saturation', min: 0, max: 200, step: 5, default: 100, unit: '%' },
+    ],
+    glsl: `
+// 6 color pairs (dark / light): green blue, magenta blue, red blue, pink yellow, orange green, cyan yellow
+const vec3 DS_DK[6] = vec3[6](
+  vec3(0.20, 0.85, 0.20), vec3(0.90, 0.10, 0.80), vec3(0.95, 0.10, 0.15),
+  vec3(1.00, 0.30, 0.60), vec3(1.00, 0.30, 0.05), vec3(0.10, 0.90, 1.00));
+const vec3 DS_LT[6] = vec3[6](
+  vec3(0.15, 0.40, 0.95), vec3(0.20, 0.30, 1.00), vec3(0.25, 0.30, 1.00),
+  vec3(1.00, 0.95, 0.20), vec3(0.40, 0.95, 0.20), vec3(1.00, 0.95, 0.25));
+
+vec4 effect(vec2 uv) {
+  vec3 c = tex(uv).rgb;
+  float l = luma(c);
+  // which pair is on right now
+  int idx = int(mod(floor(u_time * p_rate) + floor(u_seed), 6.0));
+  // map by luma around the middle of the card, contrast sets how hard the split is
+  float t = sat((l - 0.43) * (p_contrast / 100.0 * 8.0) + 0.5);
+  vec3 col = mix(DS_DK[idx], DS_LT[idx], t);
+  // keep some of the picture's detail
+  col *= 0.8 + 0.4 * l;
+  col = mix(vec3(luma(col)), col, p_saturation / 100.0);
+  return vec4(mix(c, col, u_amount), 1.0);
+}`,
+  },
+  {
+    id: 'duotone-glide',
+    name: 'duotone glide',
+    category: 'color',
     description: 'two color gradient map whose colors travel around a wheel, gliding or cutting on a beat',
     posterTime: 0.3,
     sync: { param: 'rate', cycles: 1 },
@@ -52,6 +87,37 @@ vec4 effect(vec2 uv) {
     id: 'hue-wash',
     name: 'hue wash',
     category: 'color',
+    description: 'a soft color overlay that travels around the whole hue wheel',
+    posterTime: 0.5,
+    sync: { param: 'speed', cycles: 1 },
+    params: [
+      { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 35, unit: '%' },
+      { key: 'speed', label: 'speed', min: 0.05, max: 3, step: 0.05, default: 0.42, unit: 'hz' },
+      { key: 'saturation', label: 'saturation', min: 0, max: 100, step: 1, default: 90, unit: '%' },
+    ],
+    glsl: `
+// soft light (pegtop)
+vec3 hw_soft(vec3 a, vec3 b) {
+  return (1.0 - 2.0 * b) * a * a + 2.0 * b * a;
+}
+
+vec4 effect(vec2 uv) {
+  vec3 c = tex(uv).rgb;
+  // hue goes around the wheel, speed = loops per second
+  float h = fract(u_time * p_speed + u_seed / 100.0);
+  vec3 wash = hsv2rgb(vec3(h, p_saturation / 100.0, 1.0));
+  // blend: half soft light, half tinted multiply / screen
+  vec3 soft = hw_soft(c, wash);
+  vec3 mulscr = mix(c * wash * 1.8, 1.0 - (1.0 - c) * (1.0 - wash), luma(c));
+  vec3 tinted = mix(soft, mulscr, 0.5);
+  float k = sat(p_strength / 100.0 * 1.6) * u_amount;
+  return vec4(mix(c, tinted, k), 1.0);
+}`,
+  },
+  {
+    id: 'hue-gel',
+    name: 'color gel',
+    category: 'color',
     description: 'a colored gel over the picture that travels around the whole hue wheel',
     posterTime: 0.5,
     sync: { param: 'speed', cycles: 1 },
@@ -75,7 +141,32 @@ vec4 effect(vec2 uv) {
     id: 'flash',
     name: 'flash',
     category: 'color',
-    description: 'rhythmic flashes of light added on top of the picture that fall back fast',
+    description: 'rhythmic exposure flashes that bloom to white and fall back',
+    posterTime: 0.05,
+    sync: { param: 'rate', cycles: 1 },
+    params: [
+      { key: 'rate', label: 'rate', min: 0.2, max: 12, step: 0.1, default: 2, unit: 'hz' },
+      { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 80, unit: '%' },
+      { key: 'decay', label: 'decay', min: 1, max: 30, step: 0.5, default: 8, unit: 'x' },
+    ],
+    glsl: `
+vec4 effect(vec2 uv) {
+  vec3 c = tex(uv).rgb;
+  // position inside the current flash, 0..1
+  float ph = fract(u_time * p_rate);
+  // near instant attack, exponential fall back
+  float env = exp(-ph * p_decay) * smoothstep(0.0, 0.01, ph);
+  float k = p_strength / 100.0 * env * u_amount;
+  // additive exposure: gain plus a white lift, fully white at k = 1
+  vec3 col = c * (1.0 + 3.0 * k) + vec3(k);
+  return vec4(col, 1.0);
+}`,
+  },
+  {
+    id: 'soft-flash',
+    name: 'soft flash',
+    category: 'color',
+    description: 'rhythmic flashes of light added on top of the picture, darks and lights lift the same, and it falls back fast',
     posterTime: 0.05,
     sync: { param: 'rate', cycles: 1 },
     params: [
@@ -130,7 +221,7 @@ vec4 effect(vec2 uv) {
       { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 80, unit: '%' },
       { key: 'size', label: 'size', min: 10, max: 150, step: 1, default: 105, unit: '%' },
       { key: 'warmth', label: 'warmth', min: 0, max: 100, step: 1, default: 50, unit: '%' },
-      { key: 'drift', label: 'drift', min: 0, max: 3, step: 0.05, default: 0.1, unit: 'hz' },
+      { key: 'drift', label: 'drift', min: 0, max: 3, step: 0.05, default: 0.4, unit: 'hz' },
       { key: 'angle', label: 'angle', min: 0, max: 360, step: 5, default: 45, unit: 'deg' },
     ],
     glsl: `

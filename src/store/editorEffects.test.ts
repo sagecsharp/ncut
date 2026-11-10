@@ -231,8 +231,8 @@ describe('setEffectParam', () => {
   it('keeps other params', () => {
     const id = ed().addEffect('shake')!;
     ed().setEffectParam(id, 'strength', 55);
-    ed().setEffectParam(id, 'speed', 14);
-    expect(fxOf(id).params).toEqual({ strength: 55, speed: 14 });
+    ed().setEffectParam(id, 'speed', 20);
+    expect(fxOf(id).params).toEqual({ strength: 55, speed: 20 });
   });
 
   it('clamps to the param range', () => {
@@ -289,10 +289,10 @@ describe('setEffectParam', () => {
 
   it('is a no-op without history when the value is unchanged', () => {
     const id = ed().addEffect('shake')!;
-    // default value (strength 25) is already what the clip uses
+    // default value (strength 30) is already what the clip uses
     const past = ed().past.length;
     const before = proj();
-    ed().setEffectParam(id, 'strength', 25);
+    ed().setEffectParam(id, 'strength', 30);
     expect(proj()).toBe(before);
     expect(ed().past).toHaveLength(past);
     ed().setEffectParam(id, 'strength', 60);

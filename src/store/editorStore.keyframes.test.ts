@@ -253,7 +253,7 @@ describe('toggleKeyframe', () => {
     const { v } = open((v) => [mkVideo(v, 0, 10)]);
     const id = ed().addEffect('shake', { trackId: v, start: 0, duration: 4 })!;
     ed().toggleKeyframe(id, 'p.strength', 1);
-    expect(keysOf(id, 'p.strength')![0]!.v).toBe(25);
+    expect(keysOf(id, 'p.strength')![0]!.v).toBe(30);
   });
   it('ignores unknown props', () => {
     const { ids } = open((v) => [mkVideo(v, 0, 10)]);

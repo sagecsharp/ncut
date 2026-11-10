@@ -25,7 +25,7 @@
 - **keyframes** on nearly every number, each one with its own keys
 - **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat, and effects can pulse and lock their rhythm to it
 - **3d**: clips become planes or solids in one unlit scene, with cameras and a scene view driven like blender (or like unity, one switch in the settings)
-- **87 effects, 87 transitions**, motion blur, masks, green screen
+- **94 effects, 87 transitions**, motion blur, masks, green screen
 - **text** with 29 fonts plus your own, letter animations, captions
 - **a plain color card** in every project, ready to drop in
 - **export** to mp4, webm, gif or audio, up to 240 fps, no watermark

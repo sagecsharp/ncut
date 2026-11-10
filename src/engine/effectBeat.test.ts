@@ -167,9 +167,9 @@ describe('lock', () => {
   });
 
   it('an effect without sync metadata only pulses', () => {
-    const clip = fx(2, 6, { effect: 'whip', params: { zoom: 40 }, timeOffset: 0.5, beat: beat({ lock: true, pulse: 0.5 }) });
+    const clip = fx(2, 6, { effect: 'shake', params: { speed: 4 }, timeOffset: 0.5, beat: beat({ lock: true, pulse: 0.5 }) });
     const p = effectPassAt(clip, 3.25, G)!;
-    expect(p.params).toEqual({ zoom: 40 });
+    expect(p.params).toEqual({ speed: 4 });
     expect(p.time).toBeCloseTo(1.25 + 0.5, 12);
     expect(p.amount).toBeCloseTo(pulseEnvelope(0.5, 0.5), 12);
   });
