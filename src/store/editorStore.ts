@@ -169,10 +169,19 @@ export interface EditorState {
   closeProject(): void;
 
   // history
-  /** record the current project as an undo step (use before a drag with skipHistory updates) */
+  /**
+   * open an undo step (use before a drag with skipHistory updates). the step is only written when the first
+   * skipHistory change after it lands: a gesture that changes nothing leaves undo and redo exactly as they were.
+   */
   pushHistory(): void;
+  /** undo / redo also bring back the selection the step was made with */
   undo(): void;
   redo(): void;
+  /**
+   * take back what was written since the last pushHistory() (a cancelled drag, a plan that failed half way).
+   * nothing was written: nothing happens, earlier steps are never touched. the taken back step cannot be redone.
+   */
+  rollback(): void;
 
   // project
   updateProject(patch: ProjectSettingsPatch, opts?: ActionOpts): void;
@@ -476,15 +485,23 @@ function pruneSelection(project: Project | null, selection: string[]): string[] 
 /* ---------- store ---------- */
 
 export const useEditor = create<EditorState>()((set, get) => {
+  /** the project pushHistory() was called on, until the first change of that gesture lands (or something else changes the project) */
+  let pending: Project | null = null;
+  /** the selection each history step was made with (undo / redo bring it back) */
+  const selectionAt = new WeakMap<Project, string[]>();
+
   /** apply a project transform with history bookkeeping. returns true when something changed. */
   function mutate(fn: (p: Project) => Project | null | undefined, opts?: ActionOpts): boolean {
     const { project, past } = get();
     if (!project) return false;
     const next = fn(project);
     if (!next || next === project) return false;
-    if (opts?.skipHistory) {
+    const opened = pending === project;
+    pending = null;
+    if (opts?.skipHistory && !opened) {
       set({ project: next, selection: pruneSelection(next, get().selection) });
     } else {
+      selectionAt.set(project, get().selection);
       set({
         project: next,
         past: [...past, project].slice(-HISTORY_LIMIT),
@@ -505,21 +522,37 @@ export const useEditor = create<EditorState>()((set, get) => {
     snapping: true,
 
     openProject(project) {
+      pending = null;
       set({ project, selection: [], past: [], future: [], zoom: DEFAULT_ZOOM });
     },
     closeProject() {
+      pending = null;
       set({ project: null, selection: [], past: [], future: [] });
     },
 
     pushHistory() {
-      const { project, past } = get();
+      const { project } = get();
       if (!project) return;
-      if (past[past.length - 1] === project) return;
-      set({ past: [...past, project].slice(-HISTORY_LIMIT), future: [] });
+      pending = project;
+    },
+    rollback() {
+      const { project } = get();
+      if (!project) return;
+      // still open: the gesture wrote nothing, so there is nothing to take back
+      if (pending !== null) {
+        pending = null;
+        return;
+      }
+      const past = [...get().past];
+      const prev = past.pop();
+      if (!prev) return;
+      const restored: Project = prev === project ? project : { ...prev, assets: project.assets };
+      set({ project: restored, past, selection: pruneSelection(restored, selectionAt.get(prev) ?? get().selection) });
     },
     undo() {
       const { project } = get();
       if (!project) return;
+      pending = null;
       const past = [...get().past];
       // skip no-op steps (a drag that pushed history but changed nothing)
       let prev = past.pop();
@@ -530,23 +563,26 @@ export const useEditor = create<EditorState>()((set, get) => {
       }
       // assets are not part of history: keep the current list
       const restored: Project = { ...prev, assets: project.assets };
+      selectionAt.set(project, get().selection);
       set({
         project: restored,
         past,
         future: [project, ...get().future].slice(0, HISTORY_LIMIT),
-        selection: pruneSelection(restored, get().selection),
+        selection: pruneSelection(restored, selectionAt.get(prev) ?? get().selection),
       });
     },
     redo() {
       const { project, future, past } = get();
       if (!project || future.length === 0) return;
+      pending = null;
       const [next, ...rest] = future;
       const restored: Project = { ...next!, assets: project.assets };
+      selectionAt.set(project, get().selection);
       set({
         project: restored,
         past: [...past, project].slice(-HISTORY_LIMIT),
         future: rest,
-        selection: pruneSelection(restored, get().selection),
+        selection: pruneSelection(restored, selectionAt.get(next!) ?? get().selection),
       });
     },
 
@@ -568,7 +604,10 @@ export const useEditor = create<EditorState>()((set, get) => {
     addAsset(asset) {
       const { project } = get();
       if (!project || project.assets.some((a) => a.id === asset.id)) return;
-      set({ project: { ...project, assets: [...project.assets, asset] } });
+      const next = { ...project, assets: [...project.assets, asset] };
+      // an import in the middle of a gesture must not close its undo step
+      if (pending === project) pending = next;
+      set({ project: next });
     },
     removeAsset(assetId) {
       const { project } = get();
@@ -583,6 +622,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       // history holds whole projects: a step that still has a clip of this asset cannot be gone back to.
       // when no step has one (an unused asset), undo and redo stay as they are.
       const inHistory = [...get().past, ...get().future].some((p) => p.clips.some(uses));
+      pending = null;
       if (gone.size > 0 || inHistory) set({ project: next, past: [], future: [], selection: pruneSelection(next, get().selection) });
       else set({ project: next });
     },
@@ -1183,14 +1223,22 @@ export const useEditor = create<EditorState>()((set, get) => {
       const created: string[] = [];
       mutate((p) => {
         let next = p;
-        const originals = p.clips.filter((c) => ids.includes(c.id)).sort((a, b) => a.start - b.start);
+        const trackIndex = (id: string) => p.tracks.findIndex((t) => t.id === id);
+        // sameTime: from the bottom layer up, so every copy can be put above the copies of the layers below it
+        const originals = p.clips
+          .filter((c) => ids.includes(c.id))
+          .sort((a, b) => (opts?.sameTime ? trackIndex(b.trackId) - trackIndex(a.trackId) : 0) || a.start - b.start);
         const idMap = new Map<string, string>();
+        // sameTime: the highest track taken by copies of lower layers, and the layer being worked on
+        let ceiling: string | null = null;
+        let groupTop: string | null = null;
+        let groupHome: string | null = null;
         // one shift for the whole selection, so copies keep their timing against each other: the smallest
         // shift (at least the length of the selection) where every copy fits on its track. a clip on a
         // locked track goes to another track and does not take part.
         const free = originals.filter((c) => !isLocked(p, c.trackId));
         let shift = 0;
-        if (free.length > 1) {
+        if (free.length > 1 && !opts?.sameTime) {
           const first = Math.min(...free.map((c) => c.start));
           shift = Math.max(...free.map((c) => clipEnd(c))) - first;
           for (let round = 0; round < 24; round++) {
@@ -1206,10 +1254,18 @@ export const useEditor = create<EditorState>()((set, get) => {
           const copy = structuredClone(c);
           copy.id = uid('clp');
           if (opts?.sameTime) {
-            const home = next.tracks.findIndex((t) => t.id === c.trackId);
+            const at = (id: string | null) => (id === null ? -1 : next.tracks.findIndex((t) => t.id === id));
+            if (groupHome !== c.trackId) {
+              // a new layer: what the layers below took is the ceiling now
+              if (groupTop !== null && (ceiling === null || at(groupTop) < at(ceiling))) ceiling = groupTop;
+              groupTop = null;
+              groupHome = c.trackId;
+            }
+            const home = at(c.trackId);
             const kind = next.tracks[home]?.kind ?? trackKindForClip(c.type);
+            const limit = ceiling !== null && at(ceiling) >= 0 ? Math.min(home, at(ceiling)) : home;
             let above: Track | undefined;
-            for (let i = home - 1; i >= 0; i--) {
+            for (let i = limit - 1; i >= 0; i--) {
               const t = next.tracks[i]!;
               if (t.kind === kind && !t.locked && isRangeFree(next, t.id, c.start, c.duration)) {
                 above = t;
@@ -1217,10 +1273,11 @@ export const useEditor = create<EditorState>()((set, get) => {
               }
             }
             if (!above) {
-              const made = withNewTrack(next, kind, Math.max(0, home));
+              const made = withNewTrack(next, kind, Math.max(0, limit));
               next = made.project;
               above = made.track;
             }
+            if (groupTop === null || at(above.id) < at(groupTop)) groupTop = above.id;
             copy.trackId = above.id;
             copy.start = c.start;
             created.push(copy.id);

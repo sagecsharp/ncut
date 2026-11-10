@@ -132,12 +132,33 @@ describe('duplicateClips sameTime', () => {
   });
   it('honours skipHistory inside a pushed step', () => {
     open((t) => [image(t[2]!, 'a', 2, 3)]);
-    ed().pushHistory();
     const n = ed().past.length;
+    ed().pushHistory();
     ed().duplicateClips(['a'], { sameTime: true, skipHistory: true });
-    expect(ed().past.length).toBe(n);
+    // the step opened by pushHistory is written with the first change, and only once
+    expect(ed().past.length).toBe(n + 1);
+    ed().duplicateClips(['a'], { sameTime: true, skipHistory: true });
+    expect(ed().past.length).toBe(n + 1);
     ed().undo();
     expect(proj().clips).toHaveLength(1);
+  });
+  it('keeps the layer order of a selection across tracks', () => {
+    // t0 free, b on t1 (above), a on t2 (below), overlapping in time
+    const t = open((t) => [image(t[2]!, 'a', 0, 4), image(t[1]!, 'b', 1, 4)]);
+    const made = ed().duplicateClips(['a', 'b'], { sameTime: true });
+    expect(made).toHaveLength(2);
+    const idx = (id: string) => proj().tracks.findIndex((x) => x.id === clipOf(id).trackId);
+    const copyOf = (orig: string) => made.find((id) => clipOf(id).start === clipOf(orig).start)!;
+    // the copy of the upper clip is above the copy of the lower one, and both are above their originals
+    expect(idx(copyOf('b'))).toBeLessThan(idx(copyOf('a')));
+    expect(idx(copyOf('a'))).toBeLessThan(idx('a'));
+    expect(idx(copyOf('b'))).toBeLessThan(idx('b'));
+    void t;
+  });
+  it('two clips of one track share the track of their copies', () => {
+    open((t) => [image(t[2]!, 'a', 0, 2), image(t[2]!, 'b', 3, 2)]);
+    const made = ed().duplicateClips(['a', 'b'], { sameTime: true });
+    expect(clipOf(made[0]!).trackId).toBe(clipOf(made[1]!).trackId);
   });
   it('is one undo step and the default path is unchanged', () => {
     open((t) => [image(t[2]!, 'a', 2, 3)]);

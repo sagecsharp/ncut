@@ -324,7 +324,8 @@ export function clipLookPoint(project: Project, clip: VisualClip, time: number, 
   if (!t || !(isVisualClip(t) || isCameraClip(t))) return null;
   const tt = clampTime(t, time);
   if (isCameraClip(t)) return cameraRig(cameraFromClip(t, clampTime(t, cameraTime), project), project.width, project.height).eye;
-  const f = frameOf(project, t, tt, 0);
+  // a target that hangs on the camera: the camera is read at the frame time, like for every attached clip
+  const f = cameraTime !== time && hasCameraInChain(project, t, 0) ? frameMixed(project, t, tt, cameraTime, 0) : frameOf(project, t, tt, 0);
   return [f[12]!, f[13]!, f[14]!];
 }
 

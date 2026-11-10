@@ -200,6 +200,8 @@ function gizmoTarget(project: Project, selection: string[], time: number, rig: C
   for (const id of selection) {
     const clip = project.clips.find((c) => c.id === id);
     if (!clip || !inRange(clip, time)) continue;
+    // a clip on a locked track cannot be edited: no handles (a drag would do nothing, an alt drag would copy it)
+    if (project.tracks.find((t) => t.id === clip.trackId)?.locked) continue;
     if (clip.type === 'camera') {
       const r = resolveClip(clip, time);
       return {
@@ -1061,9 +1063,8 @@ export function SceneOverlay() {
       useSceneCamera.getState().set(g.o0);
     } else if (g.started) {
       const store = useEditor.getState();
-      store.undo();
-      // the step is gone, not something to redo
-      useEditor.setState({ future: [] });
+      // only what this drag wrote: a drag that changed nothing must not take back an earlier edit
+      store.rollback();
       store.select(selBefore.current.filter((id) => useEditor.getState().project?.clips.some((c) => c.id === id)), 'replace');
     }
     redrawRef.current();

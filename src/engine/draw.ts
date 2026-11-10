@@ -682,7 +682,8 @@ function textSide(t: TextTexture, clip: TextClip, time: number, color: string): 
 interface ShapeTexture {
   sig: string;
   canvas: AnyCanvas;
-  key: string;
+  /** undefined while the picture changes every frame (draw on keys) */
+  key: string | undefined;
   /** room around the shape for its outline, in canvas pixels at scale 1 */
   margin: number;
 }
@@ -722,7 +723,10 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   c.translate(w / 2, h / 2);
   c.scale(q, q);
   drawShape(c, clip, Math.max(1, clip.width), Math.max(1, clip.height), 1);
-  const entry: ShapeTexture = { sig, canvas, key: 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
+  // an outline that is being drawn on changes every frame: no key, so the gpu side reuses one scratch texture
+  // instead of keeping a mipmapped copy of every frame
+  const live = !!(clip.keyframes?.drawStart?.length || clip.keyframes?.drawEnd?.length);
+  const entry: ShapeTexture = { sig, canvas, key: live ? undefined : 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
   shapeTextures.delete(clip.id);
   shapeTextures.set(clip.id, entry);
   if (shapeTextures.size > 64) {
@@ -743,15 +747,17 @@ function syncTextureCaches(project: Project): void {
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
-  for (const id of [...maskCopies.keys()]) if (!ids.has(id)) maskCopies.delete(id);
+  // the masked silhouette of a 3d depth text sits next to the face's copy under 'id|side'
+  for (const id of [...maskCopies.keys()]) {
+    const owner = id.endsWith(SIDE_COPY) ? id.slice(0, -SIDE_COPY.length) : id;
+    if (!ids.has(owner)) maskCopies.delete(id);
+  }
   for (const id of [...textTextures.keys()]) {
     if (ids.has(id)) continue;
     dropSide(textTextures.get(id));
     textTextures.delete(id);
   }
   for (const id of [...sideStacks.keys()]) if (!ids.has(id)) sideStacks.delete(id);
-  // the masked silhouettes of 3d depth text sit next to the face's copy under 'id|side'
-  for (const id of [...maskCopies.keys()]) if (id.endsWith(SIDE_COPY) && !ids.has(id.slice(0, -SIDE_COPY.length))) maskCopies.delete(id);
   for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
 }
 

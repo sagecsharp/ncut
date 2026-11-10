@@ -147,7 +147,12 @@ export function shapeOutline(clip: ShapeClip, w: number, h: number, radius = 0):
   if (clip.kind === 'line' || clip.kind === 'arrow') return fromPoints([-w / 2, 0, w / 2, 0]);
   const key = `${clip.kind}|${w}|${h}|${radius}|${clip.points ?? ''}|${clip.inner ?? ''}`;
   const hit = outlineCache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    // keep what is in use: the oldest unused outline goes first
+    outlineCache.delete(key);
+    outlineCache.set(key, hit);
+    return hit;
+  }
   const poly = flatten((rec: PathRecorder) => shapePath(rec as unknown as Ctx, clip, w, h, radius));
   if (outlineCache.size >= OUTLINE_CACHE_MAX) {
     const first = outlineCache.keys().next().value;
@@ -173,10 +178,14 @@ function fillAndStroke(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit: nu
 /** draw on (ShapeClip.drawStart / drawEnd) for a range that is not "everything" */
 function drawTrimmed(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit: number, s: number, e: number): void {
   if (clip.kind === 'line') {
-    // the bar grows from its left end
+    // the bar grows from its left end, with the same round ends the whole bar has (no pop on the last frame)
     if (!(s < e)) return;
+    const bw = (e - s) * w;
+    const cx = -w / 2 + s * w + bw / 2;
     ctx.beginPath();
-    ctx.rect(-w / 2 + s * w, -h / 2, (e - s) * w, h);
+    ctx.translate(cx, 0);
+    roundRect(ctx, bw, h, clip.radius ?? 0);
+    ctx.translate(-cx, 0);
     fillAndStroke(ctx, clip, w, h, unit);
     return;
   }

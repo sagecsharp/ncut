@@ -1352,12 +1352,17 @@ describe('history', () => {
     expect(vid(b.c).transform.x).toBe(0);
   });
 
-  it('pushHistory twice with no change records one step', () => {
+  it('pushHistory alone records nothing: the step is written with the first change', () => {
     const b = base();
     ed().pushHistory();
     ed().pushHistory();
+    expect(ed().past).toHaveLength(0);
+    ed().updateClip(b.c, { name: 'x' }, { skipHistory: true });
     expect(ed().past).toHaveLength(1);
-    void b;
+    ed().updateClip(b.c, { name: 'y' }, { skipHistory: true });
+    expect(ed().past).toHaveLength(1);
+    ed().undo();
+    expect(proj().clips.find((c) => c.id === b.c)!.name).not.toBe('y');
   });
 
   it('a gesture that changed nothing leaves no extra undo step', () => {
@@ -1395,12 +1400,62 @@ describe('history', () => {
     expect(proj()).toBe(p);
   });
 
-  it('redo is cleared when a gesture starts', () => {
+  it('a gesture that changes nothing keeps redo, the first change clears it', () => {
     const b = base();
     ed().updateClip(b.c, { name: 'one' });
     ed().undo();
     ed().pushHistory();
+    expect(ed().future).toHaveLength(1);
+    ed().updateClip(b.c, { name: 'two' }, { skipHistory: true });
     expect(ed().future).toHaveLength(0);
+  });
+
+  it('rollback takes back an open gesture and never an earlier step', () => {
+    const b = base();
+    const nameOf = () => proj().clips.find((c) => c.id === b.c)!.name;
+    ed().updateClip(b.c, { name: 'kept' });
+    // nothing written: nothing happens
+    ed().pushHistory();
+    ed().rollback();
+    expect(nameOf()).toBe('kept');
+    expect(ed().past).toHaveLength(1);
+    // written: taken back, not redoable
+    ed().pushHistory();
+    ed().updateClip(b.c, { name: 'drag 1' }, { skipHistory: true });
+    ed().updateClip(b.c, { name: 'drag 2' }, { skipHistory: true });
+    ed().rollback();
+    expect(nameOf()).toBe('kept');
+    expect(ed().past).toHaveLength(1);
+    expect(ed().future).toHaveLength(0);
+    // a second rollback right after pushHistory still does nothing
+    ed().pushHistory();
+    ed().rollback();
+    expect(nameOf()).toBe('kept');
+  });
+
+  it('undo and redo bring back the selection of the step', () => {
+    const b = base();
+    ed().select([b.c]);
+    const copies = ed().duplicateClips([b.c]);
+    expect(ed().selection).toEqual(copies);
+    ed().undo();
+    expect(ed().selection).toEqual([b.c]);
+    ed().redo();
+    expect(ed().selection).toEqual(copies);
+    ed().clearSelection();
+    ed().undo();
+    expect(ed().selection).toEqual([b.c]);
+  });
+
+  it('an import in the middle of a gesture keeps its undo step', () => {
+    const b = base();
+    ed().pushHistory();
+    ed().addAsset({ id: 'late', name: 'late', kind: 'image', mime: 'image/png', size: 1, duration: 0, width: 10, height: 10, hasAudio: false, createdAt: 0 });
+    ed().updateClip(b.c, { name: 'moved' }, { skipHistory: true });
+    expect(ed().past).toHaveLength(1);
+    ed().undo();
+    expect(proj().clips.find((c) => c.id === b.c)!.name).not.toBe('moved');
+    expect(proj().assets.some((a) => a.id === 'late')).toBe(true);
   });
 
   it('undo/redo with nothing to do are no-ops', () => {

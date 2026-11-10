@@ -112,7 +112,8 @@ function apply(project: Project, prep: Prepared, places: readonly SeqPlace[]): b
   st.pushHistory();
   const opts = { skipHistory: true };
   const fail = (): false => {
-    st.undo();
+    // only what this plan wrote so far (nothing written: nothing is taken back)
+    st.rollback();
     useUi.getState().toast('could not move the clips');
     return false;
   };

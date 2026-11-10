@@ -27,6 +27,8 @@ function animateDraw(clip: ShapeClip, prop: 'drawEnd' | 'drawStart'): void {
   const from = prop === 'drawEnd' ? clip.start : clip.start + clip.duration - span;
   const to = from + span;
   st.pushHistory();
+  // start clean: older keys of this value would fight the new ones
+  st.clearKeyframes(clip.id, from, prop, { skipHistory: true });
   st.setKeyframe(clip.id, prop, from, 0, 'ease', { skipHistory: true });
   st.setKeyframe(clip.id, prop, to, 1, 'ease', { skipHistory: true });
 }

@@ -367,7 +367,8 @@ export function createDnd(env: DndEnv) {
         const limit = cutLimit(tc, previousClipOnTrack(st.project, tc));
         const applied = transitionFor(payload.transition, tc.transition, limit);
         st.updateClip(tc.id, { transition: applied });
-        rememberTransition(applied.id, applied.duration);
+        // the kind only: the length may have been cut down to fit this one cut
+        rememberTransition(applied.id);
         st.select([transitionTarget.clip.id], 'replace');
       }
       return;
