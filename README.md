@@ -64,3 +64,7 @@ press `?` in the editor for the full list. the main ones:
 
 vite, react, typescript, zustand, [mediabunny](https://mediabunny.dev) for encoding and decoding, lucide icons, plain css.
 see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layout of the code and the rules it follows.
+
+## license
+
+mit, see [LICENSE](LICENSE). the bundled fonts come from fontsource and keep their own licenses (mostly sil open font license).
