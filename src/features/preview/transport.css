@@ -1,0 +1,14 @@
+.preview-speed {
+  min-width: 44px;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  flex-shrink: 0;
+  font-size: var(--font-size-sm);
+}
+.preview-speed.is-shuttle {
+  color: var(--text);
+}
+.preview-speed-menu {
+  position: fixed;
+  min-width: 88px;
+}
