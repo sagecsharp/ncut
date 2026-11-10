@@ -4,6 +4,7 @@ import { formatDuration, formatTimecode } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { PlayheadHandle } from './Playhead';
 import { RULER_H } from './layout';
+import { CHAR_W, FLAG_H, FLAG_PAD, flagLabel, flagWidth, visibleMarkerRange } from './markers';
 import { cssVar, subscribeView, view } from './view';
 
 interface Props {
@@ -118,6 +119,32 @@ export function Ruler({ onPointerDown }: Props) {
       }
       ctx.fillStyle = borderColor;
       ctx.fillRect(0, RULER_H - 1, W, 1);
+
+      // markers: only those that can touch the viewport are drawn
+      const markers = state.project?.markers;
+      if (markers && markers.length > 0) {
+        const { from, to } = visibleMarkerRange(markers, zoom, scroll, W);
+        if (to > from) {
+          const accent = cssVar('--accent');
+          const onAccent = cssVar('--on-accent');
+          ctx.font = `10px ${cssVar('--font-mono') || 'monospace'}`;
+          ctx.textBaseline = 'middle';
+          for (let i = from; i < to; i++) {
+            const m = markers[i]!;
+            const x = Math.round((m.time * zoom - scroll) * dpr) / dpr;
+            ctx.fillStyle = accent;
+            ctx.fillRect(x, 0, 1, RULER_H - 1);
+            const w = flagWidth(m.name);
+            ctx.fillRect(x, 0, w, FLAG_H);
+            const label = flagLabel(m.name);
+            if (label) {
+              ctx.fillStyle = onAccent;
+              ctx.fillText(label, x + FLAG_PAD, FLAG_H / 2 + 0.5, label.length * CHAR_W);
+            }
+          }
+          ctx.textBaseline = 'top';
+        }
+      }
     };
 
     const schedule = () => {
@@ -125,7 +152,7 @@ export function Ruler({ onPointerDown }: Props) {
     };
     const unsubView = subscribeView(schedule);
     const unsubEditor = useEditor.subscribe((s, p) => {
-      if (s.zoom !== p.zoom || s.project?.fps !== p.project?.fps) schedule();
+      if (s.zoom !== p.zoom || s.project?.fps !== p.project?.fps || s.project?.markers !== p.project?.markers) schedule();
     });
     schedule();
     return () => {

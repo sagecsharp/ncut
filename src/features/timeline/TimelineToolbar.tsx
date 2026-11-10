@@ -2,12 +2,14 @@ import { useEffect, useRef } from 'react';
 import {
   Camera,
   Copy,
+  Flag,
   ListEnd,
   Magnet,
   Maximize2,
   Music,
   Plus,
   Redo2,
+  Scan,
   Scissors,
   Trash2,
   Undo2,
@@ -24,6 +26,7 @@ interface Props {
   /** zoom to an absolute px/second value, keeping the playhead steady in the viewport */
   onZoom(zoom: number): void;
   onFit(): void;
+  onFitSelection(): void;
 }
 
 const SLIDER_STEPS = 1000;
@@ -36,10 +39,11 @@ function sliderToZoom(v: number): number {
   return MIN_ZOOM * Math.exp((v / SLIDER_STEPS) * LOG_RANGE);
 }
 
-export function TimelineToolbar({ onZoom, onFit }: Props) {
+export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
   const canUndo = useCanUndo();
   const canRedo = useCanRedo();
-  const hasSelection = useEditor((s) => s.selection.length > 0);
+  const selectedCount = useEditor((s) => s.selection.length);
+  const hasSelection = selectedCount > 0;
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
   const snapping = useEditor((s) => s.snapping);
   const zoom = useEditor((s) => s.zoom);
@@ -118,6 +122,15 @@ export function TimelineToolbar({ onZoom, onFit }: Props) {
       </button>
       <span className="timeline-toolbar-sep" />
       <button
+        className="icon-btn"
+        onClick={() => ed().addMarker(usePlayback.getState().time)}
+        title="add marker at the playhead"
+        aria-label="add marker"
+      >
+        <Flag size={16} />
+      </button>
+      <span className="timeline-toolbar-sep" />
+      <button
         className="icon-btn timeline-add-track"
         onClick={() => ed().addTrack('video')}
         title="add video track"
@@ -150,6 +163,7 @@ export function TimelineToolbar({ onZoom, onFit }: Props) {
       <span className="timeline-timecode mono" title="playhead position / project length">
         <span ref={tcRef} className="timeline-timecode-now" />
         <span className="timeline-timecode-total"> / {formatDuration(duration)}</span>
+        {hasSelection ? <span className="timeline-selection"> | {selectedCount} selected</span> : null}
       </span>
 
       <span className="spacer" />
@@ -183,6 +197,15 @@ export function TimelineToolbar({ onZoom, onFit }: Props) {
         aria-label="zoom in"
       >
         <ZoomIn size={16} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={onFitSelection}
+        disabled={!hasSelection}
+        title="zoom to the selected clips"
+        aria-label="zoom to selection"
+      >
+        <Scan size={16} />
       </button>
       <button className="icon-btn" onClick={onFit} title="zoom to fit (shift+z)" aria-label="zoom to fit">
         <Maximize2 size={16} />

@@ -14,10 +14,13 @@ import { TimelineToolbar } from './TimelineToolbar';
 import { TrackHeader } from './TrackHeader';
 import { TrackLane } from './TrackLane';
 import { createDnd } from './dnd';
+import { MarkerLines, MarkerMenu, MarkerRename } from './MarkerUi';
+import type { MarkerMenuRequest } from './MarkerUi';
 import { createGestures } from './gestures';
 import type { MenuRequest } from './gestures';
 import { HEADER_W, RULER_H, TAIL_MIN_PX, ZONE_H, laneHeight } from './layout';
 import { Overlays } from './overlays';
+import { FIT_PAD, rangeOf, zoomForRange } from './zoomMath';
 import { markUserScroll, notifyView, resetView, view } from './view';
 import './timeline.css';
 
@@ -66,6 +69,8 @@ function TimelineInner() {
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
   const [viewW, setViewW] = useState(view.width);
   const [menu, setMenu] = useState<MenuRequest | null>(null);
+  const [markerMenu, setMarkerMenu] = useState<MarkerMenuRequest | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<{ time: number; x: number } | null>(null);
@@ -73,7 +78,14 @@ function TimelineInner() {
 
   const overlays = useMemo(() => new Overlays(), []);
   const gestures = useMemo(
-    () => createGestures({ getScroller: () => scrollerRef.current, overlays, openMenu: setMenu }),
+    () =>
+      createGestures({
+        getScroller: () => scrollerRef.current,
+        overlays,
+        openMenu: setMenu,
+        openMarkerMenu: setMarkerMenu,
+        renameMarker: (id, x, y) => setRenaming({ id, x, y }),
+      }),
     [overlays],
   );
   const dnd = useMemo(() => createDnd({ getScroller: () => scrollerRef.current, overlays }), [overlays]);
@@ -87,6 +99,9 @@ function TimelineInner() {
   );
 
   const closeMenu = useCallback(() => setMenu(null), []);
+  const closeMarkerMenu = useCallback(() => setMarkerMenu(null), []);
+  const closeRename = useCallback(() => setRenaming(null), []);
+  const startRename = useCallback((id: string, x: number, y: number) => setRenaming({ id, x, y }), []);
 
   /* ---------- zoom ---------- */
 
@@ -116,6 +131,23 @@ function TimelineInner() {
     applyZoom((view.width - 48) / Math.max(d, 1), 0, 0);
     const el = scrollerRef.current;
     if (el) el.scrollLeft = 0;
+  }, [applyZoom]);
+
+  /** zoom so the selected clips fill the view */
+  const fitSelection = useCallback(() => {
+    const st = useEditor.getState();
+    const r = rangeOf(st.project?.clips.filter((c) => st.selection.includes(c.id)) ?? []);
+    if (!r) return;
+    const z = clamp(zoomForRange(r.start, r.end, view.width), MIN_ZOOM, MAX_ZOOM);
+    if (z === st.zoom) {
+      const el = scrollerRef.current;
+      if (!el) return;
+      el.scrollLeft = Math.max(0, r.start * z - FIT_PAD);
+      view.scrollLeft = el.scrollLeft;
+      notifyView();
+      return;
+    }
+    applyZoom(z, r.start, FIT_PAD);
   }, [applyZoom]);
 
   // after the content width changed with the zoom, restore the anchor (default: viewport center)
@@ -211,7 +243,7 @@ function TimelineInner() {
 
   return (
     <div className="panel timeline" style={rootVars}>
-      <TimelineToolbar onZoom={zoomKeepPlayhead} onFit={fit} />
+      <TimelineToolbar onZoom={zoomKeepPlayhead} onFit={fit} onFitSelection={fitSelection} />
       <div className="timeline-body">
         <div
           ref={scrollerRef}
@@ -235,7 +267,7 @@ function TimelineInner() {
             onDragLeave={dnd.onDragLeave}
             onDrop={dnd.onDrop}
           >
-            <div className="timeline-ruler-row">
+            <div className="timeline-ruler-row" onDoubleClick={gestures.onRulerDoubleClick} onContextMenu={gestures.onRulerContextMenu}>
               <div className="timeline-corner" />
               <Ruler onPointerDown={gestures.onRulerPointerDown} />
             </div>
@@ -264,18 +296,22 @@ function TimelineInner() {
                 <div className="timeline-lane-area timeline-filler-lane" />
               </div>
               <div className="timeline-overlay">
+                <MarkerLines />
                 <PlayheadLine scrollerRef={scrollerRef} />
                 <div ref={overlays.refSnap} className="timeline-snap" hidden />
                 <div ref={overlays.refGhost} className="timeline-ghost" hidden>
                   <span className="timeline-ghost-label" />
                 </div>
                 <div ref={overlays.refMarquee} className="timeline-marquee" hidden />
+                <div ref={overlays.refReadout} className="timeline-readout" hidden />
               </div>
             </div>
           </div>
         </div>
         {!hasClips ? <div className="timeline-hint">drag media here to start</div> : null}
       </div>
+      {markerMenu ? <MarkerMenu {...markerMenu} onClose={closeMarkerMenu} onRename={startRename} /> : null}
+      {renaming ? <MarkerRename {...renaming} onDone={closeRename} /> : null}
       {menu ? <ClipMenu x={menu.x} y={menu.y} clipId={menu.clipId} onClose={closeMenu} /> : null}
     </div>
   );
