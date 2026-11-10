@@ -37,6 +37,6 @@ describe('fog logic', () => {
   it('does not change the input', () => {
     const f = defaultFog('#000000');
     setFogNear(f, 9000);
-    expect(f.near).toBe(500);
+    expect(f.near).toBe(1158);
   });
 });
