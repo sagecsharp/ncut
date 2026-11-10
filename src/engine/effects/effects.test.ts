@@ -156,6 +156,50 @@ describe('effects registry', () => {
       for (const k of declared) expect(used.has(k), `param ${k} is declared but p_${k} is not used`).toBe(true);
     });
 
+    it('is identity at amount 0: the code reads u_amount', () => {
+      // temporal effects scale their sample offsets / weights by the amount in js instead
+      if (def.temporal) return;
+      expect(stripComments(def.glsl)).toContain('u_amount');
+    });
+
+    it('has constant, small loop bounds', () => {
+      const code = stripComments(def.glsl);
+      const loops = [...code.matchAll(/\bfor\s*\(([^)]*)\)/g)];
+      for (const m of loops) {
+        const head = m[1]!;
+        const bound = /^\s*int\s+\w+\s*=\s*0\s*;\s*\w+\s*<\s*(\d+)\s*;\s*\w+\+\+\s*$/.exec(head);
+        expect(bound, `loop "${head}" must count int from 0 to a literal`).not.toBeNull();
+        expect(Number(bound![1]), `loop "${head}" is too long`).toBeLessThanOrEqual(32);
+      }
+      expect(code).not.toMatch(/\bwhile\s*\(/);
+    });
+
+    it('never divides by a bare param and avoids gpu dependent hashes', () => {
+      const code = stripComments(def.glsl);
+      expect(code, 'divide by max(p_x, eps) instead').not.toMatch(/\/\s*\(?\s*p_/);
+      expect(code, 'fract(sin()) hashes differ between gpus').not.toMatch(/fract\s*\(\s*sin/);
+      expect(code).not.toContain('discard');
+    });
+
+    it('does not use glsl reserved words as names', () => {
+      const code = stripComments(def.glsl);
+      const reserved = 'sample|smooth|flat|half|fixed|input|output|inline|filter|patch|common|partition|active|texture|union|class|enum|this|template|long|short|double|goto|static|extern|public|interface|packed|lowp|mediump|highp|centroid|layout|resource|cast|using|namespace|volatile|sizeof';
+      const re = new RegExp('\\b(?:float|int|bool|vec[234]|ivec[234]|mat[234])\\s+(' + reserved + ')\\b');
+      expect(re.exec(code)?.[0] ?? '').toBe('');
+    });
+
+    it('declares choice params as whole number selects', () => {
+      for (const p of def.params) {
+        if (!p.options) continue;
+        expect(p.options.length, `${p.key} options`).toBeGreaterThanOrEqual(2);
+        expect(p.min).toBe(0);
+        expect(p.max).toBe(p.options.length - 1);
+        expect(p.step).toBe(1);
+        expect(Number.isInteger(p.default)).toBe(true);
+        for (const o of p.options) expect(isLower(o), `option "${o}" is lowercase`).toBe(true);
+      }
+    });
+
     it('builds a fragment source', () => {
       const src = fragmentSource(def);
       expect(src).toContain(def.glsl);
