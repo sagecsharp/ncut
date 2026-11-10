@@ -281,19 +281,79 @@ export function valueAt(clip: Clip, prop: string, time: number): number | undefi
 
 /**
  * the clip as it is at a TIMELINE time: every animated property baked into its normal field.
- * returns the same object when the clip has no keyframes (the common case, no allocation).
+ * returns the same object when the clip has no keyframes (the common case, no allocation), and also when none of its
+ * keyed properties is one this kind of clip has. otherwise ONE copy of the clip (and one of its transform / params) with
+ * every animated value written into it: the result is deeply equal to what writing the values one at a time with
+ * withBaseValue gives, without cloning the whole clip once per keyed property.
  */
 export function resolveClip<T extends Clip>(clip: T, time: number): T {
   const kf = clip.keyframes;
   if (!kf) return clip;
-  let out: T = clip;
+  let copy: Record<string, unknown> | null = null;
+  let transform: Record<string, unknown> | null = null;
+  let params: Record<string, unknown> | null = null;
   const local = time - clip.start;
+  const own = (): Record<string, unknown> => (copy ??= { ...clip } as Record<string, unknown>);
   for (const prop in kf) {
     const keys = kf[prop]!;
     if (keys.length === 0) continue;
-    out = withBaseValue(out, prop, evalKeys(keys, local));
+    // the same cases, in the same order, as withBaseValue
+    switch (clip.type) {
+      case 'video':
+      case 'image':
+      case 'text':
+      case 'shape':
+        if (TRANSFORM_KEYS.has(prop)) {
+          transform ??= { ...clip.transform };
+          transform[prop] = evalKeys(keys, local);
+          own().transform = transform;
+        } else if (prop === 'volume' && clip.type === 'video') own().volume = evalKeys(keys, local);
+        else if (clip.type === 'shape' && DRAW_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
+        break;
+      case 'audio':
+        if (prop === 'volume') own().volume = evalKeys(keys, local);
+        break;
+      case 'effect':
+        if (prop === 'amount') own().amount = evalKeys(keys, local);
+        else if (prop.startsWith('p.')) {
+          params ??= { ...clip.params };
+          // defineProperty: a param called __proto__ is an own key, as it is in an object literal
+          Object.defineProperty(params, prop.slice(2), { value: evalKeys(keys, local), enumerable: true, writable: true, configurable: true });
+          own().params = params;
+        }
+        break;
+      case 'camera':
+        if (CAMERA_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
+        break;
+    }
   }
-  return out;
+  if (!copy) return clip;
+  // text clips: the copy differs from the stored clip only in what is animated (transform, never text or style), so the
+  // caches that are keyed by the stored clip (text measuring and signatures) can be read through it, see rawClipOf
+  if (clip.type === 'text') rawOfCopy.set(copy, rawClipOf(clip));
+  return copy as unknown as T;
+}
+
+/**
+ * copy -> the clip it was made from, for text clips (resolveClip, applyClipMotion). the copy is a new object every frame
+ * but has the same text, font and style as the stored clip: only the transform differs. text.ts reads its caches
+ * (measureText, textSignature) through rawClipOf so a keyframed or moving text hits them.
+ * what those caches read: text, uppercase, fontFamily, fontSize, fontWeight, italic, color, background, align,
+ * letterSpacing, lineHeight, stroke, stroke2, shadow, backgroundRadius, backgroundPadding, gradient, curve, wrapWidth,
+ * highlight, extrude, underline, strike, hollow, backgroundPerLine and digitRanges. none of them is written by
+ * resolveClip (transform x y scale rotation opacity z rotX rotY; volume and drawStart / drawEnd belong to other kinds)
+ * or by applyClipMotion (transform only).
+ */
+const rawOfCopy = new WeakMap<object, object>();
+
+/** the stored clip a resolved text copy was made from, or the object itself when it is not one */
+export function rawClipOf<T extends object>(clip: T): T {
+  return (rawOfCopy.get(clip) as T | undefined) ?? clip;
+}
+
+/** say that `copy` (a text clip) is `raw` with only its transform changed */
+export function noteRawClip(copy: object, raw: object): void {
+  rawOfCopy.set(copy, rawClipOf(raw));
 }
 
 /**

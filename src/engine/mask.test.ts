@@ -255,3 +255,45 @@ describe('releaseMaskResources', () => {
     releaseMaskResources('preview');
   });
 });
+
+describe('alpha cache eviction and the signature memo', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    releaseMaskResources('preview');
+  });
+  it('an evicted alpha canvas is given back at once (zero sized) and the cache stays at its cap', () => {
+    const canvases: { width: number; height: number }[] = [];
+    class Fake {
+      width: number;
+      height: number;
+      constructor(w: number, h: number) {
+        this.width = w;
+        this.height = h;
+        canvases.push(this);
+      }
+      getContext() {
+        return new Proxy({} as Record<string, unknown>, { get: (t, k) => (k in t ? t[k as string] : () => undefined), set: (t, k, v) => ((t[k as string] = v), true) });
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', Fake);
+    // 26 different masks: 2 over the cap of 24. the first canvas made is the first alpha canvas (the channel canvas comes after it)
+    for (let i = 0; i < 26; i++) maskedPicture({} as CanvasImageSource, 64, 64, clip(m({ shape: 'rect', x: i / 100 })), 'preview');
+    expect(maskCacheSize().alpha).toBe(24);
+    // the two oldest alpha canvases were zeroed, the 24 newest kept their size
+    const alphas = canvases.filter((c) => c.width !== 1 || c.height !== 1);
+    expect(alphas.filter((c) => c.width === 0 && c.height === 0).length).toBeGreaterThanOrEqual(2);
+    expect(alphas.filter((c) => c.width === 64 && c.height === 64).length).toBeGreaterThanOrEqual(24);
+  });
+  it('the signature of one mask object is the same string every time and follows a replaced object', () => {
+    const a = m({ x: 0.1 });
+    const c1 = clip(a);
+    const s1 = maskSignature(c1);
+    expect(maskSignature(c1)).toBe(s1);
+    // another clip sharing the same mask object reads the same string
+    expect(maskSignature(clip(a))).toBe(s1);
+    // a replaced mask object (how the store edits) gives its own string
+    expect(maskSignature(clip({ ...a, x: 0.2 }))).not.toBe(s1);
+    // the memo gives exactly what the plain join gives
+    expect(s1).toBe(['ellipse', 0.1, 0, 0.8, 0.8, 0, 0, 0, 0].join(','));
+  });
+});

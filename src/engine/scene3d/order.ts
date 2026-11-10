@@ -12,7 +12,7 @@
  */
 import type { Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
-import { mul, transformPoint } from './math';
+import { mulInto } from './math';
 import { knownShape } from './meshes';
 
 export interface OrderItem {
@@ -27,41 +27,74 @@ interface Info {
   flat: boolean;
   center: Vec3;
   normal: Vec3;
+  /** the box corners (4 for a plane, 8 for a solid): the first `cornerCount` of the list are the live ones */
   corners: Vec3[];
+  cornerCount: number;
   /** tolerance for "in the same plane", world units */
   eps: number;
 }
 
-function info(item: OrderItem, index: number, viewProj: Mat4): Info {
+/** the corners of the unit shapes, in the order the sides are tested in */
+const FLAT_PTS: readonly Vec3[] = [
+  [-0.5, -0.5, 0],
+  [0.5, -0.5, 0],
+  [0.5, 0.5, 0],
+  [-0.5, 0.5, 0],
+];
+const SOLID_PTS: readonly Vec3[] = [
+  [-0.5, -0.5, -0.5],
+  [0.5, -0.5, -0.5],
+  [0.5, 0.5, -0.5],
+  [-0.5, 0.5, -0.5],
+  [-0.5, -0.5, 0.5],
+  [0.5, -0.5, 0.5],
+  [0.5, 0.5, 0.5],
+  [-0.5, 0.5, 0.5],
+];
+
+/**
+ * the Info records are reused from call to call (a 3d depth text has dozens of planes: one record with its center / normal /
+ * corner arrays per plane per frame was most of the allocations of a frame). they are only read inside paintOrder, which
+ * hands out plain indices: no caller ever holds one.
+ */
+const pool: Info[] = [];
+const work: Info[] = [];
+/** the view-projection x model product whose last column's w is the depth */
+const product = new Float32Array(16);
+
+function newInfo(): Info {
+  const corners: Vec3[] = [];
+  for (let i = 0; i < 8; i++) corners.push([0, 0, 0]);
+  return { index: 0, depth: 0, flat: false, center: [0, 0, 0], normal: [0, 0, 1], corners, cornerCount: 0, eps: 0.5 };
+}
+
+function info(item: OrderItem, index: number, viewProj: Mat4, out: Info): Info {
   const m = item.model;
-  const c = transformPoint(m, 0, 0, 0);
-  const center: Vec3 = [c[0], c[1], c[2]];
-  const depth = transformPoint(mul(viewProj, m), 0, 0, 0)[3];
+  // transformPoint(m, 0, 0, 0): the same expressions, written into the record
+  out.center[0] = m[0]! * 0 + m[4]! * 0 + m[8]! * 0 + m[12]!;
+  out.center[1] = m[1]! * 0 + m[5]! * 0 + m[9]! * 0 + m[13]!;
+  out.center[2] = m[2]! * 0 + m[6]! * 0 + m[10]! * 0 + m[14]!;
+  // transformPoint(mul(viewProj, m), 0, 0, 0)[3]
+  const p = mulInto(product, viewProj, m);
+  const depth = p[3]! * 0 + p[7]! * 0 + p[11]! * 0 + p[15]!;
   // every solid (box, sphere, cylinder, cone, pyramid, torus) is judged by its unit box; unknown ids draw as a plane
   const flat = knownShape(item.shape) === 'plane';
-  const corners: Vec3[] = [];
-  let normal: Vec3 = [0, 0, 1];
+  const normal = out.normal;
+  normal[0] = 0;
+  normal[1] = 0;
+  normal[2] = 1;
   let eps = 0.5;
-  const pts = flat
-    ? [
-        [-0.5, -0.5, 0],
-        [0.5, -0.5, 0],
-        [0.5, 0.5, 0],
-        [-0.5, 0.5, 0],
-      ]
-    : [
-        [-0.5, -0.5, -0.5],
-        [0.5, -0.5, -0.5],
-        [0.5, 0.5, -0.5],
-        [-0.5, 0.5, -0.5],
-        [-0.5, -0.5, 0.5],
-        [0.5, -0.5, 0.5],
-        [0.5, 0.5, 0.5],
-        [-0.5, 0.5, 0.5],
-      ];
-  for (const p of pts) {
-    const w = transformPoint(m, p[0]!, p[1]!, p[2]!);
-    corners.push([w[0], w[1], w[2]]);
+  const pts = flat ? FLAT_PTS : SOLID_PTS;
+  const corners = out.corners;
+  for (let k = 0; k < pts.length; k++) {
+    const q = pts[k]!;
+    const c = corners[k]!;
+    const x = q[0];
+    const y = q[1];
+    const z = q[2];
+    c[0] = m[0]! * x + m[4]! * y + m[8]! * z + m[12]!;
+    c[1] = m[1]! * x + m[5]! * y + m[9]! * z + m[13]!;
+    c[2] = m[2]! * x + m[6]! * y + m[10]! * z + m[14]!;
   }
   if (flat) {
     const a = corners[0]!;
@@ -77,11 +110,20 @@ function info(item: OrderItem, index: number, viewProj: Mat4): Info {
     const ny = uz * vx - ux * vz;
     const nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz);
-    if (len > 1e-9) normal = [nx / len, ny / len, nz / len];
+    if (len > 1e-9) {
+      normal[0] = nx / len;
+      normal[1] = ny / len;
+      normal[2] = nz / len;
+    }
     // a thousandth of the plane's size, never less than a hundredth of a pixel
     eps = Math.max(0.01, Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz)) * 1e-3);
   }
-  return { index, depth, flat, center, normal, corners, eps };
+  out.index = index;
+  out.depth = depth;
+  out.flat = flat;
+  out.cornerCount = pts.length;
+  out.eps = eps;
+  return out;
 }
 
 /**
@@ -95,7 +137,8 @@ function side(ref: Info, other: Info, eye: Vec3): 0 | 1 | -1 | null {
   const eps = Math.max(ref.eps, other.eps);
   let front = 0;
   let back = 0;
-  for (const p of other.corners) {
+  for (let k = 0; k < other.cornerCount; k++) {
+    const p = other.corners[k]!;
     const s = (p[0] - c[0]) * n[0] + (p[1] - c[1]) * n[1] + (p[2] - c[2]) * n[2];
     if (Math.abs(s) <= eps) continue;
     if (s > 0 === eyeSide > 0) front++;
@@ -132,7 +175,9 @@ function compare(a: Info, b: Info, eye: Vec3): number {
  * `items` are in layer order: a higher index is a higher layer.
  */
 export function paintOrder(items: OrderItem[], viewProj: Mat4, eye: Vec3): number[] {
-  const infos = items.map((it, i) => info(it, i, viewProj));
+  const infos = work;
+  infos.length = items.length;
+  for (let i = 0; i < items.length; i++) infos[i] = info(items[i]!, i, viewProj, (pool[i] ??= newInfo()));
   // start far to near, then settle pairs by geometry. the pair rule is not always transitive
   // (three planes can overlap in a ring), so this is an insertion sort: stable and always ends.
   infos.sort((a, b) => b.depth - a.depth || a.index - b.index);

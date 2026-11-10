@@ -24,8 +24,15 @@ const n = (v: number | undefined): number => (typeof v === 'number' && Number.is
 export function maskSignature(clip: VisualClip): string {
   const m = clip.mask;
   if (!m) return '';
-  return [m.shape, n(m.x), n(m.y), n(m.width), n(m.height), n(m.rotation), n(m.feather), m.invert ? 1 : 0, n(m.radius)].join(',');
+  // the store replaces a mask object on every edit (never writes into one), so the string is kept per object
+  let s = signatures.get(m);
+  if (s === undefined) {
+    s = [m.shape, n(m.x), n(m.y), n(m.width), n(m.height), n(m.rotation), n(m.feather), m.invert ? 1 : 0, n(m.radius)].join(',');
+    signatures.set(m, s);
+  }
+  return s;
 }
+const signatures = new WeakMap<Mask, string>();
 
 /* ---------- geometry ---------- */
 
@@ -285,7 +292,15 @@ function alphaCanvas(mask: Mask, w: number, h: number): AnyCanvas | null {
   alphaCache.set(key, out.canvas);
   if (alphaCache.size > ALPHA_MAX) {
     const first = alphaCache.keys().next().value;
-    if (first !== undefined) alphaCache.delete(first);
+    if (first !== undefined) {
+      // a zero sized canvas gives its backing store back right away (same as releaseMaskResources)
+      const old = alphaCache.get(first);
+      if (old) {
+        old.width = 0;
+        old.height = 0;
+      }
+      alphaCache.delete(first);
+    }
   }
   return out.canvas;
 }

@@ -9,6 +9,7 @@ import type { TextAlign, TextClip, TextGradient, TextStroke } from '../types';
 import type { CounterMark, DigitRange } from './counter';
 import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
 import { createCanvas } from '../lib/canvas';
+import { rawClipOf } from '../lib/anim';
 
 export const TEXT_LINE_HEIGHT = 1.25;
 /** padding of the text background box, as a fraction of the font size */
@@ -631,7 +632,9 @@ export function finite(v: unknown): number {
 export function measureText(clip: TextClip): TextBox {
   const v = fontsVersion();
   if (retryAfter.size > 0) wantFont(clip); // cheap: only while some font failed to load
-  const front = boxByClip.get(clip);
+  // a resolved copy of a stored text clip (keyframes, motion) has its text and style: it shares the stored clip's entry
+  const id = rawClipOf(clip);
+  const front = boxByClip.get(id);
   if (front && front.v === v) return front.box;
   wantFont(clip);
   const text = displayText(clip);
@@ -649,7 +652,7 @@ export function measureText(clip: TextClip): TextBox {
   const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${clip.align}|${text}${fixedRanges ? '|d' + fixedRanges.map((r) => r[0] + '-' + r[1]).join(',') : ''}`;
   const hit = boxCache.get(key);
   if (hit) {
-    boxByClip.set(clip, { v, box: hit });
+    boxByClip.set(id, { v, box: hit });
     return hit;
   }
   const ctx = getMeasureCtx();
@@ -696,7 +699,7 @@ export function measureText(clip: TextClip): TextBox {
     box.height = Math.max(1, finite(cl.maxY - cl.minY + pad * 2));
   }
   capSet(boxCache, key, box, 300);
-  boxByClip.set(clip, { v, box });
+  boxByClip.set(id, { v, box });
   return box;
 }
 
@@ -723,7 +726,9 @@ const sigFlatCache = new WeakMap<TextClip, { v: number; sig: string }>();
 export function textSignature(clip: TextClip, noExtrude = false): string {
   const v = fontsVersion();
   const cache = noExtrude ? sigFlatCache : sigCache;
-  const hit = cache.get(clip);
+  // read through the stored clip when this is a resolved copy of it (see rawClipOf: nothing the key reads differs)
+  const id = rawClipOf(clip);
+  const hit = cache.get(id);
   if (hit && hit.v === v) return hit.sig;
   const sig = [
     v,
@@ -754,7 +759,7 @@ export function textSignature(clip: TextClip, noExtrude = false): string {
     clip.backgroundPerLine ? 'p' : '',
     digitRangesOf(clip) ? 'd' + digitRangesOf(clip)!.map((r) => r[0] + '-' + r[1]).join(',') : '',
   ].join('|');
-  cache.set(clip, { v, sig });
+  cache.set(id, { v, sig });
   return sig;
 }
 

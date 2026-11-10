@@ -4,6 +4,7 @@
  * keyframes) at draw time, so preview and export always match.
  */
 import type { VisualClip } from '../types';
+import { noteRawClip } from '../lib/anim';
 
 export interface ClipMotionInfo {
   id: string;
@@ -309,5 +310,8 @@ export function applyClipMotion<T extends VisualClip>(clip: T, time: number, siz
     if (o.rotX) next.rotX = (t.rotX ?? 0) + o.rotX;
     if (o.z) next.z = (t.z ?? 0) + o.z;
   }
-  return { ...clip, transform: next };
+  const out = { ...clip, transform: next };
+  // only the transform differs: a text copy reads the caches of the stored clip (see rawClipOf in lib/anim.ts)
+  if (clip.type === 'text') noteRawClip(out, clip);
+  return out;
 }

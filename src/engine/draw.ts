@@ -11,11 +11,13 @@ import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
 import { resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
+import { type Bounds, type Region, deviceBounds, unionRegion } from './blurBounds';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook, isKeyActive, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
+import { StillCopies, keptStep } from './stillCopies';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
@@ -31,6 +33,8 @@ import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSig
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
 import { easeTransition, releaseTransitionRunner, renderTransition } from './transitions/runner';
+import { SideMemo, constantSideKind, frozenSideKey } from './transitions/sideMemo';
+import { fontsVersion } from '../lib/fonts';
 
 export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
 
@@ -53,6 +57,8 @@ export function releaseRenderResources(channel: 'preview' | 'export' | 'inset'):
   const lc = lookChannel(glChannel);
   releaseMaskResources(lc);
   releaseClipLook(lc);
+  // the flat path's copies of looked / masked stills are per channel
+  stillCopies.dropPrefix(glChannel + '|');
   releaseSceneRenderer(glChannel);
   releaseEffectRunner(glChannel);
   releaseTransitionRunner(glChannel as TransitionChannel);
@@ -515,6 +521,16 @@ function scratchFor(like: Ctx, channel: Channel, name: string, precise = false):
   return sc;
 }
 
+/** clearScratch for one rectangle (device pixels): the rest of the canvas is left as it is */
+function clearScratchRect(sc: Scratch, r: Region): void {
+  sc.ctx.save();
+  sc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  sc.ctx.clearRect(r.x, r.y, r.w, r.h);
+  sc.ctx.restore();
+  sc.ctx.globalAlpha = 1;
+  sc.ctx.globalCompositeOperation = 'source-over';
+}
+
 function clearScratch(sc: Scratch): void {
   sc.ctx.save();
   sc.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -738,9 +754,11 @@ let cacheClips: readonly Clip[] | null = null;
 function syncTextureCaches(project: Project): void {
   if (project.clips === cacheClips) return;
   cacheClips = project.clips;
-  if (textTextures.size === 0 && sideStacks.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0) return;
+  if (textTextures.size === 0 && sideStacks.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0 && stillCopies.size === 0) return;
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
+  // slot = channel | clip id | step
+  stillCopies.dropWhere((slot) => !ids.has(slot.slice(slot.indexOf('|') + 1, slot.lastIndexOf('|'))));
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
   // the masked silhouette of a 3d depth text sits next to the face's copy under 'id|side'
   for (const id of [...maskCopies.keys()]) {
@@ -776,24 +794,114 @@ type FlatSource = DrawSource & {
 /**
  * the clip's look, then its mask, on a picture. returns `source` itself (no allocation) when the clip has neither.
  * only valid until the next call on the same channel: draw it right away.
+ * `stillKey` = the picture cannot change while that key stays the same (an image, or a text / shape texture that is not
+ * being redrawn): the looked and the masked result are then kept in a canvas of their own per clip and channel and drawn
+ * from there on the next frames, instead of uploading the whole picture to the gpu again for every frame. the copy has
+ * the size of the result it was made from (a bigger one would be rescaled), so it draws the same pixels.
  */
-function processed(source: FlatSource, clip: VisualClip, channel: Channel): FlatSource {
+function processed(source: FlatSource, clip: VisualClip, channel: Channel, stillKey?: string): FlatSource {
   let out = source;
+  let key = stillKey;
   if (hasClipLook(clip)) {
-    const image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
+    let image: CanvasImageSource;
+    if (key !== undefined) {
+      const r = stillStep(false, clip, out.image, out.width, out.height, key, channel);
+      image = r.image;
+      key = r.key;
+    } else image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
     if (image !== out.image) {
       const c = image as AnyCanvas;
       out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
     }
   }
   if (hasMask(clip)) {
-    const image = maskedPicture(out.image, out.pw ?? out.width, out.ph ?? out.height, clip, lookChannel(channel));
+    const w = out.pw ?? out.width;
+    const h = out.ph ?? out.height;
+    let image: CanvasImageSource;
+    if (key !== undefined) image = stillStep(true, clip, out.image, w, h, key, channel).image;
+    else image = maskedPicture(out.image, w, h, clip, lookChannel(channel));
     if (image !== out.image) {
       const c = image as AnyCanvas;
       out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
     }
   }
   return out;
+}
+
+/**
+ * the flat path's kept copies of looked ('|look') and masked ('|mask') stills, slot = channel + clip id + step. the copy
+ * is made at the size of the looker's / the mask's own canvas (clipLookTexture caps at 4096, maskedPicture at 2048), so
+ * it is drawn with exactly the arguments the direct result was. 24 copies, 48 megapixels at most.
+ */
+const stillCopies = new StillCopies<AnyCanvas>(24, 48_000_000);
+let stillSerial = 0;
+
+/**
+ * one step (the look, or the mask) of a still picture through the kept copies. `w` x `h` is the size the step is asked at.
+ * returns the picture to carry on with and its key: a hit costs nothing, a miss runs the step and keeps a copy of
+ * the result. no copy can be made (no canvas here, no 2d context): the direct result, without a key, so the next step
+ * does not cache either.
+ */
+function stillStep(
+  isMask: boolean,
+  clip: VisualClip,
+  image: CanvasImageSource,
+  w: number,
+  h: number,
+  key: string,
+  channel: Channel,
+): { image: CanvasImageSource; key: string | undefined } {
+  const sig = isMask ? maskSignature(clip) : clipLookSignature(clip);
+  const slot = channel + '|' + clip.id + (isMask ? '|mask' : '|look');
+  // a hit (every frame after the first) answers before the three closures below are made
+  const hit = stillCopies.hit(slot, key, sig, w, h);
+  if (hit) return { image: hit.canvas, key: hit.key };
+  return keptStep<CanvasImageSource, AnyCanvas>(
+    stillCopies,
+    slot,
+    key,
+    sig,
+    w,
+    h,
+    image,
+    () => (isMask ? maskedPicture(image, w, h, clip, lookChannel(channel)) : clipLookTexture(image, w, h, clip, lookChannel(channel))),
+    (out, reuse) => {
+      let canvas = reuse;
+      if (!canvas) {
+        if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(out.width, out.height);
+        else if (typeof document !== 'undefined') canvas = createCanvas(out.width, out.height);
+        else return null;
+      }
+      const c = canvas.getContext('2d') as Ctx | null;
+      if (!c) return null;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = 1;
+      c.globalCompositeOperation = 'copy';
+      c.drawImage(out as CanvasImageSource, 0, 0);
+      return canvas;
+    },
+    () => `${isMask ? 'fmask' : 'flook'}:${clip.id}:${++stillSerial}`,
+  );
+}
+
+/** a number for each picture object, so the key of an image changes when its bitmap is replaced (same asset, same size) */
+const imageSerials = new WeakMap<object, number>();
+let imageSerial = 0;
+
+/**
+ * the key of a still source: an image clip's picture (asset + real pixel size + the bitmap object itself), undefined for a
+ * video (every frame is another picture).
+ */
+function imageStillKey(clip: VisualClip, source: DrawSource): string | undefined {
+  if (clip.type !== 'image') return undefined;
+  const image = source.image as object & { width?: number; height?: number };
+  if (!image || (typeof image !== 'object' && typeof image !== 'function')) return undefined;
+  let n = imageSerials.get(image);
+  if (n === undefined) {
+    n = ++imageSerial;
+    imageSerials.set(image, n);
+  }
+  return `img:${clip.assetId}:${image.width || source.width}x${image.height || source.height}:${n}`;
 }
 
 /**
@@ -817,9 +925,13 @@ function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | nu
     syncTextureCaches(project);
     const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
     if (!t) return null;
-    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel);
+    // key undefined = the picture is redrawn all the time (an animation, a counter, a drawn-on outline)
+    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, t.key);
   }
-  return source ? processed(source, clip, channel) : null;
+  if (!source) return null;
+  if (!hasClipLook(clip) && !hasMask(clip)) return source;
+  syncTextureCaches(project);
+  return processed(source, clip, channel, imageStillKey(clip, source));
 }
 
 /**
@@ -1322,17 +1434,42 @@ export function pruneSamples(samples: TemporalSample[]): TemporalSample[] {
 const OPEN_SIDE = 1e5;
 
 /**
- * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
- * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
+ * where a flat clip sits: under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path).
+ * `clip` = the clip with that pose, `box` = its box on the canvas.
  */
-function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
-  // under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path)
+function placeFlat(project: Project, clip0: VisualClip, source: FlatSource | null, poseTime: number): { clip: VisualClip; box: ClipBox } {
   let clip = clip0;
   if (clip0.parent) {
     const wt = worldTransformOf(project, clip0, poseTime);
     if (wt !== clip0.transform) clip = { ...clip0, transform: wt } as VisualClip;
   }
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
+  return { clip, box };
+}
+
+/**
+ * a rectangle, in the clip's own units (origin = the box center, before rotation), that paintFlat paints inside of, or null
+ * when that cannot be said. a video / image picture is drawn inside its box (crop and the rounded-corner clip only cut it
+ * down); a text / shape picture that went through the texture path (look, mask) inside its box plus its room. text and shapes
+ * drawn straight onto the canvas (outline, shadow, glow, letters of a text animation spill by amounts only their own
+ * drawing code knows) and anything without a picture have no bound here: null.
+ */
+function flatPaintedRect(clip: VisualClip, box: ClipBox, source: FlatSource | null): Bounds | null {
+  if (!source) return null;
+  if (clip.type === 'text' || clip.type === 'shape') {
+    if (source.pad === undefined) return null;
+    const p = source.pad * clip.transform.scale;
+    return { x0: -box.width / 2 - p, y0: -box.height / 2 - p, x1: box.width / 2 + p, y1: box.height / 2 + p };
+  }
+  return { x0: -box.width / 2, y0: -box.height / 2, x1: box.width / 2, y1: box.height / 2 };
+}
+
+/**
+ * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
+ * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
+ */
+function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
+  const { clip, box } = placeFlat(project, clip0, source, poseTime);
   const op = blend ? blendOp(clip.blend) : null;
   const crop = normalizeCrop(clip.crop);
   ctx.save();
@@ -1389,6 +1526,38 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
     }
   }
   ctx.restore();
+}
+
+/**
+ * the device pixel rectangle that the drawn samples of a clip's motion blur can paint in (see flatPaintedRect), or null.
+ * every sample that is drawn (opacity over 0.001) must be bounded, or there is no rectangle.
+ */
+function blurRegion(
+  project: Project,
+  poses: readonly ({ c: VisualClip; a: number } | undefined)[],
+  times: readonly number[],
+  source: FlatSource | null,
+  width: number,
+  height: number,
+  copyCtx: Ctx,
+): Region | null {
+  if (!source || typeof copyCtx.getTransform !== 'function') return null;
+  const m = copyCtx.getTransform();
+  const matrix = [m.a, m.b, m.c, m.d, m.e, m.f];
+  const list: Bounds[] = [];
+  for (let i = 0; i < times.length; i++) {
+    const p = poses[i];
+    // a pose that was not worked out yet is drawn from a fresh one in the loop: no region then
+    if (!p) return null;
+    if (p.a <= 0.001) continue;
+    const { clip, box } = placeFlat(project, p.c, source, times[i]!);
+    const local = flatPaintedRect(clip, box, source);
+    if (!local) return null;
+    const b = deviceBounds(matrix, box.cx, box.cy, box.rotation, local);
+    if (!b) return null;
+    list.push(b);
+  }
+  return unionRegion(list, width, height);
 }
 
 /** true when two poses put the clip in the same place with the same alpha (3d: depth and tilt count too) */
@@ -1473,27 +1642,38 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   if (!canvas || !copy || !acc) return false;
   // the clip really moves: now (and not before) the 3d run in the bin is composited, so a still clip stays in it
   beforeDraw?.();
+  // the part of the canvas the clip can paint over all the samples, or null (3d, text / shapes drawn straight, anything
+  // unbounded: the whole canvas, as ever). outside it every sample is transparent, so clearing and adding less changes nothing.
+  // (the poses the still check did not get to are worked out here instead of in the loop: the same values, in another order)
+  if (!rig) for (let i = 1; i < times.length; i++) poses[i] ??= pose(times[i]!);
+  const region = rig ? null : blurRegion(project, poses, times, source, canvas.width, canvas.height, copy.ctx);
   clearScratch(acc);
+  // the first clear of the copy is always the whole canvas: it may still hold what an earlier clip painted elsewhere
+  let copyDirty = true;
   const share = 1 / times.length;
   for (let i = 0; i < times.length; i++) {
     const t = times[i]!;
     const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
-    clearScratch(copy);
+    if (region && !copyDirty) clearScratchRect(copy, region);
+    else clearScratch(copy);
+    copyDirty = false;
     if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t }], rig, env.channel);
     else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
     acc.ctx.globalAlpha = weights ? weights[i]! : share;
     acc.ctx.globalCompositeOperation = over ? 'source-over' : 'lighter';
-    acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
+    if (region) acc.ctx.drawImage(copy.canvas, region.x, region.y, region.w, region.h, region.x, region.y, region.w, region.h);
+    else acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
     acc.ctx.restore();
   }
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = (blend ? blendOp(raw.blend) : null) ?? 'source-over';
-  ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
+  if (region) ctx.drawImage(acc.canvas, region.x, region.y, region.w, region.h, region.x, region.y, region.w, region.h);
+  else ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
   ctx.restore();
   return true;
 }
@@ -1630,6 +1810,43 @@ function seedOf(id: string): number {
   return h;
 }
 
+/** which scratch canvases ('tra' / 'trb') hold the picture of a frozen transition side, and for which key */
+const sideMemo = new SideMemo();
+
+/**
+ * the key of the picture of a transition side, or null when it cannot be proven the same on the next frame. only a side
+ * that is frozen on its edge frame and is a flat text / shape / image clip qualifies (see constantSideKind); every input that
+ * can change what paintAlone draws is in the key (frozenSideKey). `sc` = the scratch canvas the side is painted into.
+ */
+function sideKeyOf(project: Project, raw: VisualClip, paintTime: number, frozen: boolean, frameTime: number, env: Env, sc: Scratch): string | null {
+  if (!constantSideKind(raw.type, raw.threeD, frozen)) return null;
+  let image: { source: object; width: number; height: number } | null = null;
+  if (raw.type === 'image') {
+    // the same resolver call paintAlone makes: a missing picture (still loading) is not constant
+    const src = env.resolve(raw, 0);
+    const obj = src?.image as (object & { width?: number; height?: number }) | undefined;
+    if (!src || !obj || (typeof obj !== 'object' && typeof obj !== 'function')) return null;
+    image = { source: obj, width: obj.width || src.width, height: obj.height || src.height };
+  }
+  const m = typeof sc.ctx.getTransform === 'function' ? sc.ctx.getTransform() : null;
+  return frozenSideKey({
+    clip: raw,
+    project,
+    clips: project.clips,
+    clipCount: project.clips.length,
+    tracks: project.tracks,
+    paintTime,
+    fxTime: clampIntoClip(raw, frameTime),
+    width: sc.canvas.width,
+    height: sc.canvas.height,
+    matrix: m ? [m.a, m.b, m.c, m.d, m.e, m.f] : [],
+    channel: env.channel,
+    quality: env.quality,
+    fonts: fontsVersion(),
+    image,
+  });
+}
+
 /** blend the outgoing and the incoming clip of a transition and lay the result on the canvas */
 function paintTransition(ctx: Ctx, project: Project, time: number, span: TransitionSpan, env: Env, rig: () => CameraRig): void {
   const def = getTransition(span.id);
@@ -1641,23 +1858,46 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   const lb = def && canvas ? scratchFor(ctx, env.channel, 'trb') : null;
   if (!def || !canvas || !lb) {
     // no canvas to blend on: a plain cut
+    if (la) sideMemo.set(la.canvas, null);
+    if (lb) sideMemo.set(lb.canvas, null);
     const natural = span.from && time < span.to.start ? span.from : span.to;
     paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig, natural === span.to ? timeB !== time : timeA !== time, time);
     return;
   }
+  // a frozen side that is a still picture is painted (and uploaded to the gpu) once, not every frame: while its key is
+  // unchanged the scratch canvas still holds it. anything that is not provably constant is painted as before.
   let hasA = false;
+  let keyA: string | null = null;
   if (la && span.from) {
-    clearScratch(la);
-    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time, time);
+    keyA = sideKeyOf(project, span.from, timeA, timeA !== time, time, env, la);
+    if (sideMemo.holds(la.canvas, keyA)) hasA = true;
+    else {
+      sideMemo.set(la.canvas, null);
+      clearScratch(la);
+      hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time, time);
+      // only a picture that was drawn is kept: a clip that was skipped (not ready, error) is tried again next frame
+      if (hasA) sideMemo.set(la.canvas, keyA);
+    }
+  } else if (la) sideMemo.set(la.canvas, null);
+  let keyB = sideKeyOf(project, span.to, timeB, timeB !== time, time, env, lb);
+  let hasB: boolean;
+  if (sideMemo.holds(lb.canvas, keyB)) hasB = true;
+  else {
+    sideMemo.set(lb.canvas, null);
+    clearScratch(lb);
+    hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time, time);
+    if (hasB) sideMemo.set(lb.canvas, keyB);
   }
-  clearScratch(lb);
-  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time, time);
+  if (!hasA) keyA = null;
+  if (!hasB) keyB = null;
   const p = easeTransition((time - span.start) / Math.max(1e-6, span.end - span.start));
   const out = renderTransition(hasA && la ? la.canvas : null, hasB ? lb.canvas : null, def, p, canvas.width, canvas.height, {
     projectWidth: project.width,
     projectHeight: project.height,
     channel: env.channel as TransitionChannel,
     seed: seedOf(span.to.id),
+    keyA: keyA ?? undefined,
+    keyB: keyB ?? undefined,
   });
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
