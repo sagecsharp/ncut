@@ -408,6 +408,7 @@ async function fileCheck(project: Project, o: FileCheckOptions) {
     return {
       workers: s?.workers ?? 0,
       encoderFps: s?.encoderFps ?? 0,
+      onDisk: !!s?.onDisk,
       fallback,
       bytes: blob.size,
       frames,

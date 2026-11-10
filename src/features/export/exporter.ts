@@ -50,6 +50,8 @@ import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './p
 import { checkPartsMedia } from './mediaCheck';
 import { avcCodecStringOf, avcLengthSize, avcLevel, pickEncoderSetup, raiseAvcLevel, raiseAvcLevelInPacket } from './encoderSetup';
 import type { EncoderSetup } from './encoderSetup';
+import { DISK_MIN_BYTES, expectedExportBytes, openExportSink } from './sink';
+import type { ExportSink } from './sink';
 import type { PartsMedia } from './mediaCheck';
 import type { SegmentPool } from './parallel';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
@@ -96,6 +98,8 @@ export interface ExportOptions {
    * whenever it gets the gpu encoder where the plain setup would not, unless workers is 1.
    */
   gpuEncoder?: boolean;
+  /** tests: video exports expected to be at least this many bytes are written to disk while they are made (missing = sink.ts DISK_MIN_BYTES) */
+  diskBytes?: number;
 }
 
 export interface ExportProgress {
@@ -120,6 +124,8 @@ export interface ExportStats {
   workers: number;
   /** the frame rate the encoders were told to get the gpu encoder (encoderSetup.ts). missing = the real one. */
   encoderFps?: number;
+  /** true = the file was written to disk while it was made (sink.ts) */
+  onDisk?: boolean;
   /** fonts, opening the sources, starting the output */
   setupMs: number;
   /** waiting for the next decoded frame of the video clips */
@@ -464,6 +470,25 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
   const captureSet = hooks.captureFrames ? new Set(hooks.captureFrames) : null;
 
+  /**
+   * the file being written: in memory, or on disk when it will be big (sink.ts). an mp4 on disk keeps its index at
+   * the front like the ones built in memory: the room for it is set aside up front, which needs the packet counts.
+   */
+  const openOutput = async (withAudio: boolean) => {
+    const expected = expectedExportBytes(videoBitrate, withAudio ? 192_000 : 0, duration);
+    const sink = await openExportSink(expected, container, options.diskBytes ?? DISK_MIN_BYTES);
+    const reserve = sink.onDisk && container === 'mp4';
+    const format = container === 'mp4' ? new Mp4OutputFormat({ fastStart: reserve ? 'reserve' : 'in-memory' }) : new WebMOutputFormat();
+    return {
+      sink,
+      format,
+      output: new Output({ format, target: sink.target }),
+      // exact for the picture, generous for the sound (one packet is 20 ms or more in every codec used here)
+      videoMeta: { frameRate: fps, ...(reserve ? { maximumPacketCount: totalFrames + 2 } : {}) },
+      audioMeta: reserve ? { maximumPacketCount: Math.ceil(duration * 100 * 1.34) + 200 } : {},
+    };
+  };
+
   // looked at once, and only when an export is about to be split for workers
   let mediaCheck: Promise<PartsMedia> | null = null;
   const partsMedia = () => (mediaCheck ??= checkPartsMedia(project, getAssetBlob));
@@ -478,18 +503,20 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     const audio = await openAudio();
     let pool: SegmentPool | null = null;
     let output: Output | null = null;
+    let sink: ExportSink | null = null;
     let finished = false;
     try {
       if (signal?.aborted) throw abortError();
-      const format = container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat();
-      const target = new BufferTarget();
-      output = new Output({ format, target });
+      const opened = await openOutput(!!audio);
+      sink = opened.sink;
+      const format = opened.format;
+      output = opened.output;
       const videoSource = new EncodedVideoPacketSource(videoCodec);
-      output.addVideoTrack(videoSource, { frameRate: fps });
+      output.addVideoTrack(videoSource, opened.videoMeta);
       let pump: ReturnType<typeof createAudioPump> | null = null;
       if (audio) {
         const audioSource = new AudioBufferSource({ codec: audio.codec, quality: QUALITY_MEDIUM });
-        output.addAudioTrack(audioSource);
+        output.addAudioTrack(audioSource, opened.audioMeta);
         pump = createAudioPump(audio.mixer, audioSource);
       }
       await output.start();
@@ -622,12 +649,13 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       stats.finalizeMs = performance.now() - finalizeAt;
       stats.workerStartMs = pool.startTimes();
       if (setup) stats.encoderFps = setup.fps;
-      finish(Math.min(workers, segments.length));
       if (signal?.aborted) throw abortError();
-      const buffer = target.buffer;
-      if (!buffer) throw new Error('the encoder produced no data');
+      const blob = await sink.finish(format.mimeType);
+      sink = null;
+      if (opened.sink.onDisk) stats.onDisk = true;
+      finish(Math.min(workers, segments.length));
       report('finalizing', 1, totalFrames);
-      return new Blob([buffer], { type: format.mimeType });
+      return blob;
     } catch (err) {
       if (output && !finished) {
         try {
@@ -636,6 +664,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           // ignore
         }
       }
+      await sink?.discard();
       throw err;
     } finally {
       pool?.dispose();
@@ -701,6 +730,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   const resolver = sources.resolver;
   const stepFrame = sources.step;
   let output: Output | null = null;
+  let sink: ExportSink | null = null;
   let finished = false;
   let mixer: AudioMixer | null = null;
   let audioCodec: AudioCodec | null = null;
@@ -886,10 +916,10 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       throw lastError;
     }
     await sources.open();
-    const format =
-      container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat();
-    const target = new BufferTarget();
-    output = new Output({ format, target });
+    const opened = await openOutput(!!(mixer && audioCodec));
+    sink = opened.sink;
+    const format = opened.format;
+    output = opened.output;
 
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -897,11 +927,11 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
 
     const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
-    output.addVideoTrack(videoSource, { frameRate: fps });
+    output.addVideoTrack(videoSource, opened.videoMeta);
     let pump: ReturnType<typeof createAudioPump> | null = null;
     if (mixer && audioCodec) {
       const audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
-      output.addAudioTrack(audioSource);
+      output.addAudioTrack(audioSource, opened.audioMeta);
       pump = createAudioPump(mixer, audioSource);
     }
     await output.start();
@@ -943,12 +973,13 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     await output.finalize();
     finished = true;
     stats.finalizeMs = performance.now() - finalizeAt;
-    finish(1);
     if (signal?.aborted) throw abortError();
-    const buffer = target.buffer;
-    if (!buffer) throw new Error('the encoder produced no data');
+    const blob = await sink.finish(format.mimeType);
+    sink = null;
+    if (opened.sink.onDisk) stats.onDisk = true;
+    finish(1);
     report('finalizing', 1, totalFrames);
-    return new Blob([buffer], { type: format.mimeType });
+    return blob;
   } catch (err) {
     if (output && !finished) {
       try {
@@ -957,6 +988,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
         // ignore
       }
     }
+    await sink?.discard();
     if (signal?.aborted && !(err instanceof DOMException && err.name === 'AbortError')) throw abortError();
     throw err;
   } finally {
