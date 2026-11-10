@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { ClipboardPaste, Copy, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import type { BlendMode, Crop, VisualClip } from '../../types';
+import { useUi } from '../../store/ui';
 import { Row, SelectRow, Section } from './controls';
 import { beginEdit, patchClip } from './edit';
 import { BLEND_LABELS, cropPercent, maxCropPercent, setCropEdge } from './look';
@@ -24,7 +25,10 @@ export function LookButtons({ source, ids }: { source: VisualClip; ids: string[]
         type="button"
         className="btn btn-sm"
         title="copy blend, crop, corners, opacity, motion, transition and text style"
-        onClick={() => copyLook(source)}
+        onClick={() => {
+          copyLook(source);
+          useUi.getState().toast('look copied');
+        }}
       >
         <Copy size={14} />
         copy look
@@ -34,7 +38,10 @@ export function LookButtons({ source, ids }: { source: VisualClip; ids: string[]
         className="btn btn-sm"
         title={look ? 'paste the copied look on the selected clips' : 'copy a look first'}
         disabled={!look}
-        onClick={() => pasteLook(ids)}
+        onClick={() => {
+          const n = pasteLook(ids);
+          useUi.getState().toast(n > 0 ? `look pasted on ${n} clip${n === 1 ? '' : 's'}` : 'select a video, image, text or shape clip first');
+        }}
       >
         <ClipboardPaste size={14} />
         paste look

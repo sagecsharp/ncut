@@ -62,6 +62,7 @@
   --clip-image: oklch(0.39 var(--c-clip) var(--tint-h));
   --clip-audio: oklch(0.32 var(--c-clip) var(--tint-h));
   --clip-text: oklch(0.55 var(--c-clip) var(--tint-h));
+  --clip-shape: oklch(0.5 var(--c-clip) var(--tint-h));
   --clip-effect: oklch(0.26 var(--c-clip) var(--tint-h));
   --clip-label: oklch(0.98 0 0);
   --playhead: var(--text);
@@ -126,5 +127,6 @@
   --clip-image: oklch(0.47 var(--c-clip) var(--tint-h));
   --clip-audio: oklch(0.29 var(--c-clip) var(--tint-h));
   --clip-text: oklch(0.54 var(--c-clip) var(--tint-h));
+  --clip-shape: oklch(0.5 var(--c-clip) var(--tint-h));
   --clip-effect: oklch(0.2 var(--c-clip) var(--tint-h));
 }

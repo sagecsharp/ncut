@@ -2,6 +2,7 @@
  * opening / closing / creating projects, url routing (#/project/<id>) and autosave.
  * the glue between the pure editor store and indexeddb.
  */
+import { create } from 'zustand';
 import type { Project } from '../types';
 import type { CanvasPreset } from '../lib/factory';
 import { createProject } from '../lib/factory';
@@ -15,6 +16,15 @@ import { resetPlayback } from './playback';
 import { useUi } from './ui';
 
 const AUTOSAVE_MS = 600;
+
+export type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error';
+
+/** what the header shows about autosave. it only changes on edits and saves, never per frame. */
+export const useSaveState = create<{ state: SaveStatus }>(() => ({ state: 'saved' }));
+
+function setSaveState(state: SaveStatus): void {
+  if (useSaveState.getState().state !== state) useSaveState.setState({ state });
+}
 
 export function projectIdFromHash(hash = location.hash): string | null {
   const m = /^#\/project\/([\w-]+)/.exec(hash);
@@ -47,6 +57,7 @@ async function doOpen(id: string): Promise<boolean> {
   resetPlayback();
   const missing = await loadProjectMedia(project);
   useEditor.getState().openProject(project);
+  setSaveState('saved');
   setHash(`#/project/${project.id}`);
   if (missing.length > 0) {
     useUi.getState().toast(`${missing.length} media file(s) could not be loaded`, 'error');
@@ -66,6 +77,7 @@ export async function closeProject(): Promise<void> {
   await flushAutosave();
   resetPlayback();
   useEditor.getState().closeProject();
+  setSaveState('saved');
   releaseAllAssets();
   releaseAllDerived();
   setHash('');
@@ -152,13 +164,26 @@ export async function deleteStoredProject(id: string): Promise<void> {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let dirty: Project | null = null;
 let saving: Promise<void> = Promise.resolve();
+let pendingSaves = 0;
+let lastFailed = false;
 
 function persist(project: Project): Promise<void> {
+  pendingSaves++;
+  setSaveState('saving');
   saving = saving
     .then(() => saveProject({ ...project, updatedAt: Date.now() }))
+    .then(() => {
+      lastFailed = false;
+    })
     .catch((err) => {
+      lastFailed = true;
       console.error('autosave failed', err);
       useUi.getState().toast('could not save the project', 'error');
+    })
+    .finally(() => {
+      pendingSaves--;
+      if (pendingSaves > 0) return;
+      setSaveState(lastFailed ? 'error' : dirty ? 'unsaved' : 'saved');
     });
   return saving;
 }
@@ -188,6 +213,7 @@ export function startAutosave(): void {
     // opening a project is not a change
     if (!prev.project || prev.project.id !== state.project.id) return;
     dirty = state.project;
+    if (pendingSaves === 0) setSaveState('unsaved');
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;

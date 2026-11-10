@@ -276,7 +276,7 @@
   background: var(--clip-text);
 }
 .timeline-clip.is-shape {
-  background: var(--clip-text);
+  background: var(--clip-shape);
   border-color: var(--text-dim);
 }
 .timeline-clip.is-effect {

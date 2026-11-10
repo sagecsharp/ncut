@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Download, Keyboard, Redo2, Settings, Undo2 } from 'lucide-react';
 import { useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
-import { closeProject } from '../../store/session';
+import { closeProject, useSaveState } from '../../store/session';
+import type { SaveStatus } from '../../store/session';
 import { useUi } from '../../store/ui';
 import './shell.css';
+
+const SAVE_LABEL: Record<SaveStatus, string> = {
+  saved: 'saved',
+  saving: 'saving...',
+  unsaved: 'unsaved changes',
+  error: 'could not save',
+};
 
 const openExport = () => useUi.getState().openDialog('export');
 const openShortcuts = () => useUi.getState().openDialog('shortcuts');
@@ -13,6 +21,19 @@ const redo = () => useEditor.getState().redo();
 const back = () => {
   void closeProject();
 };
+
+function SaveIndicator() {
+  const saveState = useSaveState((s) => s.state);
+  return (
+    <span
+      className={`shell-saved${saveState === 'error' ? ' is-error' : ''}`}
+      role="status"
+      title="projects are stored in this browser and saved automatically"
+    >
+      {SAVE_LABEL[saveState]}
+    </span>
+  );
+}
 
 function ProjectName() {
   const name = useEditor((s) => s.project?.name ?? '');
@@ -90,9 +111,7 @@ export function Header() {
           ncut
         </span>
         <ProjectName />
-        <span className="shell-saved" title="projects are stored in this browser and saved automatically">
-          saved locally
-        </span>
+        <SaveIndicator />
       </div>
       <div className="shell-header-right">
         <button className="icon-btn" onClick={undo} disabled={!canUndo} title="undo (ctrl+z)" aria-label="undo">

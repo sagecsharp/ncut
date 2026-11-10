@@ -24,6 +24,8 @@ const CHANNEL = 'thumb';
 let sourceCanvas: HTMLCanvasElement | null = null;
 /** bumped when the tab unmounts so late async results are dropped */
 let generation = 0;
+/** true while the tab is unmounted / being torn down: nothing is rendered or stored */
+let disposed = false;
 const stills = new Map<string, ImageBitmap>();
 const savingStill = new Set<string>();
 /** cards waiting for their first still, in order. one is rendered per animation frame. */
@@ -59,6 +61,7 @@ function drawFrame(def: EffectDef, canvas: HTMLCanvasElement, time: number): voi
 
 /** the cached still when we have it, otherwise render it once and cache it */
 function paintStill(def: EffectDef, canvas: HTMLCanvasElement): void {
+  if (disposed) return;
   const cached = stills.get(def.id);
   if (cached) {
     canvas.getContext('2d')?.drawImage(cached, 0, 0, canvas.width, canvas.height);
@@ -71,7 +74,7 @@ function paintStill(def: EffectDef, canvas: HTMLCanvasElement): void {
   void createImageBitmap(canvas)
     .then((bmp) => {
       savingStill.delete(def.id);
-      if (gen !== generation || stills.has(def.id)) bmp.close();
+      if (disposed || gen !== generation || stills.has(def.id)) bmp.close();
       else stills.set(def.id, bmp);
     })
     .catch(() => savingStill.delete(def.id));
@@ -101,6 +104,8 @@ function cancelStill(canvas: HTMLCanvasElement): void {
 }
 
 function releaseThumbs(): void {
+  // stop() repaints its card: block that first so nothing is rendered or stored while the caches are cleared
+  disposed = true;
   generation++;
   if (pumpRaf) cancelAnimationFrame(pumpRaf);
   pumpRaf = 0;
@@ -261,7 +266,10 @@ export function EffectsTab() {
   const [supported] = useState(() => effectsSupported());
   const [query, setQuery] = useState('');
 
-  useEffect(() => releaseThumbs, []);
+  useEffect(() => {
+    disposed = false;
+    return releaseThumbs;
+  }, []);
 
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {

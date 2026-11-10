@@ -84,16 +84,17 @@ export function useLookClipboard(): LookData | null {
 }
 
 /** paste the copied look on clips as ONE undo step */
-export function pasteLook(ids: string[]): void {
+export function pasteLook(ids: string[]): number {
   const look = current;
   const st = useEditor.getState();
   const p = st.project;
-  if (!look || !p) return;
+  if (!look || !p) return 0;
   const targets = p.clips.filter((c): c is VisualClip => ids.includes(c.id) && (c.type === 'video' || c.type === 'image' || c.type === 'text' || c.type === 'shape'));
-  if (targets.length === 0) return;
+  if (targets.length === 0) return 0;
   st.pushHistory();
   for (const c of targets) {
     st.updateClip(c.id, lookPatch(look, c.type) as ClipPatch, { skipHistory: true });
     st.updateTransform(c.id, { opacity: look.opacity }, { skipHistory: true });
   }
+  return targets.length;
 }

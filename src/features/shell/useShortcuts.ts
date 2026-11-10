@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
+import { interaction } from '../timeline/view';
 import { findShortcut } from './shortcuts';
 
 const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'file', 'submit', 'reset']);
@@ -15,6 +16,16 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return false;
 }
 
+/** true when a focused control needs these keys for itself: a slider (arrows, home, end, page keys) or a select (letters, arrows) */
+export function ownsKey(target: EventTarget | null, key: string): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.tagName === 'SELECT') return key.length === 1 || key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown', 'Enter', ' '].includes(key);
+  if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'range') {
+    return key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(key);
+  }
+  return false;
+}
+
 /** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
 const modalOpen = () => useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
 /** registers the global keyboard shortcuts of the editor. call once from EditorLayout. */
@@ -23,11 +34,17 @@ export function useShortcuts(): void {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
       if (isTypingTarget(e.target)) return;
+      if (!e.ctrlKey && !e.metaKey && ownsKey(e.target, e.key)) return;
       // dialogs own the keyboard (they handle escape themselves)
       if (modalOpen()) return;
       if (!useEditor.getState().project) return;
       const shortcut = findShortcut(e);
       if (!shortcut) return;
+      // a drag keeps writing on top of the state it started from: editing now would corrupt the undo history
+      if (shortcut.mutates && interaction.gestureActive) {
+        e.preventDefault();
+        return;
+      }
       if (e.repeat && !shortcut.repeat) {
         e.preventDefault();
         return;

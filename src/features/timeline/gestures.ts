@@ -525,7 +525,7 @@ export function createGestures(env: GestureEnv) {
     if (hit === null) time = Math.min(hi, Math.max(lo, snapToFrame(time, project.fps)));
     if (Math.abs(time - k.time) < 1e-6) return;
     // landing on another moment of this clip would replace its keys: stay where we are instead
-    for (const t of keyTimes(clip.keyframes)) {
+    for (const t of keyTimes(clip.keyframes, undefined, clip.duration)) {
       const at = clip.start + t;
       if (Math.abs(at - k.time) > tol && Math.abs(at - time) <= tol) {
         env.overlays.setSnap(null, k.zoom);
@@ -674,7 +674,7 @@ export function createGestures(env: GestureEnv) {
       if (clipEl && clip.keyframes && !mod) {
         const rect = clipEl.getBoundingClientRect();
         const key = hitKey(
-          keyTimes(clip.keyframes),
+          keyTimes(clip.keyframes, undefined, clip.duration),
           st.zoom,
           Math.max(2, clip.duration * st.zoom),
           rect.height - 2,
@@ -687,7 +687,7 @@ export function createGestures(env: GestureEnv) {
           const points = new Set<number>([usePlayback.getState().time]);
           for (const c of project.clips) {
             if (c.id === id) continue;
-            for (const t of keyTimes(c.keyframes)) points.add(c.start + t);
+            for (const t of keyTimes(c.keyframes, undefined, c.duration)) points.add(c.start + t);
           }
           begin(
             {
@@ -810,7 +810,7 @@ export function createGestures(env: GestureEnv) {
     if (st.snapping && st.selection.length > 0) {
       const sel = new Set(st.selection);
       for (const c of project.clips) {
-        if (sel.has(c.id)) for (const t of keyTimes(c.keyframes)) points.push(c.start + t);
+        if (sel.has(c.id)) for (const t of keyTimes(c.keyframes, undefined, c.duration)) points.push(c.start + t);
       }
     }
     const cur: SeekGesture = { ...base(e, geo, computeLayout(project.tracks), e.currentTarget), kind: 'seek', points };
