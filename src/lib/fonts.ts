@@ -5,6 +5,7 @@
  * import-safe in node: nothing touches document / window / indexedDB at module load.
  */
 import type { Project } from '../types';
+import { canvasWidth, familyRenders } from './fontDetect';
 import { faceKey, readFontMeta } from './fontMeta';
 
 export type FontCategory = 'sans' | 'serif' | 'display' | 'handwriting' | 'mono' | 'system' | 'local' | 'imported';
@@ -230,6 +231,9 @@ async function run(family: string, weight: number, italic: boolean, text: string
   }
   // a failed load is not "ready": the next ensureFont tries again instead of showing the fallback for good
   if (!cssOk || !loaded) return false;
+  // load() resolves with nothing for an unknown family: measure to know if it is really there. a missing family is
+  // not marked ready (the caller backs off on false; an import / local font list adds it to ready when it arrives)
+  if (!b && !importedFonts.has(family) && !ready.has(id) && !familyRenders(family, weight, canvasWidth)) return false;
   if (!ready.has(id)) {
     ready.add(id);
     if (b || !wasThere) bump();
@@ -328,6 +332,7 @@ export async function loadLocalFonts(): Promise<number> {
   const added = [...found];
   if (added.length) {
     localFonts = [...new Set([...localFonts, ...added])].sort((a, b) => a.localeCompare(b));
+    for (const family of added) for (const w of [400, 700]) for (const i of [0, 1]) ready.add(`${family}|${w}|${i}`);
     invalidateList();
     bump();
   }
@@ -508,4 +513,67 @@ export async function removeImportedFont(family: string): Promise<void> {
     }
   }
   bump();
+}
+
+// ---------- font files inside a project file ----------
+
+export interface FontFile {
+  family: string;
+  weight: number;
+  italic: boolean;
+  bytes: ArrayBuffer;
+}
+
+/** every stored face of these families (for packing into a .ncut file). [] without storage. never rejects. */
+export async function importedFontFiles(families: Iterable<string>): Promise<FontFile[]> {
+  try {
+    const want = new Set(families);
+    if (want.size === 0) return [];
+    await restoreImportedFonts();
+    const all = await dbRun<StoredFont[]>('readonly', (s) => s.getAll() as IDBRequest<StoredFont[]>);
+    const out: FontFile[] = [];
+    for (const f of all) {
+      if (!want.has(f.family) || !f.bytes) continue;
+      out.push({ family: f.family, weight: f.weight ?? 400, italic: !!f.italic, bytes: f.bytes });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * register + store faces that came with a project file. a face that is already here is left alone (the user's own
+ * copy wins), bundled / system families are never shadowed, broken files are skipped. resolves with how many were added.
+ */
+export async function addFontFiles(files: FontFile[]): Promise<number> {
+  let added = 0;
+  try {
+    await restoreImportedFonts();
+    for (const f of files) {
+      try {
+        if (!f.family || BUNDLED_BY_FAMILY.has(f.family) || SYSTEM_FONTS.includes(f.family)) continue;
+        const key = faceKey(f.family, f.weight, f.italic);
+        if (faces.has(key)) continue;
+        await registerImported(f.family, f.weight, f.italic, f.bytes);
+        added++;
+        try {
+          await dbRun('readwrite', (s) =>
+            s.put({ key, family: f.family, weight: f.weight, italic: f.italic, bytes: f.bytes } satisfies StoredFont),
+          );
+        } catch {
+          /* works for this session, just not saved */
+        }
+      } catch {
+        /* a broken file is skipped */
+      }
+    }
+    if (added > 0) {
+      invalidateList();
+      bump();
+    }
+  } catch {
+    /* nothing more to do */
+  }
+  return added;
 }
