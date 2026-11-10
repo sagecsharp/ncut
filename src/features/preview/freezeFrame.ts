@@ -8,7 +8,7 @@ import { getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { withFollowerMoves } from '../timeline/followMoves';
-import { freezeFileName, freezeSourceTime, pickFreezeTarget, planFreeze, shiftMoves, stillClipFrom } from './freezePlan';
+import { freezeEffectCopies, freezeFileName, freezeHandover, freezeSourceTime, pickFreezeTarget, planFreeze, shiftMoves, stillClipFrom } from './freezePlan';
 
 /** default length of the still, seconds */
 export const FREEZE_DURATION = 2;
@@ -125,9 +125,17 @@ export async function freezeFrame(): Promise<string | null> {
   const moves = withFollowerMoves(afterSplit.clips, afterSplit.tracks, shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION));
   const moved = moves.length === 0 || useEditor.getState().moveClips(moves, skip);
   if (moved) {
-    const clip = stillClipFrom(liveClip, resolveClip(liveClip, time).transform, still.id, plan.stillStart, FREEZE_DURATION);
+    const handover = freezeHandover(liveClip, plan);
+    const clip = stillClipFrom(liveClip, resolveClip(liveClip, time).transform, still.id, plan.stillStart, FREEZE_DURATION, handover);
     const ids = useEditor.getState().addClips([clip], { ...skip, newTrack: false });
     newId = ids[0] ?? null;
+    if (newId) {
+      // the entrance / exit moved to the still: the video loses it in the same step
+      if (handover.videoPatch) useEditor.getState().updateClip(liveClip.id, handover.videoPatch, skip);
+      // the effects put on the video also act on the still (read from the clips before the split: the left half keeps the id)
+      const fx = freezeEffectCopies(before.clips, liveClip.id, time, newId, plan.stillStart, FREEZE_DURATION);
+      if (fx.length > 0) useEditor.getState().addClips(fx, { ...skip, newTrack: false });
+    }
   }
   if (!newId) {
     // put everything back: the history step pushed above holds the project as it was
