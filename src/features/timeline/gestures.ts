@@ -76,6 +76,8 @@ interface TrimGesture extends Base {
   id: string;
   edge: 'start' | 'end';
   points: number[];
+  /** edge time minus pointer time at press, so the edge does not jump to the pointer */
+  offset: number;
 }
 
 interface SeekGesture extends Base {
@@ -148,7 +150,12 @@ export function createGestures(env: GestureEnv) {
     window.addEventListener('pointercancel', onCancel);
     interaction.gestureActive = true;
     const scroller = env.getScroller();
-    if (scroller) scroller.dataset.gesture = mode;
+    if (scroller) {
+      scroller.dataset.gesture = mode;
+      // pin the scrollable width so a gesture that shortens the project cannot clamp scrollLeft mid-drag
+      const content = scroller.firstElementChild as HTMLElement | null;
+      if (content) content.style.minWidth = `${content.offsetWidth}px`;
+    }
   }
 
   function end(): void {
@@ -171,7 +178,11 @@ export function createGestures(env: GestureEnv) {
     interaction.gestureActive = false;
     env.overlays.clear();
     const scroller = env.getScroller();
-    if (scroller) delete scroller.dataset.gesture;
+    if (scroller) {
+      delete scroller.dataset.gesture;
+      const content = scroller.firstElementChild as HTMLElement | null;
+      if (content) content.style.minWidth = '';
+    }
   }
 
   function onMove(e: PointerEvent): void {
@@ -406,7 +417,7 @@ export function createGestures(env: GestureEnv) {
       t.started = true;
       st.pushHistory();
     }
-    let time = Math.max(0, laneX(t.geo, t.cx)) / t.zoom;
+    let time = Math.max(0, laneX(t.geo, t.cx) / t.zoom + t.offset);
     let hit: number | null = null;
     if (st.snapping) {
       const r = snapTime(time, t.points, SNAP_PX / t.zoom);
@@ -492,6 +503,7 @@ export function createGestures(env: GestureEnv) {
             kind: 'trim',
             id,
             edge: edgeAttr,
+            offset: (edgeAttr === 'start' ? clip.start : clipEnd(clip)) - laneX(geo, e.clientX) / st.zoom,
             points: collectSnapPoints(project, [id], [usePlayback.getState().time]),
           },
           'trim',
@@ -509,9 +521,10 @@ export function createGestures(env: GestureEnv) {
       }
       const sel = new Set(store().selection);
       const trackIdx = new Map(project.tracks.map((t, i) => [t.id, i]));
+      const lockedTracks = new Set(project.tracks.filter((t) => t.locked).map((t) => t.id));
       const items: MoveItem[] = [];
       for (const c of project.clips) {
-        if (!sel.has(c.id)) continue;
+        if (!sel.has(c.id) || lockedTracks.has(c.trackId)) continue;
         items.push({
           id: c.id,
           type: c.type,
@@ -530,7 +543,7 @@ export function createGestures(env: GestureEnv) {
           kind: 'move',
           items,
           leader,
-          points: collectSnapPoints(project, [...sel], [usePlayback.getState().time]),
+          points: collectSnapPoints(project, items.map((o) => o.id), [usePlayback.getState().time]),
           deferSingle,
           lastKey: '',
           delta: 0,

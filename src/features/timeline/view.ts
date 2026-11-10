@@ -77,10 +77,15 @@ export function cssVar(name: string): string {
   return v;
 }
 
+let appearanceGen = 0;
+/** bumps whenever theme / tint changes, so canvases can tell their pixels are stale */
+export const getAppearanceGen = (): number => appearanceGen;
+
 // theme / tint changed: drop cached colors and redraw every timeline canvas
 if (typeof window !== 'undefined') {
   window.addEventListener(APPEARANCE_EVENT, () => {
     colorCache.clear();
+    appearanceGen++;
     notifyView();
   });
 }

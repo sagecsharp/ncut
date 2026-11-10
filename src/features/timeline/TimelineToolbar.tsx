@@ -161,6 +161,7 @@ export function TimelineToolbar({ onZoom, onFit }: Props) {
         step={1}
         value={zoomToSlider(zoom)}
         onChange={(e) => onZoom(sliderToZoom(Number(e.target.value)))}
+        onPointerUp={(e) => e.currentTarget.blur()}
         title="zoom"
         aria-label="zoom"
       />
