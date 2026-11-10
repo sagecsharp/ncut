@@ -4,6 +4,7 @@ import { Search, Shuffle } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { beginDrag, endDrag } from '../../lib/dnd';
+import { pressesCard } from '../../lib/pressKey';
 import { isVisualClip } from '../../types';
 import type { Project, VisualClip } from '../../types';
 import { TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
@@ -248,11 +249,10 @@ const TransitionCard = memo(function TransitionCard({ def }: { def: TransitionDe
   const stop = () => refs.stop?.();
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      applyTo(def);
-    }
+    // only a card reached with the keyboard is pressed with space / enter. after a click space plays again
+    if (!pressesCard(e)) return;
+    e.preventDefault();
+    applyTo(def);
   };
   const onDragStart = (e: DragEvent<HTMLDivElement>) => {
     stop();

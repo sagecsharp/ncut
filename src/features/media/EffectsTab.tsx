@@ -4,6 +4,7 @@ import { Camera, Search, TriangleAlert } from 'lucide-react';
 import { usePlayback } from '../../store/playback';
 import { useEditor } from '../../store/editorStore';
 import { beginDrag, endDrag } from '../../lib/dnd';
+import { pressesCard } from '../../lib/pressKey';
 import { EFFECTS } from '../../engine/effects/registry';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import type { EffectDef } from '../../engine/effects/types';
@@ -176,11 +177,10 @@ const EffectCard = memo(function EffectCard({ def }: { def: EffectDef }) {
   const stop = () => refs.stop?.();
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      addAtPlayhead(def.id);
-    }
+    // only a card reached with the keyboard is pressed with space / enter. after a click space plays again
+    if (!pressesCard(e)) return;
+    e.preventDefault();
+    addAtPlayhead(def.id);
   };
   const onDragStart = (e: DragEvent<HTMLDivElement>) => {
     stop();
@@ -244,11 +244,9 @@ function CameraCard() {
       title={`${CAMERA_TIP} - click to add at the playhead, or drag it onto the timeline`}
       onClick={addCameraAtPlayhead}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          addCameraAtPlayhead();
-        }
+        if (!pressesCard(e)) return;
+        e.preventDefault();
+        addCameraAtPlayhead();
       }}
       onDragStart={(e) => beginDrag(e, { kind: 'camera' })}
       onDragEnd={endDrag}

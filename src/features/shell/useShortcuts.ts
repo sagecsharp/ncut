@@ -4,6 +4,7 @@ import { useUi } from '../../store/ui';
 import { interaction } from '../timeline/view';
 import { usePalette } from './paletteStore';
 import { findShortcut } from './shortcuts';
+import { focusedByKeyboard } from '../../lib/pressKey';
 
 const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'file', 'submit', 'reset']);
 
@@ -25,14 +26,9 @@ export function ownsKey(target: EventTarget | null, key: string): boolean {
     return key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(key);
   }
   // a control reached with the keyboard (tab) is pressed with space / enter. one that only has focus because it
-  // was clicked does not take them: space after a click still plays
-  if ((key === ' ' || key === 'Enter') && PRESSABLE.has(pressRole(target))) {
-    try {
-      return target.matches(':focus-visible');
-    } catch {
-      return false;
-    }
-  }
+  // was clicked does not take them: space after a click still plays. (:focus-visible cannot tell the two apart,
+  // the browser turns it on with the first key press: see lib/pressKey.ts)
+  if ((key === ' ' || key === 'Enter') && PRESSABLE.has(pressRole(target))) return focusedByKeyboard();
   return false;
 }
 

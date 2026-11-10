@@ -15,6 +15,7 @@ import { checkTransitions, renderTransition } from './engine/transitions/runner'
 import { preloadEditor } from './features/editor/loadEditor';
 import { attachShellOpenFile } from './features/shell/openShellFile';
 import { initAppearance } from './lib/appearance';
+import { watchFocusSource } from './lib/pressKey';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
 import { usePlayback } from './store/playback';
@@ -24,6 +25,8 @@ import { useUi } from './store/ui';
 // a url that names a project: start loading the editor now, before indexeddb and the first render
 if (session.projectIdFromHash() !== null) preloadEditor();
 initAppearance();
+// from the first event on: was the focused control reached with the keyboard or clicked (space plays after a click)
+watchFocusSource(window);
 // the canvas (preview + export) can only draw a web font once it is loaded, so fetch both weights up front
 if (document.fonts) {
   void document.fonts.load('400 16px "Kode Mono"');
