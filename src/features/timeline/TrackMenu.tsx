@@ -1,7 +1,7 @@
 import { useRef } from 'react';
-import { ArrowRightToLine, ChevronsRightLeft, ListChecks } from 'lucide-react';
+import { ArrowRightToLine, ChevronsRightLeft, ListChecks, MoveHorizontal } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
-import { closeGapsOnTrack, selectAfterPlayhead, selectTrackClips } from './actions';
+import { closeGapsOnTrack, insertGapAt, selectAfterPlayhead, selectTrackClips } from './actions';
 import { useFloatingMenu } from './menuBehavior';
 
 export interface TrackMenuRequest {
@@ -49,6 +49,25 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
       >
         <ChevronsRightLeft size={14} />
         close gaps on this track
+      </button>
+      <button
+        className="menu-item"
+        role="menuitem"
+        title="push every clip that starts at or after the playhead right by 1 second, on all unlocked tracks"
+        onClick={run(() => insertGapAt())}
+      >
+        <MoveHorizontal size={14} />
+        insert gap here
+      </button>
+      <button
+        className="menu-item"
+        role="menuitem"
+        disabled={track.locked}
+        title="the same, but only for the clips of this track"
+        onClick={run(() => insertGapAt(undefined, trackId))}
+      >
+        <MoveHorizontal size={14} />
+        insert gap on this track
       </button>
     </div>
   );

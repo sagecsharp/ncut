@@ -4,6 +4,10 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { planCloseGaps } from './gaps';
+import { GAP_SECONDS, planInsertGap } from './gapInsert';
+import { revealScrollLeft } from './followScroll';
+import { effectsOn } from './effectTarget';
+import { notifyView, view } from './view';
 import { idsAfter, idsOnTrack } from './selectionRules';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
@@ -59,4 +63,72 @@ export function closeGapsOnTrack(trackId: string): void {
     return;
   }
   if (!st.moveClips(moves)) useUi.getState().toast('could not close the gaps');
+}
+
+/**
+ * open a gap: every clip that starts at or after `time` (default the playhead) moves right by one
+ * second, on every unlocked track or on `trackId` only. one undo step, all or nothing.
+ */
+export function insertGapAt(time?: number, trackId?: string): void {
+  const st = useEditor.getState();
+  if (!st.project) return;
+  const at = time ?? usePlayback.getState().time;
+  const moves = planInsertGap(st.project.clips, st.project.tracks, at, GAP_SECONDS, trackId);
+  if (moves.length === 0) {
+    useUi.getState().toast('no clips after this point');
+    return;
+  }
+  if (!st.moveClips(moves)) useUi.getState().toast('could not insert the gap');
+}
+
+/** scroll the timeline so a clip is in view (sideways by the view state, up / down by the element) */
+export function revealClip(id: string): void {
+  const st = useEditor.getState();
+  const clip = st.project?.clips.find((c) => c.id === id);
+  if (!clip) return;
+  const scroller = document.querySelector<HTMLElement>('.timeline-scroller');
+  if (!scroller) return;
+  const next = revealScrollLeft(clip.start * st.zoom, (clip.start + clip.duration) * st.zoom, view.scrollLeft, view.width);
+  if (next !== null) {
+    scroller.scrollLeft = next;
+    view.scrollLeft = scroller.scrollLeft;
+    notifyView();
+  }
+  for (const el of scroller.querySelectorAll<HTMLElement>('[data-clip-id]')) {
+    if (el.dataset.clipId === id) {
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      break;
+    }
+  }
+}
+
+/** select the clip an effect is put on and bring it into view */
+export function goToEffectTarget(effectId: string): void {
+  const st = useEditor.getState();
+  const e = st.project?.clips.find((c) => c.id === effectId);
+  const target = e && e.type === 'effect' && e.target ? st.project?.clips.find((c) => c.id === e.target) : undefined;
+  if (!target) {
+    useUi.getState().toast('that clip is gone');
+    return;
+  }
+  st.select([target.id], 'replace');
+  revealClip(target.id);
+}
+
+/** select the effect clips that are put on any of these clips */
+export function selectEffectsOf(ids: readonly string[]): void {
+  const st = useEditor.getState();
+  if (!st.project) return;
+  const found = ids.flatMap((id) => effectsOn(st.project!.clips, id).map((e) => e.id));
+  if (found.length === 0) return;
+  st.select([...new Set(found)], 'replace');
+}
+
+/** make effect clips act on everything below their track again. one undo step. */
+export function applyEffectsToEverything(ids: readonly string[]): void {
+  const st = useEditor.getState();
+  const targeted = (st.project?.clips ?? []).filter((c) => ids.includes(c.id) && c.type === 'effect' && c.target);
+  if (targeted.length === 0) return;
+  st.pushHistory();
+  for (const c of targeted) st.updateClip(c.id, { target: null }, { skipHistory: true });
 }

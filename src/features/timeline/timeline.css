@@ -313,6 +313,14 @@
   outline: 2px solid var(--clip-label);
   outline-offset: -3px;
 }
+.timeline-clip.is-linked {
+  outline: 1px dashed var(--clip-label);
+  outline-offset: -3px;
+}
+.timeline-clip.is-linked-hover {
+  outline: 1px solid var(--clip-label);
+  outline-offset: -3px;
+}
 .timeline-clip.is-muted .timeline-clip-canvas {
   opacity: 0.45;
 }
@@ -470,7 +478,8 @@
 .timeline-ghost[data-kind='transition'] {
   border-style: solid;
 }
-.timeline-ghost[data-kind='swap'] {
+.timeline-ghost[data-kind='swap'],
+.timeline-ghost[data-kind='target'] {
   border-style: solid;
   border-width: 2px;
   opacity: 1;

@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef } from 'react';
-import { Flag, Pencil, Trash2 } from 'lucide-react';
+import { Flag, MoveHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { snapToFrame } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
+import { insertGapAt } from './actions';
 import { useFloatingMenu } from './menuBehavior';
 
 /** a hairline per marker down through the tracks. positioned with transforms, only re-rendered when markers or zoom change. */
@@ -77,6 +78,16 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
           add marker here
         </button>
       )}
+      <div className="menu-sep" />
+      <button
+        className="menu-item"
+        role="menuitem"
+        title="push every clip that starts at or after this point right by 1 second, on all unlocked tracks"
+        onClick={run(() => insertGapAt(snapToFrame(time, useEditor.getState().project?.fps ?? 30)))}
+      >
+        <MoveHorizontal size={14} />
+        insert gap here
+      </button>
     </div>
   );
 }

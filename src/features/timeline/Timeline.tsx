@@ -21,6 +21,7 @@ import type { MarkerMenuRequest } from './MarkerUi';
 import { createGestures } from './gestures';
 import type { MenuRequest } from './gestures';
 import { HEADER_W, RULER_H, TAIL_MIN_PX, ZONE_H, laneHeight } from './layout';
+import { LinkMarks } from './LinkMarks';
 import { Overlays } from './overlays';
 import { FIT_PAD, rangeOf, zoomForRange } from './zoomMath';
 import { markUserScroll, notifyView, resetView, view } from './view';
@@ -328,6 +329,7 @@ function TimelineInner() {
             </div>
           </div>
         </div>
+        <LinkMarks scrollerRef={scrollerRef} />
         {!hasClips ? <div className="timeline-hint">drag media here to start</div> : null}
       </div>
       {markerMenu ? <MarkerMenu {...markerMenu} onClose={closeMarkerMenu} onRename={startRename} /> : null}
