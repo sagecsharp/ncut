@@ -73,13 +73,14 @@ vec4 effect(vec2 uv) {
       { key: 'curve', label: 'curve', min: 0, max: 100, step: 1, default: 0, unit: '%' },
     ],
     glsl: `
-vec4 effect(vec2 uv0) {
+vec4 effect(vec2 uv) {
+  vec2 uv0 = uv;
   float k = u_amount;
   // barrel curved screen, black outside the tube
   float curve = p_curve / 100.0 * k;
   vec2 pc = uv0 * 2.0 - 1.0;
   pc *= 1.0 + curve * 0.25 * vec2(pc.y * pc.y, pc.x * pc.x);
-  vec2 uv = pc * 0.5 + 0.5;
+  uv = pc * 0.5 + 0.5;
   float mask = (1.0 - smoothstep(1.0, 1.02, abs(pc.x))) * (1.0 - smoothstep(1.0, 1.02, abs(pc.y)));
 
   // horizontal sharpening: unsharp mask with a 5 tap blur, 2 project pixels per step
