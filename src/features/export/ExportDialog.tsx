@@ -6,8 +6,8 @@ import { usePlayback } from '../../store/playback';
 import { FPS_OPTIONS } from '../../lib/factory';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
-import { exportProject, frameCount, outputSize, probeFormats } from './exporter';
-import type { ExportContainer, ExportProgress, ExportQuality } from './exporter';
+import { CODEC_LABEL, exportProject, frameCount, outputSize, planExport } from './exporter';
+import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality } from './exporter';
 import './export.css';
 
 export interface ExportDialogProps {
@@ -31,6 +31,16 @@ const SCALES = [
   { value: 0.5, label: '50%' },
 ];
 const QUALITIES: ExportQuality[] = ['low', 'medium', 'high'];
+/** wait this long after the last settings change before asking the browser what it can encode */
+const PROBE_DEBOUNCE_MS = 250;
+
+/** what the browser can encode for the current settings: undefined = still probing, null = nothing */
+type Plans = Record<ExportContainer, ExportPlan | null | undefined>;
+const PROBING: Plans = { mp4: undefined, webm: undefined };
+
+function formatBitrate(bps: number): string {
+  return bps >= 1e6 ? `${(bps / 1e6).toFixed(bps >= 1e7 ? 0 : 1)} mbps` : `${Math.round(bps / 1e3)} kbps`;
+}
 
 function sanitizeName(name: string): string {
   const s = name
@@ -68,7 +78,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const [fps, setFps] = useState(30);
   const [quality, setQuality] = useState<ExportQuality>('medium');
   const [includeAudio, setIncludeAudio] = useState(true);
-  const [support, setSupport] = useState<Record<ExportContainer, boolean> | null>(null);
+  const [plans, setPlans] = useState<Plans>(PROBING);
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -101,18 +111,33 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setProgress(null);
     setDone(null);
     setError('');
-    setSupport(null);
-    let cancelled = false;
-    void probeFormats({ width: projectW, height: projectH, fps: projectFps }).then((res) => {
-      if (cancelled) return;
-      setSupport(res);
-      setContainer((cur) => (res[cur] ? cur : res.mp4 ? 'mp4' : res.webm ? 'webm' : cur));
-    });
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, projectId]);
+
+  // ask the browser what it can encode for the chosen size + fps + quality (debounced, cancelled by the next change)
+  useEffect(() => {
+    if (!open || phase !== 'setup' || projectW <= 0) return;
+    const size = outputSize({ width: projectW, height: projectH }, scale);
+    setPlans(PROBING);
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const next: Plans = { mp4: null, webm: null };
+        try {
+          for (const c of [container, container === 'mp4' ? 'webm' : 'mp4'] as const) {
+            next[c] = await planExport({ container: c, width: size.width, height: size.height, fps, quality }, ac.signal);
+          }
+        } catch {
+          return; // cancelled
+        }
+        if (!ac.signal.aborted) setPlans(next);
+      })();
+    }, PROBE_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timer);
+      ac.abort();
+    };
+  }, [open, phase, projectW, projectH, container, scale, fps, quality]);
 
   // closing the dialog (or unmounting) frees the result and stops a running export
   useEffect(() => {
@@ -135,7 +160,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   }, [phase]);
 
   const fpsChoices = useMemo(() => {
-    const set = new Set<number>(FPS_OPTIONS.filter((f) => f <= projectFps));
+    const set = new Set<number>(FPS_OPTIONS);
     set.add(projectFps);
     return [...set].sort((a, b) => a - b);
   }, [projectFps]);
@@ -215,7 +240,17 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   let body;
   let footer;
   if (phase === 'setup') {
-    const noneSupported = support !== null && !support.mp4 && !support.webm;
+    const plan = plans[container];
+    const other: ExportContainer = container === 'mp4' ? 'webm' : 'mp4';
+    const probing = plan === undefined;
+    const noEncoder = typeof VideoEncoder === 'undefined';
+    let note = '';
+    if (noEncoder) note = 'this browser cannot encode video, try a recent chrome or edge';
+    else if (plan === null) {
+      note = `${container} cannot be encoded at ${size.width}x${size.height} and ${fps} fps here${
+        plans[other] ? `, try ${other}, or` : ', try'
+      } a lower frame rate or resolution`;
+    }
     body = (
       <>
         <label className="field">
@@ -237,12 +272,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               title="container format"
               onChange={(e) => setContainer(e.target.value as ExportContainer)}
             >
-              <option value="mp4" disabled={support !== null && !support.mp4}>
-                mp4 (h.264)
-              </option>
-              <option value="webm" disabled={support !== null && !support.webm}>
-                webm (vp9)
-              </option>
+              <option value="mp4">mp4</option>
+              <option value="webm">webm</option>
             </select>
           </label>
           <label className="field">
@@ -268,7 +299,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             <select className="select" value={fps} title="frames per second" onChange={(e) => setFps(Number(e.target.value))}>
               {fpsChoices.map((f) => (
                 <option key={f} value={f}>
-                  {f} fps
+                  {f} fps{f === projectFps ? ' (project)' : ''}
                 </option>
               ))}
             </select>
@@ -303,7 +334,10 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             ? 'the project is empty, add some clips first'
             : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${fps} fps`}
         </div>
-        {noneSupported ? <div className="export-note is-error">this browser cannot encode video, try a recent chrome or edge</div> : null}
+        <div className="export-summary">
+          {probing ? 'checking encoders...' : plan ? `codec ${CODEC_LABEL[plan.codec] ?? plan.codec}, about ${formatBitrate(plan.bitrate)}` : ''}
+        </div>
+        {note ? <div className="export-note is-error">{note}</div> : null}
       </>
     );
     footer = (
@@ -314,7 +348,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
         <button
           className="btn btn-primary"
           onClick={start}
-          disabled={empty || noneSupported || (support !== null && !support[container])}
+          disabled={empty || !plan}
           title="render the project to a file"
         >
           export
