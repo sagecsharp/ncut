@@ -10,6 +10,7 @@ import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { getLastEffect, setLastEffect } from './lastEffect';
 import { SHAPE_PRESETS } from '../media/shapePresets';
+import { openPalette } from './paletteStore';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, ungroupIdsNow } from '../timeline/actions';
@@ -28,6 +29,8 @@ export interface Shortcut {
   repeat?: boolean;
   /** true when run() changes the project: ignored while a pointer gesture is active */
   mutates?: boolean;
+  /** true for rows that only document a key handled elsewhere: shown in the ? dialog, not runnable from the palette */
+  info?: boolean;
   match(e: KeyboardEvent): boolean;
   run(): void;
 }
@@ -245,17 +248,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => usePlayback.getState().toggle(),
   },
   {
-    id: 'back-second',
+    id: 'shuttle-back',
     keys: [['j']],
     group: 'playback',
-    description: 'back 1 second (no reverse playback)',
+    description: 'play backwards, again = faster',
     repeat: true,
     match: byKey('j'),
-    run: () => {
-      const pb = usePlayback.getState();
-      pb.pause();
-      pb.seek(pb.time - 1);
-    },
+    run: () => usePlayback.getState().shuttle(-1),
   },
   {
     id: 'pause',
@@ -266,12 +265,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => usePlayback.getState().pause(),
   },
   {
-    id: 'play',
+    id: 'shuttle-forward',
     keys: [['l']],
     group: 'playback',
-    description: 'play',
+    description: 'play forward, again = faster',
+    repeat: true,
     match: byKey('l'),
-    run: () => usePlayback.getState().play(),
+    run: () => usePlayback.getState().shuttle(1),
   },
   {
     id: 'frame-back',
@@ -667,6 +667,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['←', '↑', '→', '↓']],
     group: 'preview',
     description: 'nudge the selected clip 1 px (preview focused)',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -675,6 +676,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['shift', '←', '↑', '→', '↓']],
     group: 'preview',
     description: 'nudge the selected clip 10 px (preview focused)',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -683,6 +685,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['alt']],
     group: 'preview',
     description: 'hold while dragging to turn snapping off',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -691,6 +694,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['w'], ['e'], ['r']],
     group: 'preview',
     description: 'scene view: move, rotate, scale tool (scene view focused)',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -699,6 +703,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['f']],
     group: 'preview',
     description: 'scene view: frame the selection (scene view focused)',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -707,6 +712,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['alt']],
     group: 'timeline',
     description: 'hold while dropping media on a clip of the same kind to swap its media',
+    info: true,
     match: () => false,
     run: () => undefined,
   },
@@ -727,6 +733,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'keyboard shortcuts',
     match: (e) => !isMod(e) && !e.altKey && e.key === '?',
     run: () => useUi.getState().openDialog('shortcuts'),
+  },
+  {
+    id: 'palette',
+    keys: [['ctrl', 'k']],
+    group: 'app',
+    description: 'search actions (command palette)',
+    match: byKey('k', { mod: true }),
+    run: openPalette,
   },
   {
     id: 'settings',
