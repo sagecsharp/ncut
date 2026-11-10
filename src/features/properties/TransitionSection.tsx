@@ -53,7 +53,16 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
     }
     actions().pushHistory();
     for (const p of patches) actions().updateClip(p.clipId, { transition: p.transition }, { skipHistory: true });
-    useUi.getState().toast(`${patches.length} transition${patches.length === 1 ? '' : 's'} set to ${transition.duration.toFixed(2)}s`);
+    const full = patches.filter((p) => p.transition && Math.abs(p.transition.duration - transition.duration) < 1e-6).length;
+    const short = patches.length - full;
+    const noun = (n: number) => `${n} transition${n === 1 ? '' : 's'}`;
+    useUi
+      .getState()
+      .toast(
+        short === 0
+          ? `${noun(full)} set to ${transition.duration.toFixed(2)}s`
+          : `${full} got ${transition.duration.toFixed(2)}s, ${short} kept shorter to fit their cut`,
+      );
   };
 
   return (

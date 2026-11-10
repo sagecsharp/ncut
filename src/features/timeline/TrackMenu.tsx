@@ -3,7 +3,7 @@ import { ArrowRightToLine, ChevronsRightLeft, Eraser, Layers, ListChecks, MoveHo
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { lastTransition } from '../media/transitionApply';
-import { planRemoveTransitions, planTrackTransitions } from '../media/transitionBatch';
+import { cutsOnTrack, planRemoveTransitions, planTrackTransitions } from '../media/transitionBatch';
 import type { TransitionPatch } from '../media/transitionBatch';
 import { closeGapsOnTrack, insertGapAt, selectAfterPlayhead, selectTrackClips } from './actions';
 import { useFloatingMenu } from './menuBehavior';
@@ -22,7 +22,19 @@ function addEverywhere(trackId: string, replace: boolean): void {
   if (!project) return;
   const patches = planTrackTransitions(project, trackId, lastTransition(), replace);
   if (patches.length === 0) {
-    useUi.getState().toast('nothing to do: no cuts on this track');
+    const locked = project.tracks.find((t) => t.id === trackId)?.locked;
+    const cuts = cutsOnTrack(project, trackId).length;
+    useUi
+      .getState()
+      .toast(
+        locked
+          ? 'nothing to do: this track is locked'
+          : cuts === 0
+            ? 'nothing to do: no cuts on this track'
+            : replace
+              ? 'nothing to do: every cut already has this transition'
+              : 'nothing to do: every cut already has a transition',
+      );
     return;
   }
   applyPlan(patches);

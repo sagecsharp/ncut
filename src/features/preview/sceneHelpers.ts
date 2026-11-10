@@ -218,6 +218,14 @@ export function lockDelta(d: Vec3, lock: AxisLock): Vec3 {
   return out;
 }
 
+/**
+ * whether a move drag writes axis `i` this frame: the locked / grabbed axis, any axis with a movement,
+ * and any axis the gesture already wrote (so a lock pressed mid drag sends the others back to their grab values)
+ */
+export function shouldWriteAxis(i: number, eff: number, delta: number, written: readonly boolean[]): boolean {
+  return i === eff || Math.abs(delta) >= 1e-9 || !!written[i];
+}
+
 /* ---------- readouts ---------- */
 
 const AXIS_LETTERS = ['x', 'y', 'z'] as const;

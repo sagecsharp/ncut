@@ -12,6 +12,7 @@ import {
   moveReadout,
   niceStep,
   nextLock,
+  shouldWriteAxis,
   clipPolygonNear,
   copyReadout,
   isTypingTarget,
@@ -220,5 +221,16 @@ describe('copy and typing helpers', () => {
     expect(isTypingTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
     expect(isTypingTarget({ tagName: 'DIV' })).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
+  });
+});
+
+describe('shouldWriteAxis', () => {
+  it('writes the locked axis, moved axes and axes written before', () => {
+    expect(shouldWriteAxis(0, 0, 0, [false, false, false])).toBe(true);
+    expect(shouldWriteAxis(1, 0, 0, [false, false, false])).toBe(false);
+    expect(shouldWriteAxis(1, -1, 5, [false, false, false])).toBe(true);
+    // lock pressed after y was dragged: y must go back to its grab value
+    expect(shouldWriteAxis(1, 0, 0, [true, true, false])).toBe(true);
+    expect(shouldWriteAxis(2, 0, 0, [true, true, false])).toBe(false);
   });
 });

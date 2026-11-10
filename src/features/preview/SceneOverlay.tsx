@@ -40,6 +40,7 @@ import {
   rotateReadout,
   scaleReadout,
   sectionCorners,
+  shouldWriteAxis,
 } from './sceneHelpers';
 import { snapAngle, snapDelta } from './sceneSnap';
 import { useSceneGrid, useSceneTool } from './sceneTool';
@@ -125,6 +126,8 @@ type SceneGesture =
       c0: Vec3;
       /** own x y z at the grab (an attached clip writes all of them so it follows a world axis exactly) */
       v3: Vec3;
+      /** axes this gesture has written, so a lock pressed later still resets them to the grab value */
+      written: [boolean, boolean, boolean];
       rig: CameraRig;
       /** a 2d clip moved along z becomes 3d the moment z is the moved axis */
       to3d: boolean;
@@ -1002,7 +1005,8 @@ export function SceneOverlay() {
         // parents are exact), becomes the clip's own x / y / z. only what really changes is written.
         const l = localDelta3(now, raw, time, D);
         for (let i = 0; i < 3; i++) {
-          if (i !== eff && Math.abs(l[i]!) < 1e-9) continue;
+          if (!shouldWriteAxis(i, eff, l[i]!, g.written)) continue;
+          g.written[i] = true;
           store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + l[i]!) * 100) / 100, { skipHistory: true });
         }
         return;
@@ -1012,11 +1016,14 @@ export function SceneOverlay() {
         const l = localDelta(now, raw, time, D[0], D[1]);
         store.setClipValue(g.id, 'x', time, Math.round((g.v3[0]! + l.x) * 100) / 100, { skipHistory: true });
         store.setClipValue(g.id, 'y', time, Math.round((g.v3[1]! + l.y) * 100) / 100, { skipHistory: true });
+        g.written[0] = true;
+        g.written[1] = true;
         return;
       }
     }
     for (let i = 0; i < 3; i++) {
-      if (i !== eff && Math.abs(D[i]!) < 1e-9) continue;
+      if (!shouldWriteAxis(i, eff, D[i]!, g.written)) continue;
+      g.written[i] = true;
       store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + D[i]!) * 100) / 100, { skipHistory: true });
     }
   };
@@ -1163,6 +1170,7 @@ export function SceneOverlay() {
             normal,
             c0: target.center,
             v3: [target.v[0], target.v[1], target.v[2]],
+            written: [false, false, false],
             rig,
             to3d: target.kind === 'clip' && !target.threeD,
             copy,
