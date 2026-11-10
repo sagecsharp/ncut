@@ -16,6 +16,7 @@ import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffec
 import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook, isKeyActive, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
+import { StillCopies, keptStep } from './stillCopies';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
@@ -53,6 +54,8 @@ export function releaseRenderResources(channel: 'preview' | 'export' | 'inset'):
   const lc = lookChannel(glChannel);
   releaseMaskResources(lc);
   releaseClipLook(lc);
+  // the flat path's copies of looked / masked stills are per channel
+  stillCopies.dropPrefix(glChannel + '|');
   releaseSceneRenderer(glChannel);
   releaseEffectRunner(glChannel);
   releaseTransitionRunner(glChannel as TransitionChannel);
@@ -738,9 +741,11 @@ let cacheClips: readonly Clip[] | null = null;
 function syncTextureCaches(project: Project): void {
   if (project.clips === cacheClips) return;
   cacheClips = project.clips;
-  if (textTextures.size === 0 && sideStacks.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0) return;
+  if (textTextures.size === 0 && sideStacks.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0 && stillCopies.size === 0) return;
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
+  // slot = channel | clip id | step
+  stillCopies.dropWhere((slot) => !ids.has(slot.slice(slot.indexOf('|') + 1, slot.lastIndexOf('|'))));
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
   // the masked silhouette of a 3d depth text sits next to the face's copy under 'id|side'
   for (const id of [...maskCopies.keys()]) {
@@ -776,24 +781,111 @@ type FlatSource = DrawSource & {
 /**
  * the clip's look, then its mask, on a picture. returns `source` itself (no allocation) when the clip has neither.
  * only valid until the next call on the same channel: draw it right away.
+ * `stillKey` = the picture cannot change while that key stays the same (an image, or a text / shape texture that is not
+ * being redrawn): the looked and the masked result are then kept in a canvas of their own per clip and channel and drawn
+ * from there on the next frames, instead of uploading the whole picture to the gpu again for every frame. the copy has
+ * the size of the result it was made from (a bigger one would be rescaled), so it draws the same pixels.
  */
-function processed(source: FlatSource, clip: VisualClip, channel: Channel): FlatSource {
+function processed(source: FlatSource, clip: VisualClip, channel: Channel, stillKey?: string): FlatSource {
   let out = source;
+  let key = stillKey;
   if (hasClipLook(clip)) {
-    const image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
+    let image: CanvasImageSource;
+    if (key !== undefined) {
+      const r = stillStep(false, clip, out.image, out.width, out.height, key, channel);
+      image = r.image;
+      key = r.key;
+    } else image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
     if (image !== out.image) {
       const c = image as AnyCanvas;
       out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
     }
   }
   if (hasMask(clip)) {
-    const image = maskedPicture(out.image, out.pw ?? out.width, out.ph ?? out.height, clip, lookChannel(channel));
+    const w = out.pw ?? out.width;
+    const h = out.ph ?? out.height;
+    let image: CanvasImageSource;
+    if (key !== undefined) image = stillStep(true, clip, out.image, w, h, key, channel).image;
+    else image = maskedPicture(out.image, w, h, clip, lookChannel(channel));
     if (image !== out.image) {
       const c = image as AnyCanvas;
       out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
     }
   }
   return out;
+}
+
+/**
+ * the flat path's kept copies of looked ('|look') and masked ('|mask') stills, slot = channel + clip id + step. the copy
+ * is made at the size of the looker's / the mask's own canvas (clipLookTexture caps at 4096, maskedPicture at 2048), so
+ * it is drawn with exactly the arguments the direct result was. 24 copies, 48 megapixels at most.
+ */
+const stillCopies = new StillCopies<AnyCanvas>(24, 48_000_000);
+let stillSerial = 0;
+
+/**
+ * one step (the look, or the mask) of a still picture through the kept copies. `w` x `h` is the size the step is asked at.
+ * returns the picture to carry on with and its key: a hit costs nothing, a miss runs the step and keeps a copy of
+ * the result. no copy can be made (no canvas here, no 2d context): the direct result, without a key, so the next step
+ * does not cache either.
+ */
+function stillStep(
+  isMask: boolean,
+  clip: VisualClip,
+  image: CanvasImageSource,
+  w: number,
+  h: number,
+  key: string,
+  channel: Channel,
+): { image: CanvasImageSource; key: string | undefined } {
+  const sig = isMask ? maskSignature(clip) : clipLookSignature(clip);
+  const slot = channel + '|' + clip.id + (isMask ? '|mask' : '|look');
+  return keptStep<CanvasImageSource, AnyCanvas>(
+    stillCopies,
+    slot,
+    key,
+    sig,
+    w,
+    h,
+    image,
+    () => (isMask ? maskedPicture(image, w, h, clip, lookChannel(channel)) : clipLookTexture(image, w, h, clip, lookChannel(channel))),
+    (out, reuse) => {
+      let canvas = reuse;
+      if (!canvas) {
+        if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(out.width, out.height);
+        else if (typeof document !== 'undefined') canvas = createCanvas(out.width, out.height);
+        else return null;
+      }
+      const c = canvas.getContext('2d') as Ctx | null;
+      if (!c) return null;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = 1;
+      c.globalCompositeOperation = 'copy';
+      c.drawImage(out as CanvasImageSource, 0, 0);
+      return canvas;
+    },
+    () => `${isMask ? 'fmask' : 'flook'}:${clip.id}:${++stillSerial}`,
+  );
+}
+
+/** a number for each picture object, so the key of an image changes when its bitmap is replaced (same asset, same size) */
+const imageSerials = new WeakMap<object, number>();
+let imageSerial = 0;
+
+/**
+ * the key of a still source: an image clip's picture (asset + real pixel size + the bitmap object itself), undefined for a
+ * video (every frame is another picture).
+ */
+function imageStillKey(clip: VisualClip, source: DrawSource): string | undefined {
+  if (clip.type !== 'image') return undefined;
+  const image = source.image as object & { width?: number; height?: number };
+  if (!image || (typeof image !== 'object' && typeof image !== 'function')) return undefined;
+  let n = imageSerials.get(image);
+  if (n === undefined) {
+    n = ++imageSerial;
+    imageSerials.set(image, n);
+  }
+  return `img:${clip.assetId}:${image.width || source.width}x${image.height || source.height}:${n}`;
 }
 
 /**
@@ -817,9 +909,13 @@ function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | nu
     syncTextureCaches(project);
     const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
     if (!t) return null;
-    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel);
+    // key undefined = the picture is redrawn all the time (an animation, a counter, a drawn-on outline)
+    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, t.key);
   }
-  return source ? processed(source, clip, channel) : null;
+  if (!source) return null;
+  if (!hasClipLook(clip) && !hasMask(clip)) return source;
+  syncTextureCaches(project);
+  return processed(source, clip, channel, imageStillKey(clip, source));
 }
 
 /**
