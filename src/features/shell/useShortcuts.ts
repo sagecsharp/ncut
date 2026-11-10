@@ -23,7 +23,33 @@ export function ownsKey(target: EventTarget | null, key: string): boolean {
   if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'range') {
     return key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(key);
   }
+  // a control reached with the keyboard (tab) is pressed with space / enter. one that only has focus because it
+  // was clicked does not take them: space after a click still plays
+  if ((key === ' ' || key === 'Enter') && PRESSABLE.has(pressRole(target))) {
+    try {
+      return target.matches(':focus-visible');
+    } catch {
+      return false;
+    }
+  }
   return false;
+}
+
+const PRESSABLE = new Set(['button', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'link', 'summary']);
+
+/** what kind of pressable thing an element is ('' = none) */
+function pressRole(el: HTMLElement): string {
+  const role = el.getAttribute('role');
+  if (role) return role;
+  const tag = el.tagName;
+  if (tag === 'BUTTON') return 'button';
+  if (tag === 'SUMMARY') return 'summary';
+  if (tag === 'A') return (el as HTMLAnchorElement).href ? 'link' : '';
+  if (tag === 'INPUT') {
+    const type = (el as HTMLInputElement).type;
+    return type === 'checkbox' || type === 'radio' ? type : type === 'button' || type === 'submit' ? 'button' : '';
+  }
+  return '';
 }
 
 /** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
@@ -57,6 +83,7 @@ export function useShortcuts(): void {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space' && e.key !== ' ') return;
       if (isTypingTarget(e.target) || modalOpen()) return;
+      if (ownsKey(e.target, ' ')) return;
       e.preventDefault();
     };
 

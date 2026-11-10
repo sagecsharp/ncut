@@ -4,7 +4,7 @@ import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
 import { childrenOf, parentOf } from '../../lib/links';
-import { reparentTransform } from '../../engine/parent';
+import { attachClips } from '../properties/attachActions';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
@@ -149,15 +149,11 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           role="menuitem"
           title="detach the selected clips, they stay where they are"
           onClick={run(() => {
-            const st = useEditor.getState();
-            const now = usePlayback.getState().time;
-            st.pushHistory();
-            for (const c of attached) {
-              const live = useEditor.getState().project;
-              const cur = live?.clips.find((x) => x.id === c.id);
-              if (!live || !cur || !isVisualClip(cur)) continue;
-              st.updateClip(c.id, { parent: null, transform: reparentTransform(live, cur, null, now) }, { skipHistory: true });
-            }
+            // the shared action: one undo step, keeps the place on screen, leaves animated values alone
+            attachClips(
+              attached.map((c) => c.id),
+              null,
+            );
           })}
         >
           <Paperclip size={14} />

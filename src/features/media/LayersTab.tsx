@@ -5,7 +5,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import { reparentTransform } from '../../engine/parent';
+import { attachClips } from '../properties/attachActions';
 import { expandGroups, parentOf } from '../../lib/links';
 import { isCameraClip, isVisualClip } from '../../types';
 import type { ClipType, Project } from '../../types';
@@ -35,11 +35,8 @@ function reparent(clipId: string, parentId: string | null): void {
   if (!clip || !isVisualClip(clip)) return;
   if (parentId !== null && !canAttach(project, clipId, parentId)) return;
   if ((clip.parent ?? null) === parentId) return;
-  const time = usePlayback.getState().time;
-  const patch: ClipPatch = { parent: parentId, transform: reparentTransform(project, clip, parentId, time) };
-  const target = parentId ? project.clips.find((c) => c.id === parentId) : undefined;
-  if (target && isCameraClip(target) && !clip.threeD) patch.threeD = true;
-  st.updateClip(clipId, patch);
+  // the shared action: one undo step, keeps the place on screen, leaves animated values alone, 3d for a camera
+  attachClips([clipId], parentId);
 }
 
 interface RowProps {
