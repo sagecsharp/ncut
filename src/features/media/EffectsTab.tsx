@@ -7,7 +7,7 @@ import { beginDrag, endDrag } from '../../lib/dnd';
 import { EFFECTS } from '../../engine/effects/registry';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import type { EffectDef } from '../../engine/effects/types';
-import { groupEffects } from './effectGroups';
+import { effectMatchesQuery, groupEffects } from './effectGroups';
 import { effectsSupported, renderEffects } from '../../engine/effects/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -273,7 +273,7 @@ export function EffectsTab() {
 
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
-    const match = (e: EffectDef) => !q || e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q);
+    const match = (e: EffectDef) => effectMatchesQuery(e, q);
     return groupEffects(EFFECT_CATEGORIES, EFFECTS, match);
   }, [q]);
   const cameraShown = !q || 'camera'.includes(q) || '3d'.includes(q);
@@ -298,7 +298,7 @@ export function EffectsTab() {
           <input
             className="input input-sm"
             placeholder="search effects"
-            title="search effects by name or description"
+            title="search effects by name, description or category"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />

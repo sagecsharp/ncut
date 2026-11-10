@@ -28,3 +28,10 @@ export function groupEffects(
     .map((c) => ({ id: c.id, label: c.label, items: effects.filter((e) => e.category === c.id && match(e)) }))
     .filter((g) => g.items.length > 0);
 }
+
+/** the search field: matches the name, the description or the category label, case insensitive. an empty query matches all. */
+export function effectMatchesQuery(e: EffectDef, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || e.category.toLowerCase().includes(q);
+}

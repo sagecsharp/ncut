@@ -36,7 +36,7 @@
  *  6. the output alpha is forced to 1. return rgb in 0..1.
  */
 
-export type EffectCategory = 'motion' | 'blur' | 'color' | 'distort' | 'stylize';
+export type EffectCategory = 'motion' | 'blur' | 'color' | 'distort' | 'stylize' | 'overlay';
 
 export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
   { id: 'motion', label: 'motion' },
@@ -44,6 +44,7 @@ export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
   { id: 'color', label: 'color' },
   { id: 'distort', label: 'distort' },
   { id: 'stylize', label: 'stylize' },
+  { id: 'overlay', label: 'overlay' },
 ];
 
 export interface EffectParam {
