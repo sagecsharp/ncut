@@ -10,7 +10,7 @@ export interface OverlayRect {
   h: number;
 }
 
-export type GhostKind = 'asset' | 'text' | 'shape' | 'effect' | 'camera' | 'transition';
+export type GhostKind = 'asset' | 'text' | 'shape' | 'effect' | 'camera' | 'transition' | 'swap';
 
 export class Overlays {
   private snapEl: HTMLElement | null = null;

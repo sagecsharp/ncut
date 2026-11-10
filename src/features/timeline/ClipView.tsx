@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Camera, Link2, Paperclip, Shapes, Sparkles, VolumeX } from 'lucide-react';
+import { Camera, Crop, Link2, Paperclip, Shapes, Sparkles, VolumeX, Wind } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
 import { hasKeyframes } from '../../lib/anim';
 import { canBeParent } from '../../lib/links';
@@ -46,6 +46,9 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
     const pct = Math.round(clip.amount * 100);
     if (pct !== 100) label = `${label} ${pct}%`;
   }
+  // marks for features a clip may use. a plain field read, nothing is subscribed or computed
+  const hasMask = isVisualClip(clip) && !!clip.mask;
+  const hasBlur = isVisualClip(clip) && !!clip.motionBlur;
   const fadeIn = clip.fadeIn * zoom;
   const fadeOut = clip.fadeOut * zoom;
 
@@ -71,6 +74,20 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
         {clip.type === 'camera' && w >= 40 ? <Camera size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         <span className="timeline-clip-name">{label}</span>
       </div>
+      {(hasMask || hasBlur) && w >= 40 ? (
+        <div className="timeline-clip-marks">
+          {hasMask ? (
+            <Crop size={11} aria-label="has a mask">
+              <title>has a mask</title>
+            </Crop>
+          ) : null}
+          {hasBlur ? (
+            <Wind size={11} aria-label="has motion blur">
+              <title>has motion blur</title>
+            </Wind>
+          ) : null}
+        </div>
+      ) : null}
       {hasKeyframes(clip) ? <KeyMarks clip={clip} zoom={zoom} clipH={h} /> : null}
       <div className="timeline-trim is-start" data-trim="start" style={{ width: handleW }} />
       <div className="timeline-trim is-end" data-trim="end" style={{ width: handleW }} />

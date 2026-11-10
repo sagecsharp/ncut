@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Blend, Box, Copy, Diamond, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Scissors, Snowflake, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { Blend, Box, Copy, Diamond, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -7,8 +7,10 @@ import { childrenOf, parentOf } from '../../lib/links';
 import { reparentTransform } from '../../engine/parent';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { freezeAtPlayhead, groupIdsNow, ungroupIdsNow } from './actions';
 import { useFloatingMenu } from './menuBehavior';
+import { swapCandidates } from './swap';
 
 interface Props {
   x: number;
@@ -45,6 +47,9 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const inClip = time >= clip.start && time <= clipEnd(clip);
   const is3d = visual.length > 0 && visual.every((c) => c.threeD);
 
+  const swaps = project ? swapCandidates(project.assets, clip) : [];
+  const canSplitAll = !!project?.clips.some((c) => time > c.start + 0.05 && time < clipEnd(c) - 0.05);
+
   const run = (fn: () => void) => () => {
     fn();
     onClose();
@@ -61,6 +66,19 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
       >
         <Scissors size={14} />
         split at playhead
+      </button>
+      <button
+        className="menu-item"
+        role="menuitem"
+        disabled={!canSplitAll}
+        title="split every clip on every track at the playhead"
+        onClick={run(() => {
+          const st = useEditor.getState();
+          st.splitClips(usePlayback.getState().time, st.project?.clips.map((c) => c.id) ?? []);
+        })}
+      >
+        <Scissors size={14} />
+        split all tracks here
       </button>
       <button
         className="menu-item"
@@ -157,6 +175,28 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <Snowflake size={14} />
           freeze frame
         </button>
+      ) : null}
+      {swaps.length > 0 ? (
+        <>
+          <div className="menu-sep" />
+          <div className="menu-hint" aria-hidden="true">
+            swap media
+          </div>
+          {swaps.map((a) => (
+            <button
+              key={a.id}
+              className="menu-item"
+              role="menuitem"
+              title={`replace this clip's media with ${a.name}`}
+              onClick={run(() => {
+                if (!useEditor.getState().replaceClipAsset(clip.id, a.id)) useUi.getState().toast('could not swap the media');
+              })}
+            >
+              <Replace size={14} />
+              <span className="timeline-menu-asset">{a.name}</span>
+            </button>
+          ))}
+        </>
       ) : null}
       {withTransition.length > 0 || withKeys.length > 0 || visual.length > 0 ? <div className="menu-sep" /> : null}
       {withTransition.length > 0 ? (

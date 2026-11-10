@@ -245,6 +245,19 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => usePlayback.getState().toggle(),
   },
   {
+    id: 'back-second',
+    keys: [['j']],
+    group: 'playback',
+    description: 'back 1 second (no reverse playback)',
+    repeat: true,
+    match: byKey('j'),
+    run: () => {
+      const pb = usePlayback.getState();
+      pb.pause();
+      pb.seek(pb.time - 1);
+    },
+  },
+  {
     id: 'pause',
     keys: [['k']],
     group: 'playback',
@@ -670,6 +683,30 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['alt']],
     group: 'preview',
     description: 'hold while dragging to turn snapping off',
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'scene-tools',
+    keys: [['w'], ['e'], ['r']],
+    group: 'preview',
+    description: 'scene view: move, rotate, scale tool (scene view focused)',
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'scene-frame',
+    keys: [['f']],
+    group: 'preview',
+    description: 'scene view: frame the selection (scene view focused)',
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'swap-media',
+    keys: [['alt']],
+    group: 'timeline',
+    description: 'hold while dropping media on a clip of the same kind to swap its media',
     match: () => false,
     run: () => undefined,
   },

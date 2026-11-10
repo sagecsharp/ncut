@@ -4,7 +4,7 @@
  * ghost update per animation frame and writes the ghost with a transform.
  */
 import type { DragEvent as ReactDragEvent } from 'react';
-import type { MediaAsset, TrackKind } from '../../types';
+import type { Clip, MediaAsset, TrackKind } from '../../types';
 import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_SHAPE_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
@@ -17,6 +17,7 @@ import type { VisualClip } from '../../types';
 import { snapToFrame } from '../../lib/time';
 import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { timelineSnapPoints } from './markers';
+import { swapTarget } from './swap';
 import { importFiles } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -109,7 +110,7 @@ export function createDnd(env: DndEnv) {
   let points: number[] | null = null;
   let layout: Layout | null = null;
   let rafId = 0;
-  let last: { cx: number; cy: number; payload: DragPayload | null } | null = null;
+  let last: { cx: number; cy: number; payload: DragPayload | null; alt: boolean } | null = null;
 
   function reset(): void {
     geo = null;
@@ -202,9 +203,41 @@ export function createDnd(env: DndEnv) {
     return { clip: under, laneIndex: hit.index };
   }
 
+  /** with alt held, the clip of the same kind under the pointer that a dropped asset would replace */
+  function resolveSwap(cx: number, cy: number, payload: DragPayload | null, alt: boolean): { clip: Clip; laneIndex: number } | null {
+    if (!alt || payload?.kind !== 'asset' || !ensure() || !geo || !layout) return null;
+    const st = useEditor.getState();
+    const project = st.project;
+    if (!project) return null;
+    const hit = hitLane(layout, cy - geo.top - RULER_H + view.scrollTop);
+    if (hit.type !== 'lane') return null;
+    const track = project.tracks[hit.index];
+    if (!track) return null;
+    const time = (cx - geo.left - HEADER_W + view.scrollLeft) / st.zoom;
+    const asset = project.assets.find((a) => a.id === payload.assetId);
+    const clip = swapTarget(project, track.id, time, asset);
+    return clip ? { clip, laneIndex: hit.index } : null;
+  }
+
   function updateGhost(): void {
     rafId = 0;
     if (!last) return;
+    const swap = resolveSwap(last.cx, last.cy, last.payload, last.alt);
+    if (swap && layout) {
+      const zoom = useEditor.getState().zoom;
+      env.overlays.setHot(null);
+      env.overlays.setGhost(
+        {
+          x: Math.round(swap.clip.start * zoom),
+          y: layout.tops[swap.laneIndex]! + CLIP_INSET,
+          w: swap.clip.duration * zoom,
+          h: layout.heights[swap.laneIndex]! - CLIP_INSET * 2,
+        },
+        'swap',
+        'swap media',
+      );
+      return;
+    }
     if (last.payload?.kind === 'transition') {
       const hit = resolveTransition(last.cx, last.cy);
       env.overlays.setHot(null);
@@ -267,7 +300,7 @@ export function createDnd(env: DndEnv) {
     if (!accepts(e)) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-    last = { cx: e.clientX, cy: e.clientY, payload: isNcutDrag(e) ? getDragPayload() : null };
+    last = { cx: e.clientX, cy: e.clientY, payload: isNcutDrag(e) ? getDragPayload() : null, alt: e.altKey };
     if (!rafId) rafId = requestAnimationFrame(updateGhost);
   }
 
@@ -286,6 +319,7 @@ export function createDnd(env: DndEnv) {
     const files = isFileDrag(e) && !isNcutDrag(e) ? Array.from(e.dataTransfer?.files ?? []) : [];
     const payload = readPayload(e);
     const transitionTarget = payload?.kind === 'transition' ? resolveTransition(cx, cy) : null;
+    const swap = resolveSwap(cx, cy, payload, e.altKey);
     const target = resolve(cx, cy, payload, true);
     const fileTarget = files.length > 0 ? resolve(cx, cy, null, false) : null;
     reset();
@@ -298,6 +332,13 @@ export function createDnd(env: DndEnv) {
         st.updateClip(transitionTarget.clip.id, { transition: transitionFor(payload.transition, transitionTarget.clip.transition) });
         st.select([transitionTarget.clip.id], 'replace');
       }
+      return;
+    }
+
+    if (swap && payload?.kind === 'asset') {
+      // alt + asset on a clip of the same kind: swap its media (one undo step), keep its place and look
+      if (st.replaceClipAsset(swap.clip.id, payload.assetId)) st.select([swap.clip.id], 'replace');
+      else useUi.getState().toast('could not swap the media');
       return;
     }
 
