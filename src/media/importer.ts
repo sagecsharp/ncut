@@ -45,8 +45,9 @@ export function detectKind(file: { type: string; name: string }): MediaKind | nu
   if (file.type.startsWith('video/')) return 'video';
   if (file.type.startsWith('audio/')) return 'audio';
   if (file.type.startsWith('image/')) return 'image';
-  if (!file.type || file.type === 'application/octet-stream') return EXT_KIND[extOf(file.name)] ?? null;
-  return null;
+  // no type, or one that is not a media type (ogg often comes as application/ogg, mkv as application/x-matroska):
+  // the file name decides. a name without a media extension is not media either way.
+  return EXT_KIND[extOf(file.name)] ?? null;
 }
 
 /** how many files are currently being imported (for the media panel) */
