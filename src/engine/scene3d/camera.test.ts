@@ -612,3 +612,73 @@ describe('camera target', () => {
     near(cameraFromClip(c, 1, p).pan, cameraFromClip(ref.c, 1, ref.p).pan, 6);
   });
 });
+
+/* ---------- depth of field ---------- */
+
+describe('camera focus', () => {
+  const W = 1920;
+  const H = 1080;
+  const d0 = homeDistance(H);
+  it('is off (and absent) without blur', () => {
+    const c = cc('t', 0, 5, { focusDistance: 800, focusRange: 50 });
+    const cam = cameraFromClip(c, 1);
+    expect(cam).toEqual({ x: 0, y: 0, z: 0, pan: 0, tilt: 0, roll: 0, fov: 50 });
+    expect(cameraRig(cam, W, H).focus).toBeNull();
+    expect(cameraRig(DEFAULT_CAMERA, W, H).focus).toBeNull();
+    expect(cameraRig(cam, W, H).viewProj).toHaveLength(16);
+  });
+  it('reads strength, distance and range, distance falls back to the home distance', () => {
+    const c = cc('t', 0, 5, { focusStrength: 0.6, focusDistance: 900, focusRange: 120 });
+    const rig = cameraRig(cameraFromClip(c, 1), W, H);
+    expect(rig.focus).toEqual({ distance: 900, strength: 0.6, range: 120 });
+    const home = cameraRig(cameraFromClip(cc('t', 0, 5, { focusStrength: 1 }), 1), W, H);
+    expect(home.focus!.distance).toBeCloseTo(d0, 6);
+    expect(home.focus!.range).toBe(0);
+  });
+  it('keyframes rack the focus', () => {
+    const c = cc('t', 10, 4, {
+      focusStrength: 1,
+      focusDistance: 500,
+      keyframes: {
+        focusDistance: [
+          { t: 0, v: 500, ease: 'linear' },
+          { t: 4, v: 1500, ease: 'linear' },
+        ],
+        focusStrength: [
+          { t: 0, v: 0, ease: 'linear' },
+          { t: 4, v: 1, ease: 'linear' },
+        ],
+      },
+    });
+    expect(cameraFromClip(c, 12).focusDistance).toBeCloseTo(1000, 9);
+    expect(cameraFromClip(c, 12).focusStrength).toBeCloseTo(0.5, 9);
+    expect(cameraRig(cameraFromClip(c, 10), W, H).focus).toBeNull();
+  });
+  it('follow target: the distance along the view direction to the target center', () => {
+    const { p, top, low } = twoTracks();
+    const t = createTextClip(low, 0, { duration: 4, threeD: true, transform: { ...DEFAULT_TRANSFORM, x: 300, y: 0, z: 600 } });
+    const c = cc(top, 0, 4, { target: t.id, focusStrength: 1, focusDistance: 50, focusOnTarget: true });
+    p.clips = [t, c];
+    const cam = cameraFromClip(c, 1, p);
+    const rig = cameraRig(cam, W, H);
+    // the camera looks straight at the target: the straight distance and the view distance are the same
+    const center: Vec3 = [W / 2 + 300, H / 2, 600];
+    const straight = length([center[0] - rig.eye[0], center[1] - rig.eye[1], center[2] - rig.eye[2]]);
+    expect(rig.focus!.distance).toBeCloseTo(straight, 3);
+    // without follow target the stored distance is used
+    const off = cameraFromClip({ ...c, focusOnTarget: false }, 1, p);
+    expect(cameraRig(off, W, H).focus!.distance).toBe(50);
+    // no valid target: the stored distance too
+    const none = cameraFromClip({ ...c, target: 'nope' }, 1, p);
+    expect(cameraRig(none, W, H).focus!.distance).toBe(50);
+  });
+  it('a target offset by pan keeps the distance along the view direction', () => {
+    const { p, top, low } = twoTracks();
+    const t = createTextClip(low, 0, { duration: 4, threeD: true, transform: { ...DEFAULT_TRANSFORM, x: 0, y: 0, z: 600 } });
+    const c = cc(top, 0, 4, { target: t.id, pan: 30, focusStrength: 1, focusOnTarget: true });
+    p.clips = [t, c];
+    const rig = cameraRig(cameraFromClip(c, 1, p), W, H);
+    const straight = length([W / 2 - rig.eye[0], H / 2 - rig.eye[1], 600 - rig.eye[2]]);
+    expect(rig.focus!.distance).toBeCloseTo(straight * Math.cos(30 * DEG), 2);
+  });
+});

@@ -366,8 +366,8 @@ describe('animProps', () => {
   it('effect: amount only (params come from the effect def)', () => {
     expect(names(effect())).toEqual(['amount']);
   });
-  it('camera: xyz, pan, tilt, roll, fov', () => {
-    expect(names(camera())).toEqual(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov']);
+  it('camera: xyz, pan, tilt, roll, fov, focus distance and blur', () => {
+    expect(names(camera())).toEqual(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focusDistance', 'focusStrength']);
   });
   it('has plain labels for the 3d fields', () => {
     const l = Object.fromEntries(animProps(video()).map((p) => [p.prop, p.label]));
@@ -426,6 +426,23 @@ describe('baseValue / withBaseValue', () => {
   it('camera fields', () => {
     const c = camera();
     expect(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov'].map((p) => baseValue(c, p))).toEqual([1, 2, 3, 4, 5, 6, 50]);
+  });
+  it('camera focus: blur is 0 when missing, a missing distance stays unknown', () => {
+    const c = camera();
+    expect(baseValue(c, 'focusStrength')).toBe(0);
+    expect(baseValue(c, 'focusDistance')).toBeUndefined();
+    const f = camera({ focusStrength: 0.4, focusDistance: 900 });
+    expect(baseValue(f, 'focusStrength')).toBe(0.4);
+    expect(baseValue(f, 'focusDistance')).toBe(900);
+  });
+  it('camera focus: keyframes rack the focus and resolve into the clip', () => {
+    const c = camera({ focusStrength: 1, focusDistance: 500, keyframes: { focusDistance: [k(0, 500), k(2, 1500)] } });
+    expect(valueAt(c, 'focusDistance', c.start + 1)).toBe(1000);
+    const r = resolveClip(c, c.start + 1);
+    expect(r.focusDistance).toBe(1000);
+    expect(r.focusStrength).toBe(1);
+    expect(withBaseValue(camera(), 'focusStrength', 0.5).focusStrength).toBe(0.5);
+    expect(withBaseValue(camera(), 'focusDistance', 700).focusDistance).toBe(700);
   });
   it('withBaseValue sets every kind without mutating', () => {
     const v = video();

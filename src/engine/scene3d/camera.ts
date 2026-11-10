@@ -9,6 +9,7 @@ import { worldCenterOf } from '../parent';
 import { clipEnd } from '../../lib/timelineOps';
 import type { CameraClip, Project } from '../../types';
 import { isVisualClip } from '../../types';
+import { type FocusRig, bindFocus, focusDistanceForPoint, makeFocus } from './focus';
 import { DEG, type Mat4, type Vec3, add, cross, dot, mul, normalize, rotateAround, scale, transformPoint } from './math';
 
 export interface Camera3D {
@@ -22,6 +23,15 @@ export interface Camera3D {
   roll: number;
   /** vertical field of view in degrees. smaller = zoomed in. */
   fov: number;
+  /**
+   * depth of field (see focus.ts). strength 0 / missing = off. distance missing = the home distance.
+   * focusPoint (a world point, the camera target's center) beats focusDistance: the rig works out how far it is
+   * along the view direction.
+   */
+  focusStrength?: number;
+  focusDistance?: number;
+  focusRange?: number;
+  focusPoint?: Vec3;
 }
 
 export const DEFAULT_FOV = 50;
@@ -46,6 +56,8 @@ export interface CameraRig {
   aspect: number;
   near: number;
   far: number;
+  /** depth of field, or null when off (strength 0 / missing). the renderer reads it through renderScene. */
+  focus: FocusRig | null;
 }
 
 export function cameraRig(cam: Camera3D, projectWidth: number, projectHeight: number): CameraRig {
@@ -96,7 +108,16 @@ export function cameraRig(cam: Camera3D, projectWidth: number, projectHeight: nu
   proj[11] = 1;
   proj[14] = (-2 * far * near) / (far - near);
 
-  return { eye, right, down, forward, view, proj, viewProj: mul(proj, view), tanHalf, aspect, near, far };
+  let focus: FocusRig | null = null;
+  if (cam.focusStrength) {
+    let distance = cam.focusDistance ?? d0;
+    if (cam.focusPoint) distance = focusDistanceForPoint(eye, forward, cam.focusPoint) ?? distance;
+    focus = makeFocus(cam.focusStrength, distance, cam.focusRange);
+  }
+  const viewProj = mul(proj, view);
+  // draw.ts passes viewProj to the renderer: the focus rides along on it
+  bindFocus(viewProj, focus);
+  return { eye, right, down, forward, view, proj, viewProj, tanHalf, aspect, near, far, focus };
 }
 
 /**
@@ -154,9 +175,18 @@ export function cameraFromClip(clip: CameraClip, time: number, project?: Project
     roll: v('roll', 0),
     fov: v('fov', DEFAULT_FOV),
   };
+  // depth of field values only when it is on, so a camera without it stays exactly as it was
+  const strength = v('focusStrength', 0);
+  if (strength > 0) {
+    cam.focusStrength = strength;
+    const fd = v('focusDistance', NaN);
+    if (Number.isFinite(fd)) cam.focusDistance = fd;
+    cam.focusRange = clip.focusRange ?? 0;
+  }
   if (project && clip.target) {
     const c = cameraTargetCenter(project, clip, time);
     if (c) {
+      if (strength > 0 && clip.focusOnTarget) cam.focusPoint = c;
       const dx = c[0] - (project.width / 2 + cam.x);
       const dy = c[1] - (project.height / 2 + cam.y);
       const dz = c[2] - (-homeDistance(project.height) + cam.z);
