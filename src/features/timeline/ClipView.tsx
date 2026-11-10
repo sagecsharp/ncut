@@ -1,7 +1,10 @@
 import { memo } from 'react';
-import { Camera, Shapes, Sparkles, VolumeX } from 'lucide-react';
+import { Camera, Link2, Paperclip, Shapes, Sparkles, VolumeX } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
 import { hasKeyframes } from '../../lib/anim';
+import { canBeParent } from '../../lib/links';
+import { isVisualClip } from '../../types';
+import { useEditor } from '../../store/editorStore';
 import { ClipCanvas } from './ClipCanvas';
 import { KeyMarks } from './KeyMarks';
 import { CLIP_INSET } from './layout';
@@ -12,6 +15,19 @@ interface Props {
   zoom: number;
   laneH: number;
   asset: MediaAsset | undefined;
+}
+
+/** small mark for a clip attached to another one. only mounted for attached clips, so it is the only one subscribing. */
+function AttachMark({ parentId }: { parentId: string }) {
+  const name = useEditor((s) => {
+    const p = s.project?.clips.find((c) => c.id === parentId);
+    if (!p || !canBeParent(p)) return null;
+    return p.type === 'text' ? p.text.replace(/\s+/g, ' ') : p.type === 'shape' ? p.name || p.kind : p.name;
+  });
+  if (name === null) return null;
+  return <Paperclip size={11} aria-label={`attached to ${name}`} className="timeline-clip-icon">
+    <title>{`attached to ${name}`}</title>
+  </Paperclip>;
 }
 
 /**
@@ -43,6 +59,12 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
       {fadeIn > 1 ? <div className="timeline-fade is-in" style={{ width: Math.min(fadeIn, w) }} /> : null}
       {fadeOut > 1 ? <div className="timeline-fade is-out" style={{ width: Math.min(fadeOut, w) }} /> : null}
       <div className="timeline-clip-label">
+        {clip.group ? (
+          <Link2 size={11} className="timeline-clip-icon" aria-label="in a group">
+            <title>in a group</title>
+          </Link2>
+        ) : null}
+        {isVisualClip(clip) && clip.parent ? <AttachMark parentId={clip.parent} /> : null}
         {muted ? <VolumeX size={11} aria-label="muted" /> : null}
         {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'shape' && w >= 40 ? <Shapes size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}

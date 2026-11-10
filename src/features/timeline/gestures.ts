@@ -17,6 +17,7 @@ import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { hitKey } from './keyGeometry';
+import { groupIds, marqueeSelection, pressedSelection } from './selectionRules';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
 import { hitMarker, markerTimes, timelineSnapPoints } from './markers';
 import type { MarkerMenuRequest } from './MarkerUi';
@@ -74,7 +75,7 @@ interface MoveGesture extends Base {
   items: MoveItem[];
   leader: MoveItem;
   points: number[];
-  deferSingle: string | null;
+  deferSingle: string[] | null;
   lastKey: string;
   delta: number;
   zone: 'top' | 'bottom' | null;
@@ -461,7 +462,7 @@ export function createGestures(env: GestureEnv) {
   function finishMove(m: MoveGesture): void {
     const st = store();
     if (!m.started) {
-      if (m.deferSingle) st.select([m.deferSingle], 'replace');
+      if (m.deferSingle) st.select(m.deferSingle, 'replace');
       return;
     }
     if (m.zone && m.items.length === 1) {
@@ -624,7 +625,7 @@ export function createGestures(env: GestureEnv) {
     if (key === mq.lastKey) return;
     mq.lastKey = key;
     st.select(mq.baseSelection, 'replace');
-    if (hits.length > 0) st.select(hits, 'add');
+    if (hits.length > 0) st.select(marqueeSelection(project, hits), 'add');
   }
 
   /* ---------- entry points ---------- */
@@ -719,14 +720,19 @@ export function createGestures(env: GestureEnv) {
         );
         return;
       }
-      let deferSingle: string | null = null;
-      if (mod) {
-        st.select([id], 'toggle');
-        if (!store().selection.includes(id)) return;
-      } else if (!st.selection.includes(id)) {
+      // groups select together; alt picks the one clip; trimming (above) never expands
+      let deferSingle: string[] | null = null;
+      if (e.altKey) {
         st.select([id], 'replace');
+      } else if (e.ctrlKey || e.metaKey) {
+        st.select(pressedSelection(project, st.selection, id, 'toggle'), 'replace');
+        if (!store().selection.includes(id)) return;
+      } else if (e.shiftKey) {
+        st.select(pressedSelection(project, st.selection, id, 'add'), 'replace');
+      } else if (!st.selection.includes(id)) {
+        st.select(groupIds(project, id), 'replace');
       } else if (st.selection.length > 1) {
-        deferSingle = id;
+        deferSingle = groupIds(project, id);
       }
       const sel = new Set(store().selection);
       const trackIdx = new Map(project.tracks.map((t, i) => [t.id, i]));
@@ -858,7 +864,7 @@ export function createGestures(env: GestureEnv) {
     if (!clip || !track || track.locked) return;
     e.preventDefault();
     end();
-    if (!st.selection.includes(id)) st.select([id], 'replace');
+    if (!st.selection.includes(id)) st.select(st.project ? groupIds(st.project, id) : [id], 'replace');
     env.openMenu({ x: e.clientX, y: e.clientY, clipId: id });
   }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import type { Track } from '../../types';
 import { clamp } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
@@ -13,6 +13,8 @@ import { Ruler } from './Ruler';
 import { TimelineToolbar } from './TimelineToolbar';
 import { TrackHeader } from './TrackHeader';
 import { TrackLane } from './TrackLane';
+import { TrackMenu } from './TrackMenu';
+import type { TrackMenuRequest } from './TrackMenu';
 import { createDnd } from './dnd';
 import { MarkerLines, MarkerMenu, MarkerRename } from './MarkerUi';
 import type { MarkerMenuRequest } from './MarkerUi';
@@ -69,6 +71,7 @@ function TimelineInner() {
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
   const [viewW, setViewW] = useState(view.width);
   const [menu, setMenu] = useState<MenuRequest | null>(null);
+  const [trackMenu, setTrackMenu] = useState<TrackMenuRequest | null>(null);
   const [markerMenu, setMarkerMenu] = useState<MarkerMenuRequest | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; x: number; y: number } | null>(null);
 
@@ -99,6 +102,23 @@ function TimelineInner() {
   );
 
   const closeMenu = useCallback(() => setMenu(null), []);
+  const closeTrackMenu = useCallback(() => setTrackMenu(null), []);
+  const onLanesContextMenu = useCallback(
+    (e: ReactMouseEvent<HTMLElement>) => {
+      const el = e.target as HTMLElement;
+      const onClip = el.closest('[data-clip-id], [data-transition-clip]');
+      const trackId = el.closest<HTMLElement>('[data-track-id]')?.dataset.trackId;
+      if (!onClip && trackId && !el.closest('input, button')) {
+        e.preventDefault();
+        setMenu(null);
+        setMarkerMenu(null);
+        setTrackMenu({ x: e.clientX, y: e.clientY, trackId });
+        return;
+      }
+      gestures.onContextMenu(e);
+    },
+    [gestures],
+  );
   const closeMarkerMenu = useCallback(() => setMarkerMenu(null), []);
   const closeRename = useCallback(() => setRenaming(null), []);
   const startRename = useCallback((id: string, x: number, y: number) => setRenaming({ id, x, y }), []);
@@ -274,7 +294,7 @@ function TimelineInner() {
             <div
               className="timeline-lanes-wrap"
               onPointerDown={gestures.onLanesPointerDown}
-              onContextMenu={gestures.onContextMenu}
+              onContextMenu={onLanesContextMenu}
             >
               <div className="timeline-zone">
                 <div className="timeline-head timeline-head-fill" />
@@ -312,6 +332,7 @@ function TimelineInner() {
       </div>
       {markerMenu ? <MarkerMenu {...markerMenu} onClose={closeMarkerMenu} onRename={startRename} /> : null}
       {renaming ? <MarkerRename {...renaming} onDone={closeRename} /> : null}
+      {trackMenu ? <TrackMenu {...trackMenu} onClose={closeTrackMenu} /> : null}
       {menu ? <ClipMenu x={menu.x} y={menu.y} clipId={menu.clipId} onClose={closeMenu} /> : null}
     </div>
   );

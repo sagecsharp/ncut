@@ -12,6 +12,7 @@ import { getLastEffect, setLastEffect } from './lastEffect';
 import { SHAPE_PRESETS } from '../media/shapePresets';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
+import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, ungroupIdsNow } from '../timeline/actions';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
 
@@ -423,6 +424,41 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'select all',
     match: byKey('a', { mod: true }),
     run: () => useEditor.getState().selectAll(),
+  },
+  {
+    id: 'select-after',
+    keys: [['ctrl', 'shift', 'a']],
+    group: 'editing',
+    description: 'select everything after the playhead',
+    match: byKey('a', { mod: true, shift: true }),
+    run: () => selectAfterPlayhead(),
+  },
+  {
+    id: 'group',
+    mutates: true,
+    keys: [['ctrl', 'g']],
+    group: 'editing',
+    description: 'group the selected clips',
+    match: byKey('g', { mod: true }),
+    run: () => groupIdsNow(useEditor.getState().selection),
+  },
+  {
+    id: 'ungroup',
+    mutates: true,
+    keys: [['ctrl', 'shift', 'g']],
+    group: 'editing',
+    description: 'ungroup the selected clips',
+    match: byKey('g', { mod: true, shift: true }),
+    run: () => ungroupIdsNow(useEditor.getState().selection),
+  },
+  {
+    id: 'freeze-frame',
+    mutates: true,
+    keys: [['shift', 'f']],
+    group: 'editing',
+    description: 'freeze frame at the playhead',
+    match: byKey('f', { shift: true }),
+    run: freezeAtPlayhead,
   },
   {
     id: 'deselect',

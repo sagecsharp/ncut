@@ -1,10 +1,13 @@
 import { useRef } from 'react';
-import { Blend, Box, Copy, Diamond, ListEnd, Scissors, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { Blend, Box, Copy, Diamond, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Scissors, Snowflake, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
+import { childrenOf, parentOf } from '../../lib/links';
+import { reparentTransform } from '../../engine/parent';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { freezeAtPlayhead, groupIdsNow, ungroupIdsNow } from './actions';
 import { useFloatingMenu } from './menuBehavior';
 
 interface Props {
@@ -35,6 +38,11 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const withTransition = picked.filter((c) => isVisualClip(c) && c.transition);
   const withKeys = picked.filter((c) => hasKeyframes(c));
   const visual = picked.filter(isVisualClip);
+  const grouped = picked.some((c) => c.group);
+  const children = project ? childrenOf(project, clip.id) : [];
+  const parent = project ? parentOf(project, clip) : null;
+  const attached = project ? picked.filter(isVisualClip).filter((c) => parentOf(project, c)) : [];
+  const inClip = time >= clip.start && time <= clipEnd(clip);
   const is3d = visual.length > 0 && visual.every((c) => c.threeD);
 
   const run = (fn: () => void) => () => {
@@ -82,6 +90,74 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <ListEnd size={14} />
         ripple delete
       </button>
+      {ids.length > 1 || grouped || children.length > 0 || parent || attached.length > 0 || clip.type === 'video' ? <div className="menu-sep" /> : null}
+      {ids.length > 1 ? (
+        <button className="menu-item" role="menuitem" title="move and edit these clips as one (ctrl+g)" onClick={run(() => groupIdsNow(ids))}>
+          <Link2 size={14} />
+          group
+        </button>
+      ) : null}
+      {grouped ? (
+        <button className="menu-item" role="menuitem" title="split the group apart (ctrl+shift+g)" onClick={run(() => ungroupIdsNow(ids))}>
+          <Link2Off size={14} />
+          ungroup
+        </button>
+      ) : null}
+      {children.length > 0 ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          title="select this clip and the clips attached to it"
+          onClick={run(() => useEditor.getState().select([clip.id, ...children.map((c) => c.id)], 'replace'))}
+        >
+          <MousePointer2 size={14} />
+          select attached clips
+        </button>
+      ) : null}
+      {parent ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          title="select the clip this one is attached to"
+          onClick={run(() => useEditor.getState().select([parent.id], 'replace'))}
+        >
+          <Paperclip size={14} />
+          select what it is attached to
+        </button>
+      ) : null}
+      {attached.length > 0 ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          title="detach the selected clips, they stay where they are"
+          onClick={run(() => {
+            const st = useEditor.getState();
+            const now = usePlayback.getState().time;
+            st.pushHistory();
+            for (const c of attached) {
+              const live = useEditor.getState().project;
+              const cur = live?.clips.find((x) => x.id === c.id);
+              if (!live || !cur || !isVisualClip(cur)) continue;
+              st.updateClip(c.id, { parent: null, transform: reparentTransform(live, cur, null, now) }, { skipHistory: true });
+            }
+          })}
+        >
+          <Paperclip size={14} />
+          detach
+        </button>
+      ) : null}
+      {clip.type === 'video' ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          disabled={!inClip}
+          title={inClip ? 'turn the frame at the playhead into a still (shift+f)' : 'move the playhead onto the clip first'}
+          onClick={run(freezeAtPlayhead)}
+        >
+          <Snowflake size={14} />
+          freeze frame
+        </button>
+      ) : null}
       {withTransition.length > 0 || withKeys.length > 0 || visual.length > 0 ? <div className="menu-sep" /> : null}
       {withTransition.length > 0 ? (
         <button
