@@ -98,7 +98,7 @@ vec4 effect(vec2 uv) {
     posterTime: 1.0,
     params: [
       { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 80, unit: '%' },
-      { key: 'size', label: 'size', min: 10, max: 150, step: 1, default: 70, unit: '%' },
+      { key: 'size', label: 'size', min: 10, max: 150, step: 1, default: 105, unit: '%' },
       { key: 'warmth', label: 'warmth', min: 0, max: 100, step: 1, default: 50, unit: '%' },
       { key: 'drift', label: 'drift', min: 0, max: 3, step: 0.05, default: 0.4, unit: 'hz' },
       { key: 'angle', label: 'angle', min: 0, max: 360, step: 5, default: 45, unit: 'deg' },
@@ -118,12 +118,12 @@ vec4 effect(vec2 uv) {
   float radius = p_size / 100.0 * 1.8 * (1.0 + 0.08 * sin(t * PI));
   float x = length(p - src) / max(radius, 0.01);
   float glow = pow(sat(1.0 - x), 1.5);
-  float core = pow(sat(1.0 - x * 1.5), 2.0);
+  float core = pow(sat(1.0 - x * 1.15), 1.6);
   // pink magenta outside, pale yellow white in the hot core
   float w = p_warmth / 100.0;
   vec3 outer = hsv2rgb(vec3(mix(0.92, 1.04, w), 0.8, 1.0));
   vec3 hot = hsv2rgb(vec3(mix(0.12, 0.15, w), 0.25, 1.0));
-  vec3 leak = mix(outer, hot, core) * glow * (p_strength / 100.0) * 1.3 * u_amount;
+  vec3 leak = mix(outer, hot, core) * glow * (p_strength / 100.0) * 1.7 * u_amount;
   // screen blend
   vec3 col = 1.0 - (1.0 - c) * (1.0 - sat(leak));
   return vec4(col, 1.0);

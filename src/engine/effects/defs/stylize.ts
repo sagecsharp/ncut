@@ -38,7 +38,7 @@ vec4 effect(vec2 uv) {
     description: 'soft defocus blur, optionally only at the edges',
     posterTime: 1,
     params: [
-      { key: 'radius', label: 'radius', min: 0, max: 6, step: 0.1, default: 2.5, unit: '%' },
+      { key: 'radius', label: 'radius', min: 0, max: 6, step: 0.1, default: 1.2, unit: '%' },
       { key: 'edgeOnly', label: 'edge only', min: 0, max: 100, step: 1, default: 0, unit: '%' },
     ],
     glsl: `

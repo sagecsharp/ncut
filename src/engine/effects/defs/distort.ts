@@ -77,9 +77,9 @@ vec4 effect(vec2 uv) {
     posterTime: 1,
     params: [
       { key: 'amplitude', label: 'amplitude', min: 0, max: 100, step: 1, default: 40, unit: '%' },
-      { key: 'rings', label: 'rings', min: 2, max: 30, step: 1, default: 12, unit: 'x' },
+      { key: 'rings', label: 'rings', min: 2, max: 30, step: 1, default: 9, unit: 'x' },
       { key: 'speed', label: 'speed', min: 0, max: 5, step: 0.1, default: 1.2, unit: 'hz' },
-      { key: 'dispersion', label: 'dispersion', min: 0, max: 100, step: 1, default: 60, unit: '%' },
+      { key: 'dispersion', label: 'dispersion', min: 0, max: 100, step: 1, default: 35, unit: '%' },
       { key: 'wander', label: 'wander', min: 0, max: 100, step: 1, default: 40, unit: '%' },
     ],
     glsl: `
