@@ -12,6 +12,7 @@ interface Summary {
   image: number;
   audio: number;
   text: number;
+  effect: number;
   visual: number;
   audible: number;
   /** values of the first matching clip, shown as the shared value */
@@ -31,6 +32,7 @@ function summarize(ids: string[]): Summary {
     image: 0,
     audio: 0,
     text: 0,
+    effect: 0,
     visual: 0,
     audible: 0,
     opacity: 1,
@@ -45,7 +47,7 @@ function summarize(ids: string[]): Summary {
   let first = true;
   for (const c of p.clips) {
     if (!set.has(c.id)) continue;
-    if (c.type !== 'effect') out[c.type] += 1;
+    out[c.type] += 1;
     out.minDuration = Math.min(out.minDuration, c.duration);
     if (first) {
       out.fadeIn = c.fadeIn;
@@ -148,6 +150,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
             />
           </Pair>
         </Row>
+        {sum.effect > 0 ? <div className="props-hint">fades ramp the strength of effect clips</div> : null}
       </Section>
     </>
   );
@@ -156,7 +159,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
-  const parts = (['video', 'image', 'audio', 'text'] as const)
+  const parts = (['video', 'image', 'audio', 'text', 'effect'] as const)
     .filter((k) => sum[k] > 0)
     .map((k) => `${sum[k]} ${k}`)
     .join(', ');

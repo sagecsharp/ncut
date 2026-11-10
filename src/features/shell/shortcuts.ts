@@ -7,6 +7,7 @@ import type { TimedClip } from '../../types';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { getLastEffect, setLastEffect } from './lastEffect';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'timeline' | 'app';
@@ -332,6 +333,18 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'add text at playhead',
     match: byKey('t'),
     run: () => useEditor.getState().addText({ start: usePlayback.getState().time }),
+  },
+  {
+    id: 'add-effect',
+    keys: [['e']],
+    group: 'editing',
+    description: 'add the last used effect at playhead',
+    match: byKey('e'),
+    run: () => {
+      const id = getLastEffect();
+      const made = useEditor.getState().addEffect(id, { start: usePlayback.getState().time });
+      if (made) setLastEffect(id);
+    },
   },
   {
     id: 'mute',
