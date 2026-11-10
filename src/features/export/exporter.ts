@@ -23,7 +23,7 @@ import {
 } from 'mediabunny';
 import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
-import { neededClipsAt, releaseRenderResources, renderFrame } from '../../engine/draw';
+import { neededClipsAt, releaseRenderResources, renderFrame, temporalReach } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
@@ -390,8 +390,11 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
     // ---- inputs for visible video / image clips (a gif export opens them twice: palette pass, encode pass) ----
     const openSources = async () => {
-    // clips a transition shows at the very first frame without the clip playing there (it ended before the range, or starts later)
-    const neededAtStart = new Set(neededClipsAt(project, rangeStart).map((c) => c.id));
+    // clips a transition shows inside the range without the clip playing there: it ended before the range
+    // (still needed at the first frame) or starts after it (needed at the last frame)
+    const neededAtStart = new Set(
+      [...neededClipsAt(project, rangeStart), ...neededClipsAt(project, frameTime(rangeStart, Math.max(0, totalFrames - 1), fps))].map((c) => c.id),
+    );
     const hiddenTrack = new Set(project.tracks.filter((t) => t.kind !== 'video' || t.hidden).map((t) => t.id));
     for (const clip of project.clips) {
       if (hiddenTrack.has(clip.trackId)) continue;
@@ -468,6 +471,20 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
     };
 
+    // the clips whose picture frame t can show: the ones on screen, the ones a transition holds, and under a
+    // motion blur / echo / frame blend also the ones on screen in the other moments that effect mixes in
+    // (around a cut the clip before holds its last frame and the clip after shows its first one)
+    const neededFor = (t: number) => {
+      const out = neededClipsAt(project, t);
+      const reach = temporalReach(project, t);
+      if (!reach) return out;
+      for (const off of [-reach.back, -reach.back / 2, reach.ahead / 2, reach.ahead]) {
+        if (off === 0) continue;
+        for (const c of neededClipsAt(project, Math.max(0, t + off))) if (!out.includes(c)) out.push(c);
+      }
+      return out;
+    };
+
     // advance the decoders of the video clips visible at time t. a clip that a transition shows
     // before it starts gets its first frame early; one shown after it ended holds its last frame.
     const advanceFeeds = async (t: number, visible: readonly Project['clips'][number][]) => {
@@ -506,7 +523,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     // free the decoder + canvas of video clips that just played their last frame
     const freeFeeds = async (i: number, visible: readonly Project['clips'][number][]) => {
       const nextT = frameTime(rangeStart, i + 1, fps);
-      const neededNext = neededClipsAt(project, nextT);
+      const neededNext = neededFor(nextT);
       for (const clip of visible) {
         if (clip.type !== 'video' || clip.start + clip.duration - EPS > nextT) continue;
         // a transition out of the clip still shows its last frame
@@ -534,7 +551,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     const stepFrame = async (i: number, draw: (t: number) => Promise<void> | void) => {
       // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
       const t = frameTime(rangeStart, i, fps);
-      const visible = neededClipsAt(project, t);
+      const visible = neededFor(t);
       await advanceFeeds(t, visible);
       await draw(t);
       await freeFeeds(i, visible);

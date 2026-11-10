@@ -52,7 +52,7 @@ export const PACK2_MOTION_EFFECTS: EffectDef[] = [
     id: 'frame-blend',
     name: 'frame blend',
     category: 'motion',
-    description: 'soft average of the frames around this one: smooths video and motion',
+    description: 'soft average of the moments around this one: smooths moves, camera and effects (video keeps its own frames)',
     posterTime: 1,
     params: [
       { key: 'frames', label: 'frames', min: 2, max: 8, step: 1, default: 4, unit: 'x' },
@@ -75,7 +75,7 @@ vec4 effect(vec2 uv) {
     id: 'strobe',
     name: 'strobe',
     category: 'motion',
-    description: 'holds the picture for a few frames, then jumps: stuttering time',
+    description: 'holds moves, camera and effects for a few frames, then jumps: stuttering motion (video keeps playing)',
     posterTime: 0.5,
     params: [{ key: 'hold', label: 'hold', min: 2, max: 30, step: 1, default: 6, unit: 'x' }],
     temporal: (params, amount, fps, _quality, time) => strobeSamples(params, amount, fps, time),

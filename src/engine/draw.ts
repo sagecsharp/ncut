@@ -937,6 +937,36 @@ function temporalSamples(raw: EffectClip, time: number, fps: number, quality: nu
 }
 
 /**
+ * how far the temporal effects (motion blur, echo, frame blend, strobe) that are on at a time reach into the
+ * past and the future, in seconds (both >= 0), or null when none is on. effects stacked on each other add up.
+ * the export uses it to keep the pictures of clips that only show in those other moments (around a cut).
+ */
+export function temporalReach(project: Project, time: number, quality = 1): { back: number; ahead: number } | null {
+  let back = 0;
+  let ahead = 0;
+  let any = false;
+  for (const track of project.tracks) {
+    if (track.kind !== 'video' || track.hidden) continue;
+    for (const clip of project.clips) {
+      if (clip.type !== 'effect' || clip.trackId !== track.id) continue;
+      if (time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
+      const samples = temporalSamples(clip, time, project.fps || 30, quality);
+      if (!samples) continue;
+      let lo = 0;
+      let hi = 0;
+      for (const sm of samples) {
+        if (sm.offset < lo) lo = sm.offset;
+        if (sm.offset > hi) hi = sm.offset;
+      }
+      back -= lo;
+      ahead += hi;
+      any = true;
+    }
+  }
+  return any ? { back, ahead } : null;
+}
+
+/**
  * drop samples whose share of the total weight is below 1/512 (they cannot change an 8-bit pixel) but
  * always keep the largest one, then renormalize so the weights add up to 1. order is kept.
  */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioClip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { effectPassAt, hasEffectsAt, paintListAt, renderFrame } from './draw';
+import { effectPassAt, hasEffectsAt, paintListAt, renderFrame, temporalReach } from './draw';
 import type { DrawSource } from './draw';
 import { EFFECTS, getEffect } from './effects/registry';
 
@@ -314,5 +314,31 @@ describe('renderFrame with effect clips', () => {
       return mkSource('x');
     });
     expect(seen).toEqual([]);
+  });
+});
+
+describe('temporalReach', () => {
+  const tr: Track = { id: 'tv', kind: 'video', name: 'v', muted: false, hidden: false, locked: false };
+  const top: Track = { id: 'tf', kind: 'video', name: 'fx', muted: false, hidden: false, locked: false };
+  it('is null without a temporal effect', () => {
+    const p = project([video('tv', 0, 4), effect('tf', 0, 4)], [top, tr]);
+    expect(temporalReach(p, 1)).toBeNull();
+  });
+  it('covers the moments a motion blur and an echo mix in, only while they run', () => {
+    const p = project([video('tv', 0, 4), effect('tf', 1, 2, { effect: 'motion-blur' })], [top, tr]);
+    expect(temporalReach(p, 0.5)).toBeNull();
+    const r = temporalReach(p, 2)!;
+    expect(r.back + r.ahead).toBeGreaterThan(0);
+    expect(r.back).toBeGreaterThanOrEqual(0);
+    expect(r.ahead).toBeGreaterThanOrEqual(0);
+    // within about a frame for a shutter
+    expect(r.back + r.ahead).toBeLessThan(0.2);
+    const e = temporalReach(project([video('tv', 0, 4), effect('tf', 0, 4, { effect: 'echo' })], [top, tr]), 2)!;
+    expect(e.back).toBeGreaterThan(0);
+    expect(e.ahead).toBe(0);
+  });
+  it('ignores hidden tracks', () => {
+    const p = project([video('tv', 0, 4), effect('tf', 0, 4, { effect: 'motion-blur' })], [{ ...top, hidden: true }, tr]);
+    expect(temporalReach(p, 2)).toBeNull();
   });
 });
