@@ -40,18 +40,30 @@ export function arrangeSelection(ids: readonly string[], kind: ArrangeKind, opts
     itemH = Math.max(itemH, b.height);
   }
   const poses = arrange(kind, clips.length, { ...opts, itemW: Math.round(itemW), itemH: Math.round(itemH) });
+  const want = (i: number): [prop: 'x' | 'y' | 'z' | 'rotX' | 'rotY' | 'rotation', value: number][] => {
+    const pose = poses[i]!;
+    return [
+      ['x', pose.x],
+      ['y', pose.y],
+      ['z', pose.z],
+      ['rotX', pose.rotX ?? 0],
+      ['rotY', pose.rotY],
+      ['rotation', pose.rotation],
+    ];
+  };
+  // already laid out like this (the active layout clicked again): no undo step that changes nothing
+  const same = clips.every((c, i) => {
+    if (!c.threeD) return false;
+    const t = timeIn(c);
+    return want(i).every(([prop, v]) => Math.abs((valueAt(c, prop, t) ?? c.transform[prop] ?? 0) - v) < 1e-6);
+  });
+  if (same) return clips.length;
   if (history) st.pushHistory();
   const skip = { skipHistory: true };
   clips.forEach((c, i) => {
-    const pose = poses[i]!;
     if (!c.threeD) st.updateClip(c.id, { threeD: true }, skip);
     const t = timeIn(c);
-    st.setClipValue(c.id, 'x', t, pose.x, skip);
-    st.setClipValue(c.id, 'y', t, pose.y, skip);
-    st.setClipValue(c.id, 'z', t, pose.z, skip);
-    st.setClipValue(c.id, 'rotX', t, pose.rotX ?? 0, skip);
-    st.setClipValue(c.id, 'rotY', t, pose.rotY, skip);
-    st.setClipValue(c.id, 'rotation', t, pose.rotation, skip);
+    for (const [prop, v] of want(i)) st.setClipValue(c.id, prop, t, v, skip);
   });
   return clips.length;
 }

@@ -32,6 +32,13 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
   const [kind, setKind] = useState<ArrangeKind | null>(null);
   const [vals, setVals] = useState<Record<ArrangeKey, number>>({ ...ARRANGE_DEFAULTS });
   const [outward, setOutward] = useState(true);
+  // another selection starts without a chosen layout: its slider must not re-arrange clips nobody asked to arrange
+  const idsKey = ids.join(',');
+  const [shownFor, setShownFor] = useState(idsKey);
+  if (shownFor !== idsKey) {
+    setShownFor(idsKey);
+    setKind(null);
+  }
 
   const { usable, visual, threeD } = useMemo(() => {
     if (!clips || !tracks) return { usable: 0, visual: 0, threeD: 0 };
@@ -39,7 +46,8 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
     return {
       usable: t.clips.length,
       visual: t.clips.length + t.skipped,
-      threeD: clips.filter((c) => ids.includes(c.id) && isVisualClip(c) && c.threeD).length,
+      // only the ones the buttons can change (not on a locked track)
+      threeD: clips.filter((c) => ids.includes(c.id) && isVisualClip(c) && c.threeD && !tracks.find((tr) => tr.id === c.trackId)?.locked).length,
     };
   }, [clips, tracks, ids]);
 
