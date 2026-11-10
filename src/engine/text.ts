@@ -339,7 +339,7 @@ export function measureText(clip: TextClip): TextBox {
   const wrap = clip.wrapWidth !== undefined && clip.wrapWidth > 0 ? clip.wrapWidth : 0;
   const rawCurve = clip.curve ?? 0;
   const curve = Math.abs(rawCurve) >= 0.01 ? Math.max(-360, Math.min(360, rawCurve)) : 0;
-  const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${curve !== 0 ? clip.align : ''}|${text}`;
+  const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${clip.align}|${text}`;
   const hit = boxCache.get(key);
   if (hit) {
     boxByClip.set(clip, { v, box: hit });

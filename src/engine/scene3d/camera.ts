@@ -5,6 +5,7 @@
  */
 import { resolveClip, valueAt } from '../../lib/anim';
 import { applyClipMotion } from '../clipAnim';
+import { worldCenterOf } from '../parent';
 import { clipEnd } from '../../lib/timelineOps';
 import type { CameraClip, Project } from '../../types';
 import { isVisualClip } from '../../types';
@@ -113,6 +114,9 @@ export function homeEye(projectWidth: number, projectHeight: number): Vec3 {
   return [projectWidth / 2, projectHeight / 2, -homeDistance(projectHeight)];
 }
 
+/** how many camera targets are being worked out inside each other right now (see cameraTargetCenter) */
+let aiming = 0;
+
 /** the world center of the camera clip's target at a time, or null (no / unknown / self / non visual target) */
 export function cameraTargetCenter(project: Project, clip: CameraClip, time: number): Vec3 | null {
   const id = clip.target;
@@ -121,6 +125,16 @@ export function cameraTargetCenter(project: Project, clip: CameraClip, time: num
   if (!tc || !isVisualClip(tc)) return null;
   // not visible at that time is fine: use the nearest moment inside the target clip
   const t = Math.min(Math.max(time, tc.start), Math.max(tc.start, clipEnd(tc) - 1e-4));
+  // a target attached to something is where its parents put it. a parent can be a camera, whose pose can
+  // depend on a target again (even this one): past a few levels fall back to the target's own values.
+  if (tc.parent && aiming < 3) {
+    aiming++;
+    try {
+      return worldCenterOf(project, tc, t);
+    } finally {
+      aiming--;
+    }
+  }
   const v = applyClipMotion(resolveClip(tc, t), t, project);
   return [project.width / 2 + v.transform.x, project.height / 2 + v.transform.y, v.threeD ? (v.transform.z ?? 0) : 0];
 }

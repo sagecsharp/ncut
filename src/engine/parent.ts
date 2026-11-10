@@ -303,6 +303,12 @@ export function clipLookPoint(project: Project, clip: VisualClip, time: number):
   return [f[12]!, f[13]!, f[14]!];
 }
 
+/** the center of a visual clip in the world at a time, after keyframes, motions and parents (a 2d clip lies at z 0) */
+export function worldCenterOf(project: Project, clip: VisualClip, time: number): Vec3 {
+  const f = frameOf(project, clip, time, 0);
+  return [f[12]!, f[13]!, f[14]!];
+}
+
 /** the Euler angles (degrees) of clipModelMatrix's rotation order from a pure rotation matrix (column-major, 3x3 part used) */
 function eulerOf(r: ArrayLike<number>): { rotX: number; rotY: number; rotation: number } {
   // R = Ry(a) * Rx(b) * Rz(c); r[col * 4 + row]

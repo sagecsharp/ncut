@@ -1,5 +1,6 @@
 /** geometry helpers shared by the output overlay and the scene overlay. pure, no dom. */
 import { type ClipBox, getClipBox, normalizeCrop } from '../../engine/draw';
+import { clipLookPoint } from '../../engine/parent';
 import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from '../../engine/scene3d/camera';
 import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
 import { clipModelMatrix, clipWorldModel, planeCorners } from '../../engine/scene3d/model';
@@ -74,7 +75,9 @@ export function clipQuad(project: Project, raw: VisualClip, time: number, rig: C
   const framed = usesParentFrame(raw);
   const clip = framed ? resolveClip(raw, time) : worldClip(project, raw, time);
   const box = getClipBox(project, clip);
-  const base = framed ? clipWorldModel(project, clip, time, box, rig.eye) : clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye);
+  const base = framed
+    ? clipWorldModel(project, clip, time, box, rig.eye)
+    : clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye, null, clip.lookAt === 'clip' ? clipLookPoint(project, clip, time) : null);
   const model = keptPlaneModel(base, clip.crop, clip.shape);
   const world = planeCorners(model);
   const q: Quad = out ?? { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world, cx: 0, cy: 0 };

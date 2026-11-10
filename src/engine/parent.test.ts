@@ -5,7 +5,7 @@ import { DEFAULT_TRANSFORM } from '../types';
 import { clipModelMatrix } from './scene3d/model';
 import { type CameraRig, cameraRig, cameraWorldMatrix, projectPoint } from './scene3d/camera';
 import { mul, transformPoint, translation, type Mat4 } from './scene3d/math';
-import { clipLookPoint, invertMatrix, parentModelMatrix, reparentTransform, worldDeltaToLocal, worldTransform, worldTransformOf } from './parent';
+import { clipLookPoint, invertMatrix, parentModelMatrix, reparentTransform, worldCenterOf, worldDeltaToLocal, worldTransform, worldTransformOf } from './parent';
 
 const tf = (o: Partial<Transform> = {}): Transform => ({ ...DEFAULT_TRANSFORM, ...o });
 
@@ -364,5 +364,32 @@ describe("clipLookPoint (lookAt 'clip')", () => {
     const w = centerOf(p, tar, 1).world;
     const l = pt(p)!;
     for (let i = 0; i < 3; i++) expect(l[i]).toBeCloseTo(w[i]!, 3);
+  });
+});
+
+describe('camera target under a parent', () => {
+  it('aims at where the target is in the world, not at its local offset', async () => {
+    const { cameraTargetCenter } = await import('./scene3d/camera');
+    const p = setup((t) => [
+      sh(t, 'par', { transform: tf({ x: 300, y: -100 }) }),
+      sh(t, 'kid', { parent: 'par', transform: tf({ x: 40, y: 10 }) }),
+      { ...createCameraClip(t, 0), id: 'cam', duration: 10, target: 'kid' },
+    ]);
+    const c = cameraTargetCenter(p, p.clips[2] as CameraClip, 1)!;
+    expect(c[0]).toBeCloseTo(p.width / 2 + 340);
+    expect(c[1]).toBeCloseTo(p.height / 2 - 90);
+    expect(c[2]).toBeCloseTo(0);
+    expect(worldCenterOf(p, p.clips[1] as ShapeClip, 1)[0]).toBeCloseTo(p.width / 2 + 340);
+  });
+  it('does not hang when the target hangs on the camera that aims at it', async () => {
+    const { cameraFromClip, cameraTargetCenter } = await import('./scene3d/camera');
+    const p = setup((t) => [
+      sh(t, 'kid', { parent: 'cam', threeD: true, transform: tf({ x: 40, y: 10, z: 200 }) }),
+      { ...createCameraClip(t, 0), id: 'cam', duration: 10, target: 'kid' },
+    ]);
+    const cam = p.clips[1] as CameraClip;
+    const c = cameraTargetCenter(p, cam, 1)!;
+    expect(c.every((v) => Number.isFinite(v))).toBe(true);
+    expect(Number.isFinite(cameraFromClip(cam, 1, p).pan)).toBe(true);
   });
 });

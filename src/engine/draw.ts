@@ -372,8 +372,14 @@ interface Scratch {
 }
 const scratches = new Map<string, Scratch | null>();
 
-/** a helper canvas with the same size and transform as the canvas of `like`, kept per channel + name */
-function scratchFor(like: Ctx, channel: Channel, name: string): Scratch | null {
+/**
+ * a helper canvas with the same size and transform as the canvas of `like`, kept per channel + name.
+ * precise = a canvas that sums samples (motion blur, echo): half float pixels where the browser has them. an
+ * 8 bit canvas rounds every added share, so 12 samples of a dark flat color come out as 12 x round(v / 12):
+ * level 5 turns black, level 7 turns 12. with float pixels the sum is exact and rounds once at the end.
+ * browsers without it fall back to 8 bit (same picture in preview and export either way: same browser).
+ */
+function scratchFor(like: Ctx, channel: Channel, name: string, precise = false): Scratch | null {
   const src = like.canvas as AnyCanvas | undefined;
   if (!src) return null;
   const key = `${channel}:${name}`;
@@ -382,7 +388,16 @@ function scratchFor(like: Ctx, channel: Channel, name: string): Scratch | null {
     let canvas: AnyCanvas | null = null;
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(src.width, src.height);
     else if (typeof document !== 'undefined') canvas = document.createElement('canvas');
-    const c = canvas ? (canvas.getContext('2d') as Ctx | null) : null;
+    let c: Ctx | null = null;
+    if (canvas && precise) {
+      try {
+        // unknown attributes are ignored by older browsers: they hand back a plain 8 bit context
+        c = (canvas as OffscreenCanvas).getContext('2d', { colorType: 'float16' } as CanvasRenderingContext2DSettings) as Ctx | null;
+      } catch {
+        c = null;
+      }
+    }
+    if (canvas && !c) c = canvas.getContext('2d') as Ctx | null;
     sc = canvas && c ? { canvas, ctx: c } : null;
     scratches.set(key, sc);
   }
@@ -562,7 +577,12 @@ type LookChannel = 'preview' | 'export';
 const lookChannel = (c: Channel): LookChannel => (c === 'export' ? 'export' : 'preview');
 
 /** a flat picture to draw. pad (text / shape pictures) = room around the clip box on every side, in pixels at scale 1 */
-type FlatSource = DrawSource & { pad?: number };
+type FlatSource = DrawSource & {
+  pad?: number;
+  /** pixel size of `image` when it is not width x height any more (the look caps at 4096, the mask at 2048). crop reads pixels, so it needs these. */
+  pw?: number;
+  ph?: number;
+};
 
 /**
  * the clip's look, then its mask, on a picture. returns `source` itself (no allocation) when the clip has neither.
@@ -572,13 +592,16 @@ function processed(source: FlatSource, clip: VisualClip, channel: Channel): Flat
   let out = source;
   if (hasClipLook(clip)) {
     const image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
-    if (image !== out.image) out = { ...out, image };
-  }
-  if (hasMask(clip)) {
-    const image = maskedPicture(out.image, out.width, out.height, clip, lookChannel(channel));
     if (image !== out.image) {
       const c = image as AnyCanvas;
-      out = { ...out, image, width: c.width || out.width, height: c.height || out.height };
+      out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
+    }
+  }
+  if (hasMask(clip)) {
+    const image = maskedPicture(out.image, out.pw ?? out.width, out.ph ?? out.height, clip, lookChannel(channel));
+    if (image !== out.image) {
+      const c = image as AnyCanvas;
+      out = { ...out, image, pw: c.width || out.width, ph: c.height || out.height };
     }
   }
   return out;
@@ -748,7 +771,10 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     lh = source.height;
     image = source.image as TexImageSource;
     // still images keep their texture between frames, video uploads every frame
-    cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${source.width}x${source.height}` : undefined;
+    // (the preview decodes big pictures smaller and re-decodes when the project grows: the key follows the real pixels,
+    // so a sharper decode replaces the texture and an export never reuses a copy made from the preview's smaller one)
+    const px = image as { width?: number; height?: number };
+    cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${px.width || source.width}x${px.height || source.height}` : undefined;
   }
   if (lw > 0 && lh > 0 && hasClipLook(clip)) {
     const looked = lookedTexture(clip, image, lw, lh, cacheKey, channel);
@@ -989,8 +1015,8 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
           ctx.clip();
         }
         if (crop) {
-          const sw = source.width;
-          const sh = source.height;
+          const sw = source.pw ?? source.width;
+          const sh = source.ph ?? source.height;
           ctx.drawImage(source.image, crop.left * sw, crop.top * sh, (1 - crop.left - crop.right) * sw, (1 - crop.top - crop.bottom) * sh, k.x, k.y, k.width, k.height);
         } else {
           ctx.drawImage(source.image, k.x, k.y, k.width, k.height);
@@ -1036,7 +1062,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   if (samePose(first.w, first.a, last.w, last.a)) return false;
   const canvas = ctx.canvas as AnyCanvas | undefined;
   const copy = scratchFor(ctx, env.channel, 'mbCopy');
-  const acc = scratchFor(ctx, env.channel, 'mbAcc');
+  const acc = scratchFor(ctx, env.channel, 'mbAcc', true);
   if (!canvas || !copy || !acc) return false;
   clearScratch(acc);
   const share = 1 / times.length;
@@ -1155,7 +1181,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       const samples = temporalSamples(it.clip, time, project.fps || 30, env.quality);
       if (!samples) continue;
       const sc = scratchFor(ctx, env.channel, `temporal${env.depth}`);
-      const acc = scratchFor(ctx, env.channel, `temporalAcc${env.depth}`);
+      const acc = scratchFor(ctx, env.channel, `temporalAcc${env.depth}`, true);
       const canvas = ctx.canvas as AnyCanvas | undefined;
       if (!sc || !acc || !canvas) break;
       const inner: Env = { ...env, depth: env.depth + 1 };
