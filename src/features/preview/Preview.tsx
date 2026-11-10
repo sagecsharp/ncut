@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
+import { Focus } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
+import { useSceneCamera } from './sceneCamera';
 import { PreviewEngine } from './PreviewEngine';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
@@ -25,6 +28,8 @@ export function Preview() {
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const mode = useUi((s) => s.previewMode);
+  const setMode = useUi((s) => s.setPreviewMode);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
 
   // engine + layout: the canvas is the largest project-aspect rect that fits the stage
@@ -117,6 +122,25 @@ export function Preview() {
     <div className="panel preview">
       <div className="panel-header">
         <span className="panel-title">preview</span>
+        {mode === 'scene' && (
+          <button className="icon-btn" title="reset view" aria-label="reset view" onClick={() => useSceneCamera.getState().reset()}>
+            <Focus size={14} />
+          </button>
+        )}
+        <div className="preview-seg" role="group" aria-label="preview mode">
+          {(['output', 'scene'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`preview-seg-btn${mode === m ? ' is-active' : ''}`}
+              aria-pressed={mode === m}
+              title={m === 'output' ? 'what gets exported' : 'the 3d world from a free camera'}
+              onClick={() => setMode(m)}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
       <div ref={stageRef} className="preview-stage" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         <div ref={frameRef} className="preview-frame">
