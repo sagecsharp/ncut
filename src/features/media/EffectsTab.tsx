@@ -7,6 +7,7 @@ import { beginDrag, endDrag } from '../../lib/dnd';
 import { EFFECTS } from '../../engine/effects/registry';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import type { EffectDef } from '../../engine/effects/types';
+import { groupEffects } from './effectGroups';
 import { effectsSupported, renderEffects } from '../../engine/effects/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -265,11 +266,7 @@ export function EffectsTab() {
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
     const match = (e: EffectDef) => !q || e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q);
-    return EFFECT_CATEGORIES.map((c) => ({
-      id: c.id,
-      label: c.label,
-      items: EFFECTS.filter((e) => e.category === c.id && match(e)),
-    })).filter((g) => g.items.length > 0);
+    return groupEffects(EFFECT_CATEGORIES, EFFECTS, match);
   }, [q]);
   const shown = groups.reduce((n, g) => n + g.items.length, 0);
 

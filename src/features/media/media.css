@@ -1,13 +1,35 @@
 .media-panel {
   height: 100%;
 }
-/* four tabs share the narrow panel: tighter padding, equal stretch, no clipped label */
+/* five tabs share the narrow panel (min width 280): tight padding, equal stretch, no scrollbar.
+   below 290px the labels give way to icons (every tab keeps its title and aria-label) */
+.media-panel > .tabs {
+  container-type: inline-size;
+  overflow: hidden;
+}
 .media-panel > .tabs > .tab {
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
-  padding: 0 6px;
+  padding: 0 4px;
   white-space: nowrap;
+}
+.media-tab-icon {
+  display: none;
+  flex-shrink: 0;
+}
+.media-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container (max-width: 289px) {
+  .media-tab-icon {
+    display: block;
+  }
+  .media-tab-label {
+    display: none;
+  }
 }
 
 .media-tab {
@@ -304,4 +326,33 @@
 .media-text-sample.is-stroke {
   -webkit-text-stroke: 1px var(--text-faint);
   color: transparent;
+}
+
+/* shapes tab */
+.media-shape-tab {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+.media-shape-card {
+  min-width: 0;
+}
+.media-shape-canvas {
+  display: block;
+  width: 120px;
+  height: 56px;
+  max-width: 100%;
+  pointer-events: none;
+}
+.media-text-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-empty-sub {
+  max-width: 220px;
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+  text-align: center;
 }

@@ -9,11 +9,13 @@ import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { getLastEffect, setLastEffect } from './lastEffect';
+import { SHAPE_PRESETS } from '../media/shapePresets';
+import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 
-export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'timeline' | 'app';
+export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'app';
 
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'timeline', 'app'];
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'app'];
 
 export interface Shortcut {
   id: string;
@@ -47,6 +49,8 @@ function modsOk(e: KeyboardEvent, { mod = false, shift = false }: Mods): boolean
 
 /** key matched on e.key (letters, named keys) */
 const byKey = (key: string, mods: Mods = {}) => (e: KeyboardEvent) => modsOk(e, mods) && keyIs(e, key);
+/** alt + a physical key, no other modifier (alt+letter types symbols on some layouts, so only punctuation uses it) */
+const byAltCode = (code: string) => (e: KeyboardEvent) => e.altKey && !isMod(e) && !e.shiftKey && e.code === code;
 /** key matched on the physical position (punctuation that moves around between layouts) */
 /** keys whose character is owned by another shortcut (zoom, help) on layouts where they share a physical key */
 const notMapped = (e: KeyboardEvent) => !['+', '-', '=', '_', '?'].includes(e.key);
@@ -166,6 +170,25 @@ function toggle3d(): void {
 function toggleScene(): void {
   const ui = useUi.getState();
   ui.setPreviewMode(ui.previewMode === 'scene' ? 'output' : 'scene');
+}
+
+function addMarkerHere(): void {
+  const time = usePlayback.getState().time;
+  const { project, addMarker } = useEditor.getState();
+  if (!project) return;
+  const had = project.markers?.length ?? 0;
+  addMarker(time);
+  const now = useEditor.getState().project?.markers?.length ?? 0;
+  toast(now > had ? 'marker added' : 'there is already a marker here');
+}
+
+function seekMarker(dir: -1 | 1): void {
+  const project = useEditor.getState().project;
+  if (!project) return;
+  const playback = usePlayback.getState();
+  const target = dir < 0 ? prevMarkerTime(project.markers, playback.time) : nextMarkerTime(project.markers, playback.time);
+  if (target === null) toast(dir < 0 ? 'no earlier marker' : 'no later marker');
+  else playback.seek(target);
 }
 
 function addCameraHere(): void {
@@ -417,11 +440,22 @@ export const SHORTCUTS: readonly Shortcut[] = [
     },
   },
   {
+    id: 'add-shape',
+    keys: [['r']],
+    group: 'editing',
+    description: 'add a rectangle at playhead',
+    match: byKey('r'),
+    run: () => {
+      const { project, addShape } = useEditor.getState();
+      if (project) addShape({ start: usePlayback.getState().time, preset: SHAPE_PRESETS[0]!.build(project.width, project.height) });
+    },
+  },
+  {
     id: 'mute',
-    keys: [['m']],
+    keys: [['shift', 'm']],
     group: 'editing',
     description: 'mute / unmute selected clips',
-    match: byKey('m'),
+    match: byKey('m', { shift: true }),
     run: toggleMute,
   },
   {
@@ -491,6 +525,34 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'add a camera at playhead',
     match: byKey('c'),
     run: addCameraHere,
+  },
+
+  // markers
+  {
+    id: 'marker-add',
+    keys: [['m']],
+    group: 'markers',
+    description: 'add a marker at playhead',
+    match: byKey('m'),
+    run: addMarkerHere,
+  },
+  {
+    id: 'marker-prev',
+    keys: [['alt', ',']],
+    group: 'markers',
+    description: 'previous marker',
+    repeat: true,
+    match: byAltCode('Comma'),
+    run: () => seekMarker(-1),
+  },
+  {
+    id: 'marker-next',
+    keys: [['alt', '.']],
+    group: 'markers',
+    description: 'next marker',
+    repeat: true,
+    match: byAltCode('Period'),
+    run: () => seekMarker(1),
   },
 
   // timeline

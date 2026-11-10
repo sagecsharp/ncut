@@ -1,9 +1,12 @@
+import { RotateCcw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
+import { useUi } from '../../store/ui';
+import { resetLayout } from '../editor/layoutReset';
 import type { ProjectSettingsPatch } from '../../store/editorStore';
 import './shell.css';
 
@@ -96,6 +99,20 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
     >
       <h3 className="shell-settings-heading">appearance</h3>
       <AppearanceSettings />
+      <div className="field">
+        <span className="field-label">panel layout</span>
+        <button
+          className="btn"
+          title="put the panels back to their default sizes"
+          onClick={() => {
+            resetLayout();
+            useUi.getState().toast('layout reset');
+          }}
+        >
+          <RotateCcw size={14} />
+          reset layout
+        </button>
+      </div>
 
       <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>
       <label className="field">
