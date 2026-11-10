@@ -178,3 +178,10 @@
     width: 140px;
   }
 }
+
+.projects-template-hint {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm, 11px);
+  line-height: 1.4;
+}

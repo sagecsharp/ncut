@@ -13,3 +13,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.caption-tools-title {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+.caption-tools {
+  flex-wrap: wrap;
+}
+.caption-tools .caption-tools-title {
+  flex: 1 0 100%;
+}

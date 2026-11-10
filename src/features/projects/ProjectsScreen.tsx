@@ -5,6 +5,7 @@ import type { ProjectSummary } from '../../types';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
+import { PROJECT_TEMPLATES, getTemplate } from '../../lib/templates';
 import { formatDuration } from '../../lib/time';
 import {
   createAndOpenProject,
@@ -224,6 +225,7 @@ export function ProjectsScreen() {
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState('untitled project');
   const [presetId, setPresetId] = useState(CANVAS_PRESETS[0]!.id);
+  const [templateId, setTemplateId] = useState('');
   const [fps, setFps] = useState(30);
   const [creating, setCreating] = useState(false);
 
@@ -402,7 +404,7 @@ export function ProjectsScreen() {
     const preset = CANVAS_PRESETS.find((p) => p.id === presetId) ?? CANVAS_PRESETS[0]!;
     setCreating(true);
     try {
-      await createAndOpenProject(newName.trim() || 'untitled project', preset, fps);
+      await createAndOpenProject(newName.trim() || 'untitled project', preset, fps, templateId || null);
     } catch (e) {
       fail(e, 'could not create the project');
     }
@@ -581,6 +583,26 @@ export function ProjectsScreen() {
               </option>
             ))}
           </select>
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="projects-new-template">
+            start with
+          </label>
+          <select
+            id="projects-new-template"
+            className="select"
+            value={templateId}
+            title="start empty or with a ready-made timeline you can take apart"
+            onChange={(e) => setTemplateId(e.target.value)}
+          >
+            <option value="">an empty timeline</option>
+            {PROJECT_TEMPLATES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          {templateId ? <p className="projects-template-hint">{getTemplate(templateId)?.description}</p> : null}
         </div>
         <div className="field">
           <label className="field-label" htmlFor="projects-new-fps">

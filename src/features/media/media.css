@@ -30,6 +30,11 @@
   .media-tab-label {
     display: none;
   }
+  /* the open tab keeps its name, so the row of icons still says where you are */
+  .media-panel > .tabs > .tab.is-active .media-tab-label {
+    display: block;
+    margin-left: 6px;
+  }
 }
 
 .media-tab {

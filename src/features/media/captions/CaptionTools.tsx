@@ -83,6 +83,7 @@ export function CaptionTools() {
 
   return (
     <div className="caption-tools">
+      <span className="caption-tools-title">captions</span>
       <button
         type="button"
         className="btn btn-sm"

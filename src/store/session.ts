@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { Project } from '../types';
 import type { CanvasPreset } from '../lib/factory';
 import { createProject } from '../lib/factory';
+import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
@@ -65,8 +66,10 @@ async function doOpen(id: string): Promise<boolean> {
   return true;
 }
 
-export async function createAndOpenProject(name?: string, preset?: CanvasPreset, fps?: number): Promise<Project> {
-  const project = createProject(name, preset, fps);
+/** template: id of a starter timeline in lib/templates.ts. unknown / missing = an empty project. */
+export async function createAndOpenProject(name?: string, preset?: CanvasPreset, fps?: number, template?: string | null): Promise<Project> {
+  const empty = createProject(name, preset, fps);
+  const project = getTemplate(template)?.build(empty) ?? empty;
   await saveProject(project);
   await openProjectById(project.id);
   return project;
