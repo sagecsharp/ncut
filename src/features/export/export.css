@@ -1,0 +1,54 @@
+.export-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.export-check {
+  cursor: pointer;
+  color: var(--text);
+}
+.export-summary {
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+.export-note {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+.export-note.is-error {
+  border-color: var(--danger);
+  background: var(--danger-muted);
+  color: var(--text);
+}
+.export-bar {
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.export-bar-fill {
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  will-change: transform;
+}
+.export-stats {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+}
+.export-dim {
+  color: var(--text-dim);
+}
+.export-done-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
