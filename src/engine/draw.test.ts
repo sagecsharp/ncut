@@ -1,9 +1,13 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTextClip } from '../lib/factory';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
+import { SCENE_RETRY_MS, releaseSceneRenderer, renderScene, sceneRendererCount, startBlocked } from './scene3d/renderer';
+import { effectRunnerCount, releaseEffectRunner } from './effects/runner';
+import { releaseTransitionRunner, transitionRunnerCount } from './transitions/runner';
+import { clipLookCount, releaseClipLook } from './clipLook';
 
 let seq = 0;
 function video(trackId: string, start: number, duration: number, over: Partial<VideoClip> = {}): VideoClip {
@@ -709,6 +713,90 @@ describe('releaseRenderResources', () => {
       releaseRenderResources('export');
       releaseRenderResources('preview');
     }).not.toThrow();
+  });
+});
+
+describe('release without a dom', () => {
+  it('every release function is safe when nothing was built', () => {
+    expect(() => {
+      releaseSceneRenderer('export');
+      releaseEffectRunner('export');
+      releaseTransitionRunner('export');
+      releaseClipLook('export');
+      releaseRenderResources('export');
+      releaseRenderResources('preview');
+    }).not.toThrow();
+    expect(sceneRendererCount()).toBe(0);
+    expect(effectRunnerCount()).toBe(0);
+    expect(transitionRunnerCount()).toBe(0);
+    expect(clipLookCount()).toBe(0);
+  });
+});
+
+describe('3d renderer start retry', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+  it('startBlocked is true only before the retry time', () => {
+    expect(startBlocked(undefined, 5)).toBe(false);
+    expect(startBlocked(100, 99)).toBe(true);
+    expect(startBlocked(100, 100)).toBe(false);
+  });
+  it('a failed start is tried again after the wait, not cached forever', () => {
+    let made = 0;
+    class NoGl {
+      constructor() {
+        made++;
+      }
+      getContext() {
+        return null;
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', NoGl);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const plane = { image: {}, model: new Array(16).fill(0), alpha: 1 } as unknown as Parameters<typeof renderScene>[0][number];
+    const call = () => renderScene([plane], [], new Array(16).fill(0) as never, [0, 0, 0] as never, 10, 10, 'retry-test');
+    expect(call()).toBeNull();
+    expect(made).toBe(1);
+    expect(call()).toBeNull();
+    expect(made).toBe(1);
+    vi.setSystemTime(1_000_000 + SCENE_RETRY_MS + 1);
+    expect(call()).toBeNull();
+    expect(made).toBe(2);
+    // releasing clears the wait
+    releaseSceneRenderer('retry-test');
+    expect(call()).toBeNull();
+    expect(made).toBe(3);
+  });
+});
+
+describe('imagePixelSize', () => {
+  it('reads the pixels of the image itself, not the reported size', () => {
+    expect(imagePixelSize({ width: 2048, height: 1024 }, 8000, 4000)).toEqual({ w: 2048, h: 1024 });
+    expect(imagePixelSize({ naturalWidth: 640, naturalHeight: 360, width: 99, height: 99 }, 1, 1)).toEqual({ w: 640, h: 360 });
+    expect(imagePixelSize({ videoWidth: 1280, videoHeight: 720, width: 0, height: 0 }, 1, 1)).toEqual({ w: 1280, h: 720 });
+    expect(imagePixelSize({ displayWidth: 1920, displayHeight: 1080 }, 1, 1)).toEqual({ w: 1920, h: 1080 });
+  });
+  it('falls back to the given size', () => {
+    expect(imagePixelSize({}, 300, 200)).toEqual({ w: 300, h: 200 });
+    expect(imagePixelSize(null, 300, 200)).toEqual({ w: 300, h: 200 });
+    expect(imagePixelSize({ width: { baseVal: 1 }, height: 0 }, 300, 200)).toEqual({ w: 300, h: 200 });
+    expect(imagePixelSize({ naturalWidth: 0, naturalHeight: 0 }, 300, 200)).toEqual({ w: 300, h: 200 });
+  });
+});
+
+describe('extrudeFades', () => {
+  const t = (extrude?: { depth: number } | null) => createTextClip('t', 0, { extrude: extrude as never });
+  it('only a text with an extrude below full alpha takes the picture path', () => {
+    const ex = { depth: 0.3, angle: 45, color: '#000' };
+    expect(extrudeFades(t(ex), 0.5)).toBe(true);
+    expect(extrudeFades(t(ex), 1)).toBe(false);
+    expect(extrudeFades(t({ ...ex, depth: 0 }), 0.5)).toBe(false);
+    expect(extrudeFades(t(null), 0.5)).toBe(false);
+    expect(extrudeFades(t(), 0.5)).toBe(false);
+    expect(extrudeFades(shape('t', 0, 1) as never, 0.5)).toBe(false);
   });
 });
 

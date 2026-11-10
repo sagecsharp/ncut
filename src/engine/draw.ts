@@ -13,22 +13,22 @@ import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, effectsOnClip, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
-import { clipLookSignature, clipLookTexture, hasClipLook } from './clipLook';
+import { clipLookSignature, clipLookTexture, hasClipLook, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
-import { renderEffects } from './effects/runner';
+import { releaseEffectRunner, renderEffects } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
 import { mul, scaling, translation } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
-import { type Lines3D, type Plane3D, renderScene } from './scene3d/renderer';
+import { type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
 import { drawShape, shapeSignature, shapeSpill } from './shape';
 import { drawText, measureText, textSignature, textSpill } from './text';
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
-import { easeTransition, renderTransition } from './transitions/runner';
+import { easeTransition, releaseTransitionRunner, renderTransition } from './transitions/runner';
 
 export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
 
@@ -47,10 +47,28 @@ export function releaseRenderResources(channel: 'preview' | 'export'): void {
     }
     scratches.delete(key);
   }
-  releaseMaskResources(channel === 'export' ? 'export' : 'preview');
+  const lc: LookChannel = channel === 'export' ? 'export' : 'preview';
+  releaseMaskResources(lc);
+  releaseClipLook(lc);
+  const gl = channel === 'export' ? 'export' : 'default';
+  releaseSceneRenderer(gl);
+  releaseEffectRunner(gl);
+  releaseTransitionRunner(gl);
+  // the per clip copies made for 3d are shared by both channels (keyed by clip id): emptying them is safe, the next
+  // plane that needs one rebuilds it (and gets a new texture key)
+  emptyCopies(lookCopies);
+  emptyCopies(maskCopies);
   // the text / shape texture caches are shared by both channels (the gl runners key their uploads on them),
   // so they stay. they are bounded (64 entries) and pruned when the project changes.
-  // the gl runners (effects, transitions, scene3d) expose no per channel dispose yet, nothing to call there.
+}
+
+/** shrink the canvas of every copy and forget them */
+function emptyCopies(map: Map<string, { canvas: AnyCanvas }>): void {
+  for (const c of map.values()) {
+    c.canvas.width = 0;
+    c.canvas.height = 0;
+  }
+  map.clear();
 }
 
 export interface DrawSource {
@@ -58,6 +76,29 @@ export interface DrawSource {
   /** natural size of the image in pixels */
   width: number;
   height: number;
+}
+
+/**
+ * the real pixel size of a picture, for the source rectangle of drawImage (which is in pixels of the image itself).
+ * the preview decodes big pictures into a smaller bitmap but reports the natural size in DrawSource, so the size is
+ * read from the image: naturalWidth (img), videoWidth (video), displayWidth (VideoFrame), width (bitmap, canvas).
+ * falls back to the given size when the object has none of them.
+ */
+export function imagePixelSize(image: unknown, fallbackW: number, fallbackH: number): { w: number; h: number } {
+  const o = image as Record<string, unknown> | null | undefined;
+  if (o && typeof o === 'object') {
+    const pick = (keys: string[]): number => {
+      for (const k of keys) {
+        const v = o[k];
+        if (typeof v === 'number' && v > 0 && Number.isFinite(v)) return v;
+      }
+      return 0;
+    };
+    const w = pick(['naturalWidth', 'videoWidth', 'displayWidth', 'width']);
+    const h = pick(['naturalHeight', 'videoHeight', 'displayHeight', 'height']);
+    if (w > 0 && h > 0) return { w, h };
+  }
+  return { w: fallbackW, h: fallbackH };
 }
 
 /**
@@ -630,13 +671,23 @@ function processed(source: FlatSource, clip: VisualClip, channel: Channel): Flat
 }
 
 /**
+ * true for a text clip with an extrude drawn below full alpha. the extruded side is many copies of the text: drawn
+ * straight at a globalAlpha under 1 each copy is composited at that alpha and the side comes out nearly solid while the
+ * face fades. such a clip takes the flat picture path (text at alpha 1 into its own canvas, drawn once with the alpha).
+ * alpha 1 and clips without extrude keep the direct path.
+ */
+export function extrudeFades(clip: VisualClip, alpha: number): boolean {
+  return clip.type === 'text' && !!clip.extrude && clip.extrude.depth > 0 && alpha < 0.999;
+}
+
+/**
  * the picture a flat clip is drawn from: a video / image source with look and mask applied. a text / shape clip
  * with a look or a mask is first rendered into its texture (the one 3d uses), then looked and masked; without
  * either it returns null and is drawn directly.
  */
-function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | null, time: number, channel: Channel): FlatSource | null {
+function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | null, time: number, channel: Channel, alpha = 1): FlatSource | null {
   if (clip.type === 'text' || clip.type === 'shape') {
-    if (!hasClipLook(clip) && !hasMask(clip)) return null;
+    if (!hasClipLook(clip) && !hasMask(clip) && !extrudeFades(clip, alpha)) return null;
     syncTextureCaches(project);
     const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
     if (!t) return null;
@@ -1071,8 +1122,10 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
           ctx.clip();
         }
         if (crop) {
-          const sw = source.pw ?? source.width;
-          const sh = source.ph ?? source.height;
+          // the source rectangle is in pixels of the image itself, which the preview may have decoded smaller
+          const real = source.pw !== undefined && source.ph !== undefined ? null : imagePixelSize(source.image, source.width, source.height);
+          const sw = source.pw ?? real!.w;
+          const sh = source.ph ?? real!.h;
           ctx.drawImage(source.image, crop.left * sw, crop.top * sh, (1 - crop.left - crop.right) * sw, (1 - crop.top - crop.bottom) * sh, k.x, k.y, k.width, k.height);
         } else {
           ctx.drawImage(source.image, k.x, k.y, k.width, k.height);
@@ -1235,7 +1288,7 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     const run = (c: Ctx) => draw3d(c, project, [{ clip, source, alpha, time }], rig(), env.channel);
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
   } else {
-    const pic = prepareFlat(project, clip, source, time, env.channel);
+    const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
     // the motion blur of a clip inside a transition (a frozen side has no entrance / exit to blur)
     const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
     const run = (c: Ctx) => {
@@ -1422,7 +1475,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       continue;
     }
     flush3d();
-    const pic = prepareFlat(project, clip, source, time, env.channel);
+    const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
     if (passes) {
       const run = (c: Ctx) => {
         if (!(raw.motionBlur && paintBlurred(c, project, raw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);

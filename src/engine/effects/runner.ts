@@ -149,6 +149,28 @@ class Runner {
     return result;
   }
 
+  /** free every gpu object and the drawing buffer. the runner is unusable afterwards. */
+  dispose(): void {
+    this.dead = true;
+    try {
+      const gl = this.gl;
+      for (const p of this.programs.values()) if (p) gl.deleteProgram(p.program);
+      this.programs.clear();
+      for (const t of this.targets) {
+        gl.deleteFramebuffer(t.fbo);
+        gl.deleteTexture(t.tex);
+      }
+      this.targets = [];
+      gl.deleteTexture(this.srcTex);
+      gl.deleteVertexArray(this.vao);
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      this.canvas.width = 1;
+      this.canvas.height = 1;
+    } catch {
+      // already gone
+    }
+  }
+
   errorOf(id: string): string | undefined {
     return this.errors.get(id);
   }
@@ -246,6 +268,21 @@ function getRunner(channel: string): Runner | null {
   const runner = new Runner(canvas, gl);
   runners.set(channel, runner);
   return runner;
+}
+
+/**
+ * free the gpu resources of a channel's effect runner (programs, textures, the drawing buffer) and forget it, so a
+ * finished export does not keep a 4k context alive. the next renderEffects on the channel builds a fresh runner.
+ */
+export function releaseEffectRunner(channel: string): void {
+  const r = runners.get(channel);
+  runners.delete(channel);
+  r?.dispose();
+}
+
+/** how many channels have a runner (for tests) */
+export function effectRunnerCount(): number {
+  return runners.size;
 }
 
 /** false when the browser cannot run effects at all */

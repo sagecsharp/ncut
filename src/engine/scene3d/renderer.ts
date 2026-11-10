@@ -115,6 +115,7 @@ const CACHE_LIMIT = 48;
 interface Mesh {
   vao: WebGLVertexArrayObject | null;
   count: number;
+  buffers: (WebGLBuffer | null)[];
 }
 
 class SceneRenderer {
@@ -184,6 +185,41 @@ class SceneRenderer {
     });
   }
 
+  /** the context is gone (the event can come a moment after the loss, so ask the context too) */
+  isLost(): boolean {
+    return this.dead || this.gl.isContextLost();
+  }
+
+  /**
+   * free every gpu object and the drawing buffer. the renderer is unusable afterwards (dead): drop it from the map so
+   * the next use builds a fresh one.
+   */
+  dispose(): void {
+    this.dead = true;
+    try {
+      const gl = this.gl;
+      for (const e of this.cache.values()) gl.deleteTexture(e.tex);
+      this.cache.clear();
+      for (const t of this.scratch) if (t) gl.deleteTexture(t);
+      this.scratch = [];
+      for (const m of this.meshes.values()) {
+        gl.deleteVertexArray(m.vao);
+        for (const b of m.buffers) gl.deleteBuffer(b);
+      }
+      this.meshes.clear();
+      gl.deleteVertexArray(this.lineVao);
+      gl.deleteBuffer(this.lineBuf);
+      gl.deleteProgram(this.planeProg);
+      gl.deleteProgram(this.lineProg);
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      // the antialiased depth + color buffer goes with a 1x1 canvas
+      this.canvas.width = 1;
+      this.canvas.height = 1;
+    } catch {
+      // already gone
+    }
+  }
+
   private link(vsSrc: string, fsSrc: string): WebGLProgram {
     const gl = this.gl;
     const make = (type: number, src: string) => {
@@ -209,16 +245,18 @@ class SceneRenderer {
     const data = shapeMesh(shape);
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, interleave(data), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
-    const mesh = { vao, count: data.indices.length };
+    const mesh: Mesh = { vao, count: data.indices.length, buffers: [vbo, ibo] };
     this.meshes.set(shape, mesh);
     return mesh;
   }
@@ -283,7 +321,7 @@ class SceneRenderer {
 
   render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null): GLCanvas | null {
     const gl = this.gl;
-    if (this.dead || gl.isContextLost()) return null;
+    if (this.isLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
@@ -373,12 +411,30 @@ class SceneRenderer {
   }
 }
 
-const renderers = new Map<string, SceneRenderer | null>();
+const renderers = new Map<string, SceneRenderer>();
+/** channels whose renderer failed to start: not tried again before this time (ms) */
+const retryAt = new Map<string, number>();
+/** how long to wait before trying to start a renderer again after a failure (like the font retry in text.ts) */
+export const SCENE_RETRY_MS = 2000;
+
+/** true while a failed start of a channel must not be retried yet */
+export function startBlocked(until: number | undefined, now: number): boolean {
+  return until !== undefined && now < until;
+}
 
 function getRenderer(channel: string): SceneRenderer | null {
   const cur = renderers.get(channel);
-  if (cur && !cur.dead) return cur;
-  if (cur === null) return null;
+  if (cur && !cur.isLost()) return cur;
+  if (cur) {
+    // lost: free what is left of it, a fresh one is built below
+    renderers.delete(channel);
+    cur.dispose();
+  }
+  if (startBlocked(retryAt.get(channel), Date.now())) return null;
+  const fail = (): null => {
+    retryAt.set(channel, Date.now() + SCENE_RETRY_MS);
+    return null;
+  };
   let canvas: GLCanvas | null = null;
   if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(2, 2);
   else if (typeof document !== 'undefined') canvas = document.createElement('canvas');
@@ -393,19 +449,38 @@ function getRenderer(channel: string): SceneRenderer | null {
         powerPreference: 'high-performance',
       }) as WebGL2RenderingContext | null)
     : null;
-  if (!canvas || !gl) {
-    renderers.set(channel, null);
-    return null;
-  }
+  if (!canvas || !gl) return fail();
   try {
     const r = new SceneRenderer(canvas, gl);
     renderers.set(channel, r);
+    retryAt.delete(channel);
     return r;
   } catch (e) {
     console.error('[ncut] 3d renderer failed to start', e);
-    renderers.set(channel, null);
-    return null;
+    try {
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      // gone
+    }
+    return fail();
   }
+}
+
+/**
+ * free the gpu resources of a channel's 3d renderer (textures, meshes, programs, the antialiased drawing buffer) and
+ * forget it, plus any pending start retry. the next renderScene on the channel builds a fresh one.
+ */
+export function releaseSceneRenderer(channel: string): void {
+  retryAt.delete(channel);
+  const r = renderers.get(channel);
+  if (!r) return;
+  renderers.delete(channel);
+  r.dispose();
+}
+
+/** how many channels have a renderer (for tests) */
+export function sceneRendererCount(): number {
+  return renderers.size;
 }
 
 /**
@@ -424,6 +499,11 @@ export function renderScene(
   fog: SceneFog | null = null,
 ): GLCanvas | null {
   if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0)) return null;
-  const r = getRenderer(channel);
+  let r = getRenderer(channel);
+  if (!r) return null;
+  const out = r.render(planes, lines, viewProj, eye, width, height, fog);
+  if (out || !r.isLost()) return out;
+  // the context was lost: try once more on a fresh renderer (getRenderer drops the lost one)
+  r = getRenderer(channel);
   return r ? r.render(planes, lines, viewProj, eye, width, height, fog) : null;
 }

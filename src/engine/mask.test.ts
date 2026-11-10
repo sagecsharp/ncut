@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createShapeClip } from '../lib/factory';
 import type { Mask, VisualClip } from '../types';
-import { DEFAULT_MASK, MASK_MAX_SIDE, blurAlpha, featherPx, hasMask, heartPoints, maskCoverage, maskSignature, maskWorkSize, maskedPicture, starPoints } from './mask';
+import { DEFAULT_MASK, MASK_MAX_SIDE, blurAlpha, featherPx, hasMask, heartPoints, maskCoverage, maskSignature, maskCacheSize, maskWorkSize, maskedPicture, releaseMaskResources, starPoints } from './mask';
 
 const m = (o: Partial<Mask> = {}): Mask => ({ ...DEFAULT_MASK, feather: 0, ...o });
 const clip = (mask?: Mask | null): VisualClip => ({ ...createShapeClip('t', 0, { duration: 1 }), mask });
@@ -220,5 +220,38 @@ describe('maskedPicture without a canvas (node)', () => {
     const src = {} as CanvasImageSource;
     expect(maskedPicture(src, 100, 100, clip(m()), 'export')).toBe(src);
     expect(maskedPicture(src, 0, 0, clip(m()))).toBe(src);
+  });
+});
+
+describe('releaseMaskResources', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('is safe with nothing built', () => {
+    expect(() => releaseMaskResources('export')).not.toThrow();
+    expect(maskCacheSize()).toEqual({ alpha: 0, channels: 0 });
+  });
+  it('empties the alpha cache and the channel canvas, and rebuilds on the next use', () => {
+    const canvases: { width: number; height: number }[] = [];
+    class Fake {
+      width: number;
+      height: number;
+      constructor(w: number, h: number) {
+        this.width = w;
+        this.height = h;
+        canvases.push(this);
+      }
+      getContext() {
+        return new Proxy({} as Record<string, unknown>, { get: (t, k) => (k in t ? t[k as string] : () => undefined), set: (t, k, v) => ((t[k as string] = v), true) });
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', Fake);
+    const c = clip(m({ shape: 'rect' }));
+    maskedPicture({} as CanvasImageSource, 64, 64, c, 'export');
+    expect(maskCacheSize()).toEqual({ alpha: 1, channels: 1 });
+    releaseMaskResources('export');
+    expect(maskCacheSize()).toEqual({ alpha: 0, channels: 0 });
+    expect(canvases.every((x) => x.width === 0 && x.height === 0)).toBe(true);
+    maskedPicture({} as CanvasImageSource, 64, 64, c, 'preview');
+    expect(maskCacheSize()).toEqual({ alpha: 1, channels: 1 });
+    releaseMaskResources('preview');
   });
 });
