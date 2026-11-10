@@ -22,6 +22,17 @@ export interface Plane3D {
   shape?: Shape3D;
   /** 0..1 */
   alpha: number;
+  /**
+   * the part of the picture to show as [u0, v0, du, dv] (0..1 of the texture). missing = all of it.
+   * the mesh uv 0..1 is remapped into this window.
+   */
+  uv?: [number, number, number, number];
+  /**
+   * rounded corners (plane only): radius in pixels of the plane, with the plane's own size in pixels.
+   * the alpha is cut by a rounded rectangle with a ~1 screen pixel soft edge. missing / 0 = square.
+   */
+  radius?: number;
+  size?: [number, number];
 }
 
 export interface Lines3D {
@@ -45,10 +56,19 @@ precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_tex;
 uniform float u_alpha;
+uniform vec4 u_uv;
+uniform float u_radius;
+uniform vec2 u_size;
 out vec4 outColor;
 void main() {
   // the texture is premultiplied, so is the output
-  vec4 c = texture(u_tex, v_uv) * u_alpha;
+  vec4 c = texture(u_tex, u_uv.xy + v_uv * u_uv.zw) * u_alpha;
+  if (u_radius > 0.0) {
+    // signed distance to a rounded rectangle, in plane pixels. the edge fades over about one screen pixel.
+    vec2 q = abs((v_uv - 0.5) * u_size) - (u_size * 0.5 - vec2(u_radius));
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_radius;
+    c *= clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
+  }
   if (c.a < 0.004) discard;
   outColor = c;
 }`;
@@ -169,6 +189,9 @@ class SceneRenderer {
   private lineProg: WebGLProgram;
   private uMvp: WebGLUniformLocation | null;
   private uAlpha: WebGLUniformLocation | null;
+  private uUv: WebGLUniformLocation | null;
+  private uRadius: WebGLUniformLocation | null;
+  private uSize: WebGLUniformLocation | null;
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
   private meshes = new Map<Shape3D, Mesh>();
@@ -187,6 +210,9 @@ class SceneRenderer {
     this.lineProg = this.link(LINE_VS, LINE_FS);
     this.uMvp = gl.getUniformLocation(this.planeProg, 'u_mvp');
     this.uAlpha = gl.getUniformLocation(this.planeProg, 'u_alpha');
+    this.uUv = gl.getUniformLocation(this.planeProg, 'u_uv');
+    this.uRadius = gl.getUniformLocation(this.planeProg, 'u_radius');
+    this.uSize = gl.getUniformLocation(this.planeProg, 'u_size');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -349,6 +375,14 @@ class SceneRenderer {
       if (plane.cacheKey === undefined) slot++;
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
+      const uv = plane.uv;
+      if (uv) gl.uniform4f(this.uUv, uv[0], uv[1], uv[2], uv[3]);
+      else gl.uniform4f(this.uUv, 0, 0, 1, 1);
+      const size = plane.size;
+      if (plane.radius && plane.radius > 0 && size) {
+        gl.uniform1f(this.uRadius, plane.radius);
+        gl.uniform2f(this.uSize, size[0], size[1]);
+      } else gl.uniform1f(this.uRadius, 0);
       const mesh = this.mesh(plane.shape ?? 'plane');
       gl.bindVertexArray(mesh.vao);
       gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);

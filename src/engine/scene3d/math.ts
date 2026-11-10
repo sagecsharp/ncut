@@ -6,7 +6,8 @@
  *   (0, 0, 0) is the top left corner of the canvas, z = 0 is the canvas plane.
  * positive rotations follow the right hand rule in that space:
  *   around z: clockwise on screen (same as the 2d rotation)
- *   around x: the top edge leans away from the viewer
+ *   around x: the bottom edge swings away from the viewer (the top comes toward it). model.ts negates the
+ *             user facing tilt, so a positive tilt there leans the top edge away.
  *   around y: the left edge swings away from the viewer
  */
 export type Mat4 = Float32Array;

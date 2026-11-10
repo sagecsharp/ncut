@@ -5,7 +5,7 @@
  * it does not know where pixels come from: the caller passes a resolver that returns the
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
-import type { EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
+import type { BlendMode, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
@@ -15,7 +15,7 @@ import { getEffect } from './effects/registry';
 import { renderEffects } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
-import { mul, scaling } from './scene3d/math';
+import { mul, scaling, translation } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, renderScene } from './scene3d/renderer';
 import { drawShape, shapeSignature, shapeSpill } from './shape';
@@ -85,6 +85,91 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
     height = fit.height * t.scale;
   }
   return { cx: project.width / 2 + t.x, cy: project.height / 2 + t.y, width, height, rotation: t.rotation };
+}
+
+/* ---------- blend, crop, radius (pure helpers) ---------- */
+
+/** the smallest share of a clip that always stays after cropping, per axis */
+const MIN_KEPT = 0.01;
+
+/** canvas composite operation for a blend mode, or null for 'normal' / missing (the plain path) */
+export function blendOp(mode: BlendMode | undefined): GlobalCompositeOperation | null {
+  if (!mode || mode === 'normal') return null;
+  return mode === 'add' ? 'lighter' : mode;
+}
+
+/**
+ * a crop with every edge clamped to 0..1 and at least 1% left on each axis (both edges shrink in
+ * proportion when they would eat more). null when nothing is cut, so callers can take the plain path.
+ */
+export function normalizeCrop(crop: Crop | null | undefined): Crop | null {
+  if (!crop) return null;
+  const f = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
+  let { left, right, top, bottom } = { left: f(crop.left), right: f(crop.right), top: f(crop.top), bottom: f(crop.bottom) };
+  const max = 1 - MIN_KEPT;
+  if (left + right > max) {
+    const k = max / (left + right);
+    left *= k;
+    right *= k;
+  }
+  if (top + bottom > max) {
+    const k = max / (top + bottom);
+    top *= k;
+    bottom *= k;
+  }
+  if (!(left > 0 || right > 0 || top > 0 || bottom > 0)) return null;
+  return { left, top, right, bottom };
+}
+
+/** the kept rectangle of a width x height box, with the origin at the box center (x, y = its top left corner) */
+export interface KeptRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** what stays of a box after the (normalized) crop. null crop = the whole box. */
+export function cropRect(width: number, height: number, crop: Crop | null | undefined): KeptRect {
+  const c = normalizeCrop(crop);
+  if (!c) return { x: -width / 2, y: -height / 2, width, height };
+  return {
+    x: -width / 2 + c.left * width,
+    y: -height / 2 + c.top * height,
+    width: width * (1 - c.left - c.right),
+    height: height * (1 - c.top - c.bottom),
+  };
+}
+
+/** corner radius in pixels for a 0..1 roundness of a w x h rectangle (1 = fully round ends) */
+export function radiusPx(radius: number | undefined, w: number, h: number): number {
+  if (!radius || !(radius > 0)) return 0;
+  return (Math.min(1, radius) * Math.min(w, h)) / 2;
+}
+
+/** the plane-local crop of a 3d texture that has `pad` extra pixels around the clip box (text / shape) */
+function paddedCrop(c: Crop, innerW: number, innerH: number, padX: number, padY: number): Crop {
+  const fullW = innerW + padX * 2;
+  const fullH = innerH + padY * 2;
+  // an edge that is not cut keeps the extra room (outlines, shadows), a cut edge cuts at the clip box
+  return {
+    left: c.left > 0 ? (padX + c.left * innerW) / fullW : 0,
+    right: c.right > 0 ? (padX + c.right * innerW) / fullW : 0,
+    top: c.top > 0 ? (padY + c.top * innerH) / fullH : 0,
+    bottom: c.bottom > 0 ? (padY + c.bottom * innerH) / fullH : 0,
+  };
+}
+
+/** path of a rounded rectangle (arcs, so it works in every canvas) */
+function roundedRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r: number): void {
+  const k = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + k, y);
+  ctx.arcTo(x + w, y, x + w, y + h, k);
+  ctx.arcTo(x + w, y + h, x, y + h, k);
+  ctx.arcTo(x, y + h, x, y, k);
+  ctx.arcTo(x, y, x + w, y, k);
+  ctx.closePath();
 }
 
 /** visual clips under a time in paint order (bottom layer first). skips hidden tracks. */
@@ -235,7 +320,7 @@ function clearScratch(sc: Scratch): void {
 
 /* ---------- 3d ---------- */
 
-interface Layer3D {
+export interface Layer3D {
   clip: VisualClip;
   source: DrawSource | null;
   alpha: number;
@@ -369,25 +454,29 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   return entry;
 }
 
-function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | null {
+export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | null {
   const { clip, source } = layer;
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
   const shape = clip.shape ?? 'plane';
   let image: TexImageSource;
   let cacheKey: string | undefined;
+  // extra texture room around the clip box (text / shape), in canvas pixels
+  let pad = 0;
   if (clip.type === 'text') {
     const t = textTexture(clip, layer.time);
     if (!t) return null;
     // the texture has room around the text for outlines, shadows and moving letters
-    box.width += t.margin * 2 * clip.transform.scale;
-    box.height += t.margin * 2 * clip.transform.scale;
+    pad = t.margin * clip.transform.scale;
+    box.width += pad * 2;
+    box.height += pad * 2;
     image = t.canvas;
     cacheKey = t.key;
   } else if (clip.type === 'shape') {
     const t = shapeTexture(clip);
     if (!t) return null;
-    box.width += t.margin * 2 * clip.transform.scale;
-    box.height += t.margin * 2 * clip.transform.scale;
+    pad = t.margin * clip.transform.scale;
+    box.width += pad * 2;
+    box.height += pad * 2;
     image = t.canvas;
     cacheKey = t.key;
   } else {
@@ -397,17 +486,55 @@ function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | n
     cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${source.width}x${source.height}` : undefined;
   }
   let model = clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye);
+  let uv: [number, number, number, number] | undefined;
+  let radius: number | undefined;
+  let size: [number, number] | undefined;
+  const crop = normalizeCrop(clip.crop);
+  if (crop) {
+    let c = crop;
+    if (pad > 0) {
+      // the texture has room around the clip box: crop relative to the clip box, not to the texture
+      c = paddedCrop(crop, box.width - pad * 2, box.height - pad * 2, pad, pad);
+    }
+    uv = [c.left, c.top, 1 - c.left - c.right, 1 - c.top - c.bottom];
+    // a plane shrinks to the kept rectangle, offset inside its local box so it stays in place under
+    // rotation. box / sphere / cylinder only show the kept window of the picture, stretched over the
+    // whole surface (the geometry keeps its size).
+    if (shape === 'plane') {
+      model = mul(mul(model, translation((c.left - c.right) / 2, (c.top - c.bottom) / 2, 0)), scaling(uv[2], uv[3], 1));
+    }
+  }
+  // rounded corners: planes of video / image only (a rect shape is rounded inside its own texture,
+  // text has backgroundRadius, wraps keep their geometry)
+  if (shape === 'plane' && (clip.type === 'video' || clip.type === 'image') && clip.radius && clip.radius > 0) {
+    const kw = uv ? box.width * uv[2] : box.width;
+    const kh = uv ? box.height * uv[3] : box.height;
+    radius = radiusPx(clip.radius, kw, kh);
+    size = [kw, kh];
+  }
   if (shape !== 'plane') {
     // thickness: a box is as deep as the clip is tall unless set, round shapes are as deep as they are wide
     const fallback = shape === 'box' ? box.height : box.width;
     const depth = clip.shapeDepth !== undefined && clip.shapeDepth > 0 && shape !== 'sphere' ? clip.shapeDepth * clip.transform.scale : fallback;
     model = mul(model, scaling(1, 1, Math.max(1, depth)));
   }
-  return { image, cacheKey, model, alpha: layer.alpha, shape };
+  const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
+  if (uv) plane.uv = uv;
+  if (radius && size) {
+    plane.radius = radius;
+    plane.size = size;
+  }
+  return plane;
 }
 
-/** render a run of 3d clips through the camera and lay the result over what is already on the canvas */
-function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, lines: Lines3D[] = []): void {
+const NO_LINES: Lines3D[] = [];
+
+/**
+ * render a run of 3d clips through the camera and lay the result over what is already on the canvas.
+ * `op` is how the result mixes with the canvas (a clip with a blend mode is drawn as a run of its own,
+ * see paintLayers: it does not depth-test against its neighbours).
+ */
+function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, lines: Lines3D[] = NO_LINES, op: GlobalCompositeOperation = 'source-over'): void {
   const canvas = ctx.canvas as AnyCanvas | undefined;
   if (!canvas) return;
   const planes: Plane3D[] = [];
@@ -420,7 +547,7 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, l
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalCompositeOperation = op;
   ctx.drawImage(out, 0, 0, canvas.width, canvas.height);
   ctx.restore();
 }
@@ -500,20 +627,56 @@ function temporalSamples(raw: EffectClip, time: number, fps: number, quality: nu
   return samples.length > 1 ? samples : null;
 }
 
-/** draw one flat (2d) clip */
-function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSource | null, alpha: number, time: number): void {
+/** reach of a clip path on a side that is not cropped (text / shape keep their outline and shadow room there) */
+const OPEN_SIDE = 1e5;
+
+/**
+ * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
+ * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
+ */
+function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSource | null, alpha: number, time: number, blend = true): void {
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
+  const op = blend ? blendOp(clip.blend) : null;
+  const crop = normalizeCrop(clip.crop);
   ctx.save();
   ctx.globalAlpha = alpha;
+  if (op) ctx.globalCompositeOperation = op;
   ctx.translate(box.cx, box.cy);
   if (box.rotation) ctx.rotate((box.rotation * Math.PI) / 180);
-  if (clip.type === 'text') {
-    drawText(ctx, clip, time - clip.start);
-  } else if (clip.type === 'shape') {
-    drawShape(ctx, clip, box.width, box.height, clip.transform.scale);
+  if (clip.type === 'text' || clip.type === 'shape') {
+    if (crop) {
+      // clip to the kept rectangle; an edge that is not cut stays open for outlines and shadows
+      const w = box.width;
+      const h = box.height;
+      const x0 = crop.left > 0 ? -w / 2 + crop.left * w : -OPEN_SIDE;
+      const x1 = crop.right > 0 ? w / 2 - crop.right * w : OPEN_SIDE;
+      const y0 = crop.top > 0 ? -h / 2 + crop.top * h : -OPEN_SIDE;
+      const y1 = crop.bottom > 0 ? h / 2 - crop.bottom * h : OPEN_SIDE;
+      ctx.beginPath();
+      ctx.rect(x0, y0, x1 - x0, y1 - y0);
+      ctx.clip();
+    }
+    // a rect shape rounds itself (shape.ts), other shapes and text ignore radius
+    if (clip.type === 'text') drawText(ctx, clip, time - clip.start);
+    else drawShape(ctx, clip, box.width, box.height, clip.transform.scale);
   } else if (source) {
     try {
-      ctx.drawImage(source.image, -box.width / 2, -box.height / 2, box.width, box.height);
+      if (!crop && !(clip.radius !== undefined && clip.radius > 0)) {
+        ctx.drawImage(source.image, -box.width / 2, -box.height / 2, box.width, box.height);
+      } else {
+        const k = cropRect(box.width, box.height, crop);
+        if (clip.radius !== undefined && clip.radius > 0) {
+          roundedRectPath(ctx, k.x, k.y, k.width, k.height, radiusPx(clip.radius, k.width, k.height));
+          ctx.clip();
+        }
+        if (crop) {
+          const sw = source.width;
+          const sh = source.height;
+          ctx.drawImage(source.image, crop.left * sw, crop.top * sh, (1 - crop.left - crop.right) * sw, (1 - crop.top - crop.bottom) * sh, k.x, k.y, k.width, k.height);
+        } else {
+          ctx.drawImage(source.image, k.x, k.y, k.width, k.height);
+        }
+      }
     } catch {
       // a source that is not ready (e.g. a video with no decoded frame yet) is skipped
     }
@@ -532,7 +695,7 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     if (!source) return false;
   }
   if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig());
-  else paintFlat(ctx, project, clip, source, alpha, time);
+  else paintFlat(ctx, project, clip, source, alpha, time, false);
   return true;
 }
 
@@ -574,7 +737,8 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = 'source-over';
+  // the two sides were painted with normal blending, the mixed result blends like the incoming clip
+  ctx.globalCompositeOperation = blendOp(span.to.blend) ?? 'source-over';
   if (out) ctx.drawImage(out, 0, 0, canvas.width, canvas.height);
   else {
     // the shader is broken or webgl is gone: a plain cut
@@ -676,6 +840,14 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       if (!source) continue;
     }
     if (clip.threeD) {
+      const bop = blendOp(clip.blend);
+      if (bop) {
+        // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
+        // depth-test against the 3d clips around it.
+        flush3d();
+        draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), NO_LINES, bop);
+        continue;
+      }
       bin.push({ clip, source, alpha, time });
       continue;
     }
@@ -700,6 +872,7 @@ export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: S
  * the scene view: the 3d world seen from a free editor camera instead of the project camera.
  * shows every active 3d clip as a plane, the output frame (the canvas rectangle at z = 0), a floor grid
  * and the project camera as a wire pyramid. 2d clips and effects are screen space and are not drawn.
+ * crop and radius apply here too; blend modes do not (all planes share one depth sorted run).
  * `lineColor` is straight rgba 0..1 for the helpers (pass a theme color).
  */
 export function renderSceneView(
