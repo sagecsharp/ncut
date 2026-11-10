@@ -59,6 +59,7 @@ import {
   withoutKeys,
 } from '../lib/anim';
 import { uid } from '../lib/id';
+import { relinkCopies, unlinkRemoved, wouldCycle } from '../lib/links';
 import { clamp } from '../lib/time';
 import {
   clipEnd,
@@ -104,6 +105,10 @@ const SPATIAL_KEYS = [
   'motionIn',
   'motionOut',
   'motionLoop',
+  'parent',
+  'motionBlur',
+  'adjust',
+  'chromaKey',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   video: SPATIAL_KEYS,
@@ -123,6 +128,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'gradient',
     'curve',
     'wrapWidth',
+    'highlight',
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
   camera: ['target'],
@@ -250,6 +256,21 @@ export interface EditorState {
   deleteClips(ids: string[], opts?: ActionOpts & { ripple?: boolean }): void;
   /** copies land right after the originals when there is room. selects and returns the copies. */
   duplicateClips(ids: string[], opts?: ActionOpts): string[];
+  /**
+   * add ready-made clips in one undo step (captions, a frozen frame...). every clip gets a new id.
+   * - newTrack (default true): they all go on ONE new track (video kinds: on top; audio: at the
+   *   bottom), named trackName. clips are placed in time order; one that would overlap the clip
+   *   before it starts where that one ends (and is dropped when nothing of it is left).
+   * - newTrack false: each clip goes on its own trackId when that track exists, is unlocked, has the
+   *   right kind and is free there, else on any track with room, else on a new track.
+   * all clips must be of one track kind (all pictures or all audio), otherwise nothing happens.
+   * selects and returns the new ids.
+   */
+  addClips(clips: Clip[], opts?: ActionOpts & { newTrack?: boolean; trackName?: string }): string[];
+  /** put two or more clips into a new group (they leave their old groups). returns the group id, or null. */
+  groupClips(ids: string[], opts?: ActionOpts): string | null;
+  /** dissolve every group that one of these clips belongs to */
+  ungroupClips(ids: string[], opts?: ActionOpts): void;
 
   // clipboard
   copySelection(): void;
@@ -268,6 +289,18 @@ export interface EditorState {
 }
 
 /* ---------- pure helpers ---------- */
+
+/** point the links (parent, camera target, group) of freshly copied clips at each other */
+function relinkIn(project: Project, idMap: ReadonlyMap<string, string>, originals: readonly Clip[]): Project {
+  const copyIds = new Set(idMap.values());
+  const copies = relinkCopies(
+    project.clips.filter((c) => copyIds.has(c.id)),
+    idMap,
+    originals,
+  );
+  const byId = new Map(copies.map((c) => [c.id, c]));
+  return { ...project, clips: project.clips.map((c) => byId.get(c.id) ?? c) };
+}
 
 function replaceClip(project: Project, clip: Clip): Project {
   return { ...project, clips: project.clips.map((c) => (c.id === clip.id ? clip : c)) };
@@ -773,6 +806,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (!(key in clip) && !OPTIONAL_CLIP_KEYS[clip.type]?.includes(key)) continue;
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
+          // attaching a clip to itself or to one of its own children would make a loop
+          if (key === 'parent' && typeof value === 'string' && wouldCycle(p, clip.id, value)) continue;
           // an optional field that is missing and one set to null mean the same thing
           if (next[key] !== value && !(next[key] == null && value == null)) {
             next[key] = value;
@@ -942,7 +977,10 @@ export const useEditor = create<EditorState>()((set, get) => {
         const doomed = p.clips.filter((c) => ids.includes(c.id) && !isLocked(p, c.trackId));
         if (doomed.length === 0) return null;
         const doomedIds = new Set(doomed.map((c) => c.id));
-        let clips = p.clips.filter((c) => !doomedIds.has(c.id));
+        let clips = unlinkRemoved(
+          p.clips.filter((c) => !doomedIds.has(c.id)),
+          doomedIds,
+        );
         if (opts?.ripple) {
           clips = clips.map((c) => {
             let shift = 0;
@@ -959,6 +997,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       mutate((p) => {
         let next = p;
         const originals = p.clips.filter((c) => ids.includes(c.id)).sort((a, b) => a.start - b.start);
+        const idMap = new Map<string, string>();
         for (const c of originals) {
           const copy = structuredClone(c);
           copy.id = uid('clp');
@@ -976,12 +1015,114 @@ export const useEditor = create<EditorState>()((set, get) => {
           copy.trackId = trackId;
           copy.start = findFreeStart(next, trackId, clipEnd(c), c.duration);
           created.push(copy.id);
+          idMap.set(c.id, copy.id);
           next = { ...next, clips: [...next.clips, copy] };
         }
-        return created.length > 0 ? next : null;
+        if (created.length === 0) return null;
+        return relinkIn(next, idMap, originals);
       }, opts);
       if (created.length > 0) set({ selection: created });
       return created;
+    },
+
+    addClips(input, opts) {
+      const created: string[] = [];
+      if (input.length === 0) return created;
+      const kind = trackKindForClip(input[0]!.type);
+      if (input.some((c) => trackKindForClip(c.type) !== kind)) return created;
+      mutate((p) => {
+        let next = p;
+        const sorted = [...input].sort((a, b) => a.start - b.start);
+        const idMap = new Map<string, string>();
+        const copies: Clip[] = [];
+        if (opts?.newTrack ?? true) {
+          const made = withNewTrack(next, kind);
+          next = made.project;
+          if (opts?.trackName) {
+            const name = opts.trackName;
+            next = { ...next, tracks: next.tracks.map((t) => (t.id === made.track.id ? { ...t, name } : t)) };
+          }
+          let end = 0;
+          for (const c of sorted) {
+            const start = Math.max(0, c.start, end);
+            const duration = c.start + c.duration - start;
+            if (!(duration >= MIN_CLIP_DURATION)) continue;
+            const copy = structuredClone(c);
+            copy.id = uid('clp');
+            copy.trackId = made.track.id;
+            copy.start = start;
+            copy.duration = duration;
+            end = start + duration;
+            idMap.set(c.id, copy.id);
+            copies.push(clampFades(copy));
+          }
+          if (copies.length === 0) return null;
+          next = { ...next, clips: [...next.clips, ...copies] };
+        } else {
+          for (const c of sorted) {
+            const copy = structuredClone(c);
+            copy.id = uid('clp');
+            const start = Math.max(0, c.start);
+            const home = next.tracks.find((t) => t.id === c.trackId);
+            let trackId: string;
+            if (home && home.kind === kind && !home.locked && isRangeFree(next, home.id, start, c.duration)) {
+              trackId = home.id;
+            } else {
+              const room = findTrackWithRoom(next, kind, start, c.duration);
+              if (room) trackId = room.id;
+              else {
+                const made = withNewTrack(next, kind);
+                next = made.project;
+                trackId = made.track.id;
+              }
+            }
+            copy.trackId = trackId;
+            copy.start = start;
+            idMap.set(c.id, copy.id);
+            const placed = clampFades(copy);
+            copies.push(placed);
+            next = { ...next, clips: [...next.clips, placed] };
+          }
+        }
+        for (const c of copies) created.push(c.id);
+        return relinkIn(next, idMap, sorted);
+      }, opts);
+      if (created.length > 0) set({ selection: created });
+      return created;
+    },
+
+    groupClips(ids, opts) {
+      let group: string | null = null;
+      mutate((p) => {
+        const members = p.clips.filter((c) => ids.includes(c.id) && !isLocked(p, c.trackId));
+        if (members.length < 2) return null;
+        const first = members[0]!.group;
+        // already exactly one group: nothing to do
+        if (first && members.every((c) => c.group === first) && p.clips.filter((c) => c.group === first).length === members.length) {
+          return null;
+        }
+        const id = uid('grp');
+        group = id;
+        const memberIds = new Set(members.map((c) => c.id));
+        return { ...p, clips: p.clips.map((c) => (memberIds.has(c.id) ? { ...c, group: id } : c)) };
+      }, opts);
+      return group;
+    },
+    ungroupClips(ids, opts) {
+      mutate((p) => {
+        const groups = new Set<string>();
+        for (const c of p.clips) if (ids.includes(c.id) && c.group) groups.add(c.group);
+        if (groups.size === 0) return null;
+        return {
+          ...p,
+          clips: p.clips.map((c) => {
+            if (!c.group || !groups.has(c.group)) return c;
+            const { group: _drop, ...rest } = c;
+            void _drop;
+            return rest as Clip;
+          }),
+        };
+      }, opts);
     },
 
     copySelection() {
@@ -1003,6 +1144,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         let next = p;
         const origin = Math.min(...clipboard.map((c) => c.start));
         const sorted = [...clipboard].sort((a, b) => a.start - b.start);
+        const idMap = new Map<string, string>();
         for (const c of sorted) {
           // skip clips whose asset was removed since the copy
           if ('assetId' in c && !next.assets.some((a) => a.id === c.assetId)) continue;
@@ -1026,9 +1168,11 @@ export const useEditor = create<EditorState>()((set, get) => {
           copy.trackId = trackId;
           copy.start = start;
           created.push(copy.id);
+          idMap.set(c.id, copy.id);
           next = { ...next, clips: [...next.clips, copy] };
         }
-        return created.length > 0 ? next : null;
+        if (created.length === 0) return null;
+        return relinkIn(next, idMap, sorted);
       });
       if (created.length > 0) set({ selection: created });
       return created;

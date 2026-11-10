@@ -97,6 +97,11 @@ interface ClipBase {
   fadeOut: number;
   /** keyframe animation. a property listed here ignores its static value. see lib/anim.ts. */
   keyframes?: Keyframes;
+  /**
+   * clips with the same group id belong together: clicking one selects them all (see lib/links.ts
+   * expandGroups), so they move, copy and delete as one. missing = not grouped.
+   */
+  group?: string;
 }
 
 /** what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face. */
@@ -140,6 +145,44 @@ export interface ClipAnim {
   duration: number;
 }
 
+/**
+ * motion blur for one clip: the clip is drawn several times across the time the shutter is open and
+ * the copies are averaged, so whatever moves it (keyframes, motions, its parent) leaves a trail.
+ * the picture itself (a video frame) is not blurred, only its movement. see engine/draw.ts.
+ */
+export interface ClipMotionBlur {
+  /** how long the shutter stays open, in frames. 0.5 = the classic 180 degree shutter. 0..2 */
+  shutter: number;
+  /** how many copies are averaged. 2..32 */
+  samples: number;
+}
+
+/** color correction of one clip's picture. every value at 0 changes nothing. see engine/clipLook.ts. */
+export interface ClipAdjust {
+  /** -1..1 */
+  brightness: number;
+  /** -1..1 */
+  contrast: number;
+  /** -1..1 (-1 = gray) */
+  saturation: number;
+  /** degrees, -180..180 */
+  hue: number;
+  /** -1 (cool) .. 1 (warm) */
+  temperature: number;
+}
+
+/** make one color of a clip's picture see-through (green screen). see engine/clipLook.ts. */
+export interface ChromaKey {
+  /** css hex color to remove */
+  color: string;
+  /** how far from the color still counts, 0..1 */
+  tolerance: number;
+  /** width of the soft edge, 0..1 */
+  softness: number;
+  /** how strongly the key color is taken out of what stays (edges, reflections), 0..1 */
+  spill: number;
+}
+
 /** shared by the clips that draw a picture (video, image, text, shape) */
 interface Spatial {
   transform: Transform;
@@ -165,6 +208,16 @@ interface Spatial {
   motionIn?: ClipAnim | null;
   motionOut?: ClipAnim | null;
   motionLoop?: ClipAnim | null;
+  /**
+   * id of the clip this one is attached to (a visual clip or a camera clip). the clip's own
+   * transform is then relative to the parent: it moves, turns and scales with it. opacity is not
+   * inherited. null / missing / unknown id / a loop = no parent. the exact rules are in engine/parent.ts.
+   */
+  parent?: string | null;
+  /** 2d clips only (a 3d clip is blurred by a motion blur effect layer). null / missing = off. */
+  motionBlur?: ClipMotionBlur | null;
+  adjust?: ClipAdjust | null;
+  chromaKey?: ChromaKey | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -233,6 +286,19 @@ export interface TextGradient {
   angle: number;
 }
 
+/**
+ * the words of a text take turns being the "current" word, spread over the clip's length by their
+ * number of letters (so long words stay longer). see engine/text.ts.
+ */
+export interface TextHighlight {
+  /** fill color of the lit words */
+  color: string;
+  /** 'word' = only the current word is lit. 'fill' = every word up to the current one stays lit. */
+  mode: 'word' | 'fill';
+  /** a box behind the current word (css color). null / missing = none. */
+  background?: string | null;
+}
+
 export interface TextClip extends ClipBase, Spatial {
   type: 'text';
   text: string;
@@ -267,6 +333,8 @@ export interface TextClip extends ClipBase, Spatial {
   curve?: number;
   /** wrap lines longer than this (canvas pixels at scale 1). 0 / missing = only break at line breaks. */
   wrapWidth?: number;
+  /** karaoke: the words light up one after another over the length of the clip. null / missing = off. */
+  highlight?: TextHighlight | null;
   /* ---- animation ---- */
   animIn?: TextAnim | null;
   animOut?: TextAnim | null;
