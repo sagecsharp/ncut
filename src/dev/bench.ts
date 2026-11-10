@@ -9,7 +9,7 @@
  */
 import { ALL_FORMATS, BlobSource, CanvasSink, EncodedPacketSink, Input } from 'mediabunny';
 import type { Clip, MediaAsset, Project, VideoClip } from '../types';
-import { CANVAS_PRESETS, createClipFromAsset, createEffectClip, createProject, createTextClip, createTrack } from '../lib/factory';
+import { CANVAS_PRESETS, createCameraClip, createClipFromAsset, createEffectClip, createProject, createShapeClip, createTextClip, createTrack } from '../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../lib/templates';
 import { ensureProjectFonts } from '../lib/fonts';
 import { projectDuration } from '../lib/timelineOps';
@@ -45,6 +45,43 @@ async function footage(width = 1920, height = 1080, fps = 60, seconds = 5, templ
   const blob = await exportProject(src, { container: 'mp4', scale: 1, fps, quality: 'high', includeAudio: false, range: { start: 0, end } });
   const [asset] = await importFiles([new File([blob], name, { type: 'video/mp4' })]);
   if (!asset) throw new Error('the footage could not be imported');
+  return asset;
+}
+
+/** a still picture (a png with a gradient, a grid, a pure green field and a see-through corner) imported into the open project */
+async function picture(width = 1000, height = 800): Promise<MediaAsset> {
+  if (!useEditor.getState().project) await session.createAndOpenProject('bench');
+  const name = `bench-picture-${width}x${height}.png`;
+  const have = useEditor.getState().project!.assets.find((a) => a.name === name);
+  if (have) return have;
+  const c = new OffscreenCanvas(width, height);
+  const x = c.getContext('2d')!;
+  const g = x.createLinearGradient(0, 0, width, height);
+  g.addColorStop(0, '#d04020');
+  g.addColorStop(0.5, '#f0e060');
+  g.addColorStop(1, '#2050c0');
+  x.fillStyle = g;
+  x.fillRect(0, 0, width, height);
+  x.fillStyle = '#00ff00';
+  x.fillRect(width * 0.55, height * 0.1, width * 0.35, height * 0.45);
+  x.strokeStyle = '#101010';
+  x.lineWidth = 3;
+  for (let i = 1; i < 10; i++) {
+    x.beginPath();
+    x.moveTo((width * i) / 10, 0);
+    x.lineTo((width * i) / 10, height);
+    x.moveTo(0, (height * i) / 10);
+    x.lineTo(width, (height * i) / 10);
+    x.stroke();
+  }
+  x.fillStyle = '#ffffff';
+  x.beginPath();
+  x.arc(width * 0.3, height * 0.6, height * 0.2, 0, Math.PI * 2);
+  x.fill();
+  x.clearRect(0, height * 0.85, width * 0.2, height * 0.15);
+  const blob = await c.convertToBlob({ type: 'image/png' });
+  const [asset] = await importFiles([new File([blob], name, { type: 'image/png' })]);
+  if (!asset) throw new Error('the picture could not be imported');
   return asset;
 }
 
@@ -571,6 +608,8 @@ export const bench = {
   templates: () => PROJECT_TEMPLATES.map((t) => t.id),
   templateProject,
   footage,
+  picture,
+  make: { createCameraClip, createClipFromAsset, createEffectClip, createShapeClip, createTextClip, createTrack },
   tone,
   videoProject,
   render,
