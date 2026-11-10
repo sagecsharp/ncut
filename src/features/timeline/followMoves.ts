@@ -50,7 +50,11 @@ export function withFollowerMoves(
   moves: readonly ClipMove[],
   dropOrphans = false,
 ): ClipMove[] {
-  const base = dropOrphans ? moves.filter((m) => !orphanedEffects(clips, moves).has(m.id)) : [...moves];
+  let base: ClipMove[];
+  if (dropOrphans) {
+    const orphans = orphanedEffects(clips, moves);
+    base = moves.filter((m) => !orphans.has(m.id));
+  } else base = [...moves];
   const changes = visualChanges(clips, base);
   if (changes.size === 0) return base;
   const asked = new Set(base.map((m) => m.id));
@@ -72,4 +76,36 @@ export function followerSpans(clips: readonly Clip[], tracks: readonly Track[], 
     const e = byId.get(r.id);
     return e && (Math.abs(r.start - e.start) > EPS || Math.abs(r.duration - e.duration) > EPS);
   });
+}
+
+/**
+ * where every follower of a visual clip has to be for this span, whether or not that differs from where it
+ * is in `clips`. `clips` is the project at the START of a scrub (the followers still match the clip's old
+ * span there), so a follower that had no room at one tick rejoins at the next. the caller compares the
+ * result with the current project.
+ */
+export function followerTargets(clips: readonly Clip[], tracks: readonly Track[], id: string, span: ClipSpan): FollowResult[] {
+  return planEffectFollow(clips, tracks, new Map([[id, span]]));
+}
+
+/**
+ * like withFollowerMoves for a live scrub: the followers are planned from `base` (the clips at the start of
+ * the gesture) and compared with `current`, so a follower that stayed behind at one tick rejoins at the next.
+ */
+export function withFollowerMovesFrom(
+  base: readonly Clip[],
+  current: readonly Clip[],
+  tracks: readonly Track[],
+  moves: readonly ClipMove[],
+): ClipMove[] {
+  const out = [...moves];
+  const changes = visualChanges(base, moves);
+  if (changes.size === 0) return out;
+  const asked = new Set(moves.map((m) => m.id));
+  const cur = new Map(current.map((c) => [c.id, c]));
+  for (const r of planEffectFollow(base, tracks, changes, asked)) {
+    const e = cur.get(r.id);
+    if (e && Math.abs(r.start - e.start) > EPS) out.push({ id: e.id, trackId: e.trackId, start: r.start });
+  }
+  return out;
 }

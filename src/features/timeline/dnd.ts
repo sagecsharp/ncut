@@ -10,8 +10,8 @@ import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd'
 import type { DragPayload } from '../../lib/dnd';
 import { getEffect } from '../../engine/effects/registry';
 import { getTransition } from '../../engine/transitions/registry';
-import { transitionFor } from '../media/transitionApply';
-import { CUT_EPS } from '../../lib/transitions';
+import { cutLimit, rememberTransition, transitionFor } from '../media/transitionApply';
+import { CUT_EPS, previousClipOnTrack } from '../../lib/transitions';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { snapToFrame } from '../../lib/time';
@@ -363,7 +363,11 @@ export function createDnd(env: DndEnv) {
     if (payload?.kind === 'transition') {
       // dropping on empty space, audio, effect or camera clips does nothing
       if (transitionTarget) {
-        st.updateClip(transitionTarget.clip.id, { transition: transitionFor(payload.transition, transitionTarget.clip.transition) });
+        const tc = transitionTarget.clip;
+        const limit = cutLimit(tc, previousClipOnTrack(st.project, tc));
+        const applied = transitionFor(payload.transition, tc.transition, limit);
+        st.updateClip(tc.id, { transition: applied });
+        rememberTransition(applied.id, applied.duration);
         st.select([transitionTarget.clip.id], 'replace');
       }
       return;
