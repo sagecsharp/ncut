@@ -3,6 +3,8 @@
 the long list. the short one is in the [readme](../README.md).
 
 - multi-track timeline: video, image, text, shape and audio clips. move, trim, split, ripple delete, duplicate, copy/paste, snapping, markers, markers on the beats of a song, groups, freeze frame (the still keeps the mask, the effects and the fades of the clip), undo/redo
+- the properties of a clip are split in tabs: basic (name, timing, the main settings, transform, speed, fades), look (style, color, mask, effects, 3d, links), animate (keyframes, motion, path, repeat, transition) and sound (volume, tempo). "all" is the one long list. the tab you pick stays while you switch clips, left / right arrows move between tabs
+- number fields show the real value instead of cutting it short: a 70 frame clip at 60 fps shows 1.1667 s, a scale of 37.5 % shows 37.5. typing a value and leaving the field changes nothing if the text is the same as what was shown
 - a plain color card is always the first thing in the media tab, in every project, with nothing to import: a full frame picture of one color (pick the color on the card, change it later in the properties). a background, a flash, or a plane for 3d
 - real-time preview on a canvas, with on-canvas move / scale / rotate, zoom and pan, guides, and a quality switch (full / half / quarter) for heavy timelines. preview speed from 0.25x to 2x and j / k / l shuttle in both directions
 - keyframes on almost every number (position, scale, rotation, opacity, volume, effect settings, camera), with easing, and tools for a whole animation: reverse it, fit it to the clip, repeat it, ping pong, copy it to another clip, or add a wiggle (a seeded shake on any value)

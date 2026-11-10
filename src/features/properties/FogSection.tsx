@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
@@ -49,7 +50,7 @@ export const FogSection = memo(function FogSection({ fog, background }: { fog: S
           <SliderRow
             label="strength"
             title="the most the fog covers (%)"
-            value={Math.round(fog.amount * 100)}
+            value={roundShown(fog.amount * 100, 0)}
             min={0}
             max={100}
             suffix="%"

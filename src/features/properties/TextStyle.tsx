@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo, useMemo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
@@ -50,7 +51,7 @@ function Pct({
         className="props-grow"
         suffix="%"
         title={title}
-        value={Math.round(value * 100)}
+        value={roundShown(value * 100, 0)}
         min={min}
         max={max}
         precision={0}

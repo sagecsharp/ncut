@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo } from 'react';
 import { ClipboardPaste, Copy, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
@@ -70,7 +71,7 @@ export const LookSection = memo(function LookSection({ clip }: { clip: VisualCli
             className="props-grow"
             suffix="%"
             title="corner roundness (%)"
-            value={Math.round((clip.radius ?? 0) * 100)}
+            value={roundShown((clip.radius ?? 0) * 100, 0)}
             min={0}
             max={100}
             precision={0}

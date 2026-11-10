@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
@@ -33,6 +33,9 @@ import { setValuesNow } from './animEdit';
 import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { coverScale } from './shapeLogic';
+import { InspectorTabs, rememberTab, rememberedTab } from './TabBar';
+import { onTab, resolveTab, sectionsOf, tabsFor } from './clipTabs';
+import type { InspectorTab, SectionId } from './clipTabs';
 
 const actions = () => useEditor.getState();
 
@@ -448,6 +451,8 @@ export function ClipInspector({ id }: { id: string }) {
   const clip = useClip(id);
   const fps = useEditor((s) => s.project?.fps ?? 30);
   const asset = useAsset(clip && 'assetId' in clip ? clip.assetId : undefined);
+  const [wanted, setWanted] = useState<InspectorTab>(rememberedTab);
+  const body = useRef<HTMLDivElement>(null);
   if (!clip) {
     return (
       <section className="panel props-panel">
@@ -463,6 +468,16 @@ export function ClipInspector({ id }: { id: string }) {
 
   const timed = isTimedClip(clip);
   const hasAudio = clip.type === 'audio' || (clip.type === 'video' && (asset?.hasAudio ?? true));
+  // which sections this clip has, which tabs that makes, and which sections show on the chosen tab
+  const have = sectionsOf(clip.type, hasAudio);
+  const tabs = tabsFor(have);
+  const tab = resolveTab(wanted, tabs);
+  const show = (id: SectionId) => have.includes(id) && onTab(tab, id);
+  const pick = (next: InspectorTab) => {
+    rememberTab(next);
+    setWanted(next);
+    if (body.current) body.current.scrollTop = 0;
+  };
 
   return (
     <section className="panel props-panel">
@@ -472,8 +487,10 @@ export function ClipInspector({ id }: { id: string }) {
         </span>
         <span className="props-tag">{typeLabel(clip)}</span>
       </div>
-      <div className="panel-body">
+      <InspectorTabs tabs={tabs} active={tab} onPick={pick} />
+      <div className="panel-body" ref={body}>
         <InspectedClip.Provider value={clip}>
+        {show('clip') ? (
         <ClipSection
           id={clip.id}
           trackId={clip.trackId}
@@ -486,12 +503,13 @@ export function ClipInspector({ id }: { id: string }) {
           mediaId={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.assetId : null}
           mediaKind={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null}
         />
-        <AnimationSection id={clip.id} keyframes={clip.keyframes} start={clip.start} duration={clip.duration} />
-        <BeatSyncSection id={clip.id} has={hasKeys(clip)} />
-        {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
-        {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
-        {clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
-        {clip.type === 'text' ? (
+        ) : null}
+        {show('animation') ? <AnimationSection id={clip.id} keyframes={clip.keyframes} start={clip.start} duration={clip.duration} /> : null}
+        {show('beat-sync') ? <BeatSyncSection id={clip.id} has={hasKeys(clip)} /> : null}
+        {show('effect') && clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
+        {show('camera') && clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
+        {show('focus') && clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
+        {show('text') && clip.type === 'text' ? (
           <TextSection
             id={clip.id}
             text={clip.text}
@@ -507,13 +525,13 @@ export function ClipInspector({ id }: { id: string }) {
             background={clip.background}
           />
         ) : null}
-        {clip.type === 'text' ? <TextStyleSection clip={clip} /> : null}
-        {clip.type === 'text' ? <TextAnimSection clip={clip} /> : null}
-        {clip.type === 'shape' ? <ShapeSection clip={clip} /> : null}
-        {clip.type !== 'audio' && clip.type !== 'effect' && clip.type !== 'camera' ? (
+        {show('text-style') && clip.type === 'text' ? <TextStyleSection clip={clip} /> : null}
+        {show('text-anim') && clip.type === 'text' ? <TextAnimSection clip={clip} /> : null}
+        {show('shape') && clip.type === 'shape' ? <ShapeSection clip={clip} /> : null}
+        {show('transform') ? (
           <TransformSection id={clip.id} />
         ) : null}
-        {isVisualClip(clip) ? (
+        {show('threed') && isVisualClip(clip) ? (
           <ThreeDSection
             id={clip.id}
             threeD={!!clip.threeD}
@@ -524,21 +542,23 @@ export function ClipInspector({ id }: { id: string }) {
             defaultDepth={clip.threeD && clip.shape && clip.shape !== 'plane' && clip.shape !== 'sphere' ? defaultThickness(clip) : 0}
           />
         ) : null}
-        {isVisualClip(clip) ? <PathSection id={clip.id} /> : null}
-        {isVisualClip(clip) ? <RepeatSection id={clip.id} /> : null}
-        <LinksSection clip={clip} />
-        {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
-        {isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
-        {isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
-        {isVisualClip(clip) ? <ClipEffectsSection clip={clip} /> : null}
-        {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
-        {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
-        {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
-        {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
-        {clip.type === 'video' || clip.type === 'audio' ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
-        <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
-          hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
-        />
+        {show('path') && isVisualClip(clip) ? <PathSection id={clip.id} /> : null}
+        {show('repeat') && isVisualClip(clip) ? <RepeatSection id={clip.id} /> : null}
+        {show('attach') ? <LinksSection clip={clip} /> : null}
+        {show('look') && isVisualClip(clip) ? <LookSection clip={clip} /> : null}
+        {show('color') && isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
+        {show('mask') && isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
+        {show('clip-effects') && isVisualClip(clip) ? <ClipEffectsSection clip={clip} /> : null}
+        {show('motion') && isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
+        {show('transition') && isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
+        {show('audio') && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
+        {show('tempo') && (clip.type === 'video' || clip.type === 'audio') ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
+        {show('speed') && (clip.type === 'video' || clip.type === 'audio') ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
+        {show('fades') ? (
+          <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
+            hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
+          />
+        ) : null}
         </InspectedClip.Provider>
       </div>
     </section>

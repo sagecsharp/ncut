@@ -135,6 +135,11 @@
   font-size: var(--font-size-sm);
   user-select: text;
 }
+.number-field-input.is-long {
+  /* a long value (1.1667, -123.45) keeps fitting a narrow field. the full text is in the title. */
+  padding: 0 4px;
+  font-size: var(--font-size-xs);
+}
 .number-field-input:focus {
   outline: none;
 }

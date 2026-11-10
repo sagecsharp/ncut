@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { clamp } from '../../lib/time';
+import { formatNumber } from './numberFormat';
 
 export interface NumberFieldProps {
   value: number;
@@ -10,7 +11,7 @@ export interface NumberFieldProps {
   min?: number;
   max?: number;
   step?: number;
-  /** decimals shown. default 0 */
+  /** decimals always shown. up to two more show when the value has them. default 0 */
   precision?: number;
   /** short text shown inside the field on the left (x, y, w...). drag it sideways to scrub. */
   label?: string;
@@ -39,7 +40,8 @@ export function NumberField({
   className,
   title,
 }: NumberFieldProps) {
-  const format = (v: number) => (Number.isFinite(v) ? v.toFixed(precision) : '0');
+  const format = (v: number) => formatNumber(v, precision);
+  const shown = format(value);
   const [draft, setDraft] = useState<string | null>(null);
   const skipBlur = useRef(false);
   const drag = useRef<{ x: number; start: number; moved: boolean } | null>(null);
@@ -52,6 +54,8 @@ export function NumberField({
     const n = Number(text.replace(',', '.'));
     setDraft(null);
     if (text.trim() === '' || !Number.isFinite(n)) return;
+    // the text is what the field already showed: leave the (maybe longer) real value alone
+    if (text.trim().replace(',', '.') === shown) return;
     const next = clamp(n, min, max);
     if (next !== value) onChange(next);
   };
@@ -96,11 +100,12 @@ export function NumberField({
         </span>
       ) : null}
       <input
-        className="number-field-input mono"
+        className={`number-field-input mono${shown.length > 6 ? ' is-long' : ''}`}
+        title={shown.length > 6 ? shown : undefined}
         type="text"
         inputMode="decimal"
         disabled={disabled}
-        value={draft ?? format(value)}
+        value={draft ?? shown}
         onFocus={(e) => {
           onStart?.();
           e.target.select();

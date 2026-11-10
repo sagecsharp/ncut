@@ -1,6 +1,7 @@
 import { createContext, memo, useContext } from 'react';
 import { ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
+import { roundShown } from '../../components/ui/numberFormat';
 import { EASINGS, KEY_EPS, baseValue, evalKeys, keyIndexAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
@@ -179,7 +180,7 @@ function StaticBody(p: BodyProps & { stored: number }) {
   return (
     <FieldView
       {...p}
-      value={Number((p.stored * scale).toFixed(precision))}
+      value={roundShown(p.stored * scale, precision)}
       animated={false}
       keyHere={false}
       hasPrev={false}
@@ -202,9 +203,8 @@ function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
   const scale = p.scale ?? 1;
   const precision = p.precision ?? 0;
   const tol = 0.5 / fps;
-  const f = 10 ** precision;
 
-  const value = usePlayback((s) => Math.round(evalKeys(keys, s.time - start) * scale * f) / f);
+  const value = usePlayback((s) => roundShown(evalKeys(keys, s.time - start) * scale, precision));
   const keyHere = usePlayback((s) => keyIndexAt(keys, localTime(s.time, start, duration), tol) >= 0);
   const hasPrev = usePlayback((s) => {
     const l = localTime(s.time, start, duration);

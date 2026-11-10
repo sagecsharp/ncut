@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo } from 'react';
 import { RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
@@ -44,7 +45,7 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
             min={-max}
             max={max}
             step={1}
-            value={Math.round(adjust[k] * scale)}
+            value={roundShown(adjust[k] * scale, 0)}
             onPointerDown={beginEdit}
             onKeyDown={(e) => {
               if (!e.repeat) beginEdit();
@@ -55,7 +56,7 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
           <NumberField
             className="props-num"
             title={title}
-            value={Math.round(adjust[k] * scale)}
+            value={roundShown(adjust[k] * scale, 0)}
             min={-max}
             max={max}
             step={1}
@@ -106,7 +107,7 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
               <SliderRow
                 label="range"
                 title="how far from the color still gets removed (%)"
-                value={Math.round(key.tolerance * 100)}
+                value={roundShown(key.tolerance * 100, 0)}
                 min={0}
                 max={100}
                 suffix="%"
@@ -115,7 +116,7 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
               <SliderRow
                 label="soft edge"
                 title="how soft the edge of the cut out is (%)"
-                value={Math.round(key.softness * 100)}
+                value={roundShown(key.softness * 100, 0)}
                 min={0}
                 max={100}
                 suffix="%"
@@ -124,7 +125,7 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
               <SliderRow
                 label="clean edges"
                 title="take the leftover color out of the edges (%)"
-                value={Math.round(key.spill * 100)}
+                value={roundShown(key.spill * 100, 0)}
                 min={0}
                 max={100}
                 suffix="%"

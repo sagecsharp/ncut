@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { Eraser, PenLine } from 'lucide-react';
 import { memo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
@@ -96,7 +97,7 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
             className="props-grow"
             suffix="%"
             title="inner radius (%)"
-            value={Math.round((clip.inner ?? DEFAULT_STAR_INNER) * 100)}
+            value={roundShown((clip.inner ?? DEFAULT_STAR_INNER) * 100, 0)}
             min={10}
             max={95}
             precision={0}
