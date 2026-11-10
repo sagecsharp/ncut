@@ -163,3 +163,37 @@ describe('links survive removals', () => {
     expect(ed().past.length).toBe(0);
   });
 });
+
+describe('effects on one clip', () => {
+  const fx = (trackId: string, target: string | null): EffectClip => ({ id: 'fx', type: 'effect', trackId, start: 0, duration: 2, name: 'fx', fadeIn: 0, fadeOut: 0, effect: 'shake', params: {}, amount: 1, seed: 1, target });
+
+  it('updateClip sets and clears the target', () => {
+    open((a, b) => [fx(a, null), image(b, 'x', 0, 2)]);
+    ed().updateClip('fx', { target: 'x' });
+    expect(clipOf<EffectClip>('fx').target).toBe('x');
+    ed().updateClip('fx', { target: null });
+    expect(clipOf<EffectClip>('fx').target).toBeNull();
+  });
+
+  it('copies of a clip and its effect point at each other', () => {
+    open((a, b) => [fx(a, 'x'), image(b, 'x', 0, 2)]);
+    const made = ed().duplicateClips(['fx', 'x']);
+    const copyFx = made.map((id) => clipOf(id)).find((c) => c.type === 'effect') as EffectClip;
+    const copyX = made.map((id) => clipOf(id)).find((c) => c.type === 'image')!;
+    expect(copyFx.target).toBe(copyX.id);
+    // the original still points at the original
+    expect(clipOf<EffectClip>('fx').target).toBe('x');
+  });
+
+  it('a copy of only the effect keeps the original target', () => {
+    open((a, b) => [fx(a, 'x'), image(b, 'x', 0, 2)]);
+    const made = ed().duplicateClips(['fx']);
+    expect(clipOf<EffectClip>(made[0]!).target).toBe('x');
+  });
+
+  it('deleting the target does not turn the effect into a layer over everything', () => {
+    open((a, b) => [fx(a, 'x'), image(b, 'x', 0, 2)]);
+    ed().deleteClips(['x']);
+    expect(clipOf<EffectClip>('fx').target).toBe('x');
+  });
+});
