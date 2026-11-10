@@ -21,6 +21,8 @@ import type {
   Easing,
   EffectClip,
   ImageClip,
+  Keyframe,
+  Keyframes,
   MediaAsset,
   Project,
   ShapeClip,
@@ -45,15 +47,18 @@ import {
   createTrack,
 } from '../lib/factory';
 import { getEffect } from '../engine/effects/registry';
+import { reparentTransform } from '../engine/parent';
 import {
   KEY_EPS,
   animProps,
   baseValue,
+  evalKeys,
   isAnimated,
   keyIndexAt,
   shiftKeyframes,
   valueAt,
   withKeyAt,
+  withBaseValue,
   withValueAt,
   withoutKeyAt,
   withoutKeys,
@@ -246,6 +251,15 @@ export interface EditorState {
   removeKeyframe(id: string, prop: string, time: number, tolerance?: number, opts?: ActionOpts): void;
   /** move the key(s) at fromTime to toTime. prop null = every property that has a key there. */
   moveKeyframe(id: string, prop: string | null, fromTime: number, toTime: number, tolerance?: number, opts?: ActionOpts): void;
+  /**
+   * replace the whole keyframes record of a clip in ONE step (reverse, fit, paste...). keys are clip-local
+   * seconds (see Keyframe). refused on a locked track. properties the clip cannot animate are dropped, values
+   * are clamped like setKeyframe does, keys are sorted by t (a second key at the same t replaces the first),
+   * non-finite keys and properties without keys are dropped; no keys at all removes the field.
+   * a property that had keys and has none afterwards keeps its static value as it was at `opts.time`
+   * (timeline seconds, default the clip start).
+   */
+  setClipKeyframes(id: string, keyframes: Keyframes, opts?: ActionOpts & { time?: number }): void;
   /** remove every key of one property (or of all when prop is omitted). values freeze as they are at `time`. */
   clearKeyframes(id: string, time: number, prop?: string, opts?: ActionOpts): void;
   /** set one parameter of an effect clip (clamped to the param range). */
@@ -475,11 +489,86 @@ function propDefault(clip: Clip, prop: string): number | undefined {
   return baseValue(clip, prop);
 }
 
+/** the selection without clips that are gone or sit on a locked track (same rule as select()) */
 function pruneSelection(project: Project | null, selection: string[]): string[] {
   if (!project) return [];
-  const ids = new Set(project.clips.map((c) => c.id));
+  if (selection.length === 0) return selection;
+  const locked = new Set(project.tracks.filter((t) => t.locked).map((t) => t.id));
+  const ids = new Set(project.clips.filter((c) => !locked.has(c.trackId)).map((c) => c.id));
   const next = selection.filter((id) => ids.has(id));
   return next.length === selection.length ? selection : next;
+}
+
+/** x / y / scale / rotation have keys: a pose that is animated is not rewritten (same rule as attachActions) */
+function hasKeyedPose(clip: Clip): boolean {
+  const kf = clip.keyframes;
+  if (!kf) return false;
+  return ['x', 'y', 'scale', 'rotation'].some((p) => (kf[p]?.length ?? 0) > 0);
+}
+
+/**
+ * the clips that are left when `gone` is removed. every surviving visual child of a removed clip keeps its
+ * place on screen: it gets the world pose (reparentTransform for parent = null) computed while the parent still
+ * exists, at the first moment the child is visible (clamped into the parent's range and the child's own).
+ * a child with a keyed pose keeps its keys and is only detached. all other links to removed clips are cleared.
+ */
+export function removeClipsKeepingPose(p: Project, gone: ReadonlySet<string>): Clip[] {
+  const keep = p.clips.filter((c) => !gone.has(c.id));
+  let byId: Map<string, Clip> | null = null;
+  const placed = keep.map((c) => {
+    if (!isVisualClip(c) || !c.parent || !gone.has(c.parent) || hasKeyedPose(c)) return c;
+    byId ??= new Map(p.clips.map((x) => [x.id, x]));
+    const parent = byId.get(c.parent);
+    if (!parent) return c;
+    const t = clamp(clamp(c.start, parent.start, clipEnd(parent)), c.start, clipEnd(c));
+    const tr = reparentTransform(p, c, null, t);
+    if (tr === c.transform) return c;
+    return { ...c, transform: { ...tr, scale: clamp(tr.scale, 0.01, 100) } } as Clip;
+  });
+  return unlinkRemoved(placed, gone);
+}
+
+function sameKeyframes(a: Keyframes | undefined, b: Keyframes | undefined): boolean {
+  const x = a ?? {};
+  const y = b ?? {};
+  const kx = Object.keys(x);
+  if (kx.length !== Object.keys(y).length) return false;
+  for (const prop of kx) {
+    const p = x[prop]!;
+    const q = y[prop];
+    if (!q || p.length !== q.length) return false;
+    for (let i = 0; i < p.length; i++) if (p[i]!.t !== q[i]!.t || p[i]!.v !== q[i]!.v || p[i]!.ease !== q[i]!.ease) return false;
+  }
+  return true;
+}
+
+/** a keyframes record cleaned for a clip (see EditorState.setClipKeyframes). undefined = no keys left. */
+export function cleanKeyframes(clip: Clip, input: Keyframes): Keyframes | undefined {
+  const out: Keyframes = {};
+  for (const [prop, keys] of Object.entries(input)) {
+    if (!Array.isArray(keys)) continue;
+    const list: Keyframe[] = [];
+    let ok = true;
+    for (const k of keys) {
+      if (!k || !Number.isFinite(k.t) || !Number.isFinite(k.v)) continue;
+      const v = clampProp(clip, prop, k.v);
+      if (v === null) {
+        ok = false;
+        break;
+      }
+      list.push({ t: k.t, v, ease: k.ease ?? 'ease' });
+    }
+    if (!ok || list.length === 0) continue;
+    list.sort((a, b) => a.t - b.t);
+    // a key at the same time as the one before replaces it
+    const dedup: Keyframe[] = [];
+    for (const k of list) {
+      if (dedup.length > 0 && k.t - dedup[dedup.length - 1]!.t < KEY_EPS) dedup[dedup.length - 1] = k;
+      else dedup.push(k);
+    }
+    out[prop] = dedup;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /* ---------- store ---------- */
@@ -617,7 +706,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       const next: Project = {
         ...project,
         assets: project.assets.filter((a) => a.id !== assetId),
-        clips: gone.size > 0 ? unlinkRemoved(project.clips.filter((c) => !gone.has(c.id)), gone) : project.clips,
+        clips: gone.size > 0 ? removeClipsKeepingPose(project, gone) : project.clips,
       };
       // history holds whole projects: a step that still has a clip of this asset cannot be gone back to.
       // when no step has one (an unused asset), undo and redo stay as they are.
@@ -652,7 +741,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         return {
           ...p,
           tracks: p.tracks.filter((t) => t.id !== trackId),
-          clips: gone.size > 0 ? unlinkRemoved(p.clips.filter((c) => !gone.has(c.id)), gone) : p.clips,
+          clips: gone.size > 0 ? removeClipsKeepingPose(p, gone) : p.clips,
         };
       }, opts);
     },
@@ -886,6 +975,21 @@ export const useEditor = create<EditorState>()((set, get) => {
           changed = true;
         }
         return changed ? replaceClip(p, { ...clip, keyframes: kf }) : null;
+      }, opts);
+    },
+    setClipKeyframes(id, keyframes, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || isLocked(p, clip.trackId)) return null;
+        const kf = cleanKeyframes(clip, keyframes);
+        const freeze = opts?.time ?? clip.start;
+        let next: Clip = clip;
+        // a property that lost all its keys keeps the value it had at `freeze`
+        for (const [prop, keys] of Object.entries(clip.keyframes ?? {})) {
+          if (keys.length > 0 && !kf?.[prop]) next = withBaseValue(next, prop, evalKeys(keys, freeze - clip.start));
+        }
+        if (next === clip && sameKeyframes(clip.keyframes, kf)) return null;
+        return replaceClip(p, { ...next, keyframes: kf });
       }, opts);
     },
     clearKeyframes(id, time, prop, opts) {
@@ -1175,6 +1279,8 @@ export const useEditor = create<EditorState>()((set, get) => {
         const doomed = p.clips.filter((c) => ids.includes(c.id) && !isLocked(p, c.trackId));
         if (doomed.length === 0) return null;
         const doomedIds = new Set(doomed.map((c) => c.id));
+        // only the clips that were asked for close a gap: an effect that goes with its clip never does
+        const asked = doomed.slice();
         // effects that sit on a deleted clip go with it (they would stay behind as clips that do nothing).
         // one on a locked track stays, pointing at nothing.
         for (const c of p.clips) {
@@ -1183,14 +1289,11 @@ export const useEditor = create<EditorState>()((set, get) => {
             doomedIds.add(c.id);
           }
         }
-        let clips = unlinkRemoved(
-          p.clips.filter((c) => !doomedIds.has(c.id)),
-          doomedIds,
-        );
+        let clips = removeClipsKeepingPose(p, doomedIds);
         if (opts?.ripple) {
           const shiftOf = (c: Clip): number => {
             let shift = 0;
-            for (const d of doomed) if (d.trackId === c.trackId && d.start < c.start) shift += d.duration;
+            for (const d of asked) if (d.trackId === c.trackId && d.start < c.start) shift += d.duration;
             return shift;
           };
           const before = clips;
@@ -1215,6 +1318,20 @@ export const useEditor = create<EditorState>()((set, get) => {
             });
           }
         }
+        // a transition plays from the clip right before it: when that clip is gone and nothing touches the
+        // start any more (a ripple may bring another one up), the transition would fade in from nothing
+        const after = clips;
+        const touched = (s: Clip) => after.some((o) => o !== s && o.trackId === s.trackId && Math.abs(clipEnd(o) - s.start) < 1e-6);
+        const was = new Map(p.clips.map((c) => [c.id, c]));
+        clips = clips.map((c) => {
+          if (!('transition' in c) || !c.transition) return c;
+          const old = was.get(c.id)!;
+          if (!doomed.some((d) => d.trackId === old.trackId && Math.abs(clipEnd(d) - old.start) < 1e-6)) return c;
+          if (touched(c)) return c;
+          const { transition: _drop, ...rest } = c;
+          void _drop;
+          return rest as Clip;
+        });
         return { ...p, clips };
       }, opts);
     },
@@ -1225,9 +1342,12 @@ export const useEditor = create<EditorState>()((set, get) => {
         let next = p;
         const trackIndex = (id: string) => p.tracks.findIndex((t) => t.id === id);
         // sameTime: from the bottom layer up, so every copy can be put above the copies of the layers below it
-        const originals = p.clips
-          .filter((c) => ids.includes(c.id))
-          .sort((a, b) => (opts?.sameTime ? trackIndex(b.trackId) - trackIndex(a.trackId) : 0) || a.start - b.start);
+        const order = (a: Clip, b: Clip) => (opts?.sameTime ? trackIndex(b.trackId) - trackIndex(a.trackId) : 0) || a.start - b.start;
+        const originals = p.clips.filter((c) => ids.includes(c.id)).sort(order);
+        // the effects put on a duplicated clip come along (like copy / paste), without being asked for
+        const askedIds = new Set(originals.map((c) => c.id));
+        const extras = p.clips.filter((c): c is EffectClip => c.type === 'effect' && !!c.target && askedIds.has(c.target) && !askedIds.has(c.id) && !isLocked(p, c.trackId));
+        const silent = new Set(extras.map((c) => c.id));
         const idMap = new Map<string, string>();
         // sameTime: the highest track taken by copies of lower layers, and the layer being worked on
         let ceiling: string | null = null;
@@ -1250,7 +1370,7 @@ export const useEditor = create<EditorState>()((set, get) => {
           // no shared spot found (very crowded tracks): place each copy on its own, as for one clip
           if (free.some((c) => !isRangeFree(p, c.trackId, c.start + shift, c.duration))) shift = 0;
         }
-        for (const c of originals) {
+        for (const c of opts?.sameTime ? [...originals, ...extras].sort(order) : originals) {
           const copy = structuredClone(c);
           copy.id = uid('clp');
           if (opts?.sameTime) {
@@ -1280,7 +1400,7 @@ export const useEditor = create<EditorState>()((set, get) => {
             if (groupTop === null || at(above.id) < at(groupTop)) groupTop = above.id;
             copy.trackId = above.id;
             copy.start = c.start;
-            created.push(copy.id);
+            if (!silent.has(c.id)) created.push(copy.id);
             idMap.set(c.id, copy.id);
             next = { ...next, clips: [...next.clips, copy] };
             continue;
@@ -1306,7 +1426,32 @@ export const useEditor = create<EditorState>()((set, get) => {
           next = { ...next, clips: [...next.clips, copy] };
         }
         if (created.length === 0) return null;
-        return relinkIn(next, idMap, originals);
+        // not at the same time: an effect copy keeps its place against the copy of its clip
+        if (!opts?.sameTime) {
+          for (const e of extras) {
+            const from = originals.find((o) => o.id === e.target);
+            const to = next.clips.find((x) => x.id === idMap.get(e.target!));
+            if (!from || !to) continue;
+            const copy = structuredClone(e);
+            copy.id = uid('clp');
+            const at = Math.max(0, to.start + (e.start - from.start));
+            let trackId = e.trackId;
+            if (!isRangeFree(next, trackId, at, e.duration)) {
+              const room = findTrackWithRoom(next, 'video', at, e.duration);
+              if (room) trackId = room.id;
+              else {
+                const made = withNewTrack(next, 'video', 0);
+                next = made.project;
+                trackId = made.track.id;
+              }
+            }
+            copy.trackId = trackId;
+            copy.start = at;
+            idMap.set(e.id, copy.id);
+            next = { ...next, clips: [...next.clips, copy] };
+          }
+        }
+        return relinkIn(next, idMap, [...originals, ...extras.filter((e) => idMap.has(e.id))]);
       }, opts);
       if (created.length > 0) set({ selection: created });
       return created;
