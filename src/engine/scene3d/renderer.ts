@@ -3,6 +3,7 @@
  * one webgl2 context per channel, like the effects runner. the result is a transparent canvas
  * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there.
  */
+import type { Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
 import { mul, transformPoint } from './math';
 
@@ -15,8 +16,10 @@ export interface Plane3D {
    * once per key and gets mipmaps. change the key when the pixels change. leave undefined for video.
    */
   cacheKey?: string;
-  /** maps the unit quad (x, y in -0.5..0.5, z = 0) into world space */
+  /** maps the unit shape (x, y, z in -0.5..0.5; a plane has z = 0) into world space */
   model: Mat4;
+  /** missing = 'plane' */
+  shape?: Shape3D;
   /** 0..1 */
   alpha: number;
 }
@@ -29,12 +32,13 @@ export interface Lines3D {
 }
 
 const PLANE_VS = `#version 300 es
-layout(location = 0) in vec2 a_pos;
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec2 a_uv;
 uniform mat4 u_mvp;
 out vec2 v_uv;
 void main() {
-  v_uv = a_pos + 0.5;
-  gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);
+  v_uv = a_uv;
+  gl_Position = u_mvp * vec4(a_pos, 1.0);
 }`;
 const PLANE_FS = `#version 300 es
 precision highp float;
@@ -64,6 +68,100 @@ void main() {
 
 const CACHE_LIMIT = 48;
 
+/* ---------- meshes: x, y, z, u, v per vertex. unit size, centered. the picture reads the right way
+   round from outside on every face (world: x right, y down, z away from the viewer). ---------- */
+
+interface MeshData {
+  verts: number[];
+  indices: number[];
+}
+
+function planeMesh(): MeshData {
+  return {
+    verts: [-0.5, -0.5, 0, 0, 0, 0.5, -0.5, 0, 1, 0, 0.5, 0.5, 0, 1, 1, -0.5, 0.5, 0, 0, 1],
+    indices: [0, 1, 2, 0, 2, 3],
+  };
+}
+
+function boxMesh(): MeshData {
+  const verts: number[] = [];
+  const indices: number[] = [];
+  // each face: origin (its top left corner seen from outside), the step along u, the step along v
+  const faces: [number[], number[], number[]][] = [
+    [[-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0]], // front (faces the viewer)
+    [[0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0]], // back
+    [[0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0]], // right
+    [[-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0]], // left
+    [[-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1]], // top
+    [[-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1]], // bottom
+  ];
+  for (const [o, u, v] of faces) {
+    const base = verts.length / 5;
+    for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) {
+      verts.push(o[0]! + u[0]! * fu + v[0]! * fv, o[1]! + u[1]! * fu + v[1]! * fv, o[2]! + u[2]! * fu + v[2]! * fv, fu, fv);
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  return { verts, indices };
+}
+
+function sphereMesh(seg = 48, rings = 24): MeshData {
+  const verts: number[] = [];
+  const indices: number[] = [];
+  for (let j = 0; j <= rings; j++) {
+    const v = j / rings;
+    const r = 0.5 * Math.sin(Math.PI * v);
+    const y = -0.5 * Math.cos(Math.PI * v);
+    for (let i = 0; i <= seg; i++) {
+      const u = i / seg;
+      const a = Math.PI * 2 * (u - 0.5);
+      // u = 0.5 faces the viewer, u grows to the right
+      verts.push(r * Math.sin(a), y, -r * Math.cos(a), u, v);
+    }
+  }
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < seg; i++) {
+      const p = j * (seg + 1) + i;
+      indices.push(p, p + 1, p + seg + 2, p, p + seg + 2, p + seg + 1);
+    }
+  }
+  return { verts, indices };
+}
+
+function cylinderMesh(seg = 48): MeshData {
+  const verts: number[] = [];
+  const indices: number[] = [];
+  for (let j = 0; j <= 1; j++) {
+    for (let i = 0; i <= seg; i++) {
+      const u = i / seg;
+      const a = Math.PI * 2 * (u - 0.5);
+      verts.push(0.5 * Math.sin(a), j - 0.5, -0.5 * Math.cos(a), u, j);
+    }
+  }
+  for (let i = 0; i < seg; i++) {
+    indices.push(i, i + 1, i + seg + 2, i, i + seg + 2, i + seg + 1);
+  }
+  // caps: the picture seen from above / below
+  for (const top of [true, false]) {
+    const center = verts.length / 5;
+    const y = top ? -0.5 : 0.5;
+    verts.push(0, y, 0, 0.5, 0.5);
+    for (let i = 0; i <= seg; i++) {
+      const a = (Math.PI * 2 * i) / seg;
+      const x = 0.5 * Math.cos(a);
+      const z = 0.5 * Math.sin(a);
+      verts.push(x, y, z, x + 0.5, top ? 0.5 - z : z + 0.5);
+    }
+    for (let i = 0; i < seg; i++) indices.push(center, center + 1 + i, center + 2 + i);
+  }
+  return { verts, indices };
+}
+
+interface Mesh {
+  vao: WebGLVertexArrayObject | null;
+  count: number;
+}
+
 class SceneRenderer {
   readonly canvas: GLCanvas;
   private gl: WebGL2RenderingContext;
@@ -73,7 +171,7 @@ class SceneRenderer {
   private uAlpha: WebGLUniformLocation | null;
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
-  private quadVao: WebGLVertexArrayObject | null;
+  private meshes = new Map<Shape3D, Mesh>();
   private lineVao: WebGLVertexArrayObject | null;
   private lineBuf: WebGLBuffer | null;
   private cache = new Map<string, { tex: WebGLTexture; used: number }>();
@@ -92,13 +190,6 @@ class SceneRenderer {
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
-    this.quadVao = gl.createVertexArray();
-    gl.bindVertexArray(this.quadVao);
-    const quad = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
     this.lineVao = gl.createVertexArray();
     gl.bindVertexArray(this.lineVao);
@@ -134,6 +225,28 @@ class SceneRenderer {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) || 'link failed');
     return p;
+  }
+
+  /** the gpu mesh for a shape, built on first use */
+  private mesh(shape: Shape3D): Mesh {
+    const hit = this.meshes.get(shape);
+    if (hit) return hit;
+    const gl = this.gl;
+    const data = shape === 'box' ? boxMesh() : shape === 'sphere' ? sphereMesh() : shape === 'cylinder' ? cylinderMesh() : planeMesh();
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.verts), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    const mesh = { vao, count: data.indices.length };
+    this.meshes.set(shape, mesh);
+    return mesh;
   }
 
   private newTexture(mips: boolean): WebGLTexture {
@@ -224,7 +337,6 @@ class SceneRenderer {
       .sort((a, b) => b.dist - a.dist);
 
     gl.useProgram(this.planeProg);
-    gl.bindVertexArray(this.quadVao);
     gl.activeTexture(gl.TEXTURE0);
     let slot = 0;
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
@@ -237,7 +349,9 @@ class SceneRenderer {
       if (plane.cacheKey === undefined) slot++;
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      const mesh = this.mesh(plane.shape ?? 'plane');
+      gl.bindVertexArray(mesh.vao);
+      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
     }
     gl.disable(gl.POLYGON_OFFSET_FILL);
 

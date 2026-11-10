@@ -1,3 +1,4 @@
+import { BLUR_EFFECTS } from './defs/blur';
 import { COLOR_EFFECTS } from './defs/color';
 import { DISTORT_EFFECTS } from './defs/distort';
 import { MOTION_EFFECTS } from './defs/motion';
@@ -5,7 +6,7 @@ import { STYLIZE_EFFECTS } from './defs/stylize';
 import type { EffectCategory, EffectDef } from './types';
 
 /** every effect, in the order the effects tab shows them */
-export const EFFECTS: EffectDef[] = [...MOTION_EFFECTS, ...COLOR_EFFECTS, ...DISTORT_EFFECTS, ...STYLIZE_EFFECTS];
+export const EFFECTS: EffectDef[] = [...MOTION_EFFECTS, ...BLUR_EFFECTS, ...COLOR_EFFECTS, ...DISTORT_EFFECTS, ...STYLIZE_EFFECTS];
 
 const byId = new Map(EFFECTS.map((e) => [e.id, e]));
 

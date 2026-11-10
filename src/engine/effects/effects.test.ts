@@ -151,6 +151,8 @@ describe('effects registry', () => {
       const used = usedParamKeys(def.glsl);
       const declared = new Set(def.params.map((p) => p.key));
       for (const k of used) expect(declared.has(k), `p_${k} is used but not declared in params`).toBe(true);
+      // temporal effects (motion blur, echo) read their params in js; their glsl is only a thumbnail
+      if (def.temporal) return;
       for (const k of declared) expect(used.has(k), `param ${k} is declared but p_${k} is not used`).toBe(true);
     });
 
