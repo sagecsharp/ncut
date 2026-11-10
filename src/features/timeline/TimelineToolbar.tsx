@@ -91,7 +91,7 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => trimToPlayhead('start')}
         disabled={!hasClips}
-        title="cut off the left side: the clip starts at the playhead ([)"
+        title="from the left: the clip starts at the playhead ([)"
         aria-label="cut off the left side"
       >
         <PanelLeftClose size={16} />
@@ -100,7 +100,7 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => trimToPlayhead('end')}
         disabled={!hasClips}
-        title="cut off the right side: the clip ends at the playhead (])"
+        title="from the right: the clip ends at the playhead (])"
         aria-label="cut off the right side"
       >
         <PanelRightClose size={16} />

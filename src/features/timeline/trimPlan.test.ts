@@ -25,14 +25,28 @@ describe('planTrimToPlayhead', () => {
     expect(ids(planTrimToPlayhead(clips, tracks, [], 8, 'start'))).toEqual(['a']);
   });
 
-  it('does nothing when the playhead is outside the clip or on an edge', () => {
+  it('does nothing when the playhead is on an edge, or outside with nothing selected', () => {
     const clips = [vid('a', 'v1', 2, 4)];
     for (const edge of ['start', 'end'] as const) {
-      expect(planTrimToPlayhead(clips, tracks, ['a'], 1, edge)).toEqual([]);
-      expect(planTrimToPlayhead(clips, tracks, ['a'], 7, edge)).toEqual([]);
       expect(planTrimToPlayhead(clips, tracks, ['a'], 2, edge)).toEqual([]);
       expect(planTrimToPlayhead(clips, tracks, ['a'], 6, edge)).toEqual([]);
+      expect(planTrimToPlayhead(clips, tracks, [], 1, edge)).toEqual([]);
+      expect(planTrimToPlayhead(clips, tracks, [], 7, edge)).toEqual([]);
     }
+  });
+
+  it('a selected clip grows to a playhead outside it, on the side of that edge only', () => {
+    const clips = [vid('a', 'v1', 2, 4)];
+    expect(planTrimToPlayhead(clips, tracks, ['a'], 1, 'start')).toEqual([{ id: 'a', time: 1 }]);
+    expect(planTrimToPlayhead(clips, tracks, ['a'], 7, 'end')).toEqual([{ id: 'a', time: 7 }]);
+    // the wrong side: the start cannot go past the end
+    expect(planTrimToPlayhead(clips, tracks, ['a'], 7, 'start')).toEqual([]);
+    expect(planTrimToPlayhead(clips, tracks, ['a'], 1, 'end')).toEqual([]);
+  });
+
+  it('a cut wins: a selected clip somewhere else does not grow while another one is cut', () => {
+    const clips = [vid('a', 'v1', 0, 10), vid('c', 'v1', 20, 5)];
+    expect(planTrimToPlayhead(clips, tracks, ['a', 'c'], 4, 'start')).toEqual([{ id: 'a', time: 4 }]);
   });
 
   it('skips clips on locked tracks', () => {
