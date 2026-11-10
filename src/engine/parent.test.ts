@@ -5,7 +5,7 @@ import { DEFAULT_TRANSFORM } from '../types';
 import { clipModelMatrix } from './scene3d/model';
 import { type CameraRig, cameraRig, cameraWorldMatrix, projectPoint } from './scene3d/camera';
 import { mul, transformPoint, translation, type Mat4 } from './scene3d/math';
-import { invertMatrix, parentModelMatrix, reparentTransform, worldDeltaToLocal, worldTransform, worldTransformOf } from './parent';
+import { clipLookPoint, invertMatrix, parentModelMatrix, reparentTransform, worldDeltaToLocal, worldTransform, worldTransformOf } from './parent';
 
 const tf = (o: Partial<Transform> = {}): Transform => ({ ...DEFAULT_TRANSFORM, ...o });
 
@@ -262,5 +262,107 @@ describe('camera parent', () => {
     const w = cameraWorldMatrix(rig);
     const id = mul(rig.view, Float32Array.from(w));
     for (let i = 0; i < 16; i++) expect(id[i]).toBeCloseTo(i % 5 === 0 ? 1 : 0, 3);
+  });
+});
+
+describe("clipLookPoint (lookAt 'clip')", () => {
+  const looker = (t: string, o: Partial<ShapeClip> = {}) => sh(t, 'me', { threeD: true, lookAt: 'clip', lookTarget: 'tar', ...o });
+  const camClip = (t: string, o: Partial<CameraClip>): CameraClip => ({ ...createCameraClip(t, 0, { duration: 10, ...o }), id: 'cam' });
+  const pt = (p: Project, id = 'me', time = 1) => clipLookPoint(p, p.clips.find((c) => c.id === id) as ShapeClip, time);
+
+  it('a 2d target sits in the canvas plane at z 0', () => {
+    const p = setup((t) => [looker(t), sh(t, 'tar', { transform: tf({ x: 120, y: -30 }) })]);
+    const w = pt(p)!;
+    expect(w[0]).toBeCloseTo(p.width / 2 + 120, 3);
+    expect(w[1]).toBeCloseTo(p.height / 2 - 30, 3);
+    expect(w[2]).toBeCloseTo(0, 3);
+  });
+  it('a 3d target keeps its depth', () => {
+    const p = setup((t) => [looker(t), sh(t, 'tar', { threeD: true, transform: tf({ x: 10, z: 300 }) })]);
+    expect(pt(p)![2]).toBeCloseTo(300, 3);
+  });
+  it('follows the target parents', () => {
+    const p = setup((t) => [
+      looker(t),
+      sh(t, 'par', { transform: tf({ x: 100, rotation: 90 }) }),
+      sh(t, 'tar', { parent: 'par', transform: tf({ x: 10 }) }),
+    ]);
+    const w = pt(p)!;
+    expect(w[0]).toBeCloseTo(p.width / 2 + 100, 3);
+    expect(w[1]).toBeCloseTo(p.height / 2 + 10, 3);
+  });
+  it('a camera clip as target gives that camera eye at the time', () => {
+    const p = setup((t) => [looker(t, { lookTarget: 'cam' }), camClip(t, { x: 150, y: -60, z: 200, pan: 20 })]);
+    const c = p.clips[1] as CameraClip;
+    const rig = cameraRig({ x: c.x, y: c.y, z: c.z, pan: c.pan, tilt: c.tilt, roll: c.roll, fov: c.fov }, p.width, p.height);
+    const w = pt(p)!;
+    for (let i = 0; i < 3; i++) expect(w[i]).toBeCloseTo(rig.eye[i]!, 3);
+  });
+  it('the target does not need to be in range: its nearest edge counts', () => {
+    const p = setup((t) => [
+      looker(t),
+      sh(t, 'tar', {
+        start: 2,
+        duration: 2,
+        keyframes: { x: [{ t: 0, v: 0, ease: 'linear' }, { t: 2, v: 200, ease: 'linear' }] },
+      } as Partial<ShapeClip>),
+    ]);
+    expect(pt(p, 'me', 0)![0]).toBeCloseTo(p.width / 2, 2);
+    expect(pt(p, 'me', 9)![0]).toBeCloseTo(p.width / 2 + 200, 1);
+  });
+  it('follows the target animation over time', () => {
+    const p = setup((t) => [
+      looker(t),
+      sh(t, 'tar', { keyframes: { x: [{ t: 0, v: 0, ease: 'linear' }, { t: 10, v: 100, ease: 'linear' }] } } as Partial<ShapeClip>),
+    ]);
+    expect(pt(p, 'me', 5)![0]).toBeCloseTo(p.width / 2 + 50, 2);
+  });
+  it('no target, own id, unknown id, a non visual target or another lookAt = null', () => {
+    const base = (o: Partial<ShapeClip>) => setup((t) => [looker(t, o), sh(t, 'tar'), ({ ...createCameraClip(t, 0), id: 'cam' } as CameraClip)]);
+    expect(pt(base({ lookTarget: null }))).toBeNull();
+    expect(pt(base({ lookTarget: undefined }))).toBeNull();
+    expect(pt(base({ lookTarget: 'me' }))).toBeNull();
+    expect(pt(base({ lookTarget: 'nope' }))).toBeNull();
+    expect(pt(base({ lookAt: 'camera' }))).toBeNull();
+    expect(pt(base({ lookAt: 'none' }))).toBeNull();
+    expect(pt(base({}))).not.toBeNull();
+  });
+  it('two clips looking at each other each get the other un-turned position', () => {
+    const p = setup((t) => [
+      sh(t, 'a', { threeD: true, lookAt: 'clip', lookTarget: 'b', transform: tf({ x: -100, z: 50 }) }),
+      sh(t, 'b', { threeD: true, lookAt: 'clip', lookTarget: 'a', transform: tf({ x: 100, z: -50 }) }),
+    ]);
+    const pa = pt(p, 'a')!;
+    const pb = pt(p, 'b')!;
+    expect(pa[0]).toBeCloseTo(p.width / 2 + 100, 3);
+    expect(pa[2]).toBeCloseTo(-50, 3);
+    expect(pb[0]).toBeCloseTo(p.width / 2 - 100, 3);
+    expect(pb[2]).toBeCloseTo(50, 3);
+  });
+  it('a longer loop is fine too', () => {
+    const p = setup((t) => [
+      sh(t, 'a', { lookAt: 'clip', lookTarget: 'b' }),
+      sh(t, 'b', { lookAt: 'clip', lookTarget: 'c', parent: 'a' }),
+      sh(t, 'c', { lookAt: 'clip', lookTarget: 'a', parent: 'b' }),
+    ]);
+    expect(() => pt(p, 'a')).not.toThrow();
+    expect(() => pt(p, 'c')).not.toThrow();
+  });
+  it('a child of a looking parent counts from the parent un-turned frame', () => {
+    const p = setup((t) => [
+      sh(t, 'par', { threeD: true, lookAt: 'clip', lookTarget: 'me', transform: tf({ x: 100 }) }),
+      sh(t, 'tar', { threeD: true, parent: 'par', transform: tf({ x: 50 }) }),
+      looker(t, { threeD: true }),
+    ]);
+    const w = pt(p)!;
+    expect(w[0]).toBeCloseTo(p.width / 2 + 150, 3);
+    expect(w[2]).toBeCloseTo(0, 3);
+  });
+  it('matches the world position of the drawn plane', () => {
+    const p = setup((t) => [looker(t), sh(t, 'tar', { threeD: true, transform: tf({ x: 70, y: 20, z: 130, rotY: 40 }) })]);
+    const tar = p.clips[1] as ShapeClip;
+    const w = centerOf(p, tar, 1).world;
+    const l = pt(p)!;
+    for (let i = 0; i < 3; i++) expect(l[i]).toBeCloseTo(w[i]!, 3);
   });
 });

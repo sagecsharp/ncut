@@ -312,3 +312,60 @@ describe('with a parent matrix', () => {
     expect(Array.from(a)).toEqual(Array.from(b));
   });
 });
+
+describe("lookAt 'clip' (a look point instead of the eye)", () => {
+  const b = box({ cx: 700, cy: 100, width: 300, height: 150 });
+  const center: Vec3 = [700, 100, 0];
+  const model = (point: Vec3 | null | undefined, look: 'clip' | 'camera' | 'none' = 'clip', t: Transform = tf(), parent?: Mat4 | null) =>
+    clipModelMatrix(b, t, look, EYE, parent, point);
+  it('the front faces the point: the normal runs from the point through the plane', () => {
+    for (const p of [[0, 0, -500], [1500, 900, -300], [200, -400, 900], [700, 100, 800]] as Vec3[]) {
+      near(normalOf(model(p)), normalize(sub(center, p)), 5);
+    }
+  });
+  it('it is the same turn as lookAt camera with the eye at that point', () => {
+    for (const p of [[0, 0, -500], [1500, 900, -300]] as Vec3[]) {
+      expect(Array.from(model(p))).toEqual(Array.from(clipModelMatrix(b, tf(), 'camera', p)));
+    }
+  });
+  it('is a full facing, not upright only: a point above tilts the plane', () => {
+    const n = normalOf(model([700, -900, -300]));
+    expect(Math.abs(n[1]!)).toBeGreaterThan(0.5);
+  });
+  it('the eye is ignored', () => {
+    const a = clipModelMatrix(b, tf(), 'clip', [0, 0, -1], null, [10, 20, -300]);
+    const c = clipModelMatrix(b, tf(), 'clip', [999, 999, 999], null, [10, 20, -300]);
+    expect(Array.from(a)).toEqual(Array.from(c));
+  });
+  it('the center stays put and size is kept', () => {
+    const c = planeCorners(model([100, 700, -200], 'clip', tf({ z: 50 })));
+    near([(c[0][0] + c[2][0]) / 2, (c[0][1] + c[2][1]) / 2, (c[0][2] + c[2][2]) / 2], [700, 100, 50], 3);
+    expect(length(sub(c[1], c[0]))).toBeCloseTo(300, 2);
+    expect(length(sub(c[3], c[0]))).toBeCloseTo(150, 2);
+  });
+  it('no point, null point, or the plane own center = no turn', () => {
+    const plain = Array.from(clipModelMatrix(b, tf(), 'none', EYE));
+    expect(Array.from(model(undefined))).toEqual(plain);
+    expect(Array.from(model(null))).toEqual(plain);
+    expect(Array.from(model(center))).toEqual(plain);
+  });
+  it('a point is only used by lookAt clip', () => {
+    const plain = Array.from(clipModelMatrix(b, tf(), 'none', EYE));
+    expect(Array.from(model([0, 0, -500], 'none'))).toEqual(plain);
+    expect(Array.from(model([0, 0, -500], 'camera'))).toEqual(Array.from(clipModelMatrix(b, tf(), 'camera', EYE)));
+  });
+  it('turn / tilt are applied on top, like with the camera', () => {
+    const p: Vec3 = [0, 0, -500];
+    const a = normalOf(model(p, 'clip', tf({ rotY: 30 })));
+    const base = normalOf(model(p));
+    expect(dot(a, base)).toBeLessThan(0.9999);
+  });
+  it('with a parent: the parent rotation is replaced by the look, its scale kept', () => {
+    const parent = mul(translation(960, 540, 400), scaling(3, 3, 3));
+    const p: Vec3 = [0, 0, -500];
+    const m = model(p, 'clip', tf(), parent);
+    near(normalOf(m), normalize(sub([960, 540, 400], p)), 4);
+    const c = planeCorners(clipModelMatrix(box({ width: 10, height: 10 }), tf(), 'clip', EYE, parent, p));
+    expect(length(sub(c[1], c[0]))).toBeCloseTo(30, 3);
+  });
+});
