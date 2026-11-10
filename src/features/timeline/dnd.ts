@@ -9,6 +9,10 @@ import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_IMAGE_DURATIO
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { getEffect } from '../../engine/effects/registry';
+import { DEFAULT_TRANSITION_DURATION, getTransition } from '../../engine/transitions/registry';
+import { CUT_EPS } from '../../lib/transitions';
+import { isVisualClip } from '../../types';
+import type { VisualClip } from '../../types';
 import { snapToFrame } from '../../lib/time';
 import { clipEnd, collectSnapPoints, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { importFiles } from '../../media/importer';
@@ -59,9 +63,15 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
 }
 
 function ghostLabel(payload: DragPayload | null): string {
-  if (!payload || payload.kind !== 'effect') return '';
+  if (!payload) return '';
+  if (payload.kind === 'camera') return 'camera';
+  if (payload.kind === 'transition') return getTransition(payload.transition)?.name ?? payload.transition;
+  if (payload.kind !== 'effect') return '';
   return getEffect(payload.effect)?.name ?? payload.effect;
 }
+
+/** over the last part of a clip with another clip right behind it, the user means the cut */
+const CUT_ZONE = 0.7
 
 function readPayload(e: ReactDragEvent): DragPayload | null {
   const live = getDragPayload();
@@ -142,9 +152,60 @@ export function createDnd(env: DndEnv) {
     return { start, duration, hitIndex: hit.index };
   }
 
+  /** the visual clip a transition dropped at the pointer would go to, and its lane */
+  function resolveTransition(cx: number, cy: number): { clip: VisualClip; laneIndex: number } | null {
+    if (!ensure() || !geo || !layout) return null;
+    const st = useEditor.getState();
+    const project = st.project;
+    if (!project) return null;
+    const hit = hitLane(layout, cy - geo.top - RULER_H + view.scrollTop);
+    if (hit.type !== 'lane') return null;
+    const track = project.tracks[hit.index];
+    if (!track || track.locked || track.kind !== 'video') return null;
+    const time = (cx - geo.left - HEADER_W + view.scrollLeft) / st.zoom;
+    let under: VisualClip | null = null;
+    for (const c of project.clips) {
+      if (c.trackId !== track.id || !isVisualClip(c)) continue;
+      if (time >= c.start && time < clipEnd(c)) {
+        under = c;
+        break;
+      }
+    }
+    if (!under) return null;
+    if (time >= under.start + under.duration * CUT_ZONE) {
+      const end = clipEnd(under);
+      for (const c of project.clips) {
+        if (c.id !== under.id && c.trackId === track.id && isVisualClip(c) && Math.abs(c.start - end) <= CUT_EPS) {
+          return { clip: c, laneIndex: hit.index };
+        }
+      }
+    }
+    return { clip: under, laneIndex: hit.index };
+  }
+
   function updateGhost(): void {
     rafId = 0;
     if (!last) return;
+    if (last.payload?.kind === 'transition') {
+      const hit = resolveTransition(last.cx, last.cy);
+      env.overlays.setHot(null);
+      if (!hit || !layout) {
+        env.overlays.setGhost(null);
+        return;
+      }
+      const zoom = useEditor.getState().zoom;
+      env.overlays.setGhost(
+        {
+          x: Math.round(hit.clip.start * zoom),
+          y: layout.tops[hit.laneIndex]! + CLIP_INSET,
+          w: hit.clip.duration * zoom,
+          h: layout.heights[hit.laneIndex]! - CLIP_INSET * 2,
+        },
+        'transition',
+        ghostLabel(last.payload),
+      );
+      return;
+    }
     const target = resolve(last.cx, last.cy, last.payload, true);
     const zoom = useEditor.getState().zoom;
     if (!target || !layout) {
@@ -162,7 +223,13 @@ export function createDnd(env: DndEnv) {
           w: target.duration * zoom,
           h: layout.heights[target.laneIndex]! - CLIP_INSET * 2,
         },
-        last.payload?.kind === 'text' ? 'text' : last.payload?.kind === 'effect' ? 'effect' : 'asset',
+        last.payload?.kind === 'text'
+          ? 'text'
+          : last.payload?.kind === 'effect'
+            ? 'effect'
+            : last.payload?.kind === 'camera'
+              ? 'camera'
+              : 'asset',
         ghostLabel(last.payload),
       );
     } else {
@@ -205,11 +272,21 @@ export function createDnd(env: DndEnv) {
     const cy = e.clientY;
     const files = isFileDrag(e) && !isNcutDrag(e) ? Array.from(e.dataTransfer?.files ?? []) : [];
     const payload = readPayload(e);
+    const transitionTarget = payload?.kind === 'transition' ? resolveTransition(cx, cy) : null;
     const target = resolve(cx, cy, payload, true);
     const fileTarget = files.length > 0 ? resolve(cx, cy, null, false) : null;
     reset();
     const st = useEditor.getState();
     if (!st.project) return;
+
+    if (payload?.kind === 'transition') {
+      // dropping on empty space, audio, effect or camera clips does nothing
+      if (transitionTarget) {
+        st.updateClip(transitionTarget.clip.id, { transition: { id: payload.transition, duration: DEFAULT_TRANSITION_DURATION } });
+        st.select([transitionTarget.clip.id], 'replace');
+      }
+      return;
+    }
 
     if (payload && target) {
       const kind = kindOfPayload(payload, st.project.assets);
@@ -221,7 +298,6 @@ export function createDnd(env: DndEnv) {
         if (payload.kind === 'asset') st.insertAsset(payload.assetId, { trackId, start: target.start, skipHistory: true });
         else if (payload.kind === 'effect') st.addEffect(payload.effect, { trackId, start: target.start, skipHistory: true });
         else if (payload.kind === 'camera') st.addCamera({ trackId, start: target.start, skipHistory: true });
-        else if (payload.kind === 'transition') return;
         else st.addText({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
       } else if (payload.kind === 'asset') {
         st.insertAsset(payload.assetId, { trackId: target.trackId, start: target.start });
@@ -229,8 +305,6 @@ export function createDnd(env: DndEnv) {
         st.addEffect(payload.effect, { trackId: target.trackId, start: target.start });
       } else if (payload.kind === 'camera') {
         st.addCamera({ trackId: target.trackId, start: target.start });
-      } else if (payload.kind === 'transition') {
-        return;
       } else {
         st.addText({ trackId: target.trackId, start: target.start, preset: payload.preset });
       }

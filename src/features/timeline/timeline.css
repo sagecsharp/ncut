@@ -279,7 +279,12 @@
   background: var(--clip-effect);
   border: 1px dashed var(--text-dim);
 }
-.timeline-clip.is-effect .timeline-clip-label {
+.timeline-clip.is-camera {
+  background: var(--clip-effect);
+  border: 1px dashed var(--text-dim);
+}
+.timeline-clip.is-effect .timeline-clip-label,
+.timeline-clip.is-camera .timeline-clip-label {
   background: none;
 }
 .timeline-clip.is-effect .timeline-fade {
@@ -299,6 +304,13 @@
   opacity: 0.45;
 }
 .timeline-clip-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  pointer-events: none;
+}
+.timeline-keymarks {
   position: absolute;
   left: 0;
   top: 0;
@@ -408,6 +420,42 @@
   border: 1px solid var(--accent);
   background: var(--accent-muted);
   opacity: 0.6;
+}
+/* transition marker: a thin band at the head of the incoming clip, straddling the cut */
+.timeline-transition {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6px;
+  overflow: hidden;
+  background: var(--surface-5);
+  border: 1px solid var(--clip-label);
+  border-radius: var(--radius-sm);
+  color: var(--clip-label);
+  cursor: pointer;
+  touch-action: none;
+}
+.timeline-transition.is-selected {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.timeline-transition-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.timeline-transition-handle:hover {
+  background: var(--clip-label);
+  opacity: 0.5;
+}
+.timeline-ghost[data-kind='transition'] {
+  border-style: solid;
 }
 .timeline-snap[hidden],
 .timeline-ghost[hidden],

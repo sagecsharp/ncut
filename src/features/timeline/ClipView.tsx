@@ -1,7 +1,9 @@
 import { memo } from 'react';
-import { Sparkles, VolumeX } from 'lucide-react';
+import { Camera, Sparkles, VolumeX } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
+import { hasKeyframes } from '../../lib/anim';
 import { ClipCanvas } from './ClipCanvas';
+import { KeyMarks } from './KeyMarks';
 import { CLIP_INSET } from './layout';
 
 interface Props {
@@ -43,8 +45,10 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
       <div className="timeline-clip-label">
         {muted ? <VolumeX size={11} aria-label="muted" /> : null}
         {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
+        {clip.type === 'camera' && w >= 40 ? <Camera size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         <span className="timeline-clip-name">{label}</span>
       </div>
+      {hasKeyframes(clip) ? <KeyMarks clip={clip} zoom={zoom} clipH={h} /> : null}
       <div className="timeline-trim is-start" data-trim="start" style={{ width: handleW }} />
       <div className="timeline-trim is-end" data-trim="end" style={{ width: handleW }} />
     </div>
