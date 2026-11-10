@@ -1,15 +1,19 @@
 /**
- * importing files into the open project: probe -> store blob -> register -> add asset to the store.
+ * importing files into the open project: probe -> register -> add asset to the store, while the file is copied
+ * into indexeddb in the background (see storage/pendingMedia.ts).
  */
 import { create } from 'zustand';
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
 import type { MediaAsset, MediaKind } from '../types';
 import { uid } from '../lib/id';
 import { putMediaBlob, deleteMediaBlob } from '../storage/db';
+import { trackMediaWrite, whenAssetStored } from '../storage/pendingMedia';
 import { useEditor } from '../store/editorStore';
 import { useUi } from '../store/ui';
 import { registerAsset, releaseAsset } from './registry';
 import { releaseDerived } from './derived';
+
+export { whenMediaStored } from '../storage/pendingMedia';
 
 export const ACCEPTED_TYPES = 'video/*,audio/*,image/*';
 
@@ -226,7 +230,11 @@ async function importOne(file: File, requestedKind: MediaKind, projectId: string
   const info = probed.info;
   const kind = probed.kind;
   const id = uid('ast');
-  await putMediaBlob(projectId, id, blob);
+  const current = useEditor.getState().project;
+  if (!current || current.id !== projectId) {
+    // the project was closed while probing: nothing was written yet
+    throw new Error('project closed');
+  }
   registerAsset(id, blob);
   const asset: MediaAsset = {
     id,
@@ -240,15 +248,36 @@ async function importOne(file: File, requestedKind: MediaKind, projectId: string
     hasAudio: kind === 'audio' ? true : kind === 'video' ? info.hasAudio : false,
     createdAt: Date.now(),
   };
-  const current = useEditor.getState().project;
-  if (!current || current.id !== projectId) {
-    // the project was closed while importing: do not leave orphans behind
-    releaseAsset(id);
-    void deleteMediaBlob(id).catch(() => undefined);
-    throw new Error('project closed');
-  }
   useEditor.getState().addAsset(asset);
+  storeInBackground(asset, blob, projectId);
   return asset;
+}
+
+/** remove an asset from the store and the registry (not from indexeddb) */
+function dropAssetNow(assetId: string): void {
+  useEditor.getState().removeAsset(assetId);
+  releaseDerived(assetId);
+  releaseAsset(assetId);
+}
+
+/**
+ * copy the file into indexeddb after the asset is already on screen. flushAutosave and closing / opening a project
+ * wait for it. when the copy fails the asset goes again (with its clips) and the user is told, like a failed import.
+ */
+function storeInBackground(asset: MediaAsset, blob: Blob, projectId: string): void {
+  const run = async () => {
+    try {
+      await putMediaBlob(projectId, asset.id, blob);
+    } catch (e) {
+      const why = e instanceof Error ? e.message : 'unreadable';
+      const cur = useEditor.getState().project;
+      if (cur && cur.id === projectId && cur.assets.some((a) => a.id === asset.id)) dropAssetNow(asset.id);
+      else releaseAsset(asset.id);
+      void deleteMediaBlob(asset.id).catch(() => undefined);
+      useUi.getState().toast(`could not import ${asset.name} (${why})`, 'error');
+    }
+  };
+  trackMediaWrite(asset.id, run());
 }
 
 /**
@@ -303,9 +332,9 @@ export async function importFiles(files: File[] | FileList): Promise<MediaAsset[
 
 /** remove an asset from the project, the registry and indexeddb */
 export async function deleteAsset(assetId: string): Promise<void> {
-  useEditor.getState().removeAsset(assetId);
-  releaseDerived(assetId);
-  releaseAsset(assetId);
+  dropAssetNow(assetId);
+  // a copy that is still running must land before its row can be deleted
+  await whenAssetStored(assetId);
   try {
     await deleteMediaBlob(assetId);
   } catch {

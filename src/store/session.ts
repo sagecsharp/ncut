@@ -13,6 +13,7 @@ import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
 import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { whenMediaStored } from '../storage/pendingMedia';
 import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
 import { useEditor } from './editorStore';
@@ -128,6 +129,8 @@ async function discardPartialCopy(projectId: string): Promise<void> {
 
 /** deep copy a stored project including its media blobs. returns the new project id. */
 export async function duplicateProject(id: string): Promise<string | null> {
+  // media of the open project may still be on its way into the database
+  await whenMediaStored();
   const source = await loadProject(id);
   if (!source) return null;
   const now = Date.now();
@@ -238,6 +241,8 @@ function persist(project: Project): Promise<void> {
   pendingSaves++;
   setSaveState('saving');
   saving = saving
+    // a saved project never points at imported media that is not stored yet
+    .then(() => whenMediaStored())
     .then(() => saveProject({ ...project, updatedAt: Date.now() }))
     .then(() => {
       lastFailed = false;
@@ -256,6 +261,8 @@ function persist(project: Project): Promise<void> {
 }
 
 export async function flushAutosave(): Promise<void> {
+  // imported files still being copied: a copy that fails takes its asset out of the project, so wait before reading `dirty`
+  await whenMediaStored();
   if (timer) {
     clearTimeout(timer);
     timer = null;
