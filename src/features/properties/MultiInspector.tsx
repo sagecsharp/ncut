@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { AlignButtons } from './AlignButtons';
+import { ArrangeSection } from './ArrangeSection';
 import { LookButtons } from './LookSection';
 import { ParentSelect } from './AttachSection';
 import { attachClips } from './attachActions';
@@ -164,6 +165,11 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
       {sum.visual > 0 ? (
         <Section id="m-align" title="align">
           <AlignButtons ids={visualIds} />
+        </Section>
+      ) : null}
+      {visualIds.length > 1 ? (
+        <Section id="m-arrange" title="arrange in 3d">
+          <ArrangeSection ids={ids} />
         </Section>
       ) : null}
       {sum.audible > 0 ? (
