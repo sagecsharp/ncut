@@ -1,0 +1,71 @@
+/*
+ * ncut theme. dark, flat, linux mint (mint-y dark) inspired.
+ *
+ * hard rules for every stylesheet in this app:
+ *  - no glow: no box-shadow, no text-shadow, no drop-shadow/blur filters, no backdrop-filter
+ *  - no gradients. solid fills only.
+ *  - depth comes from the surface steps below and 1px borders, nothing else
+ *  - small radii (--radius), compact controls, mint green for the one accent
+ *  - never hardcode a color in a component stylesheet. use these tokens.
+ */
+:root {
+  color-scheme: dark;
+
+  /* surfaces, darkest to lightest */
+  --surface-0: #1b1b1b; /* wells: preview backdrop, timeline lanes */
+  --surface-1: #242424; /* app background */
+  --surface-2: #2e2e2e; /* panels */
+  --surface-3: #383838; /* panel headers, raised rows, controls */
+  --surface-4: #454545; /* hover on controls */
+  --surface-5: #525252; /* pressed / active controls */
+
+  --border: #161616; /* separators between panels */
+  --border-soft: #4a4a4a; /* outlines on controls */
+
+  --text: #dedede;
+  --text-dim: #a3a3a3;
+  --text-faint: #737373;
+
+  /* mint green */
+  --accent: #8fb573;
+  --accent-hover: #a2c589;
+  --accent-press: #7a9f60;
+  --accent-muted: #3d4d33; /* selected rows, tinted fills */
+  --on-accent: #1b1b1b;
+
+  --danger: #d0605a;
+  --danger-muted: #4d2c2a;
+  --warn: #d9a441;
+  --info: #6aa5c9;
+
+  /* timeline clip fills by type */
+  --clip-video: #4c7a5e;
+  --clip-image: #7b6a9a;
+  --clip-audio: #4a7797;
+  --clip-text: #a8834a;
+  --clip-label: #f2f2f2;
+  --playhead: #e8e8e8;
+  --snap-line: #d9a441;
+
+  --radius: 4px;
+  --radius-sm: 3px;
+
+  --control-h: 28px;
+  --control-h-sm: 22px;
+  --header-h: 40px;
+  --panel-header-h: 32px;
+
+  --font: 'Ubuntu', 'Noto Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Ubuntu Mono', 'DejaVu Sans Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-size: 13px;
+  --font-size-sm: 12px;
+  --font-size-xs: 11px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  --ease: 90ms linear;
+}

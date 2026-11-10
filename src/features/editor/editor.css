@@ -1,0 +1,56 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--surface-1);
+}
+.editor-top {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 0;
+}
+.editor-pane > * {
+  flex: 1;
+  min-height: 0;
+}
+.editor-pane-grow {
+  flex: 1;
+  flex-shrink: 1;
+}
+.editor-bottom {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+}
+.editor-bottom > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.splitter {
+  flex-shrink: 0;
+  background: var(--border);
+  touch-action: none;
+  transition: background var(--ease);
+}
+.splitter:hover,
+.splitter:active {
+  background: var(--accent-press);
+}
+.splitter-v {
+  width: 3px;
+  cursor: col-resize;
+}
+.splitter-h {
+  height: 3px;
+  cursor: row-resize;
+}

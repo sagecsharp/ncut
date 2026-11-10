@@ -1,0 +1,110 @@
+# ncut architecture
+
+ncut is an in-browser video editor: multi-track timeline, real-time canvas preview, text overlays,
+local-only storage (indexeddb), export through webcodecs. no server, no accounts, no watermark.
+
+stack: vite 8, react 19, typescript 7 (strict), zustand 5, mediabunny (muxing/encoding/decoding),
+lucide-react (icons). plain css with tokens. package manager is npm.
+
+## layout of src/
+
+```
+types.ts                 data model. read this first.
+lib/time.ts              clamp, snapToFrame, formatTimecode, formatDuration, formatBytes
+lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, isRangeFree, findFreeStart,
+                         findTrackWithRoom, clipsAtTime, sourceTimeAt, fadeFactor, collectSnapPoints, snapTime
+lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
+lib/dnd.ts               drag payloads between media panel and timeline/preview
+lib/perf.ts              frame-time monitor behind the fps counter
+store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
+store/playback.ts        usePlayback: the master clock (time, playing, loop, volume)
+store/ui.ts              useUi: open dialog, toasts
+store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
+storage/db.ts            indexeddb: projects + media blobs
+media/registry.ts        runtime assetId -> blob + object url
+media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
+media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
+engine/draw.ts           renderFrame(ctx, project, time, resolver) + getClipBox, hitTestBox, measureText
+components/ui/           Dialog, NumberField, Toasts, FpsCounter
+features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
+features/projects/       ProjectsScreen
+features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts
+features/media/          MediaPanel
+features/timeline/       Timeline
+features/preview/        Preview
+features/properties/     PropertiesPanel
+features/export/         ExportDialog + the offline renderer
+styles/theme.css         design tokens
+styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
+```
+
+## data model in one paragraph
+
+a `Project` has `assets` (metadata of imported files), `tracks` and a flat `clips` list (each clip has a `trackId`).
+`tracks[0]` is the top row and the top visual layer. video tracks (video, image, text clips) always come before
+audio tracks (audio clips). all times are seconds. clips on one track never overlap. a clip covers
+`[start, start + duration)`. for video/audio clips, source time = `trimStart + (t - start) * speed`.
+`transform.x/y` are offsets from the canvas center in canvas pixels, `scale: 1` = contain-fit for media and
+natural size for text. `fadeIn/fadeOut` scale opacity (visual) and gain (audio).
+
+## store rules
+
+- the project is immutable. edit only through `useEditor` actions. never mutate objects you read from the store.
+- every action records an undo step unless called with `{ skipHistory: true }`.
+  for a drag / slider scrub: call `pushHistory()` once when the gesture really starts, then pass
+  `skipHistory: true` on every update. one gesture = one undo step.
+- placement goes through `moveClips` / `trimClip` / `setClipSpeed` / `insertAsset` / `addText`.
+  `updateClip` ignores `start`, `duration`, `trackId`, `trimStart`, `speed`.
+- zustand v5: a selector must return a stable reference. `useEditor(s => s.project.clips.filter(...))`
+  causes an infinite render loop. select the stable slice and derive with `useMemo`, or use
+  `useShallow` from `zustand/react/shallow`, or the hooks exported at the bottom of editorStore.ts
+  (`useProject`, `useSelectedClips`, `useClip`, `useAsset`, `useCanUndo`, `useCanRedo`).
+- outside react (event handlers, engines) use `useEditor.getState()` / `usePlayback.getState()`.
+
+## performance rules (these are requirements, not suggestions)
+
+the editor has an on-screen fps counter. it has to stay at the display refresh rate while playing,
+scrubbing, dragging clips and zooming, with dozens of clips.
+
+1. no react state updates per animation frame. `usePlayback` `time` changes every frame while playing:
+   never select it in a component that renders more than a tiny leaf. for the playhead, timecode text,
+   canvas redraws etc. use `usePlayback.subscribe(...)` and write to the dom / canvas directly through refs.
+2. moving things (playhead, drag ghosts, snap lines) are positioned with `transform: translate3d(...)`,
+   not `left/top/width`, and never trigger layout of their siblings.
+3. components that render per clip / per track / per asset are wrapped in `React.memo` and receive stable
+   props (the clip object itself, primitives, stable callbacks). dragging one clip must not re-render the others.
+4. pointer-move work is coalesced to one update per animation frame (requestAnimationFrame throttle).
+5. no layout reads (`getBoundingClientRect`, `offsetWidth`...) inside per-frame loops. measure once at
+   gesture start or with a `ResizeObserver`.
+6. canvases: backing store = css size x devicePixelRatio, capped so it never exceeds what is useful
+   (the preview never allocates more pixels than the project resolution). redraw only when something changed.
+   long timeline canvases only draw the visible range.
+7. heavy work stays off the interaction path: thumbnails, filmstrips and waveforms are computed lazily,
+   one at a time, cached per asset, and never block a drag or playback. decode/peaks work yields to the
+   main thread (or runs in a worker).
+8. media elements are pooled and reused. while playing, do not seek a video every frame: let it play and only
+   correct when it drifts (> ~0.15 s) from the clock.
+9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
+   observer, object url, raf and ImageBitmap you create.
+
+## visual rules (linux mint dark, flat)
+
+- no glow of any kind: no `box-shadow`, `text-shadow`, `filter: blur/drop-shadow`, `backdrop-filter`.
+- no gradients. solid fills only. depth = surface tokens + 1px borders.
+- colors only through the tokens in `styles/theme.css`. do not hardcode hex values in component css
+  (clip fills use `--clip-video/-image/-audio/-text`). the one accent is mint green `--accent`.
+- small radii (`--radius`), compact 28px controls, 13px text, lowercase ui copy. no emojis.
+- reuse the classes from `styles/base.css` and the components in `components/ui/` before writing new control styles.
+- icons: `lucide-react`, 14-16px, `strokeWidth` default. check an icon exists in the installed version before using it.
+- every interactive control has a `title` (tooltip) and works with the keyboard. focus ring = the global 1px accent outline.
+
+## feature css
+
+each feature keeps its own stylesheet next to its components (for example `features/timeline/timeline.css`)
+and imports it from its root component. prefix class names with the feature name (`.timeline-...`, `.media-...`)
+to avoid collisions. do not edit `theme.css` / `base.css` from a feature: if a token or shared class is missing,
+add it locally and mention it in your report.
+
+## dev hook
+
+in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles }` is available for testing.
