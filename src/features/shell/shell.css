@@ -1,0 +1,124 @@
+.shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-shrink: 0;
+  height: var(--header-h);
+  padding: 0 var(--space-2);
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+}
+.shell-header-left,
+.shell-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.shell-header-left {
+  flex: 1;
+}
+.shell-mark {
+  padding: 0 var(--space-1);
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.shell-name {
+  min-width: 0;
+  max-width: 320px;
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.shell-name:hover {
+  background: var(--surface-4);
+}
+.shell-name-input {
+  width: 260px;
+  max-width: 100%;
+}
+.shell-saved {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+}
+.shell-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--space-1);
+  background: var(--border-soft);
+}
+
+/* settings dialog */
+.shell-settings-size {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.shell-settings-hex {
+  width: 96px;
+}
+.shell-settings-hex.is-invalid {
+  border-color: var(--danger);
+}
+
+/* shortcuts dialog */
+.shell-shortcuts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4) var(--space-5);
+  align-items: start;
+}
+.shell-shortcut-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.shell-shortcut-title {
+  margin-bottom: var(--space-1);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+.shell-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 24px;
+}
+.shell-shortcut-desc {
+  min-width: 0;
+}
+.shell-shortcut-keys {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 3px;
+}
+.shell-shortcut-or {
+  padding: 0 3px;
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 640px) {
+  .shell-shortcuts {
+    grid-template-columns: 1fr;
+  }
+  .shell-saved {
+    display: none;
+  }
+}
