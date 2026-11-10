@@ -587,7 +587,11 @@ const LOOP_MORE: Record<string, LoopSpec> = {
     unit: 'char',
     apply: (st, ph, i, _cycles, n) => {
       // the letter spacing swells and shrinks around the middle of the text
-      st.dx += Math.sin(ph) * (i - (n - 1) / 2) * 0.05;
+      // the outer letters never travel more than 1.4 em (the room an animated text has in its texture), so a long
+      // line spreads less per letter instead of being cut at the ends
+      const mid = (n - 1) / 2;
+      const reach = Math.min(0.05 * mid, 1.4);
+      st.dx += mid > 0 ? Math.sin(ph) * ((i - mid) / mid) * reach : 0;
     },
   },
 };

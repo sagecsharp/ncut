@@ -24,6 +24,7 @@ import {
 import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
 import { releaseRenderResources, renderFrame } from '../../engine/draw';
+import { beginExport, endExport } from '../../engine/exportState';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
@@ -276,6 +277,16 @@ export function clipTimestamps(
 }
 
 export async function exportProject(project: Project, options: ExportOptions, hooks: ExportHooks = {}): Promise<Blob> {
+  // while this runs the renderer does not use wall clock retry pauses (see engine/exportState.ts)
+  beginExport();
+  try {
+    return await runExport(project, options, hooks);
+  } finally {
+    endExport();
+  }
+}
+
+async function runExport(project: Project, options: ExportOptions, hooks: ExportHooks): Promise<Blob> {
   const { onProgress, onWarning, signal } = hooks;
   const projectLength = projectDuration(project);
   if (projectLength <= 0) throw new Error('the project is empty');
@@ -396,9 +407,13 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     const openSources = async (onlyFrames?: ReadonlySet<number>) => {
     // clips a transition or a temporal effect (motion blur, echo) shows inside the range without the clip playing
     // there: it ended before the range (still needed at the first frame) or starts after it (needed at the last frame)
-    const neededAtStart = new Set(
-      [...neededForFrame(project, rangeStart), ...neededForFrame(project, frameTime(rangeStart, Math.max(0, totalFrames - 1), fps))].map((c) => c.id),
-    );
+    // without transitions and effects a clip is only needed while it plays, so the two ends are enough. with
+    // them every frame this pass renders is asked (a temporal effect that fades in reaches back further and
+    // further, a transition head can fall between the ends).
+    const reaches = project.clips.some((c) => c.type === 'effect' || ('transition' in c && !!c.transition));
+    const probe: Iterable<number> = onlyFrames ?? (reaches ? Array.from({ length: totalFrames }, (_, i) => i) : [0, Math.max(0, totalFrames - 1)]);
+    const neededAtStart = new Set<string>();
+    for (const i of probe) for (const c of neededForFrame(project, frameTime(rangeStart, i, fps))) neededAtStart.add(c.id);
     const hiddenTrack = new Set(project.tracks.filter((t) => t.kind !== 'video' || t.hidden).map((t) => t.id));
     for (const clip of project.clips) {
       if (hiddenTrack.has(clip.trackId)) continue;

@@ -4,6 +4,7 @@
  * shared by the 2d frame renderer and the 3d text textures.
  */
 import { ensureFont, fontsVersion } from '../lib/fonts';
+import { isExporting } from './exportState';
 import type { TextAlign, TextClip, TextGradient, TextStroke } from '../types';
 import type { CounterMark, DigitRange } from './counter';
 import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
@@ -516,7 +517,8 @@ function wantFont(clip: TextClip): void {
   const key = `${clip.fontFamily}|${clip.fontWeight}|${clip.italic}`;
   if (requested.has(key)) return;
   const wait = retryAfter.get(key);
-  if (wait && Date.now() < wait.at) return;
+  // no retries while an export runs: a font arriving half way would change the look in the middle of the file
+  if (wait && (isExporting() || Date.now() < wait.at)) return;
   requested.add(key);
   const failed = (): void => {
     requested.delete(key);

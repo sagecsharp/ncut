@@ -8,7 +8,8 @@
  * - while paused we draw only when something changed (one rAF), never a permanent loop.
  */
 import type { AudioClip, Clip, ImageClip, Project, VideoClip } from '../../types';
-import { renderFrame, renderSceneView } from '../../engine/draw';
+import { releaseRenderResources, renderFrame, renderSceneView } from '../../engine/draw';
+import { isExporting } from '../../engine/exportState';
 import type { DrawSource } from '../../engine/draw';
 import { valueAt } from '../../lib/anim';
 import { onFontsChanged } from '../../lib/fonts';
@@ -305,8 +306,14 @@ export class PreviewEngine {
     const canvas = new OffscreenCanvas(project.width, project.height);
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return null;
-    renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
-    return canvas.convertToBlob({ type: 'image/png' });
+    try {
+      renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
+      return await canvas.convertToBlob({ type: 'image/png' });
+    } finally {
+      // an OffscreenCanvas draws on the export channel: give back its full size canvases and gl contexts,
+      // unless an export is using them right now
+      if (!isExporting()) releaseRenderResources('export');
+    }
   }
 
   /** returns true when a frame was painted */

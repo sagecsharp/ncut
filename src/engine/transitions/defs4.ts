@@ -68,7 +68,8 @@ vec4 tr_main(vec2 uv, float p) {
   plus: `
 vec4 tr_main(vec2 uv, float p) {
   vec2 q = abs((uv - 0.5) * vec2(aspect(), 1.0));
-  float n = (3.0 * min(q.x, q.y) + 0.8 * max(q.x, q.y)) / (1.5 + 0.4 * max(aspect(), 1.0));
+  // divided by the value in the corner, so the last corner is reached exactly at the end (wide and tall frames)
+  float n = (3.0 * min(q.x, q.y) + 0.8 * max(q.x, q.y)) / (1.5 * min(aspect(), 1.0) + 0.4 * max(aspect(), 1.0));
   return mix(a(uv), b(uv), reveal(p, clamp(n, 0.0, 1.0), 0.04));
 }`,
 

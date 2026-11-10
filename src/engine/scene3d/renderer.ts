@@ -509,7 +509,9 @@ function getRenderer(channel: string): SceneRenderer | null {
     renderers.delete(channel);
     cur.dispose();
   }
-  if (startBlocked(retryAt.get(channel), Date.now())) return null;
+  // the pause is for the preview only: an export renders faster than real time, a wall clock pause would
+  // drop the 3d clips from however many frames fit into it. it asks again on every frame instead.
+  if (channel !== 'export' && startBlocked(retryAt.get(channel), Date.now())) return null;
   const fail = (): null => {
     retryAt.set(channel, Date.now() + SCENE_RETRY_MS);
     return null;
