@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { AudioLines, Blend, Box, Copy, Diamond, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, Copy, Diamond, Flag, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -12,6 +12,7 @@ import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsN
 import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
 import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
+import { cutAtMarkers, fitToMarkers, makeRow, markerInsideClip, sequenceableIds } from './sequenceActions';
 import { swapCandidates } from './swap';
 
 interface Props {
@@ -56,6 +57,9 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const canSplitAll = !!project?.clips.some((c) => time > c.start + 0.05 && time < clipEnd(c) - 0.05);
 
   const sounds = clipHasSound(project, clip);
+  const seqIds = sequenceableIds(project, ids);
+  const hasMarkers = (project?.markers?.length ?? 0) > 0;
+  const cutIds = picked.filter((c) => markerInsideClip(project, c)).map((c) => c.id);
 
   const run = (fn: () => void) => () => {
     fn();
@@ -87,6 +91,17 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <Scissors size={14} />
         split all tracks here
       </button>
+      {cutIds.length > 0 ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          title="split the selected clips at every marker inside them"
+          onClick={run(() => cutAtMarkers(ids))}
+        >
+          <Flag size={14} />
+          cut at the markers
+        </button>
+      ) : null}
       <button
         className="menu-item"
         role="menuitem"
@@ -199,6 +214,45 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
               <span className="timeline-menu-asset">{a.name}</span>
             </button>
           ))}
+        </>
+      ) : null}
+      {seqIds.length > 1 ? (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" role="menuitem" title="lay the selected clips end to end on one track" onClick={run(() => makeRow(ids))}>
+            <AlignHorizontalJustifyStart size={14} />
+            in a row
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!hasMarkers}
+            title={hasMarkers ? 'lay the clips end to end, each one from a marker to the next' : 'no markers yet: mark the beats of a clip first'}
+            onClick={run(() => fitToMarkers(ids, 1))}
+          >
+            <Flag size={14} />
+            fit to the markers
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!hasMarkers}
+            title="like fit to the markers, each clip spans 2 markers"
+            onClick={run(() => fitToMarkers(ids, 2))}
+          >
+            <Flag size={14} />
+            fit to every 2nd marker
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!hasMarkers}
+            title="like fit to the markers, each clip spans 4 markers"
+            onClick={run(() => fitToMarkers(ids, 4))}
+          >
+            <Flag size={14} />
+            fit to every 4th marker
+          </button>
         </>
       ) : null}
       {effectsHere.length > 0 || targetedEffects.length > 0 ? <div className="menu-sep" /> : null}
