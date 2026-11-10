@@ -1,10 +1,11 @@
 /**
- * text clips: measuring and drawing, including style (letter spacing, outline, shadow, rounded box)
- * and the per letter text animations. shared by the 2d frame renderer and the 3d text textures.
+ * text clips: measuring and drawing, including style (letter spacing, outline, shadow, rounded box,
+ * gradient fill, wrapping, curved lines) and the per letter text animations.
+ * shared by the 2d frame renderer and the 3d text textures.
  */
 import { ensureFont, fontsVersion } from '../lib/fonts';
-import type { TextClip } from '../types';
-import { type GlyphState, REST, blockState, glyphState, textAnimActive, textAnimUnits } from './textAnim';
+import type { TextAlign, TextClip, TextGradient } from '../types';
+import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
 
 export const TEXT_LINE_HEIGHT = 1.25;
 /** padding of the text background box, as a fraction of the font size */
@@ -33,18 +34,202 @@ export function displayText(clip: Pick<TextClip, 'text' | 'uppercase'>): string 
   return clip.uppercase ? t.toUpperCase() : t;
 }
 
+/** where one letter sits (relative to the box center) */
+export interface TextGlyph {
+  ch: string;
+  /** center x and width */
+  x: number;
+  w: number;
+  /** middle of the line */
+  y: number;
+  /** rotation of the letter in radians (curved text), 0 on a straight line */
+  rot: number;
+  /** index among the drawn letters (spaces count too), and of its word and line */
+  index: number;
+  word: number;
+  line: number;
+}
+
 export interface TextBox {
-  /** unscaled size of the box (text + padding) */
+  /** unscaled size of the box (text + padding). for curved text: the bounding box of the curved lines. */
   width: number;
   height: number;
+  /** the lines after wrapping */
   lines: string[];
   lineHeight: number;
   pad: number;
-  /** width of each line without padding */
+  /** width of each line without padding (along the line, also when it is curved) */
   lineWidths: number[];
   /** extra pixels between letters */
   spacing: number;
+  /** degrees of arc of the widest line, 0 = straight */
+  curve: number;
+  /** curved text: width of the widest line, the reference for the radius */
+  curveRef: number;
+  /** curved text: center of the curved layout in its own coordinates */
+  curveCx: number;
+  curveCy: number;
+  /** letter layout at rest, filled the first time it is needed */
+  glyphCache: { glyphs: TextGlyph[]; words: number } | null;
 }
+
+/* ---------- wrapping (pure) ---------- */
+
+export type Measure = (text: string) => number;
+
+/** width of a string with letter spacing between its letters (not after the last) */
+function spacedWidth(measure: Measure, s: string, spacing: number): number {
+  const w = measure(s);
+  return spacing !== 0 ? w + spacing * Math.max(0, Array.from(s).length - 1) : w;
+}
+
+/**
+ * break one line at spaces so no piece is wider than maxWidth. a single word wider than that stays whole.
+ * the space where it breaks is dropped. maxWidth <= 0 = no wrapping.
+ */
+export function wrapLine(line: string, maxWidth: number, measure: Measure, spacing = 0): string[] {
+  if (!(maxWidth > 0) || !line.includes(' ')) return [line];
+  if (spacedWidth(measure, line, spacing) <= maxWidth) return [line];
+  const words = line.split(' ');
+  const out: string[] = [];
+  let cur = words[0]!;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i]!;
+    const cand = cur + ' ' + w;
+    if (spacedWidth(measure, cand, spacing) <= maxWidth) cur = cand;
+    else {
+      out.push(cur);
+      cur = w;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+/** split text at its line breaks, then wrap every line */
+export function wrapText(text: string, maxWidth: number, measure: Measure, spacing = 0): string[] {
+  const raw = text.split('\n');
+  if (!(maxWidth > 0)) return raw;
+  const out: string[] = [];
+  for (const l of raw) for (const p of wrapLine(l, maxWidth, measure, spacing)) out.push(p);
+  return out;
+}
+
+/* ---------- curved layout (pure) ---------- */
+
+export interface CurvedGlyph {
+  line: number;
+  /** index in the line */
+  i: number;
+  x: number;
+  y: number;
+  rot: number;
+  w: number;
+}
+
+export interface CurveLayout {
+  glyphs: CurvedGlyph[];
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * lay lines out along circles. `edges[line][k]` = width of the first k letters (so edges[line].length - 1 letters).
+ * the widest line (refWidth) spans |curveDeg| degrees, the radius is refWidth / radians. lines further down sit
+ * on concentric circles lineHeight apart: curveDeg > 0 is an arch (center of the circle below, later lines
+ * closer to it), < 0 a smile. coordinates: x = 0 on the axis of the circle, y = 0 at the top of the first line's
+ * slot, so the first line's apex is at y = lineHeight / 2. letters are rotated to the tangent.
+ */
+export function curveLayout(
+  edges: number[][],
+  spacing: number,
+  lineHeight: number,
+  curveDeg: number,
+  align: TextAlign,
+  refWidth: number,
+): CurveLayout {
+  const arc = (Math.min(360, Math.abs(curveDeg)) * Math.PI) / 180;
+  const k = curveDeg >= 0 ? 1 : -1;
+  const ref = Math.max(1, refWidth);
+  const r0 = ref / Math.max(arc, 1e-6);
+  const minR = lineHeight * 0.25;
+  const yc = lineHeight * 0.5 + k * r0;
+  const glyphs: CurvedGlyph[] = [];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  const hh = lineHeight / 2;
+  for (let li = 0; li < edges.length; li++) {
+    const e = edges[li]!;
+    const n = e.length - 1;
+    const lineW = (e[n] ?? 0) + spacing * Math.max(0, n - 1);
+    const r = Math.max(minR, r0 - k * li * lineHeight);
+    // arc length of the line's left end, measured from the top of the circle
+    const s0 = align === 'left' ? -ref / 2 : align === 'right' ? ref / 2 - lineW : -lineW / 2;
+    for (let i = 0; i < n; i++) {
+      const w = e[i + 1]! - e[i]!;
+      const phi = (s0 + e[i]! + spacing * i + w / 2) / r;
+      const x = r * Math.sin(phi);
+      const y = yc - k * r * Math.cos(phi);
+      const rot = k * phi;
+      const c = Math.abs(Math.cos(rot));
+      const sn = Math.abs(Math.sin(rot));
+      const ex = (w / 2) * c + hh * sn;
+      const ey = (w / 2) * sn + hh * c;
+      if (x - ex < minX) minX = x - ex;
+      if (x + ex > maxX) maxX = x + ex;
+      if (y - ey < minY) minY = y - ey;
+      if (y + ey > maxY) maxY = y + ey;
+      glyphs.push({ line: li, i, x, y, rot, w });
+    }
+  }
+  if (!glyphs.length) {
+    minX = maxX = 0;
+    minY = maxY = 0;
+  }
+  return { glyphs, minX, maxX, minY, maxY };
+}
+
+/* ---------- gradient (pure) ---------- */
+
+/**
+ * the two ends of a linear gradient across a w x h block centered on the origin.
+ * angle 0 = left to right, 90 = top to bottom. the line is long enough that the corners get the end colors.
+ */
+export function gradientLine(angle: number, w: number, h: number): [number, number, number, number] {
+  const a = (angle * Math.PI) / 180;
+  const dx = Math.cos(a);
+  const dy = Math.sin(a);
+  const half = (Math.abs(w * dx) + Math.abs(h * dy)) / 2 || 1;
+  return [-dx * half, -dy * half, dx * half, dy * half];
+}
+
+interface Mat {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+/**
+ * a point given in the space of matrix `from` (the block), in the space of matrix `to` (a letter inside it).
+ * both are the full transform from their space to the canvas, `to` = `from` followed by the letter's own moves.
+ */
+export function remapPoint(from: Mat, to: Mat, x: number, y: number): [number, number] {
+  const wx = from.a * x + from.c * y + from.e;
+  const wy = from.b * x + from.d * y + from.f;
+  const det = to.a * to.d - to.b * to.c || 1;
+  const px = wx - to.e;
+  const py = wy - to.f;
+  return [(to.d * px - to.c * py) / det, (-to.b * px + to.a * py) / det];
+}
+
+/* ---------- measuring ---------- */
 
 const requested = new Set<string>();
 /** ask for the clip's font once (it loads in the background, the preview redraws when it arrives) */
@@ -56,33 +241,77 @@ function wantFont(clip: TextClip): void {
 }
 
 const boxCache = new Map<string, TextBox>();
+/** clips are immutable: the box of the very same object only needs looking up once per font version */
+const boxByClip = new WeakMap<TextClip, { v: number; box: TextBox }>();
 
-function lineWidth(ctx: Ctx, line: string, spacing: number): number {
-  const w = ctx.measureText(line).width;
-  // spacing goes between letters, not after the last one
-  return spacing !== 0 ? w + spacing * Math.max(0, Array.from(line).length - 1) : w;
+const edgesCache = new Map<string, number[]>();
+/** widths of the first 0..n letters of a line (prefixes are measured so kerning stays right). the font must be set on ctx. */
+function lineEdges(ctx: Ctx, font: string, line: string): number[] {
+  const key = `${fontsVersion()}|${font}|${line}`;
+  const hit = edgesCache.get(key);
+  if (hit) return hit;
+  const edges: number[] = [0];
+  let acc = '';
+  for (const ch of line) {
+    acc += ch;
+    edges.push(ctx.measureText(acc).width);
+  }
+  if (edgesCache.size > 600) edgesCache.clear();
+  edgesCache.set(key, edges);
+  return edges;
 }
 
 /** unscaled size of a text clip's box (text + padding) and its lines */
 export function measureText(clip: TextClip): TextBox {
+  const v = fontsVersion();
+  const front = boxByClip.get(clip);
+  if (front && front.v === v) return front.box;
   wantFont(clip);
   const text = displayText(clip);
   const spacing = (clip.letterSpacing ?? 0) * clip.fontSize;
   const lineHeight = clip.fontSize * (clip.lineHeight ?? TEXT_LINE_HEIGHT);
   const pad = clip.fontSize * (clip.backgroundPadding ?? TEXT_PADDING);
   const font = textFont(clip);
-  const key = `${fontsVersion()}|${font}|${spacing}|${lineHeight}|${pad}|${text}`;
+  const wrap = clip.wrapWidth !== undefined && clip.wrapWidth > 0 ? clip.wrapWidth : 0;
+  const rawCurve = clip.curve ?? 0;
+  const curve = Math.abs(rawCurve) >= 0.01 ? Math.max(-360, Math.min(360, rawCurve)) : 0;
+  const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${curve !== 0 ? clip.align : ''}|${text}`;
   const hit = boxCache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    boxByClip.set(clip, { v, box: hit });
+    return hit;
+  }
   const ctx = getMeasureCtx();
   ctx.font = font;
-  const lines = text.split('\n');
-  const lineWidths = lines.map((l) => lineWidth(ctx, l, spacing));
+  const lines = wrapText(text, wrap, (s) => ctx.measureText(s).width, spacing);
+  const lineWidths = lines.map((l) => spacedWidth((s) => ctx.measureText(s).width, l, spacing));
   let max = 0;
   for (const w of lineWidths) max = Math.max(max, w);
-  const box: TextBox = { width: Math.max(1, max + pad * 2), height: lines.length * lineHeight + pad * 2, lines, lineHeight, pad, lineWidths, spacing };
+  const box: TextBox = {
+    width: Math.max(1, max + pad * 2),
+    height: lines.length * lineHeight + pad * 2,
+    lines,
+    lineHeight,
+    pad,
+    lineWidths,
+    spacing,
+    curve,
+    curveRef: Math.max(1, max),
+    curveCx: 0,
+    curveCy: 0,
+    glyphCache: null,
+  };
+  if (curve !== 0) {
+    const edges = lines.map((l) => lineEdges(ctx, font, l));
+    const cl = curveLayout(edges, spacing, lineHeight, curve, clip.align, box.curveRef);
+    box.curveCx = (cl.minX + cl.maxX) / 2;
+    box.curveCy = (cl.minY + cl.maxY) / 2;
+    box.width = Math.max(1, cl.maxX - cl.minX + pad * 2);
+    box.height = Math.max(1, cl.maxY - cl.minY + pad * 2);
+  }
   if (boxCache.size > 300) boxCache.clear();
   boxCache.set(key, box);
+  boxByClip.set(clip, { v, box });
   return box;
 }
 
@@ -95,36 +324,54 @@ export function textSpill(clip: TextClip, animated: boolean): number {
   return s;
 }
 
-interface Glyph {
-  ch: string;
-  /** center x and width, relative to the box center */
-  x: number;
-  w: number;
-  /** middle of the line, relative to the box center */
-  y: number;
-  /** index among the drawn letters (spaces count too), and of its word and line */
-  index: number;
-  word: number;
-  line: number;
+const sigCache = new WeakMap<TextClip, { v: number; sig: string }>();
+/** everything that changes how a text clip looks at rest (a cache key for rendered text; position and animation not included) */
+export function textSignature(clip: TextClip): string {
+  const v = fontsVersion();
+  const hit = sigCache.get(clip);
+  if (hit && hit.v === v) return hit.sig;
+  const sig = [
+    v,
+    clip.text,
+    clip.fontFamily,
+    clip.fontSize,
+    clip.fontWeight,
+    clip.italic,
+    clip.color,
+    clip.background,
+    clip.align,
+    clip.letterSpacing,
+    clip.lineHeight,
+    clip.uppercase,
+    JSON.stringify(clip.stroke ?? 0),
+    JSON.stringify(clip.shadow ?? 0),
+    clip.backgroundRadius,
+    clip.backgroundPadding,
+    JSON.stringify(clip.gradient ?? 0),
+    clip.curve,
+    clip.wrapWidth,
+  ].join('|');
+  sigCache.set(clip, { v, sig });
+  return sig;
 }
 
+/* ---------- letter layout ---------- */
+
 /** where every letter sits. only needed when letters are drawn one by one. */
-function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number): { glyphs: Glyph[]; words: number } {
-  const glyphs: Glyph[] = [];
+function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number): { glyphs: TextGlyph[]; words: number } {
+  const glyphs: TextGlyph[] = [];
+  const font = textFont(clip);
   const innerW = m.width - m.pad * 2;
   const top = -m.height / 2 + m.pad;
+  const spacing = m.spacing + extraSpacing;
+  const edgesOf = m.lines.map((l) => lineEdges(ctx, font, l));
+  const curved = m.curve !== 0 ? curveLayout(edgesOf, spacing, m.lineHeight, m.curve, clip.align, m.curveRef) : null;
+  let cg = 0;
   let index = 0;
   let word = 0;
   for (let li = 0; li < m.lines.length; li++) {
     const chars = Array.from(m.lines[li]!);
-    const spacing = m.spacing + extraSpacing;
-    // measure prefixes so kerning stays right
-    const edges: number[] = [0];
-    let acc = '';
-    for (const ch of chars) {
-      acc += ch;
-      edges.push(ctx.measureText(acc).width);
-    }
+    const edges = edgesOf[li]!;
     const lineW = (edges[chars.length] ?? 0) + spacing * Math.max(0, chars.length - 1);
     const left = clip.align === 'left' ? -innerW / 2 : clip.align === 'right' ? innerW / 2 - lineW : -lineW / 2;
     const y = top + m.lineHeight * (li + 0.5);
@@ -138,7 +385,12 @@ function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number
         inWord = false;
         word++;
       }
-      glyphs.push({ ch, x: left + edges[i]! + spacing * i + w / 2, w, y, index, word, line: li });
+      if (curved) {
+        const p = curved.glyphs[cg++]!;
+        glyphs.push({ ch, x: p.x - m.curveCx, w, y: p.y - m.curveCy, rot: p.rot, index, word, line: li });
+      } else {
+        glyphs.push({ ch, x: left + edges[i]! + spacing * i + w / 2, w, y, rot: 0, index, word, line: li });
+      }
       index++;
     }
     if (inWord) word++;
@@ -157,6 +409,23 @@ function hueColor(h: number): string {
 }
 
 const FAR = 30000;
+
+/** a gradient across the block, in the space of ctx as it is now */
+function blockGradient(ctx: Ctx, g: TextGradient, w: number, h: number): CanvasGradient | null {
+  const [x0, y0, x1, y1] = gradientLine(g.angle, w, h);
+  return makeGradient(ctx, g, x0, y0, x1, y1);
+}
+
+function makeGradient(ctx: Ctx, g: TextGradient, x0: number, y0: number, x1: number, y1: number): CanvasGradient | null {
+  try {
+    const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+    grad.addColorStop(0, g.from);
+    grad.addColorStop(1, g.to);
+    return grad;
+  } catch {
+    return null; // a color the canvas does not understand
+  }
+}
 
 /**
  * draw a text clip centered on the origin of the context (the caller already moved / rotated it).
@@ -183,6 +452,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   }
 
   if (clip.background) {
+    // curved text: the box behind it is the bounding box of the curved lines (the same box the selection uses)
     ctx.fillStyle = clip.background;
     const r = Math.min(1, Math.max(0, clip.backgroundRadius ?? 0)) * Math.min(m.width, m.height) * 0.5;
     roundedRect(ctx, -m.width / 2, -m.height / 2, m.width, m.height, r);
@@ -194,23 +464,39 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
 
-  const perGlyph = animated || m.spacing !== 0;
+  const perGlyph = animated || m.spacing !== 0 || m.curve !== 0;
   const units = animated ? textAnimUnits(clip) : null;
-  const layout = perGlyph ? layoutGlyphs(ctx, clip, m, animated ? block.spacing * fs : 0) : null;
+  const extra = animated ? block.spacing * fs : 0;
+  let layout: { glyphs: TextGlyph[]; words: number } | null = null;
+  if (perGlyph) {
+    if (extra !== 0) layout = layoutGlyphs(ctx, clip, m, extra);
+    else layout = m.glyphCache ??= layoutGlyphs(ctx, clip, m, 0);
+  }
   const count = layout ? layout.glyphs.length : 0;
   // letter states once per frame, shared by the shadow / outline / fill passes
   const states: GlyphState[] | null =
     layout && animated ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;
 
   const innerW = m.width - m.pad * 2;
+  const innerH = m.height - m.pad * 2;
   const lineX = clip.align === 'left' ? -innerW / 2 : clip.align === 'right' ? innerW / 2 : 0;
   const top = -m.height / 2 + m.pad;
 
-  /** run `paint(text, x, y)` for every piece of text with the letter transforms applied */
-  const each = (paint: (text: string, x: number, y: number, st: GlyphState | null) => void): void => {
+  const gradient = clip.gradient ?? null;
+  // the transform of the whole block: letters that move on their own need the gradient mapped into their frame
+  const blockT = gradient || animated ? ctx.getTransform() : null;
+  const dev = blockT ? Math.hypot(blockT.a, blockT.b) || 1 : 1;
+  const canFilter = 'filter' in ctx;
+
+  /**
+   * run `paint(text, x, y, state, moved)` for every piece of text with the letter transforms applied.
+   * moved = the letter has its own transform (the context is not the block's any more).
+   * blurred letters use ctx.filter when `filter` is set, a fade otherwise.
+   */
+  const each = (paint: (text: string, x: number, y: number, st: GlyphState | null, moved: boolean) => void, filter: boolean): void => {
     if (!layout) {
       ctx.textAlign = clip.align;
-      for (let i = 0; i < m.lines.length; i++) paint(m.lines[i]!, lineX, top + m.lineHeight * (i + 0.5), null);
+      for (let i = 0; i < m.lines.length; i++) paint(m.lines[i]!, lineX, top + m.lineHeight * (i + 0.5), null, false);
       return;
     }
     ctx.textAlign = 'center';
@@ -219,16 +505,30 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
       if (g.ch.trim() === '') continue;
       const st = states ? states[i]! : null;
       if (!st || st === REST) {
-        paint(g.ch, g.x, g.y, null);
+        if (!g.rot) {
+          paint(g.ch, g.x, g.y, null, false);
+          continue;
+        }
+        ctx.save();
+        ctx.translate(g.x, g.y);
+        ctx.rotate(g.rot);
+        paint(g.ch, 0, 0, null, true);
+        ctx.restore();
         continue;
       }
       if (st.alpha <= 0.001) continue;
       ctx.save();
-      ctx.translate(g.x + st.dx * fs, g.y + st.dy * fs);
+      ctx.translate(g.x, g.y);
+      if (g.rot) ctx.rotate(g.rot);
+      ctx.translate(st.dx * fs, st.dy * fs);
       if (st.rot) ctx.rotate(st.rot);
       if (st.sx !== 1 || st.sy !== 1) ctx.scale(st.sx, st.sy);
       ctx.globalAlpha *= st.alpha;
-      paint(g.ch, 0, 0, st);
+      if (st.blur) {
+        if (filter && canFilter) ctx.filter = `blur(${(st.blur * fs * dev).toFixed(2)}px)`;
+        else ctx.globalAlpha *= 1 - 0.7 * Math.min(1, st.blur * 4);
+      }
+      paint(st.scramble !== undefined ? scrambleChar(g.ch, g.index, st.scramble) : g.ch, 0, 0, st, true);
       ctx.restore();
     }
   };
@@ -241,14 +541,14 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     // draw the letters far outside the canvas and let only their shadow land on it: the shadow of one
     // letter then never covers its neighbour, and it can be softer than the letter
     const t = ctx.getTransform();
-    const dev = Math.hypot(t.a, t.b) || 1; // device pixels per unit (shadow sizes ignore the transform)
+    const sdev = Math.hypot(t.a, t.b) || 1; // device pixels per unit (shadow sizes ignore the transform)
     const rad = (shadow.angle * Math.PI) / 180;
     ctx.save();
     ctx.setTransform(t.a, t.b, t.c, t.d, t.e - FAR, t.f);
     ctx.shadowColor = shadow.color;
-    ctx.shadowBlur = shadow.blur * fs * dev;
-    ctx.shadowOffsetX = FAR + Math.cos(rad) * shadow.distance * fs * dev;
-    ctx.shadowOffsetY = Math.sin(rad) * shadow.distance * fs * dev;
+    ctx.shadowBlur = shadow.blur * fs * sdev;
+    ctx.shadowOffsetX = FAR + Math.cos(rad) * shadow.distance * fs * sdev;
+    ctx.shadowOffsetY = Math.sin(rad) * shadow.distance * fs * sdev;
     ctx.globalAlpha *= Math.min(1, shadow.opacity);
     ctx.fillStyle = '#000';
     ctx.strokeStyle = '#000';
@@ -256,23 +556,36 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     each((text, x, y) => {
       if (stroke) ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
-    });
+    }, false);
     ctx.restore();
   }
 
   if (stroke) {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = strokeW;
-    each((text, x, y) => ctx.strokeText(text, x, y));
+    each((text, x, y) => ctx.strokeText(text, x, y), true);
   }
 
-  ctx.fillStyle = clip.color;
-  each((text, x, y, st) => {
+  const blockGrad = gradient ? blockGradient(ctx, gradient, innerW, innerH) : null;
+  const base: string | CanvasGradient = blockGrad ?? clip.color;
+  ctx.fillStyle = base;
+  each((text, x, y, st, moved) => {
     if (st && st.hue !== undefined) {
+      // the color animations replace the gradient while they run
       ctx.fillStyle = hueColor(st.hue);
       ctx.fillText(text, x, y);
-      ctx.fillStyle = clip.color;
+      ctx.fillStyle = base;
+    } else if (gradient && moved && blockGrad && blockT) {
+      // keep the gradient fixed to the block while the letter moves: map its ends into the letter's frame
+      const [x0, y0, x1, y1] = gradientLine(gradient.angle, innerW, innerH);
+      const here = ctx.getTransform();
+      const [lx0, ly0] = remapPoint(blockT, here, x0, y0);
+      const [lx1, ly1] = remapPoint(blockT, here, x1, y1);
+      const g = makeGradient(ctx, gradient, lx0, ly0, lx1, ly1);
+      if (g) ctx.fillStyle = g;
+      ctx.fillText(text, x, y);
+      ctx.fillStyle = base;
     } else ctx.fillText(text, x, y);
-  });
+  }, true);
   ctx.restore();
 }
