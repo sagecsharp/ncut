@@ -16,7 +16,6 @@ import type { CameraRig } from '../../engine/scene3d/camera';
 import { resolveClip } from '../../lib/anim';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
-import type { ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
@@ -128,9 +127,11 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         shown3d = false;
       }
       // the outline hugs the kept rectangle of a cropped clip
-      const box = keptBox(getClipBox(project, worldClip(project, clip, time)), clip.crop);
+      // (the crop as it is at this time: it may be keyed)
+      const shown = worldClip(project, clip, time);
+      const box = keptBox(getClipBox(project, shown), shown.crop);
       // edge handles change a shape's own width / height (scale cannot): only for a plain, uncropped shape
-      const edges = clip.type === 'shape' && !hasCrop(clip.crop) ? '1' : '0';
+      const edges = clip.type === 'shape' && !hasCrop(shown.crop) ? '1' : '0';
       if (el.dataset.edges !== edges) el.dataset.edges = edges;
       const w = box.width * f;
       const h = box.height * f;
@@ -317,7 +318,9 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
     const clip = visible[i]!;
     if (!clip.threeD) {
       i--;
-      if (!locked(clip) && hitTestKept(keptBox(getClipBox(project, worldClip(project, clip, time)), clip.crop), px, py, minHit)) return clip;
+      if (locked(clip)) continue;
+      const shown = worldClip(project, clip, time);
+      if (hitTestKept(keptBox(getClipBox(project, shown), shown.crop), px, py, minHit)) return clip;
       continue;
     }
     let best: VisualClip | null = null;
@@ -488,11 +491,10 @@ function OutputOverlay() {
     }
     if (g.kind === 'edge') {
       const r = edgeResize(g.start, g.edge, px, py, MIN_SHAPE_PX);
-      const patch: Record<string, number> = {};
-      if (r.width !== undefined) patch.width = Math.round(r.width * 100) / 100;
-      if (r.height !== undefined) patch.height = Math.round(r.height * 100) / 100;
-      // the opposite edge stays fixed in canvas space: the center follows. x / y go through setClipValue (keyframes)
-      store.updateClip(g.id, patch as unknown as ClipPatch, { skipHistory: true });
+      // width / height go through setClipValue like x / y: a keyed size gets its key at the playhead
+      if (r.width !== undefined) store.setClipValue(g.id, 'width', time, Math.round(r.width * 100) / 100, { skipHistory: true });
+      if (r.height !== undefined) store.setClipValue(g.id, 'height', time, Math.round(r.height * 100) / 100, { skipHistory: true });
+      // the opposite edge stays fixed in canvas space: the center follows
       const rawClip = project.clips.find((c) => c.id === g.id);
       const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, r.dx, r.dy) : { x: r.dx, y: r.dy };
       store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
@@ -635,7 +637,7 @@ function OutputOverlay() {
       let oy = 0;
       if (!raw.threeD) {
         const full = getClipBox(project, world);
-        const kept = keptBox(full, raw.crop);
+        const kept = keptBox(full, world.crop);
         const b = boxBounds(kept);
         hw = b.hw;
         hh = b.hh;

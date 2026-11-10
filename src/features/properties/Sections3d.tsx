@@ -13,7 +13,7 @@ import { Row, SelectRow, Section, Switch, useSelectOpen } from './controls';
 import { targetLabelOf, targetOptions } from './targets';
 import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
-import { beginEdit, liveOpts, patchClip } from './edit';
+import { patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
 import { lookTargetOptions } from './parentOptions';
 import { currentLabel } from './selectModel';
@@ -262,19 +262,7 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
             onChange={(v) => actions().updateClip(id, { shape: v as Shape3D })}
           />
           {shape !== 'plane' && shape !== 'sphere' ? (
-            <Row label="thickness" title="thickness of the shape (px)" wide>
-              <NumberField
-                className="props-grow"
-                suffix="px"
-                title="thickness (px)"
-                value={shapeDepth ?? defaultDepth}
-                min={1}
-                max={10000}
-                precision={0}
-                onStart={beginEdit}
-                onChange={(v) => actions().updateClip(id, { shapeDepth: v }, liveOpts())}
-              />
-            </Row>
+            <AnimField wide id={id} prop="shapeDepth" label="thickness" title="thickness of the shape (px)" suffix="px" min={1} max={10000} step={1} precision={0} fallback={defaultDepth} />
           ) : null}
         </>
       ) : null}

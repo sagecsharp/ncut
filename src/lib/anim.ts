@@ -5,12 +5,30 @@
  * key times are CLIP-LOCAL seconds (0 = the clip's start on the timeline), so moving a clip moves its
  * animation with it. a property without keys simply uses the static value stored on the clip.
  *
- * property names (see ANIM_PROPS for labels and ranges):
- *   visual clips (video, image, text): x y scale rotation opacity z rotX rotY
+ * every property has its OWN key list: a key on one property never adds, moves or removes a key of another.
+ *
+ * property names (animProps gives labels and ranges):
+ *   visual clips (video, image, text, shape): x y scale rotation opacity z rotX rotY
  *   video / audio clips:               volume
  *   effect clips:                      amount, and p.<key> for every effect param
- *   shape clips:                       the visual ones + drawStart drawEnd (draw on, 0..1)
+ *   shape clips:                       drawStart drawEnd (draw on, 0..1)
  *   camera clips:                      x y z pan tilt roll fov focusDistance focusStrength
+ *   the look of a visual clip is described by ONE table (LOOK_DEFS below), the same table answers animProps,
+ *   baseValue, withBaseValue, valueAt, resolveClip and the store's clamping:
+ *     every visual clip: radius, crop.left / top / right / bottom, adjust.brightness / contrast / saturation /
+ *                        temperature / hue, chromaKey.tolerance / softness / spill, mask.x / y / width / height /
+ *                        rotation / feather / radius, shapeDepth
+ *     text:  fontSize letterSpacing lineHeight stroke.width stroke2.width shadow.opacity / blur / distance / angle
+ *            extrude.depth / angle gradient.angle curve wrapWidth backgroundRadius backgroundPadding
+ *     shape: width height points inner gradientAngle stroke.width
+ *   a dotted name is a value inside an object of the clip (crop, adjust, mask ...). when that object is missing:
+ *   - crop, adjust: the property is there with its neutral value (0) and writing it creates the object
+ *   - mask, chromaKey, stroke, stroke2, shadow, extrude, gradient: the object being there changes what the clip is,
+ *     so without it the property does not exist (baseValue is undefined, nothing can be keyed) until the user
+ *     turns the feature on in the inspector
+ *   - shapeDepth has no neutral number (missing = as deep as the clip is wide / tall, which needs the clip's box):
+ *     its static value is undefined until written, the inspector seeds it from the thickness it shows.
+ *   integer properties (points) are rounded wherever a value is read or written.
  */
 import type { Clip, Easing, Keyframe, Keyframes } from '../types';
 
@@ -157,6 +175,8 @@ export interface AnimPropInfo {
   min?: number;
   max?: number;
   unit?: string;
+  /** whole numbers only (points): values are rounded when written and read */
+  int?: boolean;
 }
 
 const VISUAL_PROPS: AnimPropInfo[] = [
@@ -193,16 +213,181 @@ const DRAW_KEYS = new Set(['drawStart', 'drawEnd']);
 const TRANSFORM_KEYS = new Set(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
 const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focusDistance', 'focusStrength']);
 
+/* ---------- the look table: every other number of a visual clip ---------- */
+
+type VisualType = 'video' | 'image' | 'text' | 'shape';
+type ParentKey = 'crop' | 'adjust' | 'mask' | 'chromaKey' | 'stroke' | 'stroke2' | 'shadow' | 'extrude' | 'gradient';
+
+interface LookDef extends AnimPropInfo {
+  /** the object of the clip the value lives in. missing = a field of the clip itself */
+  parent?: ParentKey;
+  /** the field name (in the parent when there is one) */
+  key: string;
+  /** what a clip without the stored value has. missing = the neutral value of `create`, or none (see header) */
+  neutral?: number | ((clip: Clip) => number);
+  /** a missing parent is created like this (neutral values). missing = the parent must exist for the property to */
+  create?: Readonly<Record<string, number>>;
+  /** the value changes the picture the clip is drawn from (texture caches must not keep one picture for it) */
+  pic?: boolean;
+  /** a text style value: the text measuring / signature caches read it, so a resolved copy cannot share them */
+  textStyle?: boolean;
+  /** a clip without a stored value may be written (keyed) anyway */
+  seed?: boolean;
+}
+
+const CROP0 = { left: 0, top: 0, right: 0, bottom: 0 } as const;
+const ADJUST0 = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 } as const;
+
+const row = (parent: ParentKey | undefined, key: string, label: string, o: Partial<LookDef> = {}): LookDef => ({
+  prop: parent ? `${parent}.${key}` : key,
+  label,
+  parent,
+  key,
+  ...o,
+});
+
+/** every visual clip. ranges are the ones the inspector fields have. */
+const COMMON_DEFS: LookDef[] = [
+  row(undefined, 'radius', 'corners', { min: 0, max: 1, neutral: 0 }),
+  row('crop', 'left', 'crop left', { min: 0, max: 0.95, create: CROP0 }),
+  row('crop', 'top', 'crop top', { min: 0, max: 0.95, create: CROP0 }),
+  row('crop', 'right', 'crop right', { min: 0, max: 0.95, create: CROP0 }),
+  row('crop', 'bottom', 'crop bottom', { min: 0, max: 0.95, create: CROP0 }),
+  row('adjust', 'brightness', 'brightness', { min: -1, max: 1, create: ADJUST0, pic: true }),
+  row('adjust', 'contrast', 'contrast', { min: -1, max: 1, create: ADJUST0, pic: true }),
+  row('adjust', 'saturation', 'saturation', { min: -1, max: 1, create: ADJUST0, pic: true }),
+  row('adjust', 'temperature', 'warmth', { min: -1, max: 1, create: ADJUST0, pic: true }),
+  row('adjust', 'hue', 'hue', { min: -180, max: 180, unit: 'deg', create: ADJUST0, pic: true }),
+  row('chromaKey', 'tolerance', 'key range', { min: 0, max: 1, pic: true }),
+  row('chromaKey', 'softness', 'key soft edge', { min: 0, max: 1, pic: true }),
+  row('chromaKey', 'spill', 'key clean edges', { min: 0, max: 1, pic: true }),
+  row('mask', 'x', 'mask x', { min: -1, max: 1, pic: true }),
+  row('mask', 'y', 'mask y', { min: -1, max: 1, pic: true }),
+  row('mask', 'width', 'mask width', { min: 0, max: 2, pic: true }),
+  row('mask', 'height', 'mask height', { min: 0, max: 2, pic: true }),
+  row('mask', 'rotation', 'mask turn', { min: -180, max: 180, unit: 'deg', pic: true }),
+  row('mask', 'feather', 'mask soft edge', { min: 0, max: 1, pic: true }),
+  row('mask', 'radius', 'mask corners', { min: 0, max: 1, neutral: 0, pic: true }),
+  row(undefined, 'shapeDepth', 'thickness', { min: 1, max: 10000, unit: 'px', seed: true }),
+];
+
+const TEXT_STYLE = { pic: true, textStyle: true } as const;
+const TEXT_DEFS: LookDef[] = [
+  row(undefined, 'fontSize', 'font size', { min: 4, max: 1000, unit: 'px', ...TEXT_STYLE }),
+  row(undefined, 'letterSpacing', 'letter spacing', { min: -0.5, max: 2, neutral: 0, ...TEXT_STYLE }),
+  row(undefined, 'lineHeight', 'line gap', { min: 0.5, max: 3, neutral: 1.25, ...TEXT_STYLE }),
+  row('stroke', 'width', 'outline width', { min: 0.01, max: 0.5, ...TEXT_STYLE }),
+  row('stroke2', 'width', '2nd outline width', { min: 0.01, max: 0.5, ...TEXT_STYLE }),
+  row('shadow', 'opacity', 'shadow opacity', { min: 0, max: 1, ...TEXT_STYLE }),
+  row('shadow', 'blur', 'shadow blur', { min: 0, max: 1, ...TEXT_STYLE }),
+  row('shadow', 'distance', 'shadow distance', { min: 0, max: 1, ...TEXT_STYLE }),
+  row('shadow', 'angle', 'shadow angle', { min: -360, max: 360, unit: 'deg', ...TEXT_STYLE }),
+  row('extrude', 'depth', 'depth length', { min: 0.01, max: 1, ...TEXT_STYLE }),
+  row('extrude', 'angle', 'depth angle', { min: 0, max: 360, unit: 'deg', ...TEXT_STYLE }),
+  row('gradient', 'angle', 'gradient angle', { min: -360, max: 360, unit: 'deg', ...TEXT_STYLE }),
+  row(undefined, 'curve', 'curve', { min: -360, max: 360, unit: 'deg', neutral: 0, ...TEXT_STYLE }),
+  row(undefined, 'wrapWidth', 'wrap width', { min: 0, max: 20000, unit: 'px', neutral: 0, ...TEXT_STYLE }),
+  row(undefined, 'backgroundRadius', 'box corners', { min: 0, max: 1, neutral: 0, ...TEXT_STYLE }),
+  row(undefined, 'backgroundPadding', 'box padding', { min: 0, max: 2, neutral: 0.3, ...TEXT_STYLE }),
+];
+
+const SHAPE_DEFS: LookDef[] = [
+  row(undefined, 'width', 'width', { min: 1, max: 20000, unit: 'px', pic: true }),
+  row(undefined, 'height', 'height', { min: 1, max: 20000, unit: 'px', pic: true }),
+  // missing = 6 corners, a star 5 points (shapeLogic.defaultPoints)
+  row(undefined, 'points', 'points', { min: 3, max: 12, int: true, pic: true, neutral: (c) => (c.type === 'shape' && c.kind === 'star' ? 5 : 6) }),
+  row(undefined, 'inner', 'inner radius', { min: 0.1, max: 0.95, neutral: 0.45, pic: true }),
+  row(undefined, 'gradientAngle', 'gradient angle', { min: -360, max: 360, unit: 'deg', neutral: 90, pic: true }),
+  row('stroke', 'width', 'outline width', { min: 0.5, max: 500, unit: 'px', pic: true }),
+];
+
+const LOOK_DEFS: Record<VisualType, readonly LookDef[]> = {
+  video: COMMON_DEFS,
+  image: COMMON_DEFS,
+  text: [...COMMON_DEFS, ...TEXT_DEFS],
+  shape: [...COMMON_DEFS, ...SHAPE_DEFS],
+};
+
+const LOOK_BY_PROP: Record<VisualType, ReadonlyMap<string, LookDef>> = {
+  video: new Map(LOOK_DEFS.video.map((x) => [x.prop, x])),
+  image: new Map(LOOK_DEFS.image.map((x) => [x.prop, x])),
+  text: new Map(LOOK_DEFS.text.map((x) => [x.prop, x])),
+  shape: new Map(LOOK_DEFS.shape.map((x) => [x.prop, x])),
+};
+
+/** the public part of a table row (what animProps hands out) */
+function infoOf(x: LookDef): AnimPropInfo {
+  const out: AnimPropInfo = { prop: x.prop, label: x.label };
+  if (x.min !== undefined) out.min = x.min;
+  if (x.max !== undefined) out.max = x.max;
+  if (x.unit !== undefined) out.unit = x.unit;
+  if (x.int) out.int = true;
+  return out;
+}
+
+const LOOK_INFOS: Record<VisualType, AnimPropInfo[]> = {
+  video: LOOK_DEFS.video.map(infoOf),
+  image: LOOK_DEFS.image.map(infoOf),
+  text: LOOK_DEFS.text.map(infoOf),
+  shape: LOOK_DEFS.shape.map(infoOf),
+};
+
+const VIDEO_PROPS = [...VISUAL_PROPS, VOLUME_PROP, ...LOOK_INFOS.video];
+const IMAGE_PROPS = [...VISUAL_PROPS, ...LOOK_INFOS.image];
+const TEXT_PROPS = [...VISUAL_PROPS, ...LOOK_INFOS.text];
+const SHAPE_ALL_PROPS = [...SHAPE_PROPS, ...LOOK_INFOS.shape];
+
+function lookDef(clip: Clip, prop: string): LookDef | undefined {
+  switch (clip.type) {
+    case 'video':
+    case 'image':
+    case 'text':
+    case 'shape':
+      return LOOK_BY_PROP[clip.type].get(prop);
+    default:
+      return undefined;
+  }
+}
+
+type Rec = Record<string, unknown>;
+
+/** the property can be written on this clip: its parent object is there, or is made with neutral values */
+function lookWritable(clip: Clip, x: LookDef): boolean {
+  return !x.parent || !!x.create || !!(clip as unknown as Rec)[x.parent];
+}
+
+function lookRead(clip: Clip, x: LookDef): number | undefined {
+  const c = clip as unknown as Rec;
+  let stored: unknown;
+  if (x.parent) {
+    const o = c[x.parent] as Rec | null | undefined;
+    if (!o && !x.create) return undefined;
+    stored = o?.[x.key];
+  } else stored = c[x.key];
+  if (typeof stored === 'number') return stored;
+  if (typeof x.neutral === 'function') return x.neutral(clip);
+  return x.neutral ?? x.create?.[x.key];
+}
+
+function lookWrite<T extends Clip>(clip: T, x: LookDef, v: number): T {
+  if (!lookWritable(clip, x)) return clip;
+  const val = x.int ? Math.round(v) : v;
+  if (!x.parent) return { ...clip, [x.key]: val };
+  const o = (clip as unknown as Rec)[x.parent] as Rec | null | undefined;
+  return { ...clip, [x.parent]: { ...(o ?? x.create), [x.key]: val } };
+}
+
 /** the built-in animatable properties of a clip (effect params are added by the caller from the effect def) */
 export function animProps(clip: Clip): AnimPropInfo[] {
   switch (clip.type) {
     case 'video':
-      return [...VISUAL_PROPS, VOLUME_PROP];
+      return VIDEO_PROPS;
     case 'image':
+      return IMAGE_PROPS;
     case 'text':
-      return VISUAL_PROPS;
+      return TEXT_PROPS;
     case 'shape':
-      return SHAPE_PROPS;
+      return SHAPE_ALL_PROPS;
     case 'audio':
       return [VOLUME_PROP];
     case 'effect':
@@ -222,7 +407,10 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
       if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? 0;
       if (prop === 'volume' && clip.type === 'video') return clip.volume;
       if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return prop === 'drawStart' ? (clip.drawStart ?? 0) : (clip.drawEnd ?? 1);
-      return undefined;
+      {
+        const x = LOOK_BY_PROP[clip.type].get(prop);
+        return x ? lookRead(clip, x) : undefined;
+      }
     case 'audio':
       return prop === 'volume' ? clip.volume : undefined;
     case 'effect':
@@ -248,7 +436,10 @@ export function withBaseValue<T extends Clip>(clip: T, prop: string, v: number):
       if (TRANSFORM_KEYS.has(prop)) return { ...clip, transform: { ...clip.transform, [prop]: v } };
       if (prop === 'volume' && clip.type === 'video') return { ...clip, volume: v };
       if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return { ...clip, [prop]: v };
-      return clip;
+      {
+        const x = LOOK_BY_PROP[clip.type].get(prop);
+        return x ? lookWrite(clip, x, v) : clip;
+      }
     case 'audio':
       return prop === 'volume' ? { ...clip, volume: v } : clip;
     case 'effect':
@@ -275,8 +466,38 @@ export function hasKeyframes(clip: Clip): boolean {
 /** value of a property at a TIMELINE time: the animated value when it has keys, else the static one */
 export function valueAt(clip: Clip, prop: string, time: number): number | undefined {
   const keys = clip.keyframes?.[prop];
-  if (keys && keys.length > 0) return evalKeys(keys, time - clip.start);
+  if (keys && keys.length > 0) {
+    const v = evalKeys(keys, time - clip.start);
+    return lookDef(clip, prop)?.int ? Math.round(v) : v;
+  }
   return baseValue(clip, prop);
+}
+
+/** false for a look value whose object is missing and is not made on write (mask, outline ...): nothing to key yet */
+export function canKey(clip: Clip, prop: string): boolean {
+  const x = lookDef(clip, prop);
+  return !x || lookWritable(clip, x);
+}
+
+/** true when a property with no stored value may be written anyway (shapeDepth: see the header) */
+export function isSeedable(clip: Clip, prop: string): boolean {
+  const x = lookDef(clip, prop);
+  return !!x?.seed && lookWritable(clip, x);
+}
+
+/**
+ * true when a key list of this clip changes the picture the clip is drawn from (color, key, mask, a text's style, a
+ * shape's figure). a picture like that is new every frame: the engine must not file it under a texture key of its own.
+ * crop, corner radius and thickness only move the geometry and do not count.
+ */
+export function animatesPicture(clip: Clip): boolean {
+  const kf = clip.keyframes;
+  if (!kf) return false;
+  for (const prop in kf) {
+    if (kf[prop]!.length === 0) continue;
+    if (lookDef(clip, prop)?.pic) return true;
+  }
+  return false;
 }
 
 /**
@@ -292,6 +513,10 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
   let copy: Record<string, unknown> | null = null;
   let transform: Record<string, unknown> | null = null;
   let params: Record<string, unknown> | null = null;
+  // one copy of each object (crop, adjust, mask ...) that a keyed look value is written into
+  let nested: Record<string, Rec> | null = null;
+  // a text style value was written: the copy no longer shares the stored clip's text caches (see rawClipOf)
+  let styled = false;
   const local = time - clip.start;
   const own = (): Record<string, unknown> => (copy ??= { ...clip } as Record<string, unknown>);
   for (const prop in kf) {
@@ -309,6 +534,25 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
           own().transform = transform;
         } else if (prop === 'volume' && clip.type === 'video') own().volume = evalKeys(keys, local);
         else if (clip.type === 'shape' && DRAW_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
+        else {
+          const x = LOOK_BY_PROP[clip.type].get(prop);
+          // a value in an object the clip does not have (and that is not made on write) is left alone, like withBaseValue
+          if (x && lookWritable(clip, x)) {
+            let v = evalKeys(keys, local);
+            if (x.int) v = Math.round(v);
+            if (x.textStyle) styled = true;
+            if (!x.parent) own()[x.key] = v;
+            else {
+              nested ??= {};
+              let o = nested[x.parent];
+              if (!o) {
+                o = nested[x.parent] = { ...((clip as unknown as Rec)[x.parent] as Rec | null | undefined ?? x.create) };
+                own()[x.parent] = o;
+              }
+              o[x.key] = v;
+            }
+          }
+        }
         break;
       case 'audio':
         if (prop === 'volume') own().volume = evalKeys(keys, local);
@@ -330,7 +574,8 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
   if (!copy) return clip;
   // text clips: the copy differs from the stored clip only in what is animated (transform, never text or style), so the
   // caches that are keyed by the stored clip (text measuring and signatures) can be read through it, see rawClipOf
-  if (clip.type === 'text') rawOfCopy.set(copy, rawClipOf(clip));
+  // (unless a text style value is keyed too: then the copy differs in what those caches read and stands on its own)
+  if (clip.type === 'text' && !styled) rawOfCopy.set(copy, rawClipOf(clip));
   return copy as unknown as T;
 }
 
@@ -341,8 +586,11 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
  * what those caches read: text, uppercase, fontFamily, fontSize, fontWeight, italic, color, background, align,
  * letterSpacing, lineHeight, stroke, stroke2, shadow, backgroundRadius, backgroundPadding, gradient, curve, wrapWidth,
  * highlight, extrude, underline, strike, hollow, backgroundPerLine and digitRanges. none of them is written by
- * resolveClip (transform x y scale rotation opacity z rotX rotY; volume and drawStart / drawEnd belong to other kinds)
- * or by applyClipMotion (transform only).
+ * resolveClip unless a text style value is keyed (the TEXT_DEFS rows: fontSize, letterSpacing, stroke.width ...): then
+ * resolveClip does not register the copy and every cache reads the copy itself (a new object each frame: the lookups
+ * miss and measure again, the caches keyed by the measured values still hit, so it costs a signature per frame, not a
+ * layout). what resolveClip always writes for a text is the transform, crop, adjust, mask and the like, which these caches
+ * do not read. applyClipMotion writes the transform only.
  */
 const rawOfCopy = new WeakMap<object, object>();
 

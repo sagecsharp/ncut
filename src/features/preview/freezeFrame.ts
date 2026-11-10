@@ -140,7 +140,9 @@ export async function freezeFrame(): Promise<string | null> {
   if (splitOk && !moved && extra.length > 0) moved = useEditor.getState().moveClips(moves, skip);
   if (moved) {
     const handover = freezeHandover(liveClip, plan);
-    const clip = stillClipFrom(liveClip, resolveClip(liveClip, time).transform, still.id, plan.stillStart, FREEZE_DURATION, handover);
+    // the look values too (crop, color, mask ...) are read at the freeze time: they may be keyed
+    const shown = resolveClip(liveClip, time);
+    const clip = stillClipFrom(shown, shown.transform, still.id, plan.stillStart, FREEZE_DURATION, handover);
     const ids = useEditor.getState().addClips([clip], { ...skip, newTrack: false });
     newId = ids[0] ?? null;
     if (newId) {

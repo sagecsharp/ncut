@@ -9,7 +9,7 @@ import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Proj
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
-import { resolveClip } from '../lib/anim';
+import { animatesPicture, resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
@@ -615,7 +615,8 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined, stacked ? { noExtrude: true } : undefined);
   // a counter text changes all the time: no cache key (the gl side uploads it every frame and keeps no copy),
   // so the changing numbers cannot fill the texture cache. the 2d canvas here is replaced per clip id as before.
-  const live = animated || counterTexts.has(clip);
+  // (a keyed text style makes a new picture every frame too: no key, or every frame would add a gl texture)
+  const live = animated || counterTexts.has(clip) || animatesPicture(clip);
   const entry: TextTexture = { sig, canvas, key: live ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin, q };
   // the silhouette is stale now; its canvas is kept for reuse. a clip that is not stacked any more gives it back.
   if (stacked && hit?.side) entry.side = { canvas: hit.side.canvas, key: undefined, sig: '' };
@@ -725,7 +726,8 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   drawShape(c, clip, Math.max(1, clip.width), Math.max(1, clip.height), 1);
   // an outline that is being drawn on changes every frame: no key, so the gpu side reuses one scratch texture
   // instead of keeping a mipmapped copy of every frame
-  const live = !!(clip.keyframes?.drawStart?.length || clip.keyframes?.drawEnd?.length);
+  // (so does a keyed width, corner count, gradient angle ... of the figure)
+  const live = !!(clip.keyframes?.drawStart?.length || clip.keyframes?.drawEnd?.length) || animatesPicture(clip);
   const entry: ShapeTexture = { sig, canvas, key: live ? undefined : 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
   shapeTextures.delete(clip.id);
   shapeTextures.set(clip.id, entry);
@@ -915,12 +917,13 @@ function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | nu
     const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
     if (!t) return null;
     // key undefined = the picture is redrawn all the time (an animation, a counter, a drawn-on outline)
-    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, t.key);
+    // a look value that is keyed (adjust, key, mask) makes a new looked picture every frame: no still key to file it under
+    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, animatesPicture(clip) ? undefined : t.key);
   }
   if (!source) return null;
   if (!hasClipLook(clip) && !hasMask(clip)) return source;
   syncTextureCaches(project);
-  return processed(source, clip, channel, imageStillKey(clip, source));
+  return processed(source, clip, channel, animatesPicture(clip) ? undefined : imageStillKey(clip, source));
 }
 
 /**
@@ -1137,6 +1140,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     const px = image as { width?: number; height?: number };
     cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${px.width || source.width}x${px.height || source.height}` : undefined;
   }
+  // a keyed look or mask value: the looked picture is new every frame, so it does not get a texture key (see animatesPicture)
+  if (cacheKey !== undefined && animatesPicture(clip)) cacheKey = undefined;
   if (lw > 0 && lh > 0 && hasClipLook(clip)) {
     const looked = lookedTexture(clip, image, lw, lh, cacheKey, channel);
     image = looked.image;

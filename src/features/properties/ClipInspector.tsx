@@ -335,19 +335,7 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
       <Row label="font" title="font family">
         <FontPicker value={fontFamily} onChange={(f) => actions().updateClip(id, { fontFamily: f })} />
       </Row>
-      <Row label="size" title="font size in canvas pixels">
-        <NumberField
-          className="props-num-wide"
-          suffix="px"
-          title="font size (px)"
-          value={fontSize}
-          min={4}
-          max={1000}
-          precision={0}
-          onStart={beginEdit}
-          onChange={(v) => actions().updateClip(id, { fontSize: v }, liveOpts())}
-        />
-      </Row>
+      <AnimField id={id} prop="fontSize" label="size" title="font size in canvas pixels" suffix="px" min={4} max={1000} step={1} precision={0} />
       <Row label="style" title="bold, italic, underline, strike, hollow and alignment">
         <div className="props-seg">
           <button
