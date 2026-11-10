@@ -48,9 +48,10 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             min={0}
             step={0.05}
             precision={2}
+            onStart={beginEdit}
             onChange={(v) => {
               // a rejected move leaves the store untouched, so the field falls back to the real value
-              actions().moveClips([{ id, trackId, start: v }]);
+              actions().moveClips([{ id, trackId, start: v }], liveOpts());
             }}
           />
           <NumberField
@@ -61,7 +62,8 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             min={MIN_CLIP_DURATION}
             step={0.05}
             precision={2}
-            onChange={(v) => actions().trimClip(id, 'end', start + v)}
+            onStart={beginEdit}
+            onChange={(v) => actions().trimClip(id, 'end', start + v, liveOpts())}
           />
         </Pair>
       </Row>

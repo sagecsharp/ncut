@@ -46,6 +46,8 @@ function modsOk(e: KeyboardEvent, { mod = false, shift = false }: Mods): boolean
 /** key matched on e.key (letters, named keys) */
 const byKey = (key: string, mods: Mods = {}) => (e: KeyboardEvent) => modsOk(e, mods) && keyIs(e, key);
 /** key matched on the physical position (punctuation that moves around between layouts) */
+/** keys whose character is owned by another shortcut (zoom, help) on layouts where they share a physical key */
+const notMapped = (e: KeyboardEvent) => !['+', '-', '=', '_', '?'].includes(e.key);
 const byCode = (code: string, mods: Mods = {}) => (e: KeyboardEvent) => modsOk(e, mods) && e.code === code;
 const anyOf =
   (...fns: ((e: KeyboardEvent) => boolean)[]) =>
@@ -344,7 +346,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['[']],
     group: 'editing',
     description: 'trim clip start to playhead',
-    match: byCode('BracketLeft'),
+    match: (e) => byCode('BracketLeft')(e) && notMapped(e),
     run: () => trimToPlayhead('start'),
   },
   {
@@ -352,7 +354,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [[']']],
     group: 'editing',
     description: 'trim clip end to playhead',
-    match: byCode('BracketRight'),
+    match: (e) => byCode('BracketRight')(e) && notMapped(e),
     run: () => trimToPlayhead('end'),
   },
 
@@ -364,7 +366,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'zoom in',
     repeat: true,
     match: (e) =>
-      !isMod(e) && !e.altKey && (e.key === '=' || e.key === '+' || e.code === 'Equal' || e.code === 'NumpadAdd'),
+      !isMod(e) && !e.altKey && (e.key === '=' || e.key === '+' || e.code === 'NumpadAdd'),
     run: () => zoomBy(1.25),
   },
   {
@@ -374,7 +376,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'zoom out',
     repeat: true,
     match: (e) =>
-      !isMod(e) && !e.altKey && (e.key === '-' || e.key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract'),
+      !isMod(e) && !e.altKey && (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract'),
     run: () => zoomBy(1 / 1.25),
   },
   {

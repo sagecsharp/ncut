@@ -41,6 +41,7 @@ export function NumberField({
 }: NumberFieldProps) {
   const format = (v: number) => (Number.isFinite(v) ? v.toFixed(precision) : '0');
   const [draft, setDraft] = useState<string | null>(null);
+  const skipBlur = useRef(false);
   const drag = useRef<{ x: number; start: number; moved: boolean } | null>(null);
 
   useEffect(() => {
@@ -106,13 +107,19 @@ export function NumberField({
         }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={(e) => {
+          if (skipBlur.current) {
+            skipBlur.current = false;
+            return;
+          }
           if (draft !== null) commit(e.target.value);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             commit((e.target as HTMLInputElement).value);
+            skipBlur.current = true;
             (e.target as HTMLInputElement).blur();
           } else if (e.key === 'Escape') {
+            skipBlur.current = true;
             setDraft(null);
             (e.target as HTMLInputElement).blur();
           } else if (e.key === 'ArrowUp') {

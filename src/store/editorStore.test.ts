@@ -1619,4 +1619,23 @@ describe('fuzz', () => {
   }
 });
 
+/* ---------- locked tracks ---------- */
+
+describe('locked track editing', () => {
+  it('drops selection and blocks updateClip / updateTransform on a locked track', () => {
+    const t = load((v) => [mkVideo(v, 0, 2, { id: 'LK' })]);
+    ed().select(['LK']);
+    expect(ed().selection).toEqual(['LK']);
+    ed().updateTrack(t.v, { locked: true });
+    expect(ed().selection).toEqual([]);
+    const before = clipOf('LK');
+    ed().updateClip('LK', { volume: 0.5 } as never);
+    ed().updateTransform('LK', { x: 50 });
+    expect(clipOf('LK')).toBe(before);
+    ed().updateTrack(t.v, { locked: false });
+    ed().updateTransform('LK', { x: 50 });
+    expect((clipOf('LK') as VideoClip).transform.x).toBe(50);
+  });
+});
+
 export type { TextClip };
