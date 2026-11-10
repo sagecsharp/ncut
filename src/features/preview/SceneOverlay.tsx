@@ -1,12 +1,14 @@
 /**
  * overlay of the scene view: orbit / pan / dolly navigation of the free editor camera, click to select a
- * 3d plane, a move gizmo (x, y, z axes) for the selected 3d clip or camera clip.
+ * 3d plane, and a gizmo for the selected clip or camera clip with three tools:
+ * move (x, y, z arrows), rotate (three rings: tilt, turn, roll) and scale (one handle).
  *
  * like the output overlay nothing renders per frame in react: the svg is rewritten imperatively from store
  * subscriptions, and pointer moves are coalesced to one update per animation frame.
  */
 import { useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react';
+import { Maximize2, Move, RotateCw } from 'lucide-react';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { type CameraRig, cameraClipAt, cameraRig, homeDistance, projectPoint, screenRay } from '../../engine/scene3d/camera';
 import { type Vec3, add, dot, scale as vscale } from '../../engine/scene3d/math';
@@ -16,14 +18,24 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Project } from '../../types';
 import { isVisualClip } from '../../types';
-import { type Quad, clipQuad, closestOnAxis, rayQuad, segDist } from './overlayMath';
-import { type Orbit, currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
+import { beginPreviewGesture, endPreviewGesture } from './gesture';
+import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, segDist, unwrapStep } from './overlayMath';
+import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
+import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
+import { useSceneTool } from './sceneTool';
+import { frameTarget, viewRig } from './sceneViews';
 
 const GIZMO_PX = 84;
 const AXIS_HIT_PX = 8;
+const RING_HIT_PX = 7;
+const SCALE_HIT_PX = 11;
+/** the scale handle sits this far up and to the right of the clip center, css px */
+const SCALE_OFFSET_PX = 60;
 const CAMERA_HIT_PX = 12;
 const DRAG_THRESHOLD_PX = 3;
 const ORBIT_DEG_PER_PX = 0.3;
+const MIN_SCALE = 0.01;
+const MAX_SCALE = 100;
 const AXES: Vec3[] = [
   [1, 0, 0],
   [0, 1, 0],
@@ -32,19 +44,40 @@ const AXES: Vec3[] = [
 const AXIS_NAMES = ['x', 'y', 'z'] as const;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+const TOOLS: ReadonlyArray<{ tool: SceneTool; label: string; key: string; Icon: typeof Move; hint: string }> = [
+  { tool: 'move', label: 'move', key: 'w', Icon: Move, hint: 'drag an arrow to move along x, y or z' },
+  { tool: 'rotate', label: 'rotate', key: 'e', Icon: RotateCw, hint: 'drag a ring to tilt, turn or roll' },
+  { tool: 'scale', label: 'scale', key: 'r', Icon: Maximize2, hint: 'drag the square away from the center to grow' },
+];
+
 interface Target {
   id: string;
+  /** a camera clip only moves; a clip also rotates and scales */
+  kind: 'camera' | 'clip';
+  /** false = a 2d clip: dragging tilt, turn or z turns it 3d first */
+  threeD: boolean;
   center: Vec3;
   /** current x y z (clip.transform or camera values) */
   v: [number, number, number];
+  /** current tilt, turn and roll (clips) */
+  rot: [number, number, number];
+  scale: number;
+  /** world axes of the tilt, turn and roll rings */
+  axes: [Vec3, Vec3, Vec3];
 }
+
+type Hover = { kind: 'axis' | 'ring' | 'scale'; i: number } | null;
 
 interface GizmoState {
   visible: boolean;
+  tool: SceneTool;
   /** css px relative to the overlay */
   cx: number;
   cy: number;
   tips: Array<{ x: number; y: number; ok: boolean }>;
+  /** flat x y arrays per ring (null = not fully in front of the camera) */
+  rings: Array<number[] | null>;
+  scaleTip: { x: number; y: number };
   target: Target | null;
 }
 
@@ -63,35 +96,74 @@ type SceneGesture =
       c0: Vec3;
       v0: number;
       rig: CameraRig;
-    };
+      /** a 2d clip dragged along z becomes 3d when the drag really starts */
+      to3d: boolean;
+    }
+  | {
+      kind: 'ring';
+      pointerId: number;
+      startX: number;
+      startY: number;
+      started: boolean;
+      ring: number;
+      prop: RingProp;
+      id: string;
+      v0: number;
+      /** projected center, css px relative to the overlay */
+      cx: number;
+      cy: number;
+      /** pointer angle at the last step, degrees */
+      last: number;
+      /** unwrapped clockwise pointer rotation since the grab, degrees */
+      acc: number;
+      /** value change per clockwise degree */
+      sign: 1 | -1;
+      to3d: boolean;
+    }
+  | { kind: 'scale'; pointerId: number; startX: number; startY: number; started: boolean; id: string; cx: number; cy: number; d0: number; s0: number };
 
 interface PointerSnapshot {
   x: number;
   y: number;
 }
 
-function viewRig(project: Project): CameraRig {
-  return cameraRig(toCamera3D(currentOrbit(project), project), project.width, project.height);
-}
+const inRange = (c: { start: number; duration: number }, time: number) => time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
 
-/** the selected clip the gizmo moves: the first selected 3d clip or camera clip that is active now */
-function gizmoTarget(project: Project, selection: string[], time: number): Target | null {
+/** the selected clip the gizmo works on: the first selected visual clip or camera clip that is active now */
+function gizmoTarget(project: Project, selection: string[], time: number, rig: CameraRig): Target | null {
   for (const id of selection) {
     const clip = project.clips.find((c) => c.id === id);
-    if (!clip || time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
+    if (!clip || !inRange(clip, time)) continue;
     if (clip.type === 'camera') {
       const r = resolveClip(clip, time);
       return {
         id,
+        kind: 'camera',
+        threeD: true,
         center: [project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z],
         v: [r.x, r.y, r.z],
+        rot: [0, 0, 0],
+        scale: 1,
+        axes: AXES as [Vec3, Vec3, Vec3],
       };
     }
-    if (isVisualClip(clip) && clip.threeD) {
+    if (isVisualClip(clip)) {
       const r = resolveClip(clip, time);
       const box = getClipBox(project, r);
-      const z = r.transform.z ?? 0;
-      return { id, center: [box.cx, box.cy, z], v: [r.transform.x, r.transform.y, z] };
+      const threeD = !!clip.threeD;
+      const z = threeD ? (r.transform.z ?? 0) : 0;
+      const rotX = threeD ? (r.transform.rotX ?? 0) : 0;
+      const rotY = threeD ? (r.transform.rotY ?? 0) : 0;
+      return {
+        id,
+        kind: 'clip',
+        threeD,
+        center: [box.cx, box.cy, z],
+        v: [r.transform.x, r.transform.y, z],
+        rot: [rotX, rotY, r.transform.rotation],
+        scale: r.transform.scale,
+        axes: ringAxes(box, { z, rotX, rotY }, threeD ? clip.lookAt : undefined, rig.eye),
+      };
     }
   }
   return null;
@@ -130,6 +202,14 @@ export function SceneOverlay() {
   const axisTip = useRef<Array<SVGRectElement | null>>([null, null, null]);
   const axisText = useRef<Array<SVGTextElement | null>>([null, null, null]);
   const axisGroup = useRef<Array<SVGGElement | null>>([null, null, null]);
+  const ringGroup = useRef<Array<SVGGElement | null>>([null, null, null]);
+  const ringUnder = useRef<Array<SVGPolylineElement | null>>([null, null, null]);
+  const ringLine = useRef<Array<SVGPolylineElement | null>>([null, null, null]);
+  const ringText = useRef<Array<SVGTextElement | null>>([null, null, null]);
+  const scaleGroup = useRef<SVGGElement>(null);
+  const scaleUnder = useRef<SVGLineElement>(null);
+  const scaleLine = useRef<SVGLineElement>(null);
+  const scaleRect = useRef<SVGRectElement>(null);
   const centerDot = useRef<SVGCircleElement>(null);
   const targetUnder = useRef<SVGLineElement>(null);
   const targetLine = useRef<SVGLineElement>(null);
@@ -137,12 +217,25 @@ export function SceneOverlay() {
   const hasTargetCam = useRef(false);
   const viewF = useRef(0);
   const redrawRef = useRef<() => void>(() => undefined);
-  const gizmo = useRef<GizmoState>({ visible: false, cx: 0, cy: 0, tips: [0, 1, 2].map(() => ({ x: 0, y: 0, ok: false })), target: null });
-  const hoverAxis = useRef(-1);
+  const gizmo = useRef<GizmoState>({
+    visible: false,
+    tool: 'move',
+    cx: 0,
+    cy: 0,
+    tips: [0, 1, 2].map(() => ({ x: 0, y: 0, ok: false })),
+    rings: [null, null, null],
+    scaleTip: { x: 0, y: 0 },
+    target: null,
+  });
+  const hover = useRef<Hover>(null);
   const gestureRef = useRef<SceneGesture | null>(null);
   const pendingRef = useRef<PointerSnapshot | null>(null);
   const rafRef = useRef(0);
   const originRef = useRef({ left: 0, top: 0 });
+  /** shift held at the last pointer event (rings snap to 15 degree steps) */
+  const dragShift = useRef(false);
+  const tool = useSceneTool((s) => s.tool);
+  const setTool = useSceneTool((s) => s.setTool);
 
   /* ---------- imperative drawing ---------- */
   useLayoutEffect(() => {
@@ -178,43 +271,64 @@ export function SceneOverlay() {
         const time = usePlayback.getState().time;
         const selection = useEditor.getState().selection;
         const rig = viewRig(project);
-        // outlines of the selected 3d planes
+        // outlines of the selected clips (a 2d clip lies flat on the canvas plane)
         for (const id of selection) {
           const clip = project.clips.find((c) => c.id === id);
-          if (!clip || !isVisualClip(clip) || !clip.threeD) continue;
-          if (time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
-          const q = clipQuad(project, clip, time, rig, scratch);
+          if (!clip || !isVisualClip(clip) || !inRange(clip, time)) continue;
+          const q = clipQuad(project, asScenePlane(clip), time, rig, scratch);
           if (!q.visible) continue;
           const i = poly(used++);
           const pts = `${q.p[0] * f},${q.p[1] * f} ${q.p[2] * f},${q.p[3] * f} ${q.p[4] * f},${q.p[5] * f} ${q.p[6] * f},${q.p[7] * f}`;
           unders[i]!.setAttribute('points', pts);
           lines[i]!.setAttribute('points', pts);
         }
-        // the move gizmo
-        const target = gizmoTarget(project, selection, time);
+        // the gizmo of the active tool
+        const target = gizmoTarget(project, selection, time, rig);
         if (target) {
+          const tl: SceneTool = target.kind === 'clip' ? useSceneTool.getState().tool : 'move';
           const c = projectPoint(rig, target.center[0], target.center[1], target.center[2], project.width, project.height);
           if (c.visible) {
             const focal = project.height / 2 / rig.tanHalf;
             const len = ((GIZMO_PX / f) * c.depth) / focal;
             gz.visible = true;
             gz.target = target;
+            gz.tool = tl;
             gz.cx = c.x * f;
             gz.cy = c.y * f;
-            for (let a = 0; a < 3; a++) {
-              const ax = AXES[a]!;
-              const t = projectPoint(
-                rig,
-                target.center[0] + ax[0] * len,
-                target.center[1] + ax[1] * len,
-                target.center[2] + ax[2] * len,
-                project.width,
-                project.height,
-              );
-              const tip = gz.tips[a]!;
-              tip.ok = t.visible;
-              tip.x = t.x * f;
-              tip.y = t.y * f;
+            if (tl === 'move') {
+              for (let a = 0; a < 3; a++) {
+                const ax = AXES[a]!;
+                const t = projectPoint(
+                  rig,
+                  target.center[0] + ax[0] * len,
+                  target.center[1] + ax[1] * len,
+                  target.center[2] + ax[2] * len,
+                  project.width,
+                  project.height,
+                );
+                const tip = gz.tips[a]!;
+                tip.ok = t.visible;
+                tip.x = t.x * f;
+                tip.y = t.y * f;
+              }
+            } else if (tl === 'rotate') {
+              for (let a = 0; a < 3; a++) {
+                const pts = ringPoints(target.center, target.axes[a]!, len * 0.9);
+                const flat: number[] = [];
+                let ok = true;
+                for (const p of pts) {
+                  const s = projectPoint(rig, p[0], p[1], p[2], project.width, project.height);
+                  if (!s.visible) {
+                    ok = false;
+                    break;
+                  }
+                  flat.push(s.x * f, s.y * f);
+                }
+                gz.rings[a] = ok ? flat : null;
+              }
+            } else {
+              gz.scaleTip.x = gz.cx + SCALE_OFFSET_PX;
+              gz.scaleTip.y = gz.cy - SCALE_OFFSET_PX;
             }
           }
         }
@@ -229,7 +343,7 @@ export function SceneOverlay() {
         const camClip = cameraClipAt(project, time);
         const tid = camClip?.target;
         const tClip = tid ? project.clips.find((c) => c.id === tid) : undefined;
-        if (camClip && tClip && isVisualClip(tClip) && time >= tClip.start - 1e-6 && time < clipEnd(tClip) - 1e-6) {
+        if (camClip && tClip && isVisualClip(tClip) && inRange(tClip, time)) {
           const rig = viewRig(project);
           const r = resolveClip(camClip, time);
           const tr = resolveClip(tClip, time);
@@ -254,15 +368,28 @@ export function SceneOverlay() {
         unders[i]!.style.display = show;
         lines[i]!.style.display = show;
       }
+
+      // a handle is "hover" under the pointer and "active" while it is being dragged
+      const g = gestureRef.current;
+      const hv = hover.current;
+      const stateOf = (kind: 'axis' | 'ring' | 'scale', i: number): [boolean, boolean] => {
+        if (g) {
+          const act = (g.kind === 'axis' && kind === 'axis' && g.axis === i) || (g.kind === 'ring' && kind === 'ring' && g.ring === i) || (g.kind === 'scale' && kind === 'scale');
+          return [false, act];
+        }
+        return [hv?.kind === kind && hv.i === i, false];
+      };
+
+      // move: three arrows
       for (let a = 0; a < 3; a++) {
-        const g = axisGroup.current[a];
-        if (!g) continue;
+        const ag = axisGroup.current[a];
+        if (!ag) continue;
         const tip = gz.tips[a]!;
-        if (!gz.visible || !tip.ok) {
-          g.style.display = 'none';
+        if (!gz.visible || gz.tool !== 'move' || !tip.ok) {
+          ag.style.display = 'none';
           continue;
         }
-        g.style.display = '';
+        ag.style.display = '';
         const x1 = String(gz.cx);
         const y1 = String(gz.cy);
         const x2 = String(tip.x);
@@ -285,9 +412,66 @@ export function SceneOverlay() {
           text.setAttribute('x', String(tip.x + (dx / l) * 12));
           text.setAttribute('y', String(tip.y + (dy / l) * 12 + 4));
         }
-        const active = hoverAxis.current === a || (gestureRef.current?.kind === 'axis' && gestureRef.current.axis === a);
-        g.classList.toggle('is-active', active);
+        const [h, act] = stateOf('axis', a);
+        ag.classList.toggle('is-hover', h);
+        ag.classList.toggle('is-active', act);
       }
+
+      // rotate: three rings
+      for (let a = 0; a < 3; a++) {
+        const rg = ringGroup.current[a];
+        if (!rg) continue;
+        const pts = gz.rings[a];
+        if (!gz.visible || gz.tool !== 'rotate' || !pts) {
+          rg.style.display = 'none';
+          continue;
+        }
+        rg.style.display = '';
+        let s = '';
+        for (let i = 0; i < pts.length; i += 2) s += `${pts[i]},${pts[i + 1]} `;
+        ringUnder.current[a]?.setAttribute('points', s);
+        ringLine.current[a]?.setAttribute('points', s);
+        const text = ringText.current[a];
+        if (text) {
+          // the label rides on the ring, at its point farthest from the center (top right)
+          let bi = 0;
+          let bd = -Infinity;
+          for (let i = 0; i < pts.length; i += 2) {
+            const d = pts[i]! - gz.cx - (pts[i + 1]! - gz.cy);
+            if (d > bd) {
+              bd = d;
+              bi = i;
+            }
+          }
+          text.setAttribute('x', String(pts[bi]! + 8));
+          text.setAttribute('y', String(pts[bi + 1]! - 6));
+        }
+        const [h, act] = stateOf('ring', a);
+        rg.classList.toggle('is-hover', h);
+        rg.classList.toggle('is-active', act);
+      }
+
+      // scale: one handle
+      const sg = scaleGroup.current;
+      if (sg) {
+        if (!gz.visible || gz.tool !== 'scale') sg.style.display = 'none';
+        else {
+          sg.style.display = '';
+          for (const ln of [scaleUnder.current, scaleLine.current]) {
+            if (!ln) continue;
+            ln.setAttribute('x1', String(gz.cx));
+            ln.setAttribute('y1', String(gz.cy));
+            ln.setAttribute('x2', String(gz.scaleTip.x));
+            ln.setAttribute('y2', String(gz.scaleTip.y));
+          }
+          scaleRect.current?.setAttribute('x', String(gz.scaleTip.x - 5));
+          scaleRect.current?.setAttribute('y', String(gz.scaleTip.y - 5));
+          const [h, act] = stateOf('scale', 0);
+          sg.classList.toggle('is-hover', h);
+          sg.classList.toggle('is-active', act);
+        }
+      }
+
       const dot = centerDot.current;
       if (dot) {
         dot.style.display = gz.visible ? '' : 'none';
@@ -318,13 +502,21 @@ export function SceneOverlay() {
       if (s.time !== p.time && (hasTargetCam.current || useEditor.getState().selection.length > 0)) redraw();
     });
     const unCam = useSceneCamera.subscribe(redraw);
+    const unTool = useSceneTool.subscribe((s, p) => {
+      if (s.tool !== p.tool) {
+        hover.current = null;
+        redraw();
+      }
+    });
     redraw();
     return () => {
       ro.disconnect();
       unEditor();
       unTime();
       unCam();
+      unTool();
       cancelAnimationFrame(rafRef.current);
+      endPreviewGesture();
     };
   }, []);
 
@@ -332,7 +524,6 @@ export function SceneOverlay() {
 
   const nearestAxis = (x: number, y: number): number => {
     const gz = gizmo.current;
-    if (!gz.visible) return -1;
     let best = -1;
     let bestD = AXIS_HIT_PX;
     for (let a = 0; a < 3; a++) {
@@ -345,6 +536,23 @@ export function SceneOverlay() {
       }
     }
     return best;
+  };
+
+  /** the gizmo handle under a point (css px relative to the overlay) */
+  const handleAt = (x: number, y: number): Hover => {
+    const gz = gizmo.current;
+    if (!gz.visible || !gz.target) return null;
+    if (gz.tool === 'move') {
+      const a = nearestAxis(x, y);
+      return a >= 0 ? { kind: 'axis', i: a } : null;
+    }
+    if (gz.tool === 'rotate') {
+      const r = nearestPolyline(gz.rings, x, y, RING_HIT_PX);
+      return r ? { kind: 'ring', i: r.index } : null;
+    }
+    const tip = gz.scaleTip;
+    const hit = Math.hypot(x - tip.x, y - tip.y) <= SCALE_HIT_PX || segDist(x, y, gz.cx, gz.cy, tip.x, tip.y) <= 5;
+    return hit ? { kind: 'scale', i: 0 } : null;
   };
 
   const apply = (snap: PointerSnapshot) => {
@@ -375,24 +583,45 @@ export function SceneOverlay() {
       });
       return;
     }
-    // axis drag
+    const origin = originRef.current;
+    const lx = snap.x - origin.left;
+    const ly = snap.y - origin.top;
+    if (g.kind === 'ring') {
+      // follow the pointer's angle around the projected center step by step (unwrapped, no jump at the branch cut)
+      const a = (Math.atan2(ly - g.cy, lx - g.cx) * 180) / Math.PI;
+      g.acc += unwrapStep(g.last, a);
+      g.last = a;
+    }
     if (!g.started) {
       if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
+      // dragging z, tilt or turn of a 2d clip turns it 3d; a plain click never does
+      if ((g.kind === 'axis' || g.kind === 'ring') && g.to3d) store.updateClip(g.id, { threeD: true }, { skipHistory: true });
     }
-    const origin = originRef.current;
-    const px = (snap.x - origin.left) / f;
-    const py = (snap.y - origin.top) / f;
-    const ray = screenRay(g.rig, px, py, project.width, project.height);
+    const time = usePlayback.getState().time;
+    if (g.kind === 'ring') {
+      let v = g.v0 + g.sign * g.acc;
+      if (dragShift.current) v = Math.round(v / 15) * 15;
+      store.setClipValue(g.id, g.prop, time, Math.round(v * 100) / 100, { skipHistory: true });
+      return;
+    }
+    if (g.kind === 'scale') {
+      const d = Math.hypot(lx - g.cx, ly - g.cy);
+      const s = scaleFromDrag(g.s0, g.d0, d, MIN_SCALE, MAX_SCALE);
+      store.setClipValue(g.id, 'scale', time, Math.round(s * 1000) / 1000, { skipHistory: true });
+      return;
+    }
+    // axis drag
+    const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
     const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[g.axis]!);
     if (t1 === null) return;
-    const time = usePlayback.getState().time;
     store.setClipValue(g.id, AXIS_NAMES[g.axis]!, time, Math.round((g.v0 + (t1 - g.t0)) * 100) / 100, { skipHistory: true });
   };
 
   const queue = (e: ReactPointerEvent<HTMLDivElement>) => {
     pendingRef.current = { x: e.clientX, y: e.clientY };
+    dragShift.current = e.shiftKey;
     if (!rafRef.current) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = 0;
@@ -416,50 +645,89 @@ export function SceneOverlay() {
     viewF.current = rect.width / project.width;
     const o0 = currentOrbit(project);
     const base = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
+    dragShift.current = e.shiftKey;
+
+    const begin = (g: SceneGesture) => {
+      gestureRef.current = g;
+      root.setPointerCapture(e.pointerId);
+      beginPreviewGesture();
+    };
 
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
-      gestureRef.current = { kind: 'pan', ...base, o0, moved: false, click: false };
-      root.setPointerCapture(e.pointerId);
+      begin({ kind: 'pan', ...base, o0, moved: false, click: false });
       return;
     }
     if (e.button !== 0) return;
     if (e.altKey) {
-      gestureRef.current = { kind: 'orbit', ...base, o0, moved: false, click: false };
-      root.setPointerCapture(e.pointerId);
+      begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
       return;
     }
 
     const lx = e.clientX - rect.left;
     const ly = e.clientY - rect.top;
-    const axis = nearestAxis(lx, ly);
+    const h = handleAt(lx, ly);
     const target = gizmo.current.target;
-    if (axis >= 0 && target) {
+    if (h && target) {
+      const gz = gizmo.current;
       const rig = viewRig(project);
-      const f = viewF.current;
-      const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
-      const t0 = closestOnAxis(ray.origin, ray.dir, target.center, AXES[axis]!);
-      if (t0 !== null) {
-        gestureRef.current = { kind: 'axis', ...base, started: false, axis, id: target.id, t0, c0: target.center, v0: target.v[axis]!, rig };
-        root.setPointerCapture(e.pointerId);
+      if (h.kind === 'axis') {
+        const f = viewF.current;
+        const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
+        const t0 = closestOnAxis(ray.origin, ray.dir, target.center, AXES[h.i]!);
+        if (t0 !== null) {
+          begin({ kind: 'axis', ...base, started: false, axis: h.i, id: target.id, t0, c0: target.center, v0: target.v[h.i]!, rig, to3d: target.kind === 'clip' && !target.threeD && h.i === 2 });
+          redrawRef.current();
+          return;
+        }
+      } else if (h.kind === 'ring') {
+        const prop = RING_PROPS[h.i]!;
+        begin({
+          kind: 'ring',
+          ...base,
+          started: false,
+          ring: h.i,
+          prop,
+          id: target.id,
+          v0: target.rot[h.i]!,
+          cx: gz.cx,
+          cy: gz.cy,
+          last: (Math.atan2(ly - gz.cy, lx - gz.cx) * 180) / Math.PI,
+          acc: 0,
+          sign: ringValueSign(prop, target.axes[h.i]!, rig.forward),
+          to3d: target.kind === 'clip' && !target.threeD && h.i < 2,
+        });
+        redrawRef.current();
+        return;
+      } else {
+        begin({
+          kind: 'scale',
+          ...base,
+          started: false,
+          id: target.id,
+          cx: gz.cx,
+          cy: gz.cy,
+          d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)),
+          s0: target.scale,
+        });
         redrawRef.current();
         return;
       }
     }
-    gestureRef.current = { kind: 'orbit', ...base, o0, moved: false, click: true };
-    root.setPointerCapture(e.pointerId);
+    begin({ kind: 'orbit', ...base, o0, moved: false, click: true });
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const g = gestureRef.current;
     if (!g) {
-      // hover highlight of the gizmo axes. the overlay origin is cached from the last gesture / hover
+      // hover highlight of the gizmo handles. the overlay origin is cached from the last gesture / hover
       const root = rootRef.current;
       if (!root || !gizmo.current.visible) return;
       if (e.movementX === 0 && e.movementY === 0) return;
-      const a = nearestAxis(e.clientX - originRef.current.left, e.clientY - originRef.current.top);
-      if (a !== hoverAxis.current) {
-        hoverAxis.current = a;
-        root.style.cursor = a >= 0 ? 'pointer' : '';
+      const h = handleAt(e.clientX - originRef.current.left, e.clientY - originRef.current.top);
+      const cur = hover.current;
+      if (h?.kind !== cur?.kind || h?.i !== cur?.i) {
+        hover.current = h;
+        root.style.cursor = h ? 'pointer' : '';
         redrawRef.current();
       }
       return;
@@ -477,8 +745,8 @@ export function SceneOverlay() {
   };
 
   const onPointerLeave = () => {
-    if (hoverAxis.current >= 0 && !gestureRef.current) {
-      hoverAxis.current = -1;
+    if (hover.current && !gestureRef.current) {
+      hover.current = null;
       if (rootRef.current) rootRef.current.style.cursor = '';
       redrawRef.current();
     }
@@ -489,9 +757,13 @@ export function SceneOverlay() {
     if (!g || g.pointerId !== e.pointerId) return;
     cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
-    if (e.type === 'pointerup') apply({ x: e.clientX, y: e.clientY });
+    if (e.type === 'pointerup') {
+      dragShift.current = e.shiftKey;
+      apply({ x: e.clientX, y: e.clientY });
+    }
     pendingRef.current = null;
     gestureRef.current = null;
+    endPreviewGesture();
     const root = rootRef.current;
     if (root && root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
     // a click (no drag) selects the plane under the pointer, or clears the selection on empty space
@@ -535,6 +807,7 @@ export function SceneOverlay() {
     });
   };
 
+  /** double click: frame the plane under the pointer; on empty space (not on a gizmo handle) reset the view */
   const onDoubleClick = (e: ReactMouseEvent<HTMLDivElement>) => {
     const root = rootRef.current;
     const project = useEditor.getState().project;
@@ -545,26 +818,18 @@ export function SceneOverlay() {
     const time = usePlayback.getState().time;
     const rig = viewRig(project);
     const id = sceneHit(project, time, rig, (e.clientX - rect.left) / f, (e.clientY - rect.top) / f, f);
-    if (!id) return;
+    if (!id) {
+      if (!handleAt(e.clientX - rect.left, e.clientY - rect.top)) useSceneCamera.getState().reset();
+      return;
+    }
     const clip = project.clips.find((c) => c.id === id);
-    if (!clip) return;
-    let center: Vec3;
-    let radius: number;
-    if (clip.type === 'camera') {
-      const r = resolveClip(clip, time);
-      center = [project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z];
-      radius = project.height * 0.5;
-    } else if (isVisualClip(clip)) {
-      const q = clipQuad(project, clip, time, rig);
-      const w = q.world;
-      center = [(w[0][0] + w[2][0]) / 2, (w[0][1] + w[2][1]) / 2, (w[0][2] + w[2][2]) / 2];
-      radius = Math.max(20, Math.hypot(w[0][0] - w[2][0], w[0][1] - w[2][1], w[0][2] - w[2][2]) / 2);
-    } else return;
-    const o = currentOrbit(project);
-    const distance = Math.max(20, (radius * 1.25) / (rig.tanHalf * Math.min(1, rig.aspect)));
+    const t = clip ? frameTarget(project, clip, time, rig) : null;
+    if (!t) return;
     useEditor.getState().select([id], 'replace');
-    useSceneCamera.getState().set({ ...o, targetX: center[0], targetY: center[1], targetZ: center[2], distance });
+    useSceneCamera.getState().set(frameOrbit(currentOrbit(project), t.center, t.radius, project, 0.8));
   };
+
+  const stop = (e: { stopPropagation(): void }) => e.stopPropagation();
 
   return (
     <div
@@ -623,9 +888,60 @@ export function SceneOverlay() {
             </text>
           </g>
         ))}
+        {RING_LABELS.map((name, a) => (
+          <g
+            key={name}
+            className="scene-ring"
+            style={{ display: 'none' }}
+            ref={(n) => {
+              ringGroup.current[a] = n;
+            }}
+          >
+            <polyline
+              className="scene-ring-under"
+              ref={(n) => {
+                ringUnder.current[a] = n;
+              }}
+            />
+            <polyline
+              className="scene-ring-line"
+              ref={(n) => {
+                ringLine.current[a] = n;
+              }}
+            />
+            <text
+              className="scene-axis-label"
+              ref={(n) => {
+                ringText.current[a] = n;
+              }}
+            >
+              {name}
+            </text>
+          </g>
+        ))}
+        <g ref={scaleGroup} className="scene-scale" style={{ display: 'none' }}>
+          <line ref={scaleUnder} className="scene-axis-under" />
+          <line ref={scaleLine} className="scene-axis-line" />
+          <rect ref={scaleRect} className="scene-axis-tip" width="10" height="10" />
+        </g>
         <circle ref={centerDot} className="scene-center" r="3" />
       </svg>
-      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom</div>
+      <div className="scene-tools" role="group" aria-label="scene tool" onPointerDown={stop} onDoubleClick={stop} onWheel={stop} onContextMenu={stop}>
+        {TOOLS.map(({ tool: t, label, key, Icon, hint }) => (
+          <button
+            key={t}
+            type="button"
+            className={`icon-btn icon-btn-sm${tool === t ? ' is-active' : ''}`}
+            title={`${label} (${key}): ${hint}`}
+            aria-label={label}
+            aria-pressed={tool === t}
+            onClick={() => setTool(t)}
+          >
+            <Icon size={14} />
+          </button>
+        ))}
+      </div>
+      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame</div>
     </div>
   );
 }
