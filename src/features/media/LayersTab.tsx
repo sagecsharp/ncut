@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { Box, Camera, Film, Image as ImageIcon, Link2, Lock, Shapes, Sparkles, Type, Unlink } from 'lucide-react';
+import { Box, Camera, Crosshair, Eye, EyeOff, Film, Image as ImageIcon, Link2, Lock, Pencil, Shapes, Sparkles, SquareDashed, Type, Unlink } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
@@ -58,6 +58,47 @@ interface RowProps {
   onDragLeave: (node: LayerNode) => void;
   onDrop: (e: DragEvent, node: LayerNode) => void;
   onDetach: (node: LayerNode) => void;
+  renaming: boolean;
+  onToggleTrack: (node: LayerNode) => void;
+  onStartRename: (node: LayerNode) => void;
+  onCommitRename: (node: LayerNode, name: string) => void;
+  onCancelRename: () => void;
+}
+
+/** inline name editor of a row: enter commits, escape cancels, blur commits */
+function RenameInput({ node, onCommit, onCancel }: { node: LayerNode; onCommit: (name: string) => void; onCancel: () => void }) {
+  const [draft, setDraft] = useState(node.name);
+  const done = useRef(false);
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (commit) onCommit(draft);
+    else onCancel();
+  };
+  return (
+    <input
+      className="input input-sm layers-rename"
+      value={draft}
+      autoFocus
+      title="clip name (enter to save, escape to cancel)"
+      aria-label="clip name"
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => finish(true)}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+    />
+  );
 }
 
 const LayerRow = memo(function LayerRow(p: RowProps) {
@@ -90,7 +131,21 @@ const LayerRow = memo(function LayerRow(p: RowProps) {
       onDrop={(e) => p.onDrop(e, node)}
     >
       <Icon size={13} className="layers-icon" />
-      <span className="layers-name">{node.name}</span>
+      {p.renaming ? (
+        <RenameInput node={node} onCommit={(name) => p.onCommitRename(node, name)} onCancel={p.onCancelRename} />
+      ) : (
+        <span className="layers-name">{node.name}</span>
+      )}
+      {node.masked ? (
+        <span className="layers-flag" title="has a mask">
+          <SquareDashed size={12} aria-label="has a mask" />
+        </span>
+      ) : null}
+      {node.looksAt !== null ? (
+        <span className="layers-flag" title={`looks at ${node.looksAt}`}>
+          <Crosshair size={12} aria-label={`looks at ${node.looksAt}`} />
+        </span>
+      ) : null}
       {node.threeD ? (
         <span className="layers-badge" title="3d clip">
           <Box size={10} />
@@ -106,6 +161,35 @@ const LayerRow = memo(function LayerRow(p: RowProps) {
         <span className="layers-flag" title="track is locked">
           <Lock size={11} aria-label="locked" />
         </span>
+      ) : null}
+      {node.canRename && !node.locked && !p.renaming ? (
+        <button
+          className="icon-btn icon-btn-sm layers-act"
+          title="rename (f2)"
+          aria-label={`rename ${node.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            p.onStartRename(node);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <Pencil size={12} />
+        </button>
+      ) : null}
+      {node.firstOfTrack ? (
+        <button
+          className="icon-btn icon-btn-sm layers-act layers-eye"
+          title={node.hidden ? 'show this track (all its clips)' : 'hide this track (all its clips)'}
+          aria-label={node.hidden ? 'show this track' : 'hide this track'}
+          aria-pressed={node.hidden}
+          onClick={(e) => {
+            e.stopPropagation();
+            p.onToggleTrack(node);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          {node.hidden ? <EyeOff size={12} /> : <Eye size={12} />}
+        </button>
       ) : null}
       {attached && !node.locked ? (
         <button
@@ -134,6 +218,7 @@ export function LayersTab() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [overRest, setOverRest] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   // follow the playhead outside react render: paused = every frame change, playing = a few times a second
@@ -189,9 +274,26 @@ export function LayersTab() {
     st.select(expandGroups(st.project!, [node.id]));
   }, []);
 
+  const onToggleTrack = useCallback((node: LayerNode) => {
+    const track = useEditor.getState().project?.tracks.find((t) => t.id === node.trackId);
+    if (track) useEditor.getState().updateTrack(track.id, { hidden: !track.hidden });
+  }, []);
+  const onStartRename = useCallback((node: LayerNode) => {
+    if (node.canRename && !node.locked) setRenamingId(node.id);
+  }, []);
+  const onCancelRename = useCallback(() => setRenamingId(null), []);
+  const onCommitRename = useCallback((node: LayerNode, name: string) => {
+    setRenamingId(null);
+    const clean = name.trim();
+    if (clean && clean !== node.name) useEditor.getState().updateClip(node.id, { name: clean });
+  }, []);
+
   const onKey = useCallback(
     (e: KeyboardEvent, node: LayerNode) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'F2') {
+        e.preventDefault();
+        onStartRename(node);
+      } else if (e.key === 'Enter') {
         e.preventDefault();
         onOpen(node);
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -205,7 +307,7 @@ export function LayersTab() {
         listRef.current?.querySelector<HTMLElement>(`[data-id="${next.id}"]`)?.focus();
       }
     },
-    [nodes, onOpen],
+    [nodes, onOpen, onStartRename],
   );
 
   const clearDrag = useCallback(() => {
@@ -309,6 +411,11 @@ export function LayersTab() {
                 onDragLeave={onDragLeave}
                 onDrop={onDrop}
                 onDetach={onDetach}
+                renaming={renamingId === n.id}
+                onToggleTrack={onToggleTrack}
+                onStartRename={onStartRename}
+                onCommitRename={onCommitRename}
+                onCancelRename={onCancelRename}
               />
             ))}
           </div>

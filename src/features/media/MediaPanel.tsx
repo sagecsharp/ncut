@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Plus, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Plus, Replace, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { Dialog } from '../../components/ui/Dialog';
 import { ACCEPTED_TYPES, deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { getThumbnail } from '../../media/derived';
@@ -15,12 +16,14 @@ import { TransitionsTab } from './TransitionsTab';
 import { ShapesTab } from './ShapesTab';
 import { LayersTab } from './LayersTab';
 import { CaptionTools } from './captions/CaptionTools';
+import { MEDIA_SORTS, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
+import type { MediaFilter, MediaSort } from './mediaList';
 import { TEXT_PRESETS } from './textPresets';
 import type { TextPreset } from './textPresets';
 import './media.css';
 
 type Tab = 'media' | 'layers' | 'text' | 'shapes' | 'effects' | 'transitions';
-type Filter = 'all' | MediaKind;
+type Filter = MediaFilter;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'all' },
@@ -41,10 +44,15 @@ interface AssetCardProps {
   asset: MediaAsset;
   onInsert: (id: string) => void;
   onRemove: (id: string) => void;
+  /** set when exactly one clip of a swappable kind is selected: that clip's media kind and current asset */
+  swapKind: MediaKind | null;
+  swapCurrent: string | null;
+  onSwap: (id: string) => void;
 }
 
-const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove }: AssetCardProps) {
+const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind: selKind, swapCurrent, onSwap }: AssetCardProps) {
   const { id, kind } = asset;
+  const canSwap = selKind === kind && swapCurrent !== id;
   const cardRef = useRef<HTMLDivElement>(null);
   const [near, setNear] = useState(false);
   const [thumb, setThumb] = useState<string | null>(null);
@@ -140,6 +148,20 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove }: AssetCa
           >
             <Plus size={14} />
           </button>
+          {canSwap ? (
+            <button
+              className="icon-btn icon-btn-sm"
+              title="swap into selected clip (replaces its media, keeps its place)"
+              aria-label="swap into selected clip"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSwap(id);
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <Replace size={14} />
+            </button>
+          ) : null}
           <button
             className="icon-btn icon-btn-sm"
             title="remove from project"
@@ -202,10 +224,30 @@ function MediaTab() {
   const [dragging, setDragging] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+  const [unusedOnly, setUnusedOnly] = useState(false);
+  const [sort, setSort] = useState<MediaSort>('added');
   const [pending, setPending] = useState<PendingRemove | null>(null);
 
   const onInsert = useCallback((id: string) => {
     useEditor.getState().insertAsset(id, { start: usePlayback.getState().time });
+  }, []);
+
+  // one selected clip that holds media: its kind and asset (a string, so the selector stays stable)
+  const swapSel = useEditor((s) => {
+    const p = s.project;
+    if (!p || s.selection.length !== 1) return '';
+    const c = p.clips.find((x) => x.id === s.selection[0]);
+    const k = swapKind(c);
+    return k ? `${k}|${(c as { assetId: string }).assetId}` : '';
+  });
+  const [selKind, selAsset] = swapSel ? (swapSel.split('|') as [MediaKind, string]) : [null, null];
+  // the clips are only read while the filter is on, so other edits do not re-render the grid
+  const clipsForUsed = useEditor((s) => (unusedOnly ? s.project?.clips : undefined));
+
+  const onSwap = useCallback((assetId: string) => {
+    const st = useEditor.getState();
+    if (st.selection.length !== 1) return;
+    if (!st.replaceClipAsset(st.selection[0]!, assetId)) useUi.getState().toast('could not swap that in. the track may be locked.', 'error');
   }, []);
 
   const onRemove = useCallback((id: string) => {
@@ -226,9 +268,9 @@ function MediaTab() {
 
   const visible = useMemo(() => {
     if (!assets) return [];
-    const q = query.trim().toLowerCase();
-    return assets.filter((a) => (filter === 'all' || a.kind === filter) && (!q || a.name.toLowerCase().includes(q)));
-  }, [assets, filter, query]);
+    const used = unusedOnly && clipsForUsed ? usedAssetIds(clipsForUsed) : new Set<string>();
+    return sortAssets(filterAssets(assets, { kind: filter, query, unusedOnly, used }), sort);
+  }, [assets, filter, query, unusedOnly, clipsForUsed, sort]);
 
   const onPick = () => fileRef.current?.click();
   const onFiles = (files: FileList | null) => {
@@ -304,6 +346,14 @@ function MediaTab() {
                 {f.label}
               </button>
             ))}
+            <button
+              className={`btn btn-sm btn-ghost${unusedOnly ? ' is-active' : ''}`}
+              title="only show assets that no clip uses"
+              aria-pressed={unusedOnly}
+              onClick={() => setUnusedOnly((v) => !v)}
+            >
+              not used
+            </button>
           </div>
           <div className="media-search">
             <Search size={13} />
@@ -314,6 +364,19 @@ function MediaTab() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            <select
+              className="select media-sort"
+              title="sort assets"
+              aria-label="sort assets"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as MediaSort)}
+            >
+              {MEDIA_SORTS.map((o) => (
+                <option key={o.id} value={o.id} title={o.tip}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       ) : null}
@@ -334,7 +397,15 @@ function MediaTab() {
         ) : (
           <div className="media-grid">
             {visible.map((a) => (
-              <AssetCard key={a.id} asset={a} onInsert={onInsert} onRemove={onRemove} />
+              <AssetCard
+                key={a.id}
+                asset={a}
+                onInsert={onInsert}
+                onRemove={onRemove}
+                swapKind={selKind}
+                swapCurrent={selAsset}
+                onSwap={onSwap}
+              />
             ))}
           </div>
         )}

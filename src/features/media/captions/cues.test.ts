@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createTextClip } from '../../../lib/factory';
-import { CAPTION_WRAP, CAPTION_Y, captionStyle, clipsToCues, cueName, cuesToClips, splitTextClip } from './cues';
+import {
+  CAPTION_CHARS_PER_SECOND,
+  CAPTION_WRAP,
+  CAPTION_Y,
+  MIN_LINE_SECONDS,
+  captionStyle,
+  clipsToCues,
+  cueName,
+  cuesToClips,
+  splitTextClip,
+  transcriptToCues,
+} from './cues';
 
 describe('cueName', () => {
   it('takes the first words', () => {
@@ -74,5 +85,34 @@ describe('splitTextClip', () => {
   });
   it('returns nothing when the text is already short', () => {
     expect(splitTextClip(createTextClip('t', 0, { text: 'short' }))).toEqual([]);
+  });
+});
+
+describe('transcriptToCues', () => {
+  it('is empty for nothing', () => {
+    expect(transcriptToCues('', 0)).toEqual([]);
+    expect(transcriptToCues('  \n \r\n', 0)).toEqual([]);
+  });
+  it('makes one cue per line, back to back from the start, at about 15 characters a second', () => {
+    const line = 'x'.repeat(30);
+    const cues = transcriptToCues(`${line}\n\n${line}`, 5);
+    expect(cues).toHaveLength(2);
+    expect(cues[0]!.start).toBe(5);
+    expect(cues[0]!.end).toBeCloseTo(5 + 30 / CAPTION_CHARS_PER_SECOND);
+    expect(cues[1]!.start).toBeCloseTo(cues[0]!.end);
+  });
+  it('gives a short line at least the minimum time', () => {
+    const cues = transcriptToCues('hi', 0);
+    expect(cues[0]!.end - cues[0]!.start).toBe(MIN_LINE_SECONDS);
+  });
+  it('cuts a long line into several cues that cover its whole time', () => {
+    const text = 'this is the first sentence of a long line. this is the second sentence of the same line.';
+    const cues = transcriptToCues(text, 0);
+    expect(cues.length).toBeGreaterThan(1);
+    expect(cues[cues.length - 1]!.end).toBeCloseTo(text.length / CAPTION_CHARS_PER_SECOND);
+    for (const c of cues) expect(c.text.length).toBeLessThanOrEqual(42);
+  });
+  it('never starts before zero and ignores a bad pace', () => {
+    expect(transcriptToCues('hello there', -3, 0)[0]!.start).toBe(0);
   });
 });

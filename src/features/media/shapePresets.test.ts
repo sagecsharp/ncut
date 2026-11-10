@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SHAPE_KINDS } from '../../types';
-import { SHAPE_PRESETS, fitPreview } from './shapePresets';
+import { SHAPES_3D } from '../../types';
+import { SHAPE_PRESETS, fitPreview, solidOf, solidSilhouette } from './shapePresets';
 
 const byId = (id: string) => SHAPE_PRESETS.find((p) => p.id === id)!;
 
@@ -65,5 +66,37 @@ describe('fitPreview', () => {
   it('survives zero sizes', () => {
     const b = fitPreview(0, 0, 96, 40);
     expect(Number.isFinite(b.w) && Number.isFinite(b.h)).toBe(true);
+  });
+});
+
+describe('3d solid presets', () => {
+  it('make 3d clips on the new shapes with plain names', () => {
+    const want: [string, string][] = [['cone', 'cone'], ['pyramid', 'pyramid'], ['ring', 'torus']];
+    for (const [id, shape] of want) {
+      const b = byId(id).build(1920, 1080);
+      expect(b).toMatchObject({ name: id, threeD: true, shape });
+      expect(SHAPES_3D).toContain(b.shape);
+      expect(solidOf(byId(id))).toBe(shape);
+    }
+  });
+  it('keep a full transform with a little tilt', () => {
+    const tr = byId('cone').build(1, 1).transform!;
+    expect(tr).toMatchObject({ x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 });
+    expect(tr.rotX).not.toBe(0);
+    expect(tr.rotY).not.toBe(0);
+  });
+  it('leave the flat cards flat', () => {
+    for (const id of ['rectangle', 'circle', 'background']) expect(solidOf(byId(id))).toBeNull();
+  });
+  it('have a silhouette for every 3d shape that stays inside the unit box', () => {
+    for (const shape of SHAPES_3D) {
+      const parts = solidSilhouette(shape);
+      expect(parts.length).toBeGreaterThan(0);
+      for (const p of parts) {
+        const pts = p.kind === 'poly' ? p.pts.flat() : [p.cx - p.rx, p.cx + p.rx, p.cy - p.ry, p.cy + p.ry];
+        for (const v of pts) expect(Math.abs(v)).toBeLessThanOrEqual(0.5);
+      }
+    }
+    expect(solidSilhouette('torus').some((p) => p.kind === 'ellipse' && p.hole)).toBe(true);
   });
 });

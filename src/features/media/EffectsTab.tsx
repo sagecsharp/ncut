@@ -276,6 +276,7 @@ export function EffectsTab() {
     const match = (e: EffectDef) => !q || e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q);
     return groupEffects(EFFECT_CATEGORIES, EFFECTS, match);
   }, [q]);
+  const cameraShown = !q || 'camera'.includes(q) || '3d'.includes(q);
   const shown = groups.reduce((n, g) => n + g.items.length, 0);
 
   if (!supported) {
@@ -307,7 +308,7 @@ export function EffectsTab() {
         </div>
       </div>
       <div className="media-scroll">
-        {!q || 'camera'.includes(q) || '3d'.includes(q) ? (
+        {cameraShown ? (
           <section className="media-fx-group">
             <h3 className="media-fx-heading">3d</h3>
             <div className="media-grid">
@@ -316,7 +317,7 @@ export function EffectsTab() {
           </section>
         ) : null}
         {groups.length === 0 ? (
-          <div className="empty">no matching effects</div>
+          cameraShown ? null : <div className="empty">nothing matches</div>
         ) : (
           groups.map((g) => (
             <section key={g.id} className="media-fx-group">

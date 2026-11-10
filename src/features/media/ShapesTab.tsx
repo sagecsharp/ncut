@@ -1,12 +1,13 @@
 import { memo, useEffect, useRef } from 'react';
 import { drawShape } from '../../engine/shape';
+import type { Shape3D } from '../../types';
 import { createShapeClip } from '../../lib/factory';
 import { beginDrag, endDrag } from '../../lib/dnd';
 import { APPEARANCE_EVENT } from '../../lib/appearance';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { cssVar } from '../timeline/view';
-import { SHAPE_PRESETS, fitPreview } from './shapePresets';
+import { SHAPE_PRESETS, fitPreview, solidOf, solidSilhouette } from './shapePresets';
 import type { ShapePreset } from './shapePresets';
 
 /** preview canvas, css px. drawn once per card (and again when the theme changes) */
@@ -27,6 +28,29 @@ function isFrameCard(id: string): boolean {
   return id === 'background' || id === 'solid-background';
 }
 
+/** a flat silhouette of a 3d solid, one fill, holes cut out */
+function drawSolid(ctx: CanvasRenderingContext2D, shape: Shape3D, color: string, dpr: number): void {
+  const size = BOX_H * 1.15;
+  ctx.setTransform(dpr, 0, 0, dpr, (PREVIEW_W / 2) * dpr, (PREVIEW_H / 2) * dpr);
+  ctx.fillStyle = color;
+  // solid parts first, then the holes cut out of what is drawn
+  for (const hole of [false, true]) {
+    ctx.globalCompositeOperation = hole ? 'destination-out' : 'source-over';
+    for (const part of solidSilhouette(shape)) {
+      if (!!(part.kind === 'ellipse' && part.hole) !== hole) continue;
+      ctx.beginPath();
+      if (part.kind === 'poly') {
+        part.pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x * size, y * size) : ctx.lineTo(x * size, y * size)));
+        ctx.closePath();
+      } else {
+        ctx.ellipse(part.cx * size, part.cy * size, part.rx * size, part.ry * size, 0, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
 /** draw the card once, in the theme's text color (two grays for the gradient card) */
 function drawPreview(canvas: HTMLCanvasElement, preset: ShapePreset): void {
   const ctx = canvas.getContext('2d');
@@ -42,6 +66,11 @@ function drawPreview(canvas: HTMLCanvasElement, preset: ShapePreset): void {
   ctx.clearRect(0, 0, bw, bh);
 
   const text = cssVar('--text');
+  const solidShape = solidOf(preset);
+  if (solidShape) {
+    drawSolid(ctx, solidShape, text, dpr);
+    return;
+  }
   const fields = preset.build(1920, 1080);
   const frame = isFrameCard(preset.id);
   // size relative to the ratio only, so the preview never depends on the open project

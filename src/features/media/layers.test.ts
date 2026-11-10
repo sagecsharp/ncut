@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Project, Track } from '../../types';
-import { buildLayerTree, canAttach } from './layers';
+import { buildLayerTree, canAttach, lookTargetName } from './layers';
 
 const T = (id: string, extra: Partial<Track> = {}): Track => ({ id, kind: 'video', name: id, muted: false, hidden: false, locked: false, ...extra });
 const shape = (id: string, trackId: string, start: number, extra: Record<string, unknown> = {}) =>
@@ -56,6 +56,43 @@ describe('buildLayerTree', () => {
     const n = buildLayerTree(p, 1, 'now');
     expect(n[0]).toMatchObject({ hidden: true, locked: true, group: 'g', threeD: true, type: 'shape' });
     expect(n[1]).toMatchObject({ type: 'effect', threeD: false, group: null });
+  });
+});
+
+describe('layer row extras', () => {
+  const mask = { shape: 'rect', x: 0, y: 0, width: 1, height: 1, rotation: 0, feather: 0, invert: false };
+  it('marks the first row of each track only', () => {
+    const p = proj([T('t1'), T('t2')], [shape('a', 't1', 0), shape('b', 't1', 4), shape('c', 't2', 0)]);
+    const n = buildLayerTree(p, 0, 'all');
+    expect(n.map((x) => [x.id, x.firstOfTrack])).toEqual([['a', true], ['b', false], ['c', true]]);
+    expect(n.map((x) => x.trackId)).toEqual(['t1', 't1', 't2']);
+  });
+  it('flags masks, only when a mask is set', () => {
+    const p = proj([T('t1')], [shape('a', 't1', 0, { mask }), shape('b', 't1', 4, { mask: null }), shape('c', 't1', 8)]);
+    expect(buildLayerTree(p, 0, 'all').map((x) => x.masked)).toEqual([true, false, false]);
+  });
+  it('names the clip a clip looks at', () => {
+    const p = proj([T('t1')], [shape('a', 't1', 0, { lookAt: 'clip', lookTarget: 'b' }), shape('b', 't1', 4, { name: 'the ball' })]);
+    const n = buildLayerTree(p, 0, 'all');
+    expect(n[0]!.looksAt).toBe('the ball');
+    expect(n[1]!.looksAt).toBeNull();
+  });
+  it('ignores a look target that is missing, itself, not a picture, or not in clip mode', () => {
+    const clips = [
+      shape('a', 't1', 0, { lookAt: 'clip', lookTarget: 'nope' }),
+      shape('b', 't1', 4, { lookAt: 'clip', lookTarget: 'b' }),
+      shape('c', 't1', 8, { lookAt: 'clip', lookTarget: 'fx' }),
+      shape('d', 't1', 12, { lookAt: 'camera', lookTarget: 'a' }),
+      shape('e', 't1', 16, { lookAt: 'clip', lookTarget: null }),
+      effect('fx', 't1'),
+    ];
+    const p = proj([T('t1')], clips);
+    for (const c of clips.slice(0, 5)) expect(lookTargetName(p, c)).toBeNull();
+  });
+  it('lets everything but text be renamed', () => {
+    const text = { ...shape('t', 't1', 0), type: 'text', text: 'hello' } as unknown as Clip;
+    const p = proj([T('t1')], [text, shape('s', 't1', 4)]);
+    expect(buildLayerTree(p, 0, 'all').map((x) => x.canRename)).toEqual([false, true]);
   });
 });
 
