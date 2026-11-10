@@ -79,6 +79,11 @@ describe('export range', () => {
     const stamps = clipTimestamps(clip, 10, 50, 100, 0, 3);
     expect(stamps[0]).toBeCloseTo(6);
   });
+  it('only the wanted frames get a timestamp (gif palette pass)', () => {
+    const clip = { id: 'v', type: 'video', start: 0, duration: 10, trimStart: 0, speed: 1 } as unknown as VideoClip;
+    const stamps = clipTimestamps(clip, 10, 100, 100, 0, 0, new Set([5, 50, 99, 200]));
+    expect(Array.from(stamps).map((x) => Math.round(x * 10) / 10)).toEqual([0.5, 5, 9.9]);
+  });
   it('wav and ogg are audio only', () => {
     expect(isAudioContainer('wav')).toBe(true);
     expect(isAudioContainer('ogg')).toBe(true);
