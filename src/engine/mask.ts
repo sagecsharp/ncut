@@ -293,7 +293,10 @@ function alphaCanvas(mask: Mask, w: number, h: number): AnyCanvas | null {
 
 const results = new Map<'preview' | 'export', Surface | null>();
 
-/** free the channel's scratch canvas (call when an export is done). a later call rebuilds it. */
+/**
+ * free what the mask keeps: the channel's scratch canvas and the alpha canvases (up to 24 of up to 2048 px; they are
+ * shared by both channels but pure in (mask, size), so the next use rebuilds them). call when an export is done.
+ */
 export function releaseMaskResources(channel: 'preview' | 'export'): void {
   const r = results.get(channel);
   if (r) {
@@ -301,6 +304,16 @@ export function releaseMaskResources(channel: 'preview' | 'export'): void {
     r.canvas.height = 0;
   }
   results.delete(channel);
+  for (const c of alphaCache.values()) {
+    c.width = 0;
+    c.height = 0;
+  }
+  alphaCache.clear();
+}
+
+/** how many alpha canvases and channel scratch canvases are alive (for tests) */
+export function maskCacheSize(): { alpha: number; channels: number } {
+  return { alpha: alphaCache.size, channels: results.size };
 }
 
 /**

@@ -277,6 +277,11 @@ interface Looker {
 }
 
 const lookers = new Map<string, Looker>();
+
+/** how many looks have a live gl context (for tests) */
+export function clipLookCount(): number {
+  return lookers.size;
+}
 /** channels where webgl2 or the program is unusable: do not retry every frame */
 const failed = new Set<string>();
 
@@ -378,7 +383,7 @@ function getLooker(channel: string): Looker | null {
   return made;
 }
 
-/** free the channel's gpu resources (call when an export is done). a later call rebuilds them. */
+/** free the channel's gpu resources (call when an export is done; releaseRenderResources does). a later call rebuilds them. */
 export function releaseClipLook(channel: 'preview' | 'export'): void {
   failed.delete(channel);
   const l = lookers.get(channel);
@@ -389,6 +394,9 @@ export function releaseClipLook(channel: 'preview' | 'export'): void {
     gl.deleteTexture(l.tex);
     gl.deleteProgram(l.program);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
+    // give the drawing buffer back too
+    l.canvas.width = 1;
+    l.canvas.height = 1;
   } catch {
     // already gone
   }
