@@ -1,14 +1,22 @@
-import { memo } from 'react';
+import { createContext, memo, useContext } from 'react';
 import { ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { EASINGS, KEY_EPS, baseValue, evalKeys, keyIndexAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
-import { useClip, useEditor } from '../../store/editorStore';
+import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import type { Easing, Keyframe } from '../../types';
+import type { Clip, Easing, Keyframe } from '../../types';
 import { beginEdit, liveOpts } from './edit';
 
 const actions = () => useEditor.getState();
+
+/**
+ * the clip the inspector is showing. an AnimField of that clip reads it from here instead of running its own
+ * clips.find on every store update (a few dozen fields on screen, each on a project with hundreds of clips).
+ * the inspector already subscribes to the same clip, so the fields re-render exactly when they did before.
+ * a field of another clip, or one outside an inspector, still looks its clip up itself.
+ */
+export const InspectedClip = createContext<Clip | null>(null);
 
 export interface AnimFieldProps {
   /** clip id */
@@ -239,7 +247,10 @@ function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
  * edits go through setClipValue, so they write a key when the property is animated.
  */
 export const AnimField = memo(function AnimField(props: AnimFieldProps) {
-  const clip = useClip(props.id);
+  const shared = useContext(InspectedClip);
+  const inherited = shared !== null && shared.id === props.id;
+  const own = useEditor((s) => (inherited ? undefined : s.project?.clips.find((c) => c.id === props.id)));
+  const clip = inherited ? shared : own;
   const fps = useEditor((s) => s.project?.fps ?? 30);
   if (!clip) return null;
   const keys = clip.keyframes?.[props.prop];
