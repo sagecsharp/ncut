@@ -2,7 +2,7 @@
 
 a flat, monochrome video editor that runs entirely in your browser.
 
-- multi-track timeline: video, image, text, shape and audio clips. move, trim, split, ripple delete, duplicate, copy/paste, snapping, markers, markers on the beats of a song, groups, freeze frame, undo/redo
+- multi-track timeline: video, image, text, shape and audio clips. move, trim, split, ripple delete, duplicate, copy/paste, snapping, markers, markers on the beats of a song, groups, freeze frame (the still keeps the mask, the effects and the fades of the clip), undo/redo
 - real-time preview on a canvas, with on-canvas move / scale / rotate, zoom and pan, guides, and a quality switch (full / half / quarter) for heavy timelines. preview speed from 0.25x to 2x and j / k / l shuttle in both directions
 - keyframes on almost every number (position, scale, rotation, opacity, volume, effect settings, camera), with easing, and tools for a whole animation: reverse it, fit it to the clip, repeat it, ping pong, copy it to another clip, or add a wiggle (a seeded shake on any value)
 - 3d, set up like a small game engine scene: any clip can become a plane, box, ball, tube, cone, pyramid, ring, capsule, prism, hexagon, star or heart in one shared unlit 3d space, mixed freely with flat 2d layers. camera clips move through it (with ready-made moves: push in, orbit, dolly zoom, handheld), a scene view lets you orbit around the set with move / rotate / scale tools (ctrl snaps to a grid, x / y / z lock an axis, alt + drag leaves a copy) while a small inset shows what the camera sees, distance fog fades far things out, and the camera has depth of field: pick what is sharp, keyframe it to pull the focus, or drag the focus plane right in the scene view
@@ -18,7 +18,7 @@ a flat, monochrome video editor that runs entirely in your browser.
 - cut to the music: mark the beats of a song, then lay the selected clips in a row, fit them to the markers (every beat, every 2nd, every 4th) or cut a clip at every marker
 - export to mp4 or webm with webcodecs at up to 240 fps, gif, or audio only (wav / ogg), whole timeline or a range, with one click presets. no upload, no watermark. what you see in the preview is what gets exported
 - start from an empty timeline or a template (3d title, 3d shapes, name tag, countdown, lyrics, numbers, snow title, carousel, rack focus, block title, tunnel, letter ring, orbit, letters fly in, timer)
-- everything stays on your machine: projects and media live in indexeddb. save a project as one `.ncut` file (project + media) to back it up or move it to another computer
+- everything stays on your machine: projects and media live in indexeddb. save a project as one `.ncut` file (project + media + the font files you imported for it) to back it up or move it to another computer. an export tells you when a font of the project is missing on this machine
 - monochrome, high contrast, flat ui in kode mono. follows your system: black at night, white by day. optional color tint in settings. no glow.
 - a small fps counter in the corner so you can see how the editor is performing
 

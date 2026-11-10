@@ -24,6 +24,7 @@ lib/subtitles.ts         .srt / .vtt parsing and writing, splitting a text into 
 lib/templates.ts         starter timelines for the new project dialog
 lib/gif.ts               dependency-free gif encoder (palette, dithering, lzw)
 lib/fonts.ts             font catalog: bundled (lazy css imports), system, local and imported fonts
+lib/fontDetect.ts        does a family really render here (measured, not asked): the export warns when not
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
@@ -31,11 +32,12 @@ store/playback.ts        usePlayback: the master clock (time, playing, loop, vol
 store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
-storage/projectFile.ts   one .ncut file = project + media
+storage/projectFile.ts   one .ncut file = project + media + imported font files of its text clips
 storage/posters.ts       small pictures of the preview for the project cards (localStorage)
 media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
+media/seekFrame.ts       seek a video element and wait for the picture (not only 'seeked') before drawing it
 engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + renderSceneView, getClipBox, hitTestBox
 engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
 engine/textAnim.ts       the per-letter text animations (in / out / loop)
