@@ -621,6 +621,11 @@ function lineEdgesFor(ctx: Ctx, font: string, line: string, flags: readonly bool
   return edges;
 }
 
+/** a number from a project file that may be missing or broken (undefined, NaN, Infinity): anything not finite counts as 0 */
+export function finite(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
 /** unscaled size of a text clip's box (text + padding) and its lines */
 export function measureText(clip: TextClip): TextBox {
   const v = fontsVersion();
@@ -629,9 +634,10 @@ export function measureText(clip: TextClip): TextBox {
   if (front && front.v === v) return front.box;
   wantFont(clip);
   const text = displayText(clip);
-  const spacing = (clip.letterSpacing ?? 0) * clip.fontSize;
-  const lineHeight = clip.fontSize * (clip.lineHeight ?? TEXT_LINE_HEIGHT);
-  const pad = clip.fontSize * (clip.backgroundPadding ?? TEXT_PADDING);
+  // a broken number in an old or hand edited file counts as 0 (never NaN into a canvas size)
+  const spacing = finite(finite(clip.letterSpacing) * clip.fontSize);
+  const lineHeight = finite(clip.fontSize * (clip.lineHeight ?? TEXT_LINE_HEIGHT));
+  const pad = finite(clip.fontSize * (clip.backgroundPadding ?? TEXT_PADDING));
   const font = textFont(clip);
   const wrap = clip.wrapWidth !== undefined && clip.wrapWidth > 0 ? clip.wrapWidth : 0;
   const rawCurve = clip.curve ?? 0;
@@ -664,8 +670,8 @@ export function measureText(clip: TextClip): TextBox {
   let max = 0;
   for (const w of lineWidths) max = Math.max(max, w);
   const box: TextBox = {
-    width: Math.max(1, max + pad * 2),
-    height: lines.length * lineHeight + pad * 2,
+    width: Math.max(1, finite(max + pad * 2)),
+    height: finite(lines.length * lineHeight + pad * 2),
     lines,
     lineHeight,
     pad,
@@ -685,8 +691,8 @@ export function measureText(clip: TextClip): TextBox {
     const cl = curveLayout(edges, spacing, lineHeight, curve, clip.align, box.curveRef);
     box.curveCx = (cl.minX + cl.maxX) / 2;
     box.curveCy = (cl.minY + cl.maxY) / 2;
-    box.width = Math.max(1, cl.maxX - cl.minX + pad * 2);
-    box.height = Math.max(1, cl.maxY - cl.minY + pad * 2);
+    box.width = Math.max(1, finite(cl.maxX - cl.minX + pad * 2));
+    box.height = Math.max(1, finite(cl.maxY - cl.minY + pad * 2));
   }
   capSet(boxCache, key, box, 300);
   boxByClip.set(clip, { v, box });
@@ -695,10 +701,11 @@ export function measureText(clip: TextClip): TextBox {
 
 /** how far (as a fraction of the font size) letters can reach outside the box: outline, shadow, animation */
 export function textSpill(clip: TextClip, animated: boolean, noExtrude = false): number {
+  // finite(): a missing or broken field (a shadow without blur, a stroke width of NaN) adds nothing instead of NaN
   let s = 0.05;
-  if (clip.stroke) s += clip.stroke.width;
-  if (clip.stroke2 && clip.stroke2.width > 0) s += clip.stroke2.width; // the second outline reaches its own width past the first
-  if (clip.shadow) s += clip.shadow.distance + clip.shadow.blur * 2;
+  if (clip.stroke) s += finite(clip.stroke.width);
+  if (clip.stroke2 && clip.stroke2.width > 0) s += finite(clip.stroke2.width); // the second outline reaches its own width past the first
+  if (clip.shadow) s += finite(clip.shadow.distance) + finite(clip.shadow.blur) * 2;
   if (animated) s += 1.5;
   if (!noExtrude && clip.extrude && clip.extrude.depth > 0) s += Math.min(1, clip.extrude.depth); // the side reaches this far in any direction (3d depth text has no flat side)
   if (clip.highlight?.background) s += 0.15; // the box behind the lit word reaches a little past the letters
@@ -706,10 +713,16 @@ export function textSpill(clip: TextClip, animated: boolean, noExtrude = false):
 }
 
 const sigCache = new WeakMap<TextClip, { v: number; sig: string }>();
-/** everything that changes how a text clip looks at rest (a cache key for rendered text; position and animation not included) */
-export function textSignature(clip: TextClip): string {
+const sigFlatCache = new WeakMap<TextClip, { v: number; sig: string }>();
+/**
+ * everything that changes how a text clip looks at rest (a cache key for rendered text; position and animation not included).
+ * `noExtrude`: the key of the picture drawn without the flat extrude (3d depth text, whose side is made of planes): the
+ * extrude (depth, angle, colour) is not part of it, so dragging them does not redraw the face.
+ */
+export function textSignature(clip: TextClip, noExtrude = false): string {
   const v = fontsVersion();
-  const hit = sigCache.get(clip);
+  const cache = noExtrude ? sigFlatCache : sigCache;
+  const hit = cache.get(clip);
   if (hit && hit.v === v) return hit.sig;
   const sig = [
     v,
@@ -733,14 +746,14 @@ export function textSignature(clip: TextClip): string {
     clip.curve,
     clip.wrapWidth,
     clip.highlight ? JSON.stringify(clip.highlight) : '',
-    clip.extrude ? JSON.stringify(clip.extrude) : '',
+    !noExtrude && clip.extrude ? JSON.stringify(clip.extrude) : '',
     clip.underline ? 'u' : '',
     clip.strike ? 's' : '',
     clip.hollow ? 'h' : '',
     clip.backgroundPerLine ? 'p' : '',
     digitRangesOf(clip) ? 'd' + digitRangesOf(clip)!.map((r) => r[0] + '-' + r[1]).join(',') : '',
   ].join('|');
-  sigCache.set(clip, { v, sig });
+  cache.set(clip, { v, sig });
   return sig;
 }
 

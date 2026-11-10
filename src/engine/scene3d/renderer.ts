@@ -43,6 +43,23 @@ export interface Plane3D {
    * depth between them). missing = the plane's place in the list.
    */
   layer?: number;
+  /**
+   * the number of planes that share this picture as a stack (a 3d text's sides). the shader gives every texel the alpha
+   * that makes the n planes composite to the texel's own alpha (times `alpha`) instead of 1 - (1 - a)^n, so soft edges,
+   * blurred halos and faded letters stay soft. missing or <= 1 = a plain plane. see stackedTexelAlpha.
+   */
+  stack?: number;
+}
+
+/**
+ * the alpha one plane of a stack of `n` needs so that the n planes composite to `a` (0..1): 1 - (1 - a)^(1/n).
+ * the fragment shader does the same per texel (keep in sync); exported for tests.
+ */
+export function stackedTexelAlpha(a: number, n: number): number {
+  if (!(a > 0)) return 0;
+  if (!(a < 1)) return 1;
+  if (!(n > 1)) return a;
+  return 1 - Math.pow(1 - a, 1 / n);
 }
 
 export interface Lines3D {
@@ -96,6 +113,8 @@ uniform float u_frameH;
 uniform float u_edge;
 // 1 = the picture wraps round the mesh in u (sphere, cylinder, cone, capsule, torus): taps wrap at the seam instead of clamping
 uniform float u_wrapU;
+// number of planes that share this picture (a 3d text's side stack). 1 = a plain plane.
+uniform float u_stack;
 out vec4 outColor;
 // a vogel disc of taps (radius r in screen pixels), each read at the mip level that matches the tap spacing
 vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
@@ -153,6 +172,13 @@ void main() {
     vec2 q = abs((v_uv - 0.5) * u_size) - (u_size * 0.5 - vec2(u_radius));
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_radius;
     c *= clamp(0.5 - d / (max(fwidth(d), 1e-4) * (1.0 + blur)), 0.0, 1.0);
+  }
+  if (u_stack > 1.5) {
+    // the n planes of a stack show the same picture: give each the alpha that makes them composite to the alpha this
+    // texel has now (picture x plane alpha x blur edge), not to 1 - (1 - a)^n. keep in sync with stackedTexelAlpha.
+    float sa = clamp(c.a, 0.0, 1.0);
+    float sa2 = 1.0 - pow(1.0 - sa, 1.0 / u_stack);
+    c *= sa2 / max(sa, 1e-4);
   }
   if (c.a < 0.004) discard;
   if (u_pass < 1.5 ? c.a < SOLID : c.a >= SOLID) discard;
@@ -227,6 +253,7 @@ class SceneRenderer {
   private uFrameH: WebGLUniformLocation | null;
   private uEdge: WebGLUniformLocation | null;
   private uWrapU: WebGLUniformLocation | null;
+  private uStack: WebGLUniformLocation | null;
   private fogBuf = new Float32Array(6);
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
@@ -262,6 +289,7 @@ class SceneRenderer {
     this.uFrameH = gl.getUniformLocation(this.planeProg, 'u_frameH');
     this.uEdge = gl.getUniformLocation(this.planeProg, 'u_edge');
     this.uWrapU = gl.getUniformLocation(this.planeProg, 'u_wrapU');
+    this.uStack = gl.getUniformLocation(this.planeProg, 'u_stack');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -502,6 +530,9 @@ class SceneRenderer {
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
       if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
+      // the stack correction runs on the final texel alpha, so the solid / see-through pass test below it sees the corrected
+      // alpha: only a texel that is fully opaque on a fully opaque plane writes depth, a soft or faded one blends
+      gl.uniform1f(this.uStack, plane.stack !== undefined && plane.stack > 1 ? plane.stack : 1);
       const uv = plane.uv;
       if (uv) gl.uniform4f(this.uUv, uv[0], uv[1], uv[2], uv[3]);
       else gl.uniform4f(this.uUv, 0, 0, 1, 1);

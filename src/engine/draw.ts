@@ -13,7 +13,7 @@ import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
-import { clipLookSignature, clipLookTexture, hasClipLook, releaseClipLook } from './clipLook';
+import { clipLookSignature, clipLookTexture, hasClipLook, isKeyActive, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
@@ -25,7 +25,7 @@ import { mul, scaling, translation } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
 import { drawShape, shapeSignature, shapeSpill } from './shape';
-import { drawText, measureText, textSignature, textSpill } from './text';
+import { drawText, finite, measureText, textSignature, textSpill } from './text';
 import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSignature } from './textDepth';
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
@@ -62,8 +62,24 @@ export function releaseRenderResources(channel: 'preview' | 'export' | 'inset'):
   // plane that needs one rebuilds it (and gets a new texture key)
   emptyCopies(lookCopies);
   emptyCopies(maskCopies);
+  // the side stacks of 3d depth text (planes + silhouette canvases) are rebuilt on demand too
+  releaseSides();
   // the text / shape texture caches are shared by both channels (the gl runners key their uploads on them),
   // so they stay. they are bounded (64 entries) and pruned when the project changes.
+}
+
+/** drop every stack of side planes and the silhouette canvases (zero sized, so the backing store goes right away) */
+function releaseSides(): void {
+  sideStacks.clear();
+  for (const t of textTextures.values()) dropSide(t);
+}
+
+/** forget the silhouette of a text texture and give its canvas back */
+function dropSide(t: TextTexture | undefined): void {
+  if (!t?.side) return;
+  t.side.canvas.width = 0;
+  t.side.canvas.height = 0;
+  t.side = undefined;
 }
 
 /** shrink the canvas of every copy and forget them */
@@ -538,9 +554,18 @@ let textTextureSerial = 0;
  * texture size. stepped (not continuous) so an animated scale does not make a new canvas + gl upload every frame.
  */
 export function textureQuality(scale: number, fullW: number, fullH: number): number {
-  const want = scale * 1.5;
+  const want = finite(scale) * 1.5;
   const step = want <= 1 ? 1 : want <= 2 ? 2 : 4;
-  return Math.min(step, 4096 / Math.max(fullW, fullH, 1));
+  return Math.min(step, TEXTURE_MAX / Math.max(finite(fullW), finite(fullH), 1));
+}
+
+/** the largest side of a text texture, in pixels */
+export const TEXTURE_MAX = 4096;
+
+/** the pixel size of a text texture for a box and a quality: whole pixels, at least 2, at most TEXTURE_MAX, never NaN */
+export function textureSize(fullW: number, fullH: number, q: number): { w: number; h: number } {
+  const side = (v: number): number => Math.min(TEXTURE_MAX, Math.max(2, Math.ceil(finite(v * q))));
+  return { w: side(fullW), h: side(fullH) };
 }
 
 /**
@@ -552,14 +577,14 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   const local = time - clip.start;
   const animated = textAnimActive(clip, local);
   // the same room whether or not the animation is running right now, so the plane never changes size
-  const margin = textSpill(clip, !!(clip.animIn || clip.animOut || clip.animLoop), stacked) * clip.fontSize;
-  const fullW = m.width + margin * 2;
-  const fullH = m.height + margin * 2;
+  const margin = finite(textSpill(clip, !!(clip.animIn || clip.animOut || clip.animLoop), stacked) * finite(clip.fontSize));
+  const fullW = finite(m.width + margin * 2);
+  const fullH = finite(m.height + margin * 2);
   // enough pixels for the size it is shown at, within reason
   const q = textureQuality(clip.transform.scale, fullW, fullH);
-  const w = Math.max(2, Math.ceil(fullW * q));
-  const h = Math.max(2, Math.ceil(fullH * q));
-  const sig = animated ? '' : textSignature(clip) + '|' + w + '|' + h + (stacked ? '|d' : '');
+  const { w, h } = textureSize(fullW, fullH, q);
+  // stacked: the face does not depend on the extrude (its depth, angle and colour), so dragging them does not redraw it
+  const sig = animated ? '' : textSignature(clip, stacked) + '|' + w + '|' + h + (stacked ? '|d' : '');
   const hit = textTextures.get(clip.id);
   if (hit && !animated && hit.sig === sig) {
     // most recently used goes last, so the first key is the one to evict
@@ -588,13 +613,18 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   // so the changing numbers cannot fill the texture cache. the 2d canvas here is replaced per clip id as before.
   const live = animated || counterTexts.has(clip);
   const entry: TextTexture = { sig, canvas, key: live ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin, q };
-  // the silhouette is stale now; its canvas is kept for reuse
+  // the silhouette is stale now; its canvas is kept for reuse. a clip that is not stacked any more gives it back.
   if (stacked && hit?.side) entry.side = { canvas: hit.side.canvas, key: undefined, sig: '' };
+  else dropSide(hit);
   textTextures.delete(clip.id);
   textTextures.set(clip.id, entry);
   if (textTextures.size > 64) {
     const first = textTextures.keys().next().value;
-    if (first !== undefined) textTextures.delete(first);
+    if (first !== undefined) {
+      dropSide(textTextures.get(first));
+      textTextures.delete(first);
+      sideStacks.delete(first);
+    }
   }
   return entry;
 }
@@ -616,6 +646,7 @@ function textSide(t: TextTexture, clip: TextClip, time: number, color: string): 
   const h = t.canvas.height;
   let canvas: AnyCanvas | null = t.side && t.side.canvas.width === w && t.side.canvas.height === h ? t.side.canvas : null;
   if (!canvas) {
+    dropSide(t);
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
     else if (typeof document !== 'undefined') {
       canvas = document.createElement('canvas');
@@ -713,8 +744,14 @@ function syncTextureCaches(project: Project): void {
   for (const c of project.clips) ids.add(c.id);
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
   for (const id of [...maskCopies.keys()]) if (!ids.has(id)) maskCopies.delete(id);
-  for (const id of [...textTextures.keys()]) if (!ids.has(id)) textTextures.delete(id);
+  for (const id of [...textTextures.keys()]) {
+    if (ids.has(id)) continue;
+    dropSide(textTextures.get(id));
+    textTextures.delete(id);
+  }
   for (const id of [...sideStacks.keys()]) if (!ids.has(id)) sideStacks.delete(id);
+  // the masked silhouettes of 3d depth text sit next to the face's copy under 'id|side'
+  for (const id of [...maskCopies.keys()]) if (id.endsWith(SIDE_COPY) && !ids.has(id.slice(0, -SIDE_COPY.length))) maskCopies.delete(id);
   for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
 }
 
@@ -849,6 +886,8 @@ interface MaskCopy {
 }
 const maskCopies = new Map<string, MaskCopy>();
 let maskSerial = 0;
+/** the slot suffix of the masked copy of a 3d depth text's silhouette (the face's copy is under the plain clip id) */
+const SIDE_COPY = '|side';
 
 function maskedTexture(
   clip: VisualClip,
@@ -857,9 +896,10 @@ function maskedTexture(
   h: number,
   key: string | undefined,
   channel: Channel,
+  slot: string = clip.id,
 ): { image: TexImageSource; key: string | undefined } {
   const sig = maskSignature(clip);
-  const hit = maskCopies.get(clip.id);
+  const hit = maskCopies.get(slot);
   if (key !== undefined && hit && hit.srcKey === key && hit.sig === sig && hit.w === w && hit.h === h) {
     return { image: hit.canvas, key: hit.key };
   }
@@ -884,8 +924,8 @@ function maskedTexture(
   c.globalCompositeOperation = 'copy';
   c.drawImage(out, 0, 0);
   const outKey = key === undefined ? undefined : `mask:${clip.id}:${++maskSerial}`;
-  maskCopies.delete(clip.id);
-  maskCopies.set(clip.id, { sig, srcKey: key, w, h, canvas, key: outKey });
+  maskCopies.delete(slot);
+  maskCopies.set(slot, { sig, srcKey: key, w, h, canvas, key: outKey });
   if (maskCopies.size > 32) {
     const first = maskCopies.keys().next().value;
     if (first !== undefined) maskCopies.delete(first);
@@ -909,7 +949,8 @@ const sideStacks = new Map<string, SideStack>();
  */
 function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexImageSource, cacheKey: string | undefined, alpha: number): Plane3D[] {
   const offsets = sideOffsets(depthPx);
-  const a = sideAlpha(alpha, offsets.length);
+  // the clip's opacity as it is; the renderer makes the n planes composite to texel alpha x opacity (Plane3D.stack)
+  const a = sideAlpha(alpha);
   let st = sideStacks.get(clipId);
   let same = !!st && st.depth === depthPx && st.planes.length === offsets.length;
   if (same) for (let i = 0; i < 16 && same; i++) if (st!.model[i] !== face.model[i]) same = false;
@@ -919,7 +960,7 @@ function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexIm
       m[12] = m[12]! + dz * m[8]!;
       m[13] = m[13]! + dz * m[9]!;
       m[14] = m[14]! + dz * m[10]!;
-      return { image, cacheKey, model: m, alpha: a, shape: face.shape };
+      return { image, cacheKey, model: m, alpha: a, shape: face.shape, stack: offsets.length };
     });
     st = { model: new Float32Array(face.model), depth: depthPx, planes };
     sideStacks.delete(clipId);
@@ -941,8 +982,8 @@ function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexIm
 /**
  * the plane of a 3d clip. a 3d text with an extrude (textDepth.ts hasTextDepth) is a stack: pass `sides` and the
  * side planes are pushed into it, farthest first (the plane returned is the face, the one at the clip's own position).
- * without `sides` only the face comes back. the face is the text without the flat extrude; the look and the mask act
- * on the face only, a crop acts on both.
+ * without `sides` only the face comes back. the face is the text without the flat extrude; the mask and the crop act on
+ * face and side alike. a chroma key makes the clip a plain plane with the flat extrude in its picture (no side planes).
  */
 export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, channel: Channel = 'default', sides?: Plane3D[]): Plane3D | null {
   syncTextureCaches(project);
@@ -957,8 +998,15 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   let lw = 0;
   let lh = 0;
   let sideTex: { canvas: AnyCanvas; key: string | undefined } | null = null;
+  // the clip's own box before the texture room of a text / shape is added: the default thickness of a solid follows this
+  const ownW = box.width;
+  const ownH = box.height;
+  // a keyed picture (chroma key) cannot be put on the silhouette cheaply: such a clip keeps the flat extrude baked into its
+  // picture (look and key act on all of it) instead of the stack of side planes
+  const stacked = clip.type === 'text' && hasTextDepth(clip) && !isKeyActive(clip.chromaKey);
+  // a clip that is not a stack (any more) keeps no planes
+  if (!stacked && sideStacks.size > 0) sideStacks.delete(clip.id);
   if (clip.type === 'text') {
-    const stacked = hasTextDepth(clip);
     const t = textTexture(clip, layer.time, stacked);
     if (!t) return null;
     if (stacked && sides) sideTex = textSide(t, clip, layer.time, clip.extrude!.color);
@@ -1038,7 +1086,7 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   }
   if (shape !== 'plane') {
     // thickness: a box is as deep as the clip is tall unless set, round shapes are as deep as they are wide
-    const fallback = shape === 'box' ? box.height : box.width;
+    const fallback = shape === 'box' ? ownH : ownW;
     const depth = clip.shapeDepth !== undefined && clip.shapeDepth > 0 && shape !== 'sphere' ? clip.shapeDepth * clip.transform.scale : fallback;
     model = mul(model, scaling(1, 1, Math.max(1, depth)));
   }
@@ -1049,14 +1097,62 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     plane.size = size;
   }
   if (sideTex && sides) {
+    // the mask hides the side like it hides the face: the silhouette goes through it too (its own copy: 'id|side').
+    // the colour part of the look (adjust) does not touch a flat colour, a chroma key took the stack away above.
+    let sideImage = sideTex.canvas as TexImageSource;
+    let sideKey = sideTex.key;
+    if (lw > 0 && lh > 0 && hasMask(clip)) {
+      const masked = maskedTexture(clip, sideImage, lw, lh, sideKey, channel, clip.id + SIDE_COPY);
+      sideImage = masked.image;
+      sideKey = masked.key;
+    }
     // farthest first, the face last: the order the planes are given in is the order coplanar ties keep (order.ts)
-    const list = sidePlanes(clip.id, plane, depthPixels(clip), sideTex.canvas, sideTex.key, layer.alpha);
+    const list = sidePlanes(clip.id, plane, depthPixels(clip), sideImage, sideKey, layer.alpha);
     for (const p of list) sides.push(p);
   }
   return plane;
 }
 
 const NO_LINES: Lines3D[] = [];
+
+/* ---------- one bad clip must not kill the frame ---------- */
+
+const reportedClips = new Set<string>();
+
+/**
+ * say once per clip id that a clip could not be drawn (console.warn, never per frame). true the first time.
+ * a broken clip is skipped, the rest of the frame (preview and export alike) is drawn without it.
+ */
+export function reportClipError(id: string, err: unknown): boolean {
+  if (reportedClips.has(id)) return false;
+  if (reportedClips.size >= 500) reportedClips.clear();
+  reportedClips.add(id);
+  console.warn(`clip ${id} could not be drawn and is left out of the frame`, err);
+  return true;
+}
+
+/** forget what was reported (a new project, tests) */
+export function resetClipErrors(): void {
+  reportedClips.clear();
+}
+
+/**
+ * run the painting of one clip so that an error in it only costs that clip: the canvas state (save stack, alpha,
+ * composite op, transform) is put back and the error is reported once. true when it ran through.
+ */
+function guarded(ctx: Ctx, id: string, fn: () => void): boolean {
+  ctx.save();
+  try {
+    fn();
+    return true;
+  } catch (err) {
+    reportClipError(id, err);
+    return false;
+  } finally {
+    // the save above is ours: restoring it undoes whatever the clip left on the state (alpha, op, transform)
+    ctx.restore();
+  }
+}
 
 /**
  * render a run of 3d clips through the camera and lay the result over what is already on the canvas.
@@ -1071,7 +1167,14 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   for (const layer of layers) {
     // a 3d depth text pushes its side planes (far to near) before its face
     const from = planes.length;
-    const p = planeFor(project, layer, rig, channel, planes);
+    let p: Plane3D | null = null;
+    try {
+      p = planeFor(project, layer, rig, channel, planes);
+    } catch (err) {
+      // this clip only: drop what it pushed and go on with the next layer
+      planes.length = from;
+      reportClipError(layer.clip.id, err);
+    }
     if (p) planes.push(p);
     // one layer number per clip: the planes of its stack are not nudged against each other (renderer.ts)
     for (let i = from; i < planes.length; i++) planes[i]!.layer = li;
@@ -1489,6 +1592,14 @@ function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: Globa
  * the effects its edge frame has (the frame time itself is before the start / after the end of that clip).
  */
 function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false, frameTime = time): boolean {
+  let drawn = false;
+  guarded(ctx, raw.id, () => {
+    drawn = paintAloneRaw(ctx, project, raw, time, env, rig, frozen, frameTime);
+  });
+  return drawn;
+}
+
+function paintAloneRaw(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen: boolean, frameTime: number): boolean {
   // a frozen side of a transition sits on its edge frame: its entrance / exit would hold it at nothing, so only the loop runs
   const clip = frozen && (raw.motionIn || raw.motionOut) ? resolveVisual({ ...raw, motionIn: null, motionOut: null }, time, project) : resolveVisual(raw, time, project);
   const alpha = clip.transform.opacity * fadeFactor(clip, time);
@@ -1630,8 +1741,10 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
   let bin: Layer3D[] = [];
   const flush3d = () => {
     if (bin.length === 0) return;
-    draw3d(ctx, project, bin, getRig(), env.channel);
+    // emptied first: a failure inside must not leave the same clips to fail again at every flush
+    const run = bin;
     bin = [];
+    guarded(ctx, run[0]!.clip.id, () => draw3d(ctx, project, run, getRig(), env.channel));
   };
   // effect clips stack up until the next picture is drawn on top of them (or the frame ends),
   // then run together in one gpu round trip
@@ -1660,56 +1773,59 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       continue;
     }
     const raw = it.clip;
-    // keyframes baked in. the resolver still gets the stored clip (it is keyed by identity).
-    const clip = resolveVisual(raw, time, project);
-    const alpha = clip.transform.opacity * fadeFactor(clip, time);
-    if (alpha <= 0.001) continue;
-    let source: DrawSource | null = null;
-    if (raw.type === 'video' || raw.type === 'image') {
-      source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
-      if (!source) continue;
-    }
-    const passes = clipFxPasses(project, env.fx, raw.id, time);
-    if (clip.threeD) {
-      const bop = blendOp(clip.blend);
+    // one clip that cannot be drawn is left out, the layers around it are still painted
+    guarded(ctx, raw.id, () => {
+      // keyframes baked in. the resolver still gets the stored clip (it is keyed by identity).
+      const clip = resolveVisual(raw, time, project);
+      const alpha = clip.transform.opacity * fadeFactor(clip, time);
+      if (alpha <= 0.001) return;
+      let source: DrawSource | null = null;
+      if (raw.type === 'video' || raw.type === 'image') {
+        source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
+        if (!source) return;
+      }
+      const passes = clipFxPasses(project, env.fx, raw.id, time);
+      if (clip.threeD) {
+        const bop = blendOp(clip.blend);
+        if (passes) {
+          // a 3d clip with effects on it is a run of its own (like a blended one): its picture is rendered alone, the
+          // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
+          flush3d();
+          const layer: Layer3D = { clip, source, alpha, time };
+          const run = (c: Ctx) => {
+            if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, getRig()))) draw3d(c, project, [layer], getRig(), env.channel);
+          };
+          if (paintWithFx(ctx, project, passes, bop, env, run)) return;
+          if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env, true, getRig())) return;
+          draw3d(ctx, project, [layer], getRig(), env.channel, NO_LINES, bop ?? 'source-over');
+          return;
+        }
+        if (raw.motionBlur) {
+          // a 3d clip with a motion blur is a run of its own too: one render per copy, summed, then mixed onto the
+          // canvas with its blend mode. a clip that does not move takes the normal paths below.
+          if (paintBlurred(ctx, project, raw, source, time, env, true, getRig(), flush3d)) return;
+        }
+        if (bop) {
+          // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
+          // depth-test against the 3d clips around it.
+          flush3d();
+          draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), env.channel, NO_LINES, bop);
+          return;
+        }
+        bin.push({ clip, source, alpha, time });
+        return;
+      }
+      flush3d();
+      const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
       if (passes) {
-        // a 3d clip with effects on it is a run of its own (like a blended one): its picture is rendered alone, the
-        // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
-        flush3d();
-        const layer: Layer3D = { clip, source, alpha, time };
         const run = (c: Ctx) => {
-          if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, getRig()))) draw3d(c, project, [layer], getRig(), env.channel);
+          if (!(raw.motionBlur && paintBlurred(c, project, raw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
         };
-        if (paintWithFx(ctx, project, passes, bop, env, run)) continue;
-        if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env, true, getRig())) continue;
-        draw3d(ctx, project, [layer], getRig(), env.channel, NO_LINES, bop ?? 'source-over');
-        continue;
+        if (paintWithFx(ctx, project, passes, blendOp(clip.blend), env, run)) return;
       }
-      if (raw.motionBlur) {
-        // a 3d clip with a motion blur is a run of its own too: one render per copy, summed, then mixed onto the
-        // canvas with its blend mode. a clip that does not move takes the normal paths below.
-        if (paintBlurred(ctx, project, raw, source, time, env, true, getRig(), flush3d)) continue;
-      }
-      if (bop) {
-        // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
-        // depth-test against the 3d clips around it.
-        flush3d();
-        draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), env.channel, NO_LINES, bop);
-        continue;
-      }
-      bin.push({ clip, source, alpha, time });
-      continue;
-    }
-    flush3d();
-    const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
-    if (passes) {
-      const run = (c: Ctx) => {
-        if (!(raw.motionBlur && paintBlurred(c, project, raw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
-      };
-      if (paintWithFx(ctx, project, passes, blendOp(clip.blend), env, run)) continue;
-    }
-    if (raw.motionBlur && paintBlurred(ctx, project, raw, pic, time, env)) continue;
-    paintFlat(ctx, project, clip, pic, alpha, time);
+      if (raw.motionBlur && paintBlurred(ctx, project, raw, pic, time, env)) return;
+      paintFlat(ctx, project, clip, pic, alpha, time);
+    });
   }
   flush3d();
   flushEffects();

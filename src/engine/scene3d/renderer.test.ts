@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { meshNeedsBlur } from './focus';
 import { identity, mul, scaling, translation } from './math';
-import { planeNeedsBlur, uvWrapsU } from './renderer';
+import { planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
 
 // a camera at the origin looking down +z: depth = z (w = z), no perspective needed for the depth test
 const viewProj = (() => {
@@ -45,5 +45,29 @@ describe('uvWrapsU', () => {
   it('the round shapes wrap, the flat ones do not', () => {
     for (const s of ['sphere', 'cylinder', 'capsule'] as const) expect(uvWrapsU(s)).toBe(true);
     for (const s of ['plane', 'box', 'pyramid'] as const) expect(uvWrapsU(s)).toBe(false);
+  });
+});
+
+describe('stackedTexelAlpha', () => {
+  const composite = (per: number, n: number) => 1 - Math.pow(1 - per, n);
+  it('n planes with the corrected alpha composite to the texel alpha, not to 1 - (1 - a)^n', () => {
+    for (const n of [4, 10, 48]) {
+      for (const a of [0.02, 0.1, 0.5, 0.9]) {
+        expect(composite(stackedTexelAlpha(a, n), n)).toBeCloseTo(a, 9);
+        // the old way: the uncorrected stack is far more solid than the texel
+        if (a <= 0.5) expect(composite(a, n)).toBeGreaterThan(a + 0.05);
+      }
+    }
+  });
+  it('opaque stays opaque, empty stays empty, one plane is unchanged', () => {
+    expect(stackedTexelAlpha(1, 10)).toBe(1);
+    expect(stackedTexelAlpha(0, 10)).toBe(0);
+    expect(stackedTexelAlpha(Number.NaN, 10)).toBe(0);
+    expect(stackedTexelAlpha(0.4, 1)).toBe(0.4);
+  });
+  it('a clip at opacity o composites to texel alpha x o (the shader corrects the product)', () => {
+    const o = 0.5;
+    const a = 0.8;
+    expect(composite(stackedTexelAlpha(a * o, 20), 20)).toBeCloseTo(0.4, 9);
   });
 });
