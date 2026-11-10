@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { followScrollLeft } from './followScroll';
 import { interaction, notifyView, view } from './view';
 
 /**
@@ -50,11 +51,12 @@ export function PlayheadLine({ scrollerRef }: { scrollerRef: RefObject<HTMLEleme
   usePlayheadTransform(ref, 0, (x, playing) => {
     // keep the playhead in view, but never fight the user (wheel / scrollbar) or a drag
     if (interaction.gestureActive || performance.now() < interaction.userScrollUntil) return;
-    const left = view.scrollLeft;
-    if (x >= left && x <= left + view.width - 6) return;
+    // the page scrolls in the direction of travel (forward, backwards, fast)
+    const next = followScrollLeft(x, view.scrollLeft, view.width, playing, usePlayback.getState().rate);
+    if (next === null) return;
     const el = scrollerRef.current;
     if (!el) return;
-    el.scrollLeft = Math.max(0, playing ? x - 40 : x - view.width / 2);
+    el.scrollLeft = next;
     view.scrollLeft = el.scrollLeft;
     notifyView();
   });

@@ -6,6 +6,7 @@ import { canBeParent } from '../../lib/links';
 import { isVisualClip } from '../../types';
 import { useEditor } from '../../store/editorStore';
 import { ClipCanvas } from './ClipCanvas';
+import { effectOnLabel, targetNameById } from './effectTarget';
 import { KeyMarks } from './KeyMarks';
 import { CLIP_INSET } from './layout';
 
@@ -28,6 +29,12 @@ function AttachMark({ parentId }: { parentId: string }) {
   return <Paperclip size={11} aria-label={`attached to ${name}`} className="timeline-clip-icon">
     <title>{`attached to ${name}`}</title>
   </Paperclip>;
+}
+
+/** label of an effect clip that is put on one clip. only mounted for those, so it is the only one subscribing. */
+function EffectOnName({ label, targetId }: { label: string; targetId: string }) {
+  const name = useEditor((s) => targetNameById(s.project?.clips, targetId));
+  return <span className="timeline-clip-name">{effectOnLabel(label, name)}</span>;
 }
 
 /**
@@ -72,7 +79,11 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
         {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'shape' && w >= 40 ? <Shapes size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'camera' && w >= 40 ? <Camera size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
-        <span className="timeline-clip-name">{label}</span>
+        {clip.type === 'effect' && clip.target ? (
+          <EffectOnName label={label} targetId={clip.target} />
+        ) : (
+          <span className="timeline-clip-name">{label}</span>
+        )}
       </div>
       {(hasMask || hasBlur) && w >= 40 ? (
         <div className="timeline-clip-marks">

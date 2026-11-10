@@ -18,6 +18,8 @@ import { snapToFrame } from '../../lib/time';
 import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { timelineSnapPoints } from './markers';
 import { swapTarget } from './swap';
+import { effectDropTarget, pickEffectTrack } from './effectTarget';
+import { createEffectClip } from '../../lib/factory';
 import { importFiles } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -219,9 +221,40 @@ export function createDnd(env: DndEnv) {
     return clip ? { clip, laneIndex: hit.index } : null;
   }
 
+  /** with alt held, the visual clip under the pointer that a dropped effect would be put on */
+  function resolveEffectOn(cx: number, cy: number, payload: DragPayload | null, alt: boolean): { clip: VisualClip; laneIndex: number } | null {
+    if (!alt || payload?.kind !== 'effect' || !ensure() || !geo || !layout) return null;
+    const st = useEditor.getState();
+    const project = st.project;
+    if (!project) return null;
+    const hit = hitLane(layout, cy - geo.top - RULER_H + view.scrollTop);
+    if (hit.type !== 'lane') return null;
+    const track = project.tracks[hit.index];
+    if (!track) return null;
+    const time = (cx - geo.left - HEADER_W + view.scrollLeft) / st.zoom;
+    const clip = effectDropTarget(project, track.id, time);
+    return clip ? { clip, laneIndex: hit.index } : null;
+  }
+
   function updateGhost(): void {
     rafId = 0;
     if (!last) return;
+    const on = resolveEffectOn(last.cx, last.cy, last.payload, last.alt);
+    if (on && layout) {
+      const zoom = useEditor.getState().zoom;
+      env.overlays.setHot(null);
+      env.overlays.setGhost(
+        {
+          x: Math.round(on.clip.start * zoom),
+          y: layout.tops[on.laneIndex]! + CLIP_INSET,
+          w: on.clip.duration * zoom,
+          h: layout.heights[on.laneIndex]! - CLIP_INSET * 2,
+        },
+        'target',
+        'on this clip',
+      );
+      return;
+    }
     const swap = resolveSwap(last.cx, last.cy, last.payload, last.alt);
     if (swap && layout) {
       const zoom = useEditor.getState().zoom;
@@ -320,6 +353,7 @@ export function createDnd(env: DndEnv) {
     const payload = readPayload(e);
     const transitionTarget = payload?.kind === 'transition' ? resolveTransition(cx, cy) : null;
     const swap = resolveSwap(cx, cy, payload, e.altKey);
+    const effectOn = resolveEffectOn(cx, cy, payload, e.altKey);
     const target = resolve(cx, cy, payload, true);
     const fileTarget = files.length > 0 ? resolve(cx, cy, null, false) : null;
     reset();
@@ -332,6 +366,18 @@ export function createDnd(env: DndEnv) {
         st.updateClip(transitionTarget.clip.id, { transition: transitionFor(payload.transition, transitionTarget.clip.transition) });
         st.select([transitionTarget.clip.id], 'replace');
       }
+      return;
+    }
+
+    if (effectOn && payload?.kind === 'effect') {
+      // alt + effect on a visual clip: a new effect clip that is put on that clip only (one undo step)
+      const def = getEffect(payload.effect);
+      if (!def) return;
+      const c = effectOn.clip;
+      const trackId = pickEffectTrack(st.project, c.trackId, c.start, c.duration);
+      const clip = createEffectClip(def.id, def.name, trackId ?? c.trackId, c.start, { duration: c.duration, target: c.id });
+      const made = st.addClips([clip], trackId ? { newTrack: false } : { newTrack: true, trackName: 'effects' });
+      if (made.length === 0) useUi.getState().toast('could not put the effect on that clip');
       return;
     }
 

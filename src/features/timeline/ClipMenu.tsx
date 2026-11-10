@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Blend, Box, Copy, Diamond, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { Blend, Box, Copy, Diamond, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -8,7 +8,8 @@ import { attachClips } from '../properties/attachActions';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
-import { freezeAtPlayhead, groupIdsNow, ungroupIdsNow } from './actions';
+import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsNow, selectEffectsOf, ungroupIdsNow } from './actions';
+import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
 import { swapCandidates } from './swap';
 
@@ -46,6 +47,9 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const attached = project ? picked.filter(isVisualClip).filter((c) => parentOf(project, c)) : [];
   const inClip = time >= clip.start && time <= clipEnd(clip);
   const is3d = visual.length > 0 && visual.every((c) => c.threeD);
+  const effectsHere = project ? visual.flatMap((c) => effectsOn(project.clips, c.id)) : [];
+  const targetedEffects = picked.filter((c) => c.type === 'effect' && c.target);
+  const targetClip = clip.type === 'effect' && clip.target && project ? project.clips.find((c) => c.id === clip.target) : undefined;
 
   const swaps = project ? swapCandidates(project.assets, clip) : [];
   const canSplitAll = !!project?.clips.some((c) => time > c.start + 0.05 && time < clipEnd(c) - 0.05);
@@ -192,6 +196,41 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
               <span className="timeline-menu-asset">{a.name}</span>
             </button>
           ))}
+        </>
+      ) : null}
+      {effectsHere.length > 0 || targetedEffects.length > 0 ? <div className="menu-sep" /> : null}
+      {effectsHere.length > 0 ? (
+        <button
+          className="menu-item"
+          role="menuitem"
+          title="select the effects that are put on this clip"
+          onClick={run(() => selectEffectsOf(visual.map((c) => c.id)))}
+        >
+          <Sparkles size={14} />
+          select its effects
+        </button>
+      ) : null}
+      {targetedEffects.length > 0 ? (
+        <>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!targetClip}
+            title={targetClip ? 'select the clip this effect is on and show it' : 'the clip this effect was on is gone'}
+            onClick={run(() => goToEffectTarget(clip.id))}
+          >
+            <Target size={14} />
+            go to its clip
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            title="make the selected effects change everything below their track again"
+            onClick={run(() => applyEffectsToEverything(picked.map((c) => c.id)))}
+          >
+            <Layers size={14} />
+            apply to everything below
+          </button>
         </>
       ) : null}
       {withTransition.length > 0 || withKeys.length > 0 || visual.length > 0 ? <div className="menu-sep" /> : null}

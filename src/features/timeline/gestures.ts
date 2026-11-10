@@ -6,7 +6,7 @@
  * applies at most one update per animation frame.
  */
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from 'react';
-import type { Clip, ClipType } from '../../types';
+import type { Clip, ClipType, EffectClip } from '../../types';
 import { trackKindForClip } from '../../types';
 import { keyTimes } from '../../lib/anim';
 import { formatTimecode, snapToFrame } from '../../lib/time';
@@ -16,6 +16,8 @@ import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { findFollowers, placeFollowers } from './effectFollow';
+import type { ClipSpan } from './effectFollow';
 import { hitKey } from './keyGeometry';
 import { groupIds, marqueeSelection, pressedSelection } from './selectionRules';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
@@ -79,6 +81,9 @@ interface MoveGesture extends Base {
   lastKey: string;
   delta: number;
   zone: 'top' | 'bottom' | null;
+  /** effect clips that follow the moving clips, and the clips as they were when the drag started */
+  follow: EffectClip[];
+  baseClips: Clip[];
 }
 
 interface TrimGesture extends Base {
@@ -88,6 +93,9 @@ interface TrimGesture extends Base {
   points: number[];
   /** edge time minus pointer time at press, so the edge does not jump to the pointer */
   offset: number;
+  /** effect clips that follow the trimmed clip, and the clips as they were when the trim started */
+  follow: EffectClip[];
+  baseClips: Clip[];
 }
 
 interface SeekGesture extends Base {
@@ -351,6 +359,8 @@ export function createGestures(env: GestureEnv) {
       if (Math.hypot(m.cx - m.startX, m.cy - m.startY) < DRAG_THRESHOLD) return;
       m.started = true;
       st.pushHistory();
+      m.baseClips = project.clips;
+      m.follow = findFollowers(project.clips, project.tracks, m.items.map((o) => o.id), new Set(m.items.map((o) => o.id)));
     }
     const zoom = m.zoom;
     let minStart = Infinity;
@@ -424,17 +434,38 @@ export function createGestures(env: GestureEnv) {
       trackId: trackFor(o),
       start: Math.max(0, o.start + delta),
     }));
-    const applied = applyMoves(m, project.clips, moves);
+    // effects that are put on the moving clips move with them when their own track has room
+    let applied = false;
+    if (m.follow.length > 0) applied = applyMoves(m, project.clips, [...moves, ...followMoves(m, moves)]);
+    if (!applied) applied = applyMoves(m, project.clips, moves);
     if (!applied && m.items.length === 1) {
       const o = m.items[0]!;
       const trackId = trackFor(o);
       const free = findFreeStart(project, trackId, o.start + delta, o.duration, [o.id]);
-      if (applyMoves(m, project.clips, [{ id: o.id, trackId, start: free }])) {
+      const single: ClipMove[] = [{ id: o.id, trackId, start: free }];
+      if (
+        (m.follow.length > 0 && applyMoves(m, project.clips, [...single, ...followMoves(m, single)])) ||
+        applyMoves(m, project.clips, single)
+      ) {
         env.overlays.setSnap(null, zoom);
         return;
       }
     }
     env.overlays.setSnap(applied ? snapHit : null, zoom);
+  }
+
+  /** where the effects that follow the moved clips go, planned from the clips as the drag found them */
+  function followMoves(m: MoveGesture, moves: ClipMove[]): ClipMove[] {
+    const changes = new Map<string, ClipSpan>();
+    for (const mv of moves) {
+      const o = m.items.find((x) => x.id === mv.id);
+      if (o) changes.set(mv.id, { start: mv.start, duration: o.duration, trackId: mv.trackId });
+    }
+    return placeFollowers(m.baseClips, m.follow, changes).map((r) => ({
+      id: r.id,
+      trackId: m.baseClips.find((c) => c.id === r.id)!.trackId,
+      start: r.start,
+    }));
   }
 
   /** returns true when the project now reflects `moves` (applied now or already there) */
@@ -470,7 +501,10 @@ export function createGestures(env: GestureEnv) {
       const kind = trackKindForClip(o.type);
       const trackId = st.addTrack(kind, { skipHistory: true, index: m.zone === 'top' ? 0 : undefined });
       if (trackId) {
-        st.moveClips([{ id: o.id, trackId, start: Math.max(0, o.start + m.delta) }], { skipHistory: true });
+        const lead: ClipMove[] = [{ id: o.id, trackId, start: Math.max(0, o.start + m.delta) }];
+        if (!(m.follow.length > 0 && st.moveClips([...lead, ...followMoves(m, lead)], { skipHistory: true }))) {
+          st.moveClips(lead, { skipHistory: true });
+        }
       }
     }
   }
@@ -483,6 +517,11 @@ export function createGestures(env: GestureEnv) {
       if (Math.abs(t.cx - t.startX) < 2) return;
       t.started = true;
       st.pushHistory();
+      const project = st.project;
+      if (project) {
+        t.baseClips = project.clips;
+        t.follow = findFollowers(project.clips, project.tracks, [t.id]);
+      }
     }
     let time = Math.max(0, laneX(t.geo, t.cx) / t.zoom + t.offset);
     let hit: number | null = null;
@@ -492,12 +531,30 @@ export function createGestures(env: GestureEnv) {
       hit = r.hit;
     }
     st.trimClip(t.id, t.edge, time, { skipHistory: true });
+    if (t.follow.length > 0) followTrim(t);
     if (hit !== null) {
       const c = useEditor.getState().project?.clips.find((x) => x.id === t.id);
       const actual = c ? (t.edge === 'start' ? c.start : clipEnd(c)) : NaN;
       if (!(Math.abs(actual - hit) < 1e-6)) hit = null;
     }
     env.overlays.setSnap(hit, t.zoom);
+  }
+
+  /** effects that are put on the trimmed clip take its new start and end when their own track has room */
+  function followTrim(t: TrimGesture): void {
+    const st = store();
+    const trimmed = st.project?.clips.find((c) => c.id === t.id);
+    if (!trimmed) return;
+    const changes = new Map<string, ClipSpan>([[t.id, { start: trimmed.start, duration: trimmed.duration }]]);
+    for (const r of placeFollowers(t.baseClips, t.follow, changes)) {
+      const now = store().project?.clips.find((c) => c.id === r.id);
+      if (!now) continue;
+      if (Math.abs(now.start - r.start) > 1e-6) st.trimClip(r.id, 'start', r.start, { skipHistory: true });
+      const after = store().project?.clips.find((c) => c.id === r.id);
+      if (after && Math.abs(clipEnd(after) - (r.start + r.duration)) > 1e-6) {
+        st.trimClip(r.id, 'end', r.start + r.duration, { skipHistory: true });
+      }
+    }
   }
 
   /* ---------- keyframe diamonds ---------- */
@@ -715,6 +772,8 @@ export function createGestures(env: GestureEnv) {
             edge: edgeAttr,
             offset: (edgeAttr === 'start' ? clip.start : clipEnd(clip)) - laneX(geo, e.clientX) / st.zoom,
             points: timelineSnapPoints(project, [id], [usePlayback.getState().time]),
+            follow: [],
+            baseClips: project.clips,
           },
           'trim',
         );
@@ -763,6 +822,8 @@ export function createGestures(env: GestureEnv) {
           lastKey: '',
           delta: 0,
           zone: null,
+          follow: [],
+          baseClips: project.clips,
         },
         'move',
       );
