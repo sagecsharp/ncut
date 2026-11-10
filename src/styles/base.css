@@ -63,7 +63,7 @@ svg {
 /* flat scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--surface-5) transparent;
+  scrollbar-color: var(--scrollbar) transparent;
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -73,7 +73,7 @@ svg {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-5);
+  background: var(--scrollbar);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 5px;
@@ -466,7 +466,7 @@ input[type='color'].input {
   align-items: center;
   justify-content: center;
   padding: var(--space-5);
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
 }
 .dialog {
   display: flex;

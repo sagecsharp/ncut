@@ -18,19 +18,23 @@ export interface DialogProps {
 /** flat modal. closes on escape and backdrop click. */
 export function Dialog({ open, title, onClose, children, footer, width, dismissable = true }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const dismissableRef = useRef(dismissable);
+  onCloseRef.current = onClose;
+  dismissableRef.current = dismissable;
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissable) {
+      if (e.key === 'Escape' && dismissableRef.current) {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', onKey, true);
-    ref.current?.focus();
+    if (!ref.current?.contains(document.activeElement)) ref.current?.focus();
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, onClose, dismissable]);
+  }, [open]);
 
   if (!open) return null;
   return (

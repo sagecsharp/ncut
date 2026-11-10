@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { formatTimecode } from '../../lib/time';
@@ -18,15 +18,32 @@ const ProjectSettings = memo(function ProjectSettings({
   const presetId = CANVAS_PRESETS.find((p) => p.width === width && p.height === height)?.id ?? 'custom';
   const fpsOptions = FPS_OPTIONS.includes(fps) ? FPS_OPTIONS : [...FPS_OPTIONS, fps].sort((a, b) => a - b);
   const update = useEditor.getState().updateProject;
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
   return (
     <Section id="project" title="project">
       <Row label="name" title="project name">
         <input
           className="input"
           title="project name"
-          value={name}
-          onFocus={beginEdit}
-          onChange={(e) => update({ name: e.target.value }, liveOpts())}
+          value={draft ?? name}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            const next = draft;
+            setDraft(null);
+            if (cancelled.current) {
+              cancelled.current = false;
+              return;
+            }
+            if (next !== null && next.trim() !== '' && next.trim() !== name) update({ name: next });
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            else if (e.key === 'Escape') {
+              cancelled.current = true;
+              e.currentTarget.blur();
+            }
+          }}
         />
       </Row>
       <Row label="canvas" title="canvas size preset">
@@ -42,7 +59,7 @@ const ProjectSettings = memo(function ProjectSettings({
           {presetId === 'custom' ? <option value="custom">custom</option> : null}
           {CANVAS_PRESETS.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.label}
+              {p.id} {p.width}x{p.height}
             </option>
           ))}
         </select>

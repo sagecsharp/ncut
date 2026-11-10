@@ -382,6 +382,12 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (!p.tracks.some((t) => t.id === trackId)) return null;
         return { ...p, tracks: p.tracks.map((t) => (t.id === trackId ? { ...t, ...patch } : t)) };
       }, opts);
+      if (patch.locked === true) {
+        const p = get().project;
+        const sel = get().selection;
+        const kept = sel.filter((id) => p?.clips.find((c) => c.id === id)?.trackId !== trackId);
+        if (kept.length !== sel.length) set({ selection: kept });
+      }
     },
     moveTrack(trackId, toIndex, opts) {
       mutate((p) => {
@@ -436,7 +442,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     updateClip(id, patch, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
-        if (!clip) return null;
+        if (!clip || isLocked(p, clip.trackId)) return null;
         const next: Record<string, unknown> = { ...clip };
         let changed = false;
         for (const [key, value] of Object.entries(patch)) {
@@ -456,7 +462,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     updateTransform(id, patch, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
-        if (!clip || !isVisualClip(clip)) return null;
+        if (!clip || !isVisualClip(clip) || isLocked(p, clip.trackId)) return null;
         const transform = { ...clip.transform, ...patch };
         transform.opacity = clamp(transform.opacity, 0, 1);
         transform.scale = clamp(transform.scale, 0.01, 100);

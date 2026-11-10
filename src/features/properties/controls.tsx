@@ -111,14 +111,14 @@ export function ColorField({ value, title, disabled, onChange }: ColorFieldProps
         value={toColorInput(value)}
         onFocus={beginEdit}
         onPointerDown={beginEdit}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value + (value.length === 9 && isHex(value) ? value.slice(7) : ''))}
       />
       <input
         type="text"
         className="input mono props-hex"
         title={`${title} (hex)`}
         spellCheck={false}
-        maxLength={7}
+        maxLength={9}
         disabled={disabled}
         value={draft ?? value}
         onFocus={beginEdit}
@@ -126,7 +126,7 @@ export function ColorField({ value, title, disabled, onChange }: ColorFieldProps
           let v = e.target.value.trim();
           if (v && !v.startsWith('#')) v = `#${v}`;
           setDraft(v);
-          if (v.length === 7 && isHex(v)) onChange(v.toLowerCase());
+          if ((v.length === 7 || v.length === 9) && isHex(v)) onChange(v.toLowerCase());
         }}
         onBlur={() => setDraft(null)}
         onKeyDown={(e) => {

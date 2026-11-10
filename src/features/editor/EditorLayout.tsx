@@ -24,14 +24,24 @@ interface Sizes {
 
 const DEFAULTS: Sizes = { left: 300, right: 300, bottom: 320 };
 
+/** single source of the panel limits. also used on load and when the window shrinks */
+function clampSizes(s: Sizes): Sizes {
+  const fin = (v: number, d: number) => (Number.isFinite(v) ? v : d);
+  return {
+    left: clamp(fin(s.left, DEFAULTS.left), 200, Math.max(200, window.innerWidth * 0.4)),
+    right: clamp(fin(s.right, DEFAULTS.right), 280, Math.max(280, window.innerWidth * 0.4)),
+    bottom: clamp(fin(s.bottom, DEFAULTS.bottom), 140, Math.max(140, window.innerHeight - 220)),
+  };
+}
+
 function loadSizes(): Sizes {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Sizes>) };
+    if (raw) return clampSizes({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<Sizes>) });
   } catch {
     // ignore
   }
-  return DEFAULTS;
+  return clampSizes(DEFAULTS);
 }
 
 type Edge = keyof Sizes;
@@ -61,6 +71,16 @@ export function EditorLayout() {
     }
   }, [sizes]);
 
+  useEffect(() => {
+    const onResize = () =>
+      setSizes((s) => {
+        const n = clampSizes(s);
+        return n.left === s.left && n.right === s.right && n.bottom === s.bottom ? s : n;
+      });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const onDown = useCallback(
     (edge: Edge) => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault();
@@ -75,10 +95,8 @@ export function EditorLayout() {
     if (!d) return;
     const pos = d.edge === 'bottom' ? e.clientY : e.clientX;
     const delta = pos - d.startPos;
-    let next: number;
-    if (d.edge === 'left') next = clamp(d.startSize + delta, 200, Math.max(200, window.innerWidth * 0.4));
-    else if (d.edge === 'right') next = clamp(d.startSize - delta, 220, Math.max(220, window.innerWidth * 0.4));
-    else next = clamp(d.startSize - delta, 140, Math.max(140, window.innerHeight - 220));
+    const raw = d.edge === 'left' ? d.startSize + delta : d.startSize - delta;
+    const next = clampSizes({ ...DEFAULTS, [d.edge]: raw })[d.edge];
     setSizes((s) => ({ ...s, [d.edge]: next }));
   }, []);
 

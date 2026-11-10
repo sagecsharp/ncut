@@ -26,7 +26,7 @@ export function even(v: number): number {
   return Math.max(2, Math.round(v / 2) * 2);
 }
 
-const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 export function isHex(v: string): boolean {
   return HEX.test(v);
@@ -36,5 +36,5 @@ export function isHex(v: string): boolean {
 export function toColorInput(v: string): string {
   if (!HEX.test(v)) return '#000000';
   if (v.length === 4) return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`.toLowerCase();
-  return v.toLowerCase();
+  return v.slice(0, 7).toLowerCase();
 }

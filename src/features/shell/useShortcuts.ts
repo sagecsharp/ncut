@@ -3,13 +3,20 @@ import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { findShortcut } from './shortcuts';
 
-function isTypingTarget(target: EventTarget | null): boolean {
+const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'file', 'submit', 'reset']);
+
+/** true when the key should go to a text-like control instead of the shortcut table */
+export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  if (tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') return !NON_TEXT_INPUTS.has((target as HTMLInputElement).type);
+  return false;
 }
 
+/** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
+const modalOpen = () => useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
 /** registers the global keyboard shortcuts of the editor. call once from EditorLayout. */
 export function useShortcuts(): void {
   useEffect(() => {
@@ -17,7 +24,7 @@ export function useShortcuts(): void {
       if (e.defaultPrevented || e.isComposing) return;
       if (isTypingTarget(e.target)) return;
       // dialogs own the keyboard (they handle escape themselves)
-      if (useUi.getState().dialog !== null) return;
+      if (modalOpen()) return;
       if (!useEditor.getState().project) return;
       const shortcut = findShortcut(e);
       if (!shortcut) return;
@@ -32,7 +39,7 @@ export function useShortcuts(): void {
     // a focused button would otherwise "click" on space keyup after we handled keydown
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space' && e.key !== ' ') return;
-      if (isTypingTarget(e.target) || useUi.getState().dialog !== null) return;
+      if (isTypingTarget(e.target) || modalOpen()) return;
       e.preventDefault();
     };
 

@@ -34,6 +34,8 @@
   --surface-3: oklch(0.255 var(--c-surface) var(--tint-h)); /* panel headers, raised rows, controls */
   --surface-4: oklch(0.3 var(--c-surface) var(--tint-h)); /* hover on controls */
   --surface-5: oklch(0.36 var(--c-surface) var(--tint-h)); /* pressed / active controls */
+  --scrollbar: oklch(0.42 var(--c-surface) var(--tint-h)); /* scrollbar thumbs */
+  --scrim: oklch(0.1 0 0 / 0.6); /* modal backdrop */
 
   --border: oklch(0.15 var(--c-surface) var(--tint-h)); /* separators between panels */
   --border-soft: oklch(0.4 var(--c-surface) var(--tint-h)); /* outlines on controls */
@@ -99,6 +101,7 @@
   --surface-3: oklch(0.935 var(--c-surface) var(--tint-h));
   --surface-4: oklch(0.88 var(--c-surface) var(--tint-h));
   --surface-5: oklch(0.82 var(--c-surface) var(--tint-h));
+  --scrollbar: oklch(0.62 var(--c-surface) var(--tint-h));
 
   --border: oklch(0.42 var(--c-surface) var(--tint-h));
   --border-soft: oklch(0.56 var(--c-surface) var(--tint-h));
