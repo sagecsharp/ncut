@@ -106,7 +106,8 @@
   color: var(--text-faint);
 }
 .media-thumb.is-audio {
-  color: var(--clip-audio);
+  background: var(--surface-4);
+  color: var(--text);
 }
 .media-thumb-img {
   position: absolute;
@@ -225,4 +226,59 @@
 }
 .media-text-hint {
   color: var(--text-faint);
+}
+
+/* effects tab */
+.media-fx-hint {
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+.media-fx-group + .media-fx-group {
+  margin-top: var(--space-3);
+}
+.media-fx-heading {
+  margin: 0 0 var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  font-weight: 400;
+}
+.media-fx-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  cursor: grab;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 90px;
+}
+.media-fx-card:hover {
+  background: var(--surface-4);
+}
+.media-fx-card:active {
+  cursor: grabbing;
+}
+.media-fx-card.is-live {
+  border-color: var(--accent);
+}
+.media-fx-thumb {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+}
+.media-fx-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.media-fx-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
 }

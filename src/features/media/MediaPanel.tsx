@@ -10,9 +10,10 @@ import { beginDrag, endDrag, isFileDrag } from '../../lib/dnd';
 import { DEFAULT_TRANSFORM } from '../../types';
 import type { MediaAsset, MediaKind, TextClip } from '../../types';
 import { formatBytes, formatDuration } from '../../lib/time';
+import { EffectsTab } from './EffectsTab';
 import './media.css';
 
-type Tab = 'media' | 'text';
+type Tab = 'media' | 'text' | 'effects';
 type Filter = 'all' | MediaKind;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -409,7 +410,7 @@ const TEXT_PRESETS: TextPreset[] = [
       fontSize: 48,
       fontWeight: 700,
       align: 'center',
-      background: 'rgba(0, 0, 0, 0.7)',
+      background: '#000000b3',
       transform: { ...DEFAULT_TRANSFORM, y: Math.round(h * 0.35) },
     }),
   },
@@ -428,7 +429,7 @@ const TEXT_PRESETS: TextPreset[] = [
       fontSize: 56,
       fontWeight: 700,
       align: 'left',
-      background: 'rgba(0, 0, 0, 0.7)',
+      background: '#000000b3',
       transform: { ...DEFAULT_TRANSFORM, x: -Math.round(w * 0.28), y: Math.round(h * 0.33) },
     }),
   },
@@ -507,8 +508,17 @@ export function MediaPanel() {
         >
           text
         </button>
+        <button
+          className={`tab${tab === 'effects' ? ' is-active' : ''}`}
+          role="tab"
+          aria-selected={tab === 'effects'}
+          title="effects for the timeline"
+          onClick={() => setTab('effects')}
+        >
+          effects
+        </button>
       </div>
-      {tab === 'media' ? <MediaTab /> : <TextTab />}
+      {tab === 'media' ? <MediaTab /> : tab === 'text' ? <TextTab /> : <EffectsTab />}
     </div>
   );
 }
