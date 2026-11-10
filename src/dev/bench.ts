@@ -48,7 +48,44 @@ async function footage(width = 1920, height = 1080, fps = 60, seconds = 5, templ
   return asset;
 }
 
+/** a sound file (two sine tones, stereo wav) imported into the open project (made once, found again by name) */
+async function tone(seconds = 10): Promise<MediaAsset> {
+  if (!useEditor.getState().project) await session.createAndOpenProject('bench');
+  const name = `bench-tone-${seconds}s.wav`;
+  const have = useEditor.getState().project!.assets.find((a) => a.name === name);
+  if (have) return have;
+  const rate = 48000;
+  const frames = Math.round(seconds * rate);
+  const buf = new ArrayBuffer(44 + frames * 4);
+  const v = new DataView(buf);
+  const text = (at: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(at + i, s.charCodeAt(i));
+  };
+  text(0, 'RIFF');
+  v.setUint32(4, 36 + frames * 4, true);
+  text(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 2, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 4, true);
+  v.setUint16(32, 4, true);
+  v.setUint16(34, 16, true);
+  text(36, 'data');
+  v.setUint32(40, frames * 4, true);
+  for (let i = 0; i < frames; i++) {
+    const t = i / rate;
+    v.setInt16(44 + i * 4, Math.round(Math.sin(t * 2 * Math.PI * 440) * 9000), true);
+    v.setInt16(46 + i * 4, Math.round(Math.sin(t * 2 * Math.PI * 660) * 9000), true);
+  }
+  const [asset] = await importFiles([new File([buf], name, { type: 'audio/wav' })]);
+  if (!asset) throw new Error('the tone could not be imported');
+  return asset;
+}
+
 interface VideoProjectOptions {
+  /** a sound asset laid under the whole timeline (repeated) */
+  sound?: MediaAsset;
   width?: number;
   height?: number;
   fps?: number;
@@ -125,7 +162,16 @@ function videoProject(asset: MediaAsset, o: VideoProjectOptions = {}): Project {
       clips.push(c);
     }
   }
-  p.tracks.push(createTrack('audio', 'audio 1'));
+  const audioTrack = createTrack('audio', 'audio 1');
+  p.tracks.push(audioTrack);
+  if (o.sound) {
+    p.assets = [asset, o.sound];
+    for (let start = 0; start < seconds - 1e-6; start += o.sound.duration) {
+      const c = createClipFromAsset(o.sound, audioTrack.id, start);
+      c.duration = Math.min(o.sound.duration, seconds - start);
+      clips.push(c);
+    }
+  }
   p.clips = clips;
   return p;
 }
@@ -204,14 +250,34 @@ async function render(project: Project, o: RenderOptions = {}) {
 let lastBlob: Blob | null = null;
 
 /** run the real exporter and report its stage times. the file is kept only until the next run. */
-async function exportRun(project: Project, o: Partial<ExportOptions> = {}) {
+async function exportRun(project: Project, o: Partial<ExportOptions> & { cancelAfterMs?: number } = {}) {
+  const { cancelAfterMs, ...rest } = o;
+  if (cancelAfterMs !== undefined) {
+    // cancel in the middle: the export must reject with an AbortError and leave nothing running
+    const stop = new AbortController();
+    const t0 = performance.now();
+    const timer = setTimeout(() => stop.abort(), cancelAfterMs);
+    let progress = 0;
+    try {
+      await exportProject(
+        project,
+        { container: 'mp4', scale: 1, fps: project.fps, quality: 'high', includeAudio: false, ...rest },
+        { signal: stop.signal, onProgress: (p) => (progress = p.progress) },
+      );
+      return { cancelled: false, ms: Math.round(performance.now() - t0), progress };
+    } catch (err) {
+      return { cancelled: err instanceof DOMException && err.name === 'AbortError', error: String(err), ms: Math.round(performance.now() - t0), progress: Math.round(progress * 100) / 100 };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   let stats: ExportStats | null = null;
   const warnings: string[] = [];
   let fallback: string | null = null;
   const t0 = performance.now();
   const blob = await exportProject(
     project,
-    { container: 'mp4', scale: 1, fps: project.fps, quality: 'high', includeAudio: false, ...o },
+    { container: 'mp4', scale: 1, fps: project.fps, quality: 'high', includeAudio: false, ...rest },
     { onStats: (s) => (stats = s), onWarning: (w) => warnings.push(w), onFallback: (reason) => (fallback = reason) },
   );
   lastBlob = blob;
@@ -505,6 +571,7 @@ export const bench = {
   templates: () => PROJECT_TEMPLATES.map((t) => t.id),
   templateProject,
   footage,
+  tone,
   videoProject,
   render,
   export: exportRun,
