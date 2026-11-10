@@ -87,6 +87,7 @@ export type ClipPatch = Partial<Omit<VideoClip, LockedKeys>> &
   Partial<Omit<ImageClip, LockedKeys>> &
   Partial<Omit<AudioClip, LockedKeys>> &
   Partial<Omit<TextClip, LockedKeys>> &
+  Partial<Omit<ShapeClip, LockedKeys>> &
   Partial<Omit<EffectClip, LockedKeys>> &
   Partial<Omit<CameraClip, LockedKeys>>;
 
@@ -900,9 +901,18 @@ export const useEditor = create<EditorState>()((set, get) => {
             clips.push(c);
             continue;
           }
-          const left = clampFades({ ...c, duration: time - c.start, fadeOut: 0 } as Clip);
+          // what happens at the head (entrances, the transition in) stays with the left half,
+          // what happens at the tail (exits) goes with the right half
+          const leftDraft = { ...c, duration: time - c.start, fadeOut: 0 } as Record<string, unknown>;
+          delete leftDraft.motionOut;
+          delete leftDraft.animOut;
+          const left = clampFades(leftDraft as unknown as Clip);
+          const rightDraft = { ...c } as Record<string, unknown>;
+          delete rightDraft.transition;
+          delete rightDraft.motionIn;
+          delete rightDraft.animIn;
           const right = {
-            ...c,
+            ...(rightDraft as unknown as Clip),
             id: uid('clp'),
             start: time,
             duration: clipEnd(c) - time,
