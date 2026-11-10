@@ -6,6 +6,8 @@
 import type { SceneFog, Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
 import { mul } from './math';
+import { fogOn, writeFogUniforms } from './fog';
+import { interleave, knownShape, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
@@ -19,7 +21,7 @@ export interface Plane3D {
   cacheKey?: string;
   /** maps the unit shape (x, y, z in -0.5..0.5; a plane has z = 0) into world space */
   model: Mat4;
-  /** missing = 'plane' */
+  /** missing or an id this build does not know = 'plane' (see meshes.ts) */
   shape?: Shape3D;
   /** 0..1 */
   alpha: number;
@@ -47,15 +49,21 @@ const PLANE_VS = `#version 300 es
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec2 a_uv;
 uniform mat4 u_mvp;
+// only read while fog is on (u_fogOn > 0): the world position of the vertex, for the distance to the eye
+uniform mat4 u_model;
+uniform float u_fogOn;
 out vec2 v_uv;
+out vec3 v_world;
 void main() {
   v_uv = a_uv;
+  v_world = u_fogOn > 0.0 ? (u_model * vec4(a_pos, 1.0)).xyz : vec3(0.0);
   gl_Position = u_mvp * vec4(a_pos, 1.0);
 }`;
 const PLANE_FS = `#version 300 es
 precision highp float;
 const float SOLID = 0.98;
 in vec2 v_uv;
+in vec3 v_world;
 uniform sampler2D u_tex;
 uniform float u_alpha;
 uniform vec4 u_uv;
@@ -63,6 +71,11 @@ uniform float u_radius;
 uniform vec2 u_size;
 // 1 = only the solid pixels, 2 = only the see-through ones (see render)
 uniform float u_pass;
+// fog (fog.ts): rgb of the fog color, near / far - near / amount. u_fogOn = 0: off, nothing below runs.
+uniform float u_fogOn;
+uniform vec3 u_fogColor;
+uniform vec3 u_fogRange;
+uniform vec3 u_eye;
 out vec4 outColor;
 void main() {
   // the texture is premultiplied, so is the output
@@ -75,6 +88,12 @@ void main() {
   }
   if (c.a < 0.004) discard;
   if (u_pass < 1.5 ? c.a < SOLID : c.a >= SOLID) discard;
+  if (u_fogOn > 0.0) {
+    // FOG MATH: must match fog.ts (fogFactor + mixFog). un-premultiply, mix, premultiply again; alpha is kept.
+    float f = clamp((distance(v_world, u_eye) - u_fogRange.x) / u_fogRange.y, 0.0, 1.0) * u_fogRange.z;
+    vec3 rgb = c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
+    c.rgb = mix(rgb, u_fogColor, f) * c.a;
+  }
   outColor = c;
 }`;
 const LINE_VS = `#version 300 es
@@ -93,95 +112,6 @@ void main() {
 
 const CACHE_LIMIT = 48;
 
-/* ---------- meshes: x, y, z, u, v per vertex. unit size, centered. the picture reads the right way
-   round from outside on every face (world: x right, y down, z away from the viewer). ---------- */
-
-interface MeshData {
-  verts: number[];
-  indices: number[];
-}
-
-function planeMesh(): MeshData {
-  return {
-    verts: [-0.5, -0.5, 0, 0, 0, 0.5, -0.5, 0, 1, 0, 0.5, 0.5, 0, 1, 1, -0.5, 0.5, 0, 0, 1],
-    indices: [0, 1, 2, 0, 2, 3],
-  };
-}
-
-function boxMesh(): MeshData {
-  const verts: number[] = [];
-  const indices: number[] = [];
-  // each face: origin (its top left corner seen from outside), the step along u, the step along v
-  const faces: [number[], number[], number[]][] = [
-    [[-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0]], // front (faces the viewer)
-    [[0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0]], // back
-    [[0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0]], // right
-    [[-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0]], // left
-    [[-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1]], // top
-    [[-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1]], // bottom
-  ];
-  for (const [o, u, v] of faces) {
-    const base = verts.length / 5;
-    for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) {
-      verts.push(o[0]! + u[0]! * fu + v[0]! * fv, o[1]! + u[1]! * fu + v[1]! * fv, o[2]! + u[2]! * fu + v[2]! * fv, fu, fv);
-    }
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  }
-  return { verts, indices };
-}
-
-function sphereMesh(seg = 48, rings = 24): MeshData {
-  const verts: number[] = [];
-  const indices: number[] = [];
-  for (let j = 0; j <= rings; j++) {
-    const v = j / rings;
-    const r = 0.5 * Math.sin(Math.PI * v);
-    const y = -0.5 * Math.cos(Math.PI * v);
-    for (let i = 0; i <= seg; i++) {
-      const u = i / seg;
-      const a = Math.PI * 2 * (u - 0.5);
-      // u = 0.5 faces the viewer, u grows to the right
-      verts.push(r * Math.sin(a), y, -r * Math.cos(a), u, v);
-    }
-  }
-  for (let j = 0; j < rings; j++) {
-    for (let i = 0; i < seg; i++) {
-      const p = j * (seg + 1) + i;
-      indices.push(p, p + 1, p + seg + 2, p, p + seg + 2, p + seg + 1);
-    }
-  }
-  return { verts, indices };
-}
-
-function cylinderMesh(seg = 48): MeshData {
-  const verts: number[] = [];
-  const indices: number[] = [];
-  for (let j = 0; j <= 1; j++) {
-    for (let i = 0; i <= seg; i++) {
-      const u = i / seg;
-      const a = Math.PI * 2 * (u - 0.5);
-      verts.push(0.5 * Math.sin(a), j - 0.5, -0.5 * Math.cos(a), u, j);
-    }
-  }
-  for (let i = 0; i < seg; i++) {
-    indices.push(i, i + 1, i + seg + 2, i, i + seg + 2, i + seg + 1);
-  }
-  // caps: the picture seen from above / below
-  for (const top of [true, false]) {
-    const center = verts.length / 5;
-    const y = top ? -0.5 : 0.5;
-    verts.push(0, y, 0, 0.5, 0.5);
-    for (let i = 0; i <= seg; i++) {
-      const a = (Math.PI * 2 * i) / seg;
-      const x = 0.5 * Math.cos(a);
-      const z = 0.5 * Math.sin(a);
-      verts.push(x, y, z, x + 0.5, top ? 0.5 - z : z + 0.5);
-    }
-    for (let i = 0; i < seg; i++) indices.push(center, center + 1 + i, center + 2 + i);
-  }
-  return { verts, indices };
-}
-
 interface Mesh {
   vao: WebGLVertexArrayObject | null;
   count: number;
@@ -198,6 +128,12 @@ class SceneRenderer {
   private uRadius: WebGLUniformLocation | null;
   private uSize: WebGLUniformLocation | null;
   private uPass: WebGLUniformLocation | null;
+  private uModel: WebGLUniformLocation | null;
+  private uFogOn: WebGLUniformLocation | null;
+  private uFogColor: WebGLUniformLocation | null;
+  private uFogRange: WebGLUniformLocation | null;
+  private uEye: WebGLUniformLocation | null;
+  private fogBuf = new Float32Array(6);
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
   private meshes = new Map<Shape3D, Mesh>();
@@ -220,6 +156,11 @@ class SceneRenderer {
     this.uRadius = gl.getUniformLocation(this.planeProg, 'u_radius');
     this.uSize = gl.getUniformLocation(this.planeProg, 'u_size');
     this.uPass = gl.getUniformLocation(this.planeProg, 'u_pass');
+    this.uModel = gl.getUniformLocation(this.planeProg, 'u_model');
+    this.uFogOn = gl.getUniformLocation(this.planeProg, 'u_fogOn');
+    this.uFogColor = gl.getUniformLocation(this.planeProg, 'u_fogColor');
+    this.uFogRange = gl.getUniformLocation(this.planeProg, 'u_fogRange');
+    this.uEye = gl.getUniformLocation(this.planeProg, 'u_eye');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -265,17 +206,17 @@ class SceneRenderer {
     const hit = this.meshes.get(shape);
     if (hit) return hit;
     const gl = this.gl;
-    const data = shape === 'box' ? boxMesh() : shape === 'sphere' ? sphereMesh() : shape === 'cylinder' ? cylinderMesh() : planeMesh();
+    const data = shapeMesh(shape);
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.verts), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, interleave(data), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
     const mesh = { vao, count: data.indices.length };
     this.meshes.set(shape, mesh);
@@ -341,7 +282,6 @@ class SceneRenderer {
   }
 
   render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null): GLCanvas | null {
-    void fog;
     const gl = this.gl;
     if (this.dead || gl.isContextLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -369,6 +309,15 @@ class SceneRenderer {
 
     gl.useProgram(this.planeProg);
     gl.activeTexture(gl.TEXTURE0);
+    // fog: set once per render. off = one uniform at 0, the shader skips it.
+    const fogging = fogOn(fog);
+    writeFogUniforms(fog, this.fogBuf);
+    gl.uniform1f(this.uFogOn, fogging ? 1 : 0);
+    if (fogging) {
+      gl.uniform3f(this.uFogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
+      gl.uniform3f(this.uFogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
+      gl.uniform3f(this.uEye, eye[0], eye[1], eye[2]);
+    }
     let slot = 0;
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
     // nudge each one toward the viewer by a few depth steps per layer
@@ -380,6 +329,7 @@ class SceneRenderer {
       if (!this.bindPlaneTexture(plane, slot)) continue;
       if (plane.cacheKey === undefined) slot++;
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
+      if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
       const uv = plane.uv;
       if (uv) gl.uniform4f(this.uUv, uv[0], uv[1], uv[2], uv[3]);
@@ -389,7 +339,7 @@ class SceneRenderer {
         gl.uniform1f(this.uRadius, plane.radius);
         gl.uniform2f(this.uSize, size[0], size[1]);
       } else gl.uniform1f(this.uRadius, 0);
-      const mesh = this.mesh(plane.shape ?? 'plane');
+      const mesh = this.mesh(knownShape(plane.shape));
       gl.bindVertexArray(mesh.vao);
       // a plane that is faded as a whole has no solid pixels
       if (plane.alpha >= 0.98) {

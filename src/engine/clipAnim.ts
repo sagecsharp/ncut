@@ -27,6 +27,10 @@ export const CLIP_MOTIONS_IN: ClipMotionInfo[] = [
   { id: 'drop', name: 'drop' },
   { id: 'swing', name: 'swing' },
   { id: 'flip', name: 'flip' },
+  { id: 'fly-in', name: 'fly in', threeD: true },
+  { id: 'flip-in-y', name: 'flip sideways', threeD: true },
+  { id: 'flip-in-x', name: 'flip upright', threeD: true },
+  { id: 'swing-in', name: 'swing open', threeD: true },
 ];
 
 export const CLIP_MOTIONS_OUT: ClipMotionInfo[] = CLIP_MOTIONS_IN;
@@ -41,7 +45,15 @@ export const CLIP_MOTIONS_LOOP: ClipMotionInfo[] = [
   { id: 'bounce', name: 'bounce' },
   { id: 'blink', name: 'blink' },
   { id: 'orbit', name: 'orbit' },
+  { id: 'turntable', name: 'turntable', threeD: true },
+  { id: 'tumble', name: 'tumble', threeD: true },
+  { id: 'sway-3d', name: 'sway 3d', threeD: true },
+  { id: 'hover', name: 'hover', threeD: true },
 ];
+
+const idsOf = (list: ClipMotionInfo[]) => new Set(list.filter((m) => m.threeD).map((m) => m.id));
+const THREE_D_IN = idsOf(CLIP_MOTIONS_IN);
+const THREE_D_LOOP = idsOf(CLIP_MOTIONS_LOOP);
 
 export const DEFAULT_CLIP_MOTION_IN = 0.5;
 export const DEFAULT_CLIP_MOTION_OUT = 0.5;
@@ -63,10 +75,14 @@ interface Pose {
   op: number;
   /** degrees, added (3d clips only) */
   rotY: number;
+  /** degrees, added (3d clips only) */
+  rotX: number;
+  /** project pixels, added; + is away from the viewer (3d clips only) */
+  z: number;
 }
 
 // one scratch pose: applyClipMotion is synchronous and not re-entrant
-const POSE: Pose = { dx: 0, dy: 0, s: 1, rot: 0, op: 1, rotY: 0 };
+const POSE: Pose = { dx: 0, dy: 0, s: 1, rot: 0, op: 1, rotY: 0, rotX: 0, z: 0 };
 const TAU = Math.PI * 2;
 
 function resetPose(): Pose {
@@ -76,6 +92,8 @@ function resetPose(): Pose {
   POSE.rot = 0;
   POSE.op = 1;
   POSE.rotY = 0;
+  POSE.rotX = 0;
+  POSE.z = 0;
   return POSE;
 }
 
@@ -155,6 +173,21 @@ function enter(id: string, p: number, W: number, H: number, threeD: boolean, o: 
       else o.s *= 0.5 + 0.5 * e;
       o.op *= clamp01(p * 2);
       break;
+    // 3d only (applyClipMotion never calls these for a 2d clip). z: + is away from the viewer.
+    case 'fly-in':
+      o.z += 2000 * (1 - e);
+      o.op *= clamp01(p * 3);
+      break;
+    case 'flip-in-y':
+      o.rotY += 90 * (1 - e);
+      break;
+    case 'flip-in-x':
+      o.rotX -= 90 * (1 - e);
+      break;
+    case 'swing-in':
+      o.rotY -= 120 * (1 - easeOutBack(p));
+      o.op *= clamp01(p * 3);
+      break;
   }
 }
 
@@ -199,6 +232,21 @@ function loop(id: string, ph: number, W: number, H: number, o: Pose): void {
       o.dy -= r * Math.cos(a);
       break;
     }
+    // 3d only
+    case 'turntable':
+      o.rotY += 360 * ph;
+      break;
+    case 'tumble':
+      o.rotX += 360 * ph;
+      o.rotY += 720 * ph;
+      break;
+    case 'sway-3d':
+      o.rotY += 25 * Math.sin(a);
+      break;
+    case 'hover':
+      o.z += 120 * Math.sin(a);
+      o.dy += 0.01 * H * Math.sin(2 * a);
+      break;
   }
 }
 
@@ -227,7 +275,7 @@ export function applyClipMotion<T extends VisualClip>(clip: T, time: number, siz
 
   if (mi && mi.duration > 0) {
     const d = Math.min(mi.duration, half);
-    if (local < d) {
+    if (local < d && (threeD || !THREE_D_IN.has(mi.id))) {
       enter(mi.id, local / d, W, H, threeD, o);
       active = true;
     }
@@ -235,12 +283,12 @@ export function applyClipMotion<T extends VisualClip>(clip: T, time: number, siz
   if (mo && mo.duration > 0) {
     const d = Math.min(mo.duration, half);
     const left = len - local;
-    if (left < d) {
+    if (left < d && (threeD || !THREE_D_IN.has(mo.id))) {
       enter(mo.id, left / d, W, H, threeD, o);
       active = true;
     }
   }
-  if (ml && ml.duration > 0) {
+  if (ml && ml.duration > 0 && (threeD || !THREE_D_LOOP.has(ml.id))) {
     const cycle = local / ml.duration;
     loop(ml.id, cycle - Math.floor(cycle), W, H, o);
     active = true;
@@ -256,6 +304,10 @@ export function applyClipMotion<T extends VisualClip>(clip: T, time: number, siz
     rotation: t.rotation + o.rot,
     opacity: clamp01(t.opacity * o.op),
   };
-  if (threeD && o.rotY) next.rotY = (t.rotY ?? 0) + o.rotY;
+  if (threeD) {
+    if (o.rotY) next.rotY = (t.rotY ?? 0) + o.rotY;
+    if (o.rotX) next.rotX = (t.rotX ?? 0) + o.rotX;
+    if (o.z) next.z = (t.z ?? 0) + o.z;
+  }
   return { ...clip, transform: next };
 }

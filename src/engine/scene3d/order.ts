@@ -13,6 +13,7 @@
 import type { Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
 import { mul, transformPoint } from './math';
+import { knownShape } from './meshes';
 
 export interface OrderItem {
   model: Mat4;
@@ -36,7 +37,8 @@ function info(item: OrderItem, index: number, viewProj: Mat4): Info {
   const c = transformPoint(m, 0, 0, 0);
   const center: Vec3 = [c[0], c[1], c[2]];
   const depth = transformPoint(mul(viewProj, m), 0, 0, 0)[3];
-  const flat = (item.shape ?? 'plane') === 'plane';
+  // every solid (box, sphere, cylinder, cone, pyramid, torus) is judged by its unit box; unknown ids draw as a plane
+  const flat = knownShape(item.shape) === 'plane';
   const corners: Vec3[] = [];
   let normal: Vec3 = [0, 0, 1];
   let eps = 0.5;
