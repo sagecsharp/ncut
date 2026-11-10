@@ -92,8 +92,11 @@ export interface EffectDef {
    * temporal effects only: the moments to blend for one frame. when present the frame renderer blends
    * the layers below at these times and `glsl` is only used for the effects tab thumbnail.
    * `quality` is 1 for export and lower for the live preview (use fewer samples).
+   * `time` is the project time of the frame in seconds. effects that need to know where on the timeline
+   * they are (strobe holds frames on a fixed grid) read it. it is optional: older callers do not pass it,
+   * an effect that needs it returns no samples without it.
    */
-  temporal?: (params: Record<string, number>, amount: number, fps: number, quality: number) => TemporalSample[];
+  temporal?: (params: Record<string, number>, amount: number, fps: number, quality: number, time?: number) => TemporalSample[];
 }
 
 /** one effect to run on a frame */
