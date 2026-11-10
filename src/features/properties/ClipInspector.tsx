@@ -7,6 +7,7 @@ import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { Clip, TextAlign, Transform } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip } from '../../types';
+import { EffectSection } from './EffectSection';
 import { ColorField, Pair, Row, Section, SliderRow } from './controls';
 import { beginEdit, liveOpts } from './edit';
 
@@ -236,7 +237,19 @@ const SpeedSection = memo(function SpeedSection({ id, speed }: { id: string; spe
 
 /* ---------- fades ---------- */
 
-const FadeSection = memo(function FadeSection({ id, fadeIn, fadeOut, duration }: { id: string; fadeIn: number; fadeOut: number; duration: number }) {
+const FadeSection = memo(function FadeSection({
+  id,
+  fadeIn,
+  fadeOut,
+  duration,
+  hint,
+}: {
+  id: string;
+  fadeIn: number;
+  fadeOut: number;
+  duration: number;
+  hint?: string;
+}) {
   return (
     <Section id="fades" title="fades">
       <Row label="fade" title="fade in and fade out in seconds">
@@ -267,6 +280,7 @@ const FadeSection = memo(function FadeSection({ id, fadeIn, fadeOut, duration }:
           />
         </Pair>
       </Row>
+      {hint ? <div className="props-hint">{hint}</div> : null}
     </Section>
   );
 });
@@ -429,6 +443,9 @@ export function ClipInspector({ id }: { id: string }) {
           srcOut={timed ? clip.trimStart + clip.duration * clip.speed : null}
           fps={fps}
         />
+        {clip.type === 'effect' ? (
+          <EffectSection id={clip.id} name={clip.name} effect={clip.effect} amount={clip.amount} params={clip.params} />
+        ) : null}
         {clip.type === 'text' ? (
           <TextSection
             id={clip.id}
@@ -449,7 +466,9 @@ export function ClipInspector({ id }: { id: string }) {
           <AudioSection id={clip.id} volume={clip.volume} muted={clip.muted} />
         ) : null}
         {clip.type === 'video' || clip.type === 'audio' ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
-        <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration} />
+        <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
+          hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
+        />
       </div>
     </section>
   );
