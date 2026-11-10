@@ -208,3 +208,54 @@ describe('keys the shell takes', () => {
     expect(rules.shellKey(null)).toBeNull();
   });
 });
+
+describe('the bridge rules', () => {
+  it('clampProgress keeps 0..1 and clears everything else', () => {
+    expect(rules.clampProgress(0)).toBe(0);
+    expect(rules.clampProgress(0.5)).toBe(0.5);
+    expect(rules.clampProgress(1)).toBe(1);
+    for (const bad of [-0.1, 1.01, NaN, Infinity, -Infinity, null, undefined, '0.5', {}, [], true]) {
+      expect(rules.clampProgress(bad)).toBe(-1);
+    }
+  });
+
+  it('isProjectFile wants the extension and a real name', () => {
+    expect(rules.isProjectFile('C:\\a\\b\\my film.ncut')).toBe(true);
+    expect(rules.isProjectFile('C:\\a\\b\\MY FILM.NCUT')).toBe(true);
+    expect(rules.isProjectFile('rel/x.ncut')).toBe(true);
+    for (const bad of ['', '.ncut', 'C:\\a\\.ncut', 'C:\\a\\b.ncut\\', 'a/b.ncut/', 'a.mp4', 'a.ncut.txt', 'a.ncutx', 'a\0.ncut', null, 5, undefined]) {
+      expect(rules.isProjectFile(bad)).toBe(false);
+    }
+    expect(rules.isProjectFile('x'.repeat(5000) + '.ncut')).toBe(false);
+  });
+
+  it('projectFileFromArgs skips the exe, the dev app path and flags', () => {
+    expect(rules.projectFileFromArgs(['C:\\ncut.exe', 'C:\\f.ncut'], true)).toBe('C:\\f.ncut');
+    expect(rules.projectFileFromArgs(['C:\\ncut.exe', '--flag', '"C:\\my f.ncut"'], true)).toBe('C:\\my f.ncut');
+    expect(rules.projectFileFromArgs(['C:\\ncut.exe'], true)).toBeNull();
+    expect(rules.projectFileFromArgs(['C:\\ncut.exe', 'a.mp4', 'b.ncut', 'c.ncut'], true)).toBe('b.ncut');
+    // dev: electron . file
+    expect(rules.projectFileFromArgs(['electron.exe', 'C:\\app.ncut', 'f.ncut'], false)).toBe('f.ncut');
+    expect(rules.projectFileFromArgs(['electron.exe', '.', '--dev-url=http://localhost:5173', 'f.ncut'], false)).toBe('f.ncut');
+    expect(rules.projectFileFromArgs(['electron.exe', '.', '-x.ncut'], false)).toBeNull();
+    expect(rules.projectFileFromArgs(null, true)).toBeNull();
+    expect(rules.projectFileFromArgs([1, null, 'a.ncut'], true)).toBe('a.ncut');
+  });
+
+  it('baseName and the open cap', () => {
+    expect(rules.baseName('C:\\a\\b\\c.mp4')).toBe('c.mp4');
+    expect(rules.baseName('/a/b/c.mp4')).toBe('c.mp4');
+    expect(rules.baseName('c.mp4')).toBe('c.mp4');
+    expect(rules.baseName(null)).toBe('');
+    expect(rules.MAX_OPEN_BYTES).toBeGreaterThan(0);
+  });
+
+  it('only the top frame of the app is a trusted sender', () => {
+    expect(rules.isTrustedSender('app://ncut/', true, null)).toBe(true);
+    expect(rules.isTrustedSender('app://ncut/', false, null)).toBe(false);
+    expect(rules.isTrustedSender('https://evil.example/', true, null)).toBe(false);
+    expect(rules.isTrustedSender('http://localhost:5173/', true, null)).toBe(false);
+    expect(rules.isTrustedSender('http://localhost:5173/', true, 'http://localhost:5173/')).toBe(true);
+    expect(rules.isTrustedSender(undefined, true, null)).toBe(false);
+  });
+});

@@ -200,7 +200,64 @@ function shellKey(input) {
   return null;
 }
 
+// ---------- the bridge (preload) ----------
+
+/** the extension of an exported project (src/storage/projectFile.ts PROJECT_FILE_EXT) */
+const PROJECT_EXT = '.ncut';
+/** biggest project file handed to the page: it goes over ipc in one piece, so it stays below what a page can hold */
+const MAX_OPEN_BYTES = 1024 * 1024 * 1024;
+
+/** taskbar progress: the fraction when it is a number in 0..1, otherwise -1 (= clear the bar) */
+function clampProgress(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) return -1;
+  return value;
+}
+
+/** does this look like the path of a project file? (right extension, a real name, not a folder) */
+function isProjectFile(p) {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 4096) return false;
+  if (p.includes('\0')) return false;
+  if (/[/\\]$/.test(p)) return false;
+  const base = p.slice(Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) + 1);
+  return base.length > PROJECT_EXT.length && base.toLowerCase().endsWith(PROJECT_EXT);
+}
+
+/**
+ * the project file a start / second start was given: the first argument that is a project file path.
+ * skips the exe itself (and in dev the app path after `electron`), flags and anything else.
+ */
+function projectFileFromArgs(argv, isPackaged) {
+  if (!Array.isArray(argv)) return null;
+  for (let i = isPackaged ? 1 : 2; i < argv.length; i++) {
+    let a = argv[i];
+    if (typeof a !== 'string') continue;
+    a = a.trim();
+    if (a.length >= 2 && a.startsWith('"') && a.endsWith('"')) a = a.slice(1, -1);
+    if (a.startsWith('-')) continue;
+    if (isProjectFile(a)) return a;
+  }
+  return null;
+}
+
+/** the last part of a path with either separator: what the page may be told about a saved file */
+function baseName(p) {
+  const s = String(p ?? '');
+  return s.slice(Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\')) + 1);
+}
+
+/** may this ipc message be believed? only the top frame of the app itself (or the dev server) */
+function isTrustedSender(frameUrl, isMainFrame, devUrl) {
+  return isMainFrame === true && typeof frameUrl === 'string' && isAppUrl(frameUrl, devUrl);
+}
+
 module.exports = {
+  PROJECT_EXT,
+  MAX_OPEN_BYTES,
+  clampProgress,
+  isProjectFile,
+  projectFileFromArgs,
+  baseName,
+  isTrustedSender,
   SCHEME,
   HOST,
   HOME,
