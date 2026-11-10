@@ -63,11 +63,15 @@ export function keySpan(kf: Keyframes): { lo: number; hi: number } | null {
  * what is visible plays backwards, not what was cut off.
  */
 export function reverseKeys(kf: Keyframes, duration?: number): Keyframes {
-  const span = keySpan(kf);
-  if (!span) return {};
-  const outside = duration !== undefined && duration > 0 && (span.lo < -GAP_TOL || span.hi > duration + GAP_TOL);
-  const sum = outside ? duration : span.lo + span.hi;
+  if (!keySpan(kf)) return {};
+  // decided per property: one stray key far outside the clip must not move the animations that lie inside it
+  const isOut = (keys: readonly Keyframe[]) =>
+    duration !== undefined && duration > 0 && keys.length > 0 && (keys[0]!.t < -GAP_TOL || keys[keys.length - 1]!.t > duration + GAP_TOL);
+  const inside: Keyframes = {};
+  for (const prop of Object.keys(kf)) if (!isOut(kf[prop]!)) inside[prop] = kf[prop]!;
+  const span = keySpan(inside);
   return mapProps(kf, (keys) => {
+    const sum = isOut(keys) || !span ? (duration ?? 0) : span.lo + span.hi;
     const n = keys.length;
     const out: Keyframe[] = [];
     for (let i = n - 1; i >= 0; i--) {

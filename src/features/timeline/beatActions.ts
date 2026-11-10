@@ -11,7 +11,7 @@ import type { Clip, Project } from '../../types';
 import { getWaveform } from '../../media/derived';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
-import { beatsInClipIndexed, detectBeats, thinBeats } from './beats';
+import { beatsInClipIndexed, detectBeats } from './beats';
 
 /** how many beats between markers: every beat, every 2nd, every 4th (bars) */
 export type BeatDensity = 1 | 2 | 4;
@@ -72,8 +72,15 @@ export async function markBeats(clipId: string, density: BeatDensity = 1): Promi
   const st = useEditor.getState();
   const existing = st.project?.markers ?? [];
   const tol = 0.5 / fps;
-  const wanted = thinBeats(res.beats, density);
-  const wantedIndex = thinBeats(res.indices, density);
+  // every 2nd / 4th beat of the SONG (bars stay bars after a trim), not of what happens to be visible
+  const step = Math.max(1, Math.round(density));
+  const picked = res.beats.map((_, i) => i).filter((i) => res.indices[i]! % step === 0);
+  if (picked.length === 0) {
+    useUi.getState().toast('no beats inside this clip');
+    return;
+  }
+  const wanted = picked.map((i) => res.beats[i]!);
+  const wantedIndex = picked.map((i) => res.indices[i]!);
   const fresh: { time: number; name: string }[] = [];
   wanted.forEach((time, i) => {
     // named by the beat's place in the whole sound ("beat 5" is the fifth beat of the song), even after a trim

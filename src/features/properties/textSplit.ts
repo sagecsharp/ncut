@@ -248,6 +248,20 @@ export function pieceTransform(base: PieceBase, piece: Pick<SplitPiece, 'cx' | '
   return keys !== undefined && keys !== kf ? { transform, keyframes: keys } : { transform, ...(kf ? { keyframes: kf } : {}) };
 }
 
+/** the piece closest to the middle of the old box: it takes over what hung on the text (children, look targets, cameras) */
+export function middlePiece(pieces: readonly Pick<SplitPiece, 'cx' | 'cy'>[]): number {
+  let best = 0;
+  let dist = Infinity;
+  pieces.forEach((pc, i) => {
+    const d = pc.cx * pc.cx + pc.cy * pc.cy;
+    if (d < dist - 1e-9) {
+      dist = d;
+      best = i;
+    }
+  });
+  return best;
+}
+
 /* ---------- the piece clip ---------- */
 
 /** why a text cannot be split at all, or null */
@@ -276,8 +290,10 @@ export function modeBlocker(clip: Pick<TextClip, 'text'>, mode: SplitMode): stri
 }
 
 /** what a split cannot carry over exactly, as words for the toast. empty when the pieces are a true copy. */
-export function splitNotes(clip: TextClip): string[] {
+export function splitNotes(clip: TextClip, mode?: SplitMode): string[] {
   const notes: string[] = [];
+  // one box around the whole text becomes a box per piece (a box per line split into lines looks the same)
+  if (clip.background && mode && keepsBackground(mode) && !(mode === 'lines' && clip.backgroundPerLine)) notes.push('the background is now a box per piece');
   const keyed = (prop: string) => (clip.keyframes?.[prop]?.length ?? 0) > 0;
   const moving = ['scale', 'rotation', ...(clip.threeD ? ['rotX', 'rotY'] : [])].filter(keyed);
   if (moving.length > 0) notes.push('the size / turn is animated: the pieces match at the playhead only');

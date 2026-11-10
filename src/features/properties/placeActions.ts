@@ -325,7 +325,8 @@ export function dropToFloor(ids: readonly string[]): number {
     }
     const a = axesOf(it.frame);
     const size = worldSize(p, it);
-    const y = floorCenterY(p.height, size.w, size.h, a.right, a.down, solidDepth(it, size), a.normal);
+    const round = !!it.now.threeD && it.now.shape === 'sphere';
+    const y = floorCenterY(p.height, size.w, size.h, a.right, a.down, solidDepth(it, size), a.normal, round);
     const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix([a.center[0], y, a.center[2]], a.right, a.down, a.normal, frameScale(it.frame)));
     if (next) plans.push(planOf(it, next, { withScale: !!it.parent, make3d: false }));
     else skipped++;

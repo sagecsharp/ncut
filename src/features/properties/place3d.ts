@@ -319,14 +319,16 @@ export function floorY(projectHeight: number): number {
  * how far a w x h clip reaches up and down from its center in the world (its vertical extent, total).
  * a solid has a thickness along the clip's normal: pass `depth` and `normal` to count it too.
  */
-export function verticalExtent(w: number, h: number, right: Vec3, down: Vec3, depth = 0, normal?: Vec3): number {
+export function verticalExtent(w: number, h: number, right: Vec3, down: Vec3, depth = 0, normal?: Vec3, round = false): number {
   const thick = depth > 0 && normal ? Math.abs(depth * normal[1]) : 0;
+  // a ball reaches as far as its radii along the three axes combine (an ellipsoid), not as far as the box around it
+  if (round) return Math.hypot(w * right[1], h * down[1], thick);
   return Math.abs(w * right[1]) + Math.abs(h * down[1]) + thick;
 }
 
 /** world y of a clip's center so its lowest edge rests on the floor line */
-export function floorCenterY(projectHeight: number, w: number, h: number, right: Vec3, down: Vec3, depth = 0, normal?: Vec3): number {
-  return floorY(projectHeight) - verticalExtent(w, h, right, down, depth, normal) / 2;
+export function floorCenterY(projectHeight: number, w: number, h: number, right: Vec3, down: Vec3, depth = 0, normal?: Vec3, round = false): number {
+  return floorY(projectHeight) - verticalExtent(w, h, right, down, depth, normal, round) / 2;
 }
 
 export const normalizeVec = normalize;

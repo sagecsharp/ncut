@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { getEffect } from '../../engine/effects/registry';
-import { animProps } from '../../lib/anim';
+import { animProps, evalKeys } from '../../lib/anim';
 import type { Clip, Keyframe, Keyframes } from '../../types';
 import { keySpan } from './keyTools';
 
@@ -32,9 +32,14 @@ export function placeKeys(copied: KeyClip, clip: Clip, at: number): Keyframes {
   const out: Keyframes = {};
   for (const prop of Object.keys(copied)) {
     if (!allowed.has(prop) && !params?.has(prop)) continue;
-    // keys that would land after the clip's end are left out: nobody would ever see them
-    const keys: Keyframe[] = copied[prop]!.map((k) => ({ t: t0 + k.t, v: k.v, ease: k.ease })).filter((k) => k.t <= clip.duration + 1e-6);
-    if (keys.length > 0) out[prop] = keys;
+    const all: Keyframe[] = copied[prop]!.map((k) => ({ t: t0 + k.t, v: k.v, ease: k.ease }));
+    // keys that would land after the clip's end are left out, nobody would ever see them. but they shape the
+    // curve inside the clip: a key at the very end holds the value the full animation has there
+    const keys = all.filter((k) => k.t <= clip.duration + 1e-6);
+    if (keys.length === 0) continue;
+    const last = keys[keys.length - 1]!;
+    if (keys.length < all.length && clip.duration - last.t > 1e-3) keys.push({ t: clip.duration, v: evalKeys(all, clip.duration), ease: 'linear' });
+    out[prop] = keys;
   }
   return out;
 }

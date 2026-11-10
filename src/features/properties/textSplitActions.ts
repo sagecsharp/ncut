@@ -8,7 +8,7 @@ import { useUi } from '../../store/ui';
 import { isCameraClip, isVisualClip } from '../../types';
 import type { TextClip } from '../../types';
 import { hasAnimatedPose } from './parentOptions';
-import { MAX_PIECES, keepsBackground, modeBlocker, pieceClip, splitBlocker, splitNotes, splitPlan } from './textSplit';
+import { MAX_PIECES, keepsBackground, middlePiece, modeBlocker, pieceClip, splitBlocker, splitNotes, splitPlan } from './textSplit';
 import type { SplitMode, SplitPlan } from './textSplit';
 
 export const SPLIT_MODES: SplitMode[] = ['letters', 'words', 'lines'];
@@ -85,7 +85,11 @@ export function splitText(id: string, mode: SplitMode): number {
   }
   const after = useEditor.getState().project;
   const effects = effectIds.filter((eid) => !after?.clips.some((c) => c.id === eid)).length;
-  const first = made[0]!;
+  // the piece in the middle of the old box takes over what hung on the text, so a camera that aimed at the
+  // title still aims at its middle (the pieces come back in the order they went in)
+  const mid = made.length === pieces.length ? middlePiece(plan.pieces) : 0;
+  const first = made[mid]!;
+  const anchor = plan.pieces[mid]!;
   if (kids.length + lookers.length + cameras.length > 0) {
     // the pieces are in the project now: work the kids' places out from the old project plus the pieces (the original
     // still there), so each kid stays where it is on screen under the first piece
@@ -94,9 +98,24 @@ export function splitText(id: string, mode: SplitMode): number {
     const synth = { ...p, clips: [...p.clips, ...added] };
     for (const kid of kids) {
       if (!isVisualClip(kid)) continue;
-      const transform = hasAnimatedPose(kid) ? null : reparentTransform(synth, kid, first, clamp(time, kid.start, kid.start + kid.duration));
+      if (hasAnimatedPose(kid)) {
+        // a keyed child keeps its animation: its place is measured from the piece now, so the piece's offset
+        // inside the old box comes off x / y (off every key, or off the plain value)
+        const kf = { ...(kid.keyframes ?? {}) };
+        const tr = { ...kid.transform };
+        for (const [prop, d] of [['x', -anchor.cx], ['y', -anchor.cy]] as const) {
+          const keys = kf[prop];
+          if (keys && keys.length > 0) kf[prop] = keys.map((k) => ({ ...k, v: k.v + d }));
+          else tr[prop] = (tr[prop] ?? 0) + d;
+        }
+        st.updateClip(kid.id, { parent: first }, skip);
+        st.updateTransform(kid.id, tr, skip);
+        st.setClipKeyframes(kid.id, kf, skip);
+        continue;
+      }
+      const transform = reparentTransform(synth, kid, first, clamp(time, kid.start, kid.start + kid.duration));
       st.updateClip(kid.id, { parent: first }, skip);
-      if (transform) st.updateTransform(kid.id, transform, skip);
+      st.updateTransform(kid.id, transform, skip);
     }
     for (const lid of lookers) st.updateClip(lid, { lookTarget: first }, skip);
     for (const cid of cameras) st.updateClip(cid, { target: first }, skip);
@@ -107,7 +126,7 @@ export function splitText(id: string, mode: SplitMode): number {
   let msg = plural(made.length, mode);
   if (clip.background && !keepsBackground(mode)) msg += ', background removed';
   if (effects > 0) msg += `, ${effects === 1 ? 'its effect was' : `${effects} effects were`} removed`;
-  for (const note of splitNotes(clip)) msg += ', ' + note;
+  for (const note of splitNotes(clip, mode)) msg += ', ' + note;
   ui.toast(msg);
   return made.length;
 }

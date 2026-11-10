@@ -1,4 +1,4 @@
-import { animProps, valueAt } from '../../lib/anim';
+import { animProps, evalKeys, valueAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -132,8 +132,12 @@ export function wiggleAction(id: string, prop: string, amount: number, perSecond
     toast('cannot wiggle that', 'info');
     return;
   }
-  const keys = wiggleKeys(base, { amount, perSecond: clamp(perSecond, 1, 12), from: 0, to: clip.duration, seed: Math.floor(Math.random() * 1e9) });
-  if (writeKeys(clip, { [prop]: keys })) toast(`wiggle added, ${keys.length} keys`);
+  const old = clip.keyframes?.[prop];
+  const animated = !!old && old.length > 0;
+  // an animation that is already there is kept: the shake rides on top of it (each wiggle key = the curve there + the shake)
+  let keys = wiggleKeys(animated ? 0 : base, { amount, perSecond: clamp(perSecond, 1, 12), from: 0, to: clip.duration, seed: Math.floor(Math.random() * 1e9) });
+  if (animated) keys = keys.map((k) => ({ ...k, v: evalKeys(old, k.t) + k.v }));
+  if (writeKeys(clip, { [prop]: keys })) toast(animated ? `wiggle added on top of the animation, ${keys.length} keys` : `wiggle added, ${keys.length} keys`);
 }
 
 export function copyKeysAction(id: string): void {
@@ -175,6 +179,10 @@ export function pasteKeysAction(id: string): void {
     const old = (clip.keyframes?.[prop] ?? []).filter((k) => k.t < lo - 1e-6 || k.t > hi + 1e-6);
     merged[prop] = [...old, ...fresh].sort((a, b) => a.t - b.t);
   }
-  writeKeys(clip, merged);
-  toast(`${n} keys pasted`);
+  if (!writeKeys(clip, merged)) {
+    toast('these keys are already here', 'info');
+    return;
+  }
+  const written = Object.keys(placed).reduce((s, prop) => s + placed[prop]!.length, 0);
+  toast(`${written} key${written === 1 ? '' : 's'} pasted`);
 }
