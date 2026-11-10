@@ -22,6 +22,7 @@ import {
   gifSizeWarning,
 } from './gifPlan';
 import { loadExportSettings, saveExportSettings } from './settings';
+import { setBusy } from '../../lib/busy';
 import './export.css';
 
 export interface ExportDialogProps {
@@ -189,6 +190,13 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     },
     [revokeUrl],
   );
+
+  // closing the tab / the desktop window asks first while an export runs
+  useEffect(() => {
+    if (phase !== 'exporting') return;
+    setBusy('export', 'an export is still running');
+    return () => setBusy('export', null);
+  }, [phase]);
 
   // elapsed clock while exporting (2 ticks per second, not per frame)
   useEffect(() => {

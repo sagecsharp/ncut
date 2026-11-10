@@ -247,6 +247,27 @@ and imports it from its root component. prefix class names with the feature name
 to avoid collisions. do not edit `theme.css` / `base.css` from a feature: if a token or shared class is missing,
 add it locally and mention it in your report.
 
+## desktop shell (electron/)
+
+the exe is the built web app (`dist/`) in one electron window. nothing in `src/` knows about electron.
+
+- `electron/main.cjs` the main process: registers the `app://ncut` origin and serves `dist/` from it (never a file
+  outside the folder), sends the content security policy with the page, creates the window, remembers its place
+  and the last save folder in `window.json` (userData).
+- `electron/rules.cjs` every decision as a pure function (url to file, what may navigate, permissions, file names,
+  window placement, shell keys), tested in `electron/rules.test.mjs`.
+- the page has no node access, no preload script and no network (csp `connect-src 'self' blob: data:`). it may ask
+  for two permissions only: full screen and the installed fonts. new windows and navigation away are refused,
+  web links open in the system browser.
+- two globals are the whole bridge, set in `store/session.ts`: `window.__ncutBusy()` returns a sentence while work
+  would be lost (`lib/busy.ts`, the export dialog marks itself) and `window.__ncutBeforeClose()` writes the last
+  autosave. the shell calls both when the window closes. in a browser tab `beforeunload` uses the same busy flag.
+- files the app hands out (`<a download>` on a blob) become a save dialog through `will-download`.
+- packaging: `electron-builder` config in `package.json` (`build`): only `dist/`, `electron/` and `package.json` go
+  into the asar, fuses turn off run-as-node / node options / inspect and turn on asar integrity.
+- testing the exe: start it with `--remote-debugging-port=9334 --user-data-dir=<temp folder>` and drive the page
+  over the chrome devtools protocol. native dialogs (open, save, message box) block the window until answered.
+
 ## dev hook
 
 in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, fx }` is available for testing.

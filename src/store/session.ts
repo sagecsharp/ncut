@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { Project } from '../types';
 import type { CanvasPreset } from '../lib/factory';
 import { createProject } from '../lib/factory';
+import { busyReason } from '../lib/busy';
 import { addFontFiles, importedFontFiles } from '../lib/fonts';
 import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
@@ -290,9 +291,18 @@ export function startAutosave(): void {
       }
     }, AUTOSAVE_MS);
   });
-  window.addEventListener('beforeunload', () => {
+  window.addEventListener('beforeunload', (e) => {
     if (dirty) void persist(dirty);
+    // a running export would be gone: let the browser ask first
+    if (busyReason() !== null) e.preventDefault();
   });
+  // the desktop shell (electron/main.cjs) calls these before it closes the window
+  const shell = window as unknown as { __ncutBusy?: () => string | null; __ncutBeforeClose?: () => Promise<void> };
+  shell.__ncutBusy = () => busyReason();
+  shell.__ncutBeforeClose = async () => {
+    snapPoster();
+    await flushAutosave();
+  };
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'hidden') return;
     snapPoster();

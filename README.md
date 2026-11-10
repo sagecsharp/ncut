@@ -34,12 +34,37 @@ npm run dev
 
 then open http://localhost:5173. use a chromium based browser (chrome, edge, brave) for export, it needs webcodecs.
 
+## desktop app (windows)
+
+the same editor in its own window, no browser needed.
+
+```bash
+npm run exe
+```
+
+this builds into `release/`:
+
+- `ncut-<version>-portable.exe` one file, just run it
+- `ncut-<version>-setup.exe` installer (start menu entry, uninstaller)
+- `win-unpacked/ncut.exe` the plain folder build, starts the fastest
+
+what the desktop version does on top: exports and saved frames open a normal save dialog in the folder you used
+last, the window remembers its place, closing while an export runs asks first, `f11` is full screen.
+projects live in the app's own storage (`%APPDATA%\ncut`), separate from the browser version. use the
+project file (.ncut) to move a project between them.
+
+the exe is not code signed, so windows smartscreen may ask before the first start.
+
 ## scripts
 
 - `npm run dev` start the dev server
 - `npm run build` typecheck + production build into `dist/`
 - `npm run test` unit tests (vitest)
 - `npm run typecheck` typescript only
+- `npm run app` build and open the desktop window without packaging
+- `npm run app:dev` desktop window on the running dev server (start `npm run dev` first)
+- `npm run exe` build the windows exe files into `release/`
+- `npm run icon` redraw `build/icon.png` and `build/icon.ico`
 
 ## shortcuts
 
@@ -63,6 +88,7 @@ press `?` in the editor for the full list. the main ones:
 ## how it is built
 
 vite, react, typescript, zustand, [mediabunny](https://mediabunny.dev) for encoding and decoding, lucide icons, plain css.
+the desktop app is an [electron](https://www.electronjs.org) window around the same build.
 see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layout of the code and the rules it follows.
 
 ## license

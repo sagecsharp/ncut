@@ -5,12 +5,64 @@
   "version": "0.1.0",
   "type": "module",
   "description": "a flat, dark, in-browser video editor. multi-track timeline, real-time preview, local-only, no watermark.",
+  "author": "sagecsharp",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "app": "npm run build && electron .",
+    "app:dev": "electron . --dev-url=http://localhost:5173",
+    "icon": "node scripts/make-icon.cjs",
+    "exe": "npm run build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.sagecsharp.ncut",
+    "productName": "ncut",
+    "copyright": "Copyright (c) 2026 sagecsharp",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!electron/**/*.test.*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "asar": true,
+    "publish": null,
+    "electronLanguages": [
+      "en-US"
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "portable": {
+      "artifactName": "ncut-${version}-portable.exe"
+    },
+    "nsis": {
+      "artifactName": "ncut-${version}-setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
   },
   "dependencies": {
     "@fontsource/abril-fatface": "^5.3.0",
@@ -52,6 +104,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.7",
     "vitest": "^5.1.0"
