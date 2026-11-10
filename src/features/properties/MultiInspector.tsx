@@ -4,7 +4,7 @@ import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
-import { Pair, Row, Section, SliderRow } from './controls';
+import { Pair, Row, Section, SliderRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 
 interface Summary {
@@ -13,7 +13,10 @@ interface Summary {
   audio: number;
   text: number;
   effect: number;
+  camera: number;
   visual: number;
+  /** every selected visual clip is 3d */
+  allThreeD: boolean;
   audible: number;
   /** values of the first matching clip, shown as the shared value */
   opacity: number;
@@ -33,7 +36,9 @@ function summarize(ids: string[]): Summary {
     audio: 0,
     text: 0,
     effect: 0,
+    camera: 0,
     visual: 0,
+    allThreeD: true,
     audible: 0,
     opacity: 1,
     volume: 1,
@@ -47,7 +52,7 @@ function summarize(ids: string[]): Summary {
   let first = true;
   for (const c of p.clips) {
     if (!set.has(c.id)) continue;
-    if (c.type !== 'camera') out[c.type] += 1;
+    out[c.type] += 1;
     out.minDuration = Math.min(out.minDuration, c.duration);
     if (first) {
       out.fadeIn = c.fadeIn;
@@ -57,6 +62,7 @@ function summarize(ids: string[]): Summary {
     if (isVisualClip(c)) {
       if (out.visual === 0) out.opacity = c.transform.opacity;
       out.visual += 1;
+      if (!c.threeD) out.allThreeD = false;
     }
     if (c.type === 'audio' || (c.type === 'video' && (p.assets.find((a) => a.id === c.assetId)?.hasAudio ?? true))) {
       if (out.audible === 0) out.volume = c.volume;
@@ -82,6 +88,11 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
     const o = liveOpts();
     for (const id of targets(ids, isVisualClip)) useEditor.getState().updateTransform(id, { opacity: v / 100 }, o);
   };
+  const setThreeD = (on: boolean) => {
+    const st = useEditor.getState();
+    st.pushHistory();
+    for (const id of targets(ids, isVisualClip)) st.updateClip(id, { threeD: on }, { skipHistory: true });
+  };
   const setVolume = (v: number) => {
     const o = liveOpts();
     for (const id of targets(ids, (c) => c.type === 'audio' || c.type === 'video')) {
@@ -105,6 +116,9 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
       {sum.visual > 0 ? (
         <Section id="m-visual" title="visual">
           <SliderRow label="opacity" title="opacity of all selected visual clips (%)" value={sum.opacity * 100} min={0} max={100} suffix="%" onChange={setOpacity} />
+          <Row label="3d" title="put all selected visual clips in 3d space or back to flat">
+            <Switch checked={sum.allThreeD} title="3d on or off for all selected visual clips" onChange={setThreeD} />
+          </Row>
         </Section>
       ) : null}
       {sum.audible > 0 ? (
@@ -159,7 +173,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
-  const parts = (['video', 'image', 'audio', 'text', 'effect'] as const)
+  const parts = (['video', 'image', 'audio', 'text', 'effect', 'camera'] as const)
     .filter((k) => sum[k] > 0)
     .map((k) => `${sum[k]} ${k}`)
     .join(', ');

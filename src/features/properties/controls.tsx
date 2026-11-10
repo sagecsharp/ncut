@@ -29,10 +29,10 @@ export function Section({ id, title, children }: { id: string; title: string; ch
   );
 }
 
-export function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+export function Row({ label, title, wide, children }: { label: string; title?: string; wide?: boolean; children: ReactNode }) {
   return (
     <div className="props-row" title={title}>
-      <span className="field-label props-label">{label}</span>
+      <span className={`field-label props-label${wide ? ' props-label-wide' : ''}`}>{label}</span>
       <div className="props-control">{children}</div>
     </div>
   );
@@ -138,5 +138,51 @@ export function ColorField({ value, title, disabled, onChange }: ColorFieldProps
         }}
       />
     </div>
+  );
+}
+
+/** clear on / off switch: a button that reads "on" or "off" */
+export function Switch({ checked, title, onChange }: { checked: boolean; title: string; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`btn btn-sm props-switch${checked ? ' btn-primary' : ''}`}
+      title={title}
+      aria-label={title}
+      onClick={() => onChange(!checked)}
+    >
+      {checked ? 'on' : 'off'}
+    </button>
+  );
+}
+
+/** a plain select row. options are [value, label]. */
+export function SelectRow({
+  label,
+  title,
+  value,
+  options,
+  wide,
+  onChange,
+}: {
+  wide?: boolean;
+  label: string;
+  title: string;
+  value: string;
+  options: [value: string, label: string][];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <Row label={label} title={title} wide={wide}>
+      <select className="select" title={title} aria-label={title} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </Row>
   );
 }
