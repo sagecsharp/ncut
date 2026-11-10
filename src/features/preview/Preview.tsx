@@ -209,12 +209,8 @@ export function Preview() {
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  // the inset draws with the engine's media sources. the resolver is private to the engine (not in my files):
-  // read it when it is needed, and the inset simply stays empty if it is ever not there
-  const getResolve = useCallback((): SourceResolver | null => {
-    const r = (engineRef.current as unknown as { resolve?: SourceResolver } | null)?.resolve;
-    return typeof r === 'function' ? r : null;
-  }, []);
+  // the inset draws with the engine's media sources (read when needed: the engine is made after the first render)
+  const getResolve = useCallback((): SourceResolver | null => engineRef.current?.resolve ?? null, []);
 
   const toggleFullscreen = useCallback(() => {
     const stage = stageRef.current;

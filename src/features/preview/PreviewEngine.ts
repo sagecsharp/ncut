@@ -410,7 +410,8 @@ export class PreviewEngine {
     return false;
   }
 
-  private readonly resolve = (clip: VideoClip | ImageClip, _sourceTime: number): DrawSource | null => {
+  /** the picture of a media clip right now (the pooled element / decoded image). also used by the camera inset. */
+  readonly resolve = (clip: VideoClip | ImageClip, _sourceTime: number): DrawSource | null => {
     if (clip.type === 'video') {
       const entry = this.pool.get(clip.id);
       if (!entry || entry.kind !== 'video') return null;

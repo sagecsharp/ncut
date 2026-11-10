@@ -1,5 +1,6 @@
 import { getClipBox } from '../../engine/draw';
 import { resolveClip, valueAt } from '../../lib/anim';
+import { resolveCounter } from '../../engine/counter';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -21,7 +22,10 @@ function timeIn(clip: Clip): number {
 
 /** the box of a clip on the canvas at the playhead (keyframes applied, rotation ignored) */
 function boxOf(project: Project, clip: VisualClip): AlignBox {
-  const b = getClipBox(project, resolveClip(clip, timeIn(clip)));
+  const t = timeIn(clip);
+  const shown = resolveClip(clip, t);
+  // a running number is measured as it is drawn right now
+  const b = getClipBox(project, shown.type === 'text' ? resolveCounter(shown, t) : shown);
   return { id: clip.id, cx: b.cx, cy: b.cy, width: b.width, height: b.height };
 }
 
