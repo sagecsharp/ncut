@@ -31,7 +31,7 @@ function all(clip: TextClip, local: number, i = 0, n = 1): GlyphState[] {
 const plain = (s: GlyphState) => ({ ...s });
 
 const NEW_IN = ['blur', 'scramble', 'flip', 'wave-in', 'glitch', 'expand', 'swing', 'bounce'];
-const NEW_LOOP = ['glitch', 'typing', 'neon', 'heartbeat', 'spin', 'colors'];
+const NEW_LOOP = ['glitch', 'typing', 'neon', 'heartbeat', 'spin', 'colors', 'flicker'];
 
 describe('animation lists', () => {
   it('keeps the old ids first and in order, then the new ones', () => {
@@ -315,5 +315,30 @@ describe('loops', () => {
     expect(h1 - h0).toBeCloseTo(1 / 6, 6);
     const later = letter(clip, 0.1 + 2 / 6, 0, 5).hue!;
     expect(later - h0).toBeCloseTo(1 / 6, 6);
+  });
+
+  it('flicker blinks single letters in an irregular pattern and never moves them', () => {
+    const c = withLoop('flicker', 2);
+    const n = 12;
+    const alphas = new Set<number>();
+    let dark = 0;
+    let samples = 0;
+    for (let k = 0; k < 36; k++) {
+      for (let i = 0; i < n; i++) {
+        const st = letter(c, (k / 36) * 2, i, n);
+        alphas.add(st.alpha);
+        if (st.alpha < 1) dark++;
+        samples++;
+        expect(st.alpha).toBeGreaterThan(0);
+        expect(st.dx).toBe(0);
+        expect(st.dy).toBe(0);
+      }
+    }
+    expect(dark).toBeGreaterThan(0);
+    expect(dark).toBeLessThan(samples / 2);
+    expect(alphas.size).toBeGreaterThan(1);
+    // letters do not all blink together
+    const pattern = (i: number) => Array.from({ length: 18 }, (_, k) => letter(c, (k / 18) * 2 + 0.01, i, n).alpha).join();
+    expect(new Set(Array.from({ length: n }, (_, i) => pattern(i))).size).toBeGreaterThan(1);
   });
 });

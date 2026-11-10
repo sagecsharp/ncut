@@ -195,6 +195,43 @@ export function curveLayout(
   return { glyphs, minX, maxX, minY, maxY };
 }
 
+/* ---------- extrude (pure) ---------- */
+
+/** most copies drawn for one extrude, deeper blocks use larger steps */
+export const EXTRUDE_MAX_STEPS = 64;
+
+/**
+ * the offsets of the copies that make the side of the letters, from the far end toward the face (the last one is
+ * one step away from the face, the face itself is drawn on top). one copy per pixel of depth, at most `cap` copies
+ * (then the steps get larger so the block stays solid). angle = degrees clockwise from the right (90 = down).
+ * depthPx <= 0 = no copies.
+ */
+export function extrudeOffsets(depthPx: number, angleDeg: number, cap = EXTRUDE_MAX_STEPS): { dx: number; dy: number }[] {
+  if (!(depthPx > 0) || !(cap >= 1)) return [];
+  const n = Math.min(Math.floor(cap), Math.max(1, Math.ceil(depthPx)));
+  const a = (angleDeg * Math.PI) / 180;
+  const cx = Math.cos(a);
+  const cy = Math.sin(a);
+  const out: { dx: number; dy: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = (depthPx * (n - i)) / n;
+    out.push({ dx: cx * d, dy: cy * d });
+  }
+  return out;
+}
+
+const extrudeCache = { depth: -1, angle: 0, dev: 0, list: [] as { dx: number; dy: number }[] };
+/** extrudeOffsets in the units of the block (not device pixels), the last result is kept */
+function blockExtrudeOffsets(depthUnits: number, angle: number, dev: number): { dx: number; dy: number }[] {
+  const c = extrudeCache;
+  if (c.depth === depthUnits && c.angle === angle && c.dev === dev) return c.list;
+  c.depth = depthUnits;
+  c.angle = angle;
+  c.dev = dev;
+  c.list = extrudeOffsets(depthUnits * dev, angle).map((o) => ({ dx: o.dx / dev, dy: o.dy / dev }));
+  return c.list;
+}
+
 /* ---------- gradient (pure) ---------- */
 
 /**
@@ -349,6 +386,7 @@ export function textSpill(clip: TextClip, animated: boolean): number {
   if (clip.stroke) s += clip.stroke.width;
   if (clip.shadow) s += clip.shadow.distance + clip.shadow.blur * 2;
   if (animated) s += 1.5;
+  if (clip.extrude && clip.extrude.depth > 0) s += Math.min(1, clip.extrude.depth); // the side reaches this far in any direction
   if (clip.highlight?.background) s += 0.15; // the box behind the lit word reaches a little past the letters
   return s;
 }
@@ -380,6 +418,7 @@ export function textSignature(clip: TextClip): string {
     clip.curve,
     clip.wrapWidth,
     clip.highlight ? JSON.stringify(clip.highlight) : '',
+    clip.extrude ? JSON.stringify(clip.extrude) : '',
   ].join('|');
   sigCache.set(clip, { v, sig });
   return sig;
@@ -582,7 +621,8 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
 
   const gradient = clip.gradient ?? null;
   // the transform of the whole block: letters that move on their own need the gradient mapped into their frame
-  const blockT = gradient || animated ? ctx.getTransform() : null;
+  const ext = clip.extrude && clip.extrude.depth > 0 ? clip.extrude : null;
+  const blockT = gradient || animated || ext ? ctx.getTransform() : null;
   const dev = blockT ? Math.hypot(blockT.a, blockT.b) || 1 : 1;
   const canFilter = 'filter' in ctx;
 
@@ -656,6 +696,30 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     }
   }
 
+  const offs = ext && blockT ? blockExtrudeOffsets(Math.min(1, ext.depth) * fs, ext.angle, dev) : null;
+  // the block's directions in the frame of the current letter: where a block space step lands inside the letter's own transform
+  let bax = 1;
+  let bay = 0;
+  let bbx = 0;
+  let bby = 1;
+  const setBasis = (moved: boolean): void => {
+    if (!moved || !blockT) {
+      bax = 1;
+      bay = 0;
+      bbx = 0;
+      bby = 1;
+      return;
+    }
+    const here = ctx.getTransform();
+    const [ox, oy] = remapPoint(blockT, here, 0, 0);
+    const [ux, uy] = remapPoint(blockT, here, 1, 0);
+    const [vx, vy] = remapPoint(blockT, here, 0, 1);
+    bax = ux - ox;
+    bay = uy - oy;
+    bbx = vx - ox;
+    bby = vy - oy;
+  };
+
   const shadow = clip.shadow && clip.shadow.opacity > 0 ? clip.shadow : null;
   if (shadow) {
     // draw the letters far outside the canvas and let only their shadow land on it: the shadow of one
@@ -673,11 +737,35 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     ctx.fillStyle = '#000';
     ctx.strokeStyle = '#000';
     ctx.lineWidth = strokeW;
-    each((text, x, y) => {
+    // with a side, the shadow belongs to its far end: it is cast by the farthest copy only
+    const far = offs && offs.length > 0 ? offs[0]! : null;
+    each((text, x, y, _st, moved) => {
+      if (far) {
+        setBasis(moved);
+        x += far.dx * bax + far.dy * bbx;
+        y += far.dx * bay + far.dy * bby;
+      }
       if (stroke) ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
     }, false);
     ctx.restore();
+  }
+
+  if (offs && offs.length > 0 && ext) {
+    // the side: flat copies from the far end to the face, under the outline and the fill
+    ctx.fillStyle = ext.color;
+    ctx.strokeStyle = ext.color;
+    ctx.lineWidth = strokeW;
+    each((text, x, y, _st, moved) => {
+      setBasis(moved);
+      for (let k = 0; k < offs.length; k++) {
+        const o = offs[k]!;
+        const px = x + o.dx * bax + o.dy * bbx;
+        const py = y + o.dx * bay + o.dy * bby;
+        if (stroke) ctx.strokeText(text, px, py);
+        ctx.fillText(text, px, py);
+      }
+    }, true);
   }
 
   if (stroke) {

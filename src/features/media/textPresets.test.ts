@@ -56,4 +56,16 @@ describe('text presets', () => {
     expect(boxed?.background).toBeTruthy();
     expect(byId('caption-line').build(1, 1).highlight).toBeUndefined();
   });
+  it('has depth cards that use extrude', () => {
+    for (const id of ['block', 'retro', 'long-shadow', 'sticker']) {
+      const e = byId(id).build(1920, 1080).extrude;
+      expect(e, id).toBeTruthy();
+      expect(e!.depth).toBeGreaterThan(0);
+      expect(e!.depth).toBeLessThanOrEqual(1);
+    }
+    expect(byId('long-shadow').build(1, 1).extrude!.depth).toBeGreaterThan(byId('block').build(1, 1).extrude!.depth);
+    expect(byId('long-shadow').build(1, 1).extrude!.angle).toBe(135);
+    expect(byId('retro').build(1, 1).stroke).toBeTruthy();
+    expect(byId('sticker').build(1, 1).stroke!.width).toBeGreaterThan(byId('outline').build(1, 1).stroke!.width);
+  });
 });

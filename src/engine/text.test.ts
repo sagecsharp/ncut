@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createTextClip } from '../lib/factory';
 import {
   curveLayout,
+  EXTRUDE_MAX_STEPS,
   drawText,
+  extrudeOffsets,
   fontRetryDelay,
   glyphAnimActive,
   gradientLine,
@@ -516,5 +518,75 @@ describe('karaoke drawing', () => {
     expect(textAnimActive(lit, 3)).toBe(true);
     expect(textAnimActive(plain, 3)).toBe(false);
     expect(textSpill(mk({ highlight: { color: '#ff0', mode: 'word', background: '#f00' } }), false)).toBeGreaterThan(textSpill(lit, false));
+  });
+});
+
+describe('extrudeOffsets', () => {
+  it('is empty without depth', () => {
+    expect(extrudeOffsets(0, 45)).toEqual([]);
+    expect(extrudeOffsets(-3, 45)).toEqual([]);
+    expect(extrudeOffsets(Number.NaN, 45)).toEqual([]);
+  });
+  it('makes one copy per pixel, far to near, the nearest one step from the face', () => {
+    const o = extrudeOffsets(10, 0);
+    expect(o.length).toBe(10);
+    expect(o[0]!.dx).toBeCloseTo(10, 9);
+    expect(o[9]!.dx).toBeCloseTo(1, 9);
+    for (let i = 1; i < o.length; i++) expect(o[i]!.dx).toBeLessThan(o[i - 1]!.dx);
+    expect(extrudeOffsets(0.4, 0).length).toBe(1);
+  });
+  it('caps the count and still reaches the full depth', () => {
+    const o = extrudeOffsets(400, 90);
+    expect(o.length).toBe(EXTRUDE_MAX_STEPS);
+    expect(o[0]!.dy).toBeCloseTo(400, 9);
+    expect(o[0]!.dy - o[1]!.dy).toBeCloseTo(400 / EXTRUDE_MAX_STEPS, 9);
+    expect(extrudeOffsets(400, 90, 8).length).toBe(8);
+  });
+  it('points along the angle: 0 right, 90 down, 225 up left', () => {
+    const right = extrudeOffsets(20, 0)[0]!;
+    expect(right.dx).toBeCloseTo(20, 9);
+    expect(right.dy).toBeCloseTo(0, 9);
+    const down = extrudeOffsets(20, 90)[0]!;
+    expect(down.dx).toBeCloseTo(0, 9);
+    expect(down.dy).toBeCloseTo(20, 9);
+    const ul = extrudeOffsets(20, 225)[0]!;
+    expect(ul.dx).toBeLessThan(0);
+    expect(ul.dy).toBeLessThan(0);
+    expect(ul.dx).toBeCloseTo(ul.dy, 9);
+  });
+});
+
+describe('extrude drawing', () => {
+  const mk = (extra: Partial<Parameters<typeof createTextClip>[2]> = {}) =>
+    createTextClip('t', 0, { text: 'ab', fontFamily: 'Extrude A', fontSize: 100, color: '#ffffff', ...extra });
+  const ex = { depth: 0.1, angle: 90, color: '#123456' };
+
+  it('draws the copies in the side color under the face', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ extrude: ex }));
+    const colors = r.fills.map((f) => f.color);
+    expect(colors.filter((c) => c === '#123456').length).toBe(10); // 10px of depth, one line
+    expect(colors[colors.length - 1]).toBe('#ffffff');
+    expect(colors.indexOf('#ffffff')).toBe(colors.length - 1);
+  });
+  it('stays at one fill per line without it', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ extrude: null }));
+    expect(r.fills.length).toBe(1);
+    const z = recordCtx();
+    drawText(z.ctx, mk({ extrude: { ...ex, depth: 0 } }));
+    expect(z.fills.length).toBe(1);
+  });
+  it('moves with every letter when letters are drawn one by one', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ extrude: ex, letterSpacing: 0.1 }));
+    expect(r.fills.filter((f) => f.color === '#123456').length).toBe(20);
+  });
+  it('is part of the signature and widens the spill', () => {
+    const a = mk();
+    const b = mk({ extrude: ex });
+    expect(textSignature(a)).not.toBe(textSignature(b));
+    expect(textSignature(b)).not.toBe(textSignature(mk({ extrude: { ...ex, angle: 45 } })));
+    expect(textSpill(b, false)).toBeGreaterThanOrEqual(textSpill(a, false) + 0.1);
   });
 });
