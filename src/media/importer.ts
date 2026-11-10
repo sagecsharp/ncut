@@ -95,7 +95,7 @@ async function probeWithMediabunny(blob: Blob, kind: 'video' | 'audio'): Promise
       duration,
       width: videoTrack.displayWidth,
       height: videoTrack.displayHeight,
-      hasAudio: !!audioTrack,
+      hasAudio: !!audioTrack && (await audioTrack.canDecode()),
     };
   } finally {
     input.dispose();
@@ -190,8 +190,7 @@ async function probeImage(blob: Blob): Promise<Probe> {
   }
 }
 
-async function probe(blob: Blob, kind: MediaKind): Promise<Probe> {
-  if (kind === 'image') return probeImage(blob);
+async function probeOne(blob: Blob, kind: 'video' | 'audio'): Promise<Probe> {
   let result: Probe;
   try {
     result = await probeWithMediabunny(blob, kind);
@@ -202,13 +201,30 @@ async function probe(blob: Blob, kind: MediaKind): Promise<Probe> {
   return result;
 }
 
+async function probe(blob: Blob, kind: MediaKind): Promise<{ info: Probe; kind: MediaKind }> {
+  if (kind === 'image') return { info: await probeImage(blob), kind };
+  try {
+    return { info: await probeOne(blob, kind), kind };
+  } catch (err) {
+    if (kind !== 'video') throw err;
+    // mime says video (every .webm / .mp4) but the file may hold audio only
+    try {
+      return { info: await probeOne(blob, 'audio'), kind: 'audio' };
+    } catch {
+      throw err;
+    }
+  }
+}
+
 /* ---------- import ---------- */
 
-async function importOne(file: File, kind: MediaKind, projectId: string): Promise<MediaAsset> {
+async function importOne(file: File, requestedKind: MediaKind, projectId: string): Promise<MediaAsset> {
   const mime = file.type || EXT_MIME[extOf(file.name)] || '';
   // files with an empty type get the guessed one so media elements can sniff reliably
   const blob: File | Blob = file.type || !mime ? file : new Blob([file], { type: mime });
-  const info = await probe(blob, kind);
+  const probed = await probe(blob, requestedKind);
+  const info = probed.info;
+  const kind = probed.kind;
   const id = uid('ast');
   await putMediaBlob(projectId, id, blob);
   registerAsset(id, blob);

@@ -52,7 +52,13 @@ const PHASE_TEXT: Record<ExportProgress['phase'], string> = {
   finalizing: 'finalizing file',
 };
 
+/** mounted always by the editor, so it must not subscribe to the project while closed */
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
+  if (!open) return null;
+  return <ExportDialogInner open onClose={onClose} />;
+}
+
+function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const project = useEditor((s) => s.project);
 
   const [phase, setPhase] = useState<Phase>('setup');
@@ -177,7 +183,10 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
           },
         },
       );
-      if (ac.signal.aborted) return;
+      if (ac.signal.aborted) {
+        setPhase('setup');
+        return;
+      }
       const url = URL.createObjectURL(blob);
       doneUrlRef.current = url;
       setDone({ url, size: blob.size, seconds: (performance.now() - startRef.current) / 1000, fileName: name, warnings });

@@ -22,6 +22,7 @@ const PEAKS_PER_SECOND = 50;
 const MAX_FILMSTRIP_FRAMES = 160;
 const SEEK_TIMEOUT_MS = 6000;
 const SLICE_MS = 10;
+const WAVEFORM_FALLBACK_MAX_BYTES = 200 * 1024 * 1024;
 
 /* ---------- serial queue ---------- */
 
@@ -162,6 +163,26 @@ function seekTo(v: HTMLVideoElement, t: number): Promise<boolean> {
 
 /* ---------- thumbnails ---------- */
 
+/** svg and other formats createImageBitmap rejects: decode through an <img> */
+async function thumbFromImageElement(blob: Blob): Promise<Blob | null> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const w = img.naturalWidth || 320;
+    const h = img.naturalHeight || 180;
+    const scale = THUMB_WIDTH / w;
+    const c = makeCanvas(w * scale, h * scale);
+    c.getContext('2d')?.drawImage(img, 0, 0, c.width, c.height);
+    return await canvasToBlob(c, 'image/jpeg', 0.8);
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function thumbFromImage(blob: Blob): Promise<Blob | null> {
   let bmp: ImageBitmap | null = null;
   try {
@@ -175,7 +196,7 @@ async function thumbFromImage(blob: Blob): Promise<Blob | null> {
       full.close();
       return canvasToBlob(c, 'image/jpeg', 0.8);
     } catch {
-      return null;
+      return thumbFromImageElement(blob);
     }
   }
   const c = makeCanvas(bmp.width, bmp.height);
@@ -363,6 +384,9 @@ async function filmstripElement(
  * `count` evenly spaced frames, each `height` css px tall. frames[i] is taken at times[i] seconds.
  * null for non-video assets or on failure. cached per asset (largest count wins).
  */
+const SUPERSEDED = Symbol('superseded');
+const STRIP_LADDER = [24, 48, 96, MAX_FILMSTRIP_FRAMES];
+
 export function getFilmstrip(
   assetId: string,
   count: number,
@@ -370,7 +394,9 @@ export function getFilmstrip(
 ): Promise<{ times: number[]; frames: ImageBitmap[] } | null> {
   const asset = getAsset(assetId);
   if (!asset || asset.kind !== 'video' || asset.duration <= 0) return Promise.resolve(null);
-  const want = Math.max(1, Math.min(MAX_FILMSTRIP_FRAMES, Math.round(count)));
+  const wanted = Math.max(1, Math.min(MAX_FILMSTRIP_FRAMES, Math.round(count)));
+  // coarse ladder: stepping the zoom does not queue one decode pass per step
+  const want = STRIP_LADDER.find((n) => n >= wanted) ?? MAX_FILMSTRIP_FRAMES;
   const hCss = Math.max(8, Math.round(height));
   const entry = filmstrips.get(assetId);
   if (entry && entry.count >= want && entry.height >= hCss) return entry.promise;
@@ -381,8 +407,10 @@ export function getFilmstrip(
   const total = Math.min(MAX_FILMSTRIP_FRAMES, Math.max(want, entry?.count ?? 0));
   const times = frameTimes(asset.duration, total);
   const fresh: FilmstripEntry = { count: total, height: Math.max(hCss, entry?.height ?? 0), promise: null as never, done: null };
-  fresh.promise = enqueue(async (): Promise<Filmstrip | null> => {
+  fresh.promise = enqueue(async (): Promise<Filmstrip | null | typeof SUPERSEDED> => {
     if (token.cancelled) return null;
+    // a bigger strip was requested while this one waited: skip the pass
+    if (filmstrips.get(assetId) !== fresh) return SUPERSEDED;
     const blob = getAssetBlob(assetId);
     if (!blob) return null;
     let frames = await filmstripMediabunny(blob, times, pixelHeight, token);
@@ -395,7 +423,7 @@ export function getFilmstrip(
     const result = { times, frames };
     fresh.done = result;
     return result;
-  });
+  }).then((r) => (r === SUPERSEDED ? (filmstrips.get(assetId)?.promise ?? null) : r));
   filmstrips.set(assetId, fresh);
   void fresh.promise.then((r) => {
     // failed: forget it so a later call can retry. keep the previous good result if there was one.
@@ -494,17 +522,30 @@ export function getWaveform(assetId: string): Promise<WaveformData | null> {
   const asset = getAsset(assetId);
   if (!asset || !asset.hasAudio || asset.kind === 'image') return Promise.resolve(null);
   const token = tokenFor(assetId);
+  let retry = false;
   const p = enqueue(async () => {
-    if (token.cancelled) return null;
+    if (token.cancelled) {
+      retry = true;
+      return null;
+    }
     const blob = getAssetBlob(assetId);
-    if (!blob) return null;
+    if (!blob) {
+      retry = true;
+      return null;
+    }
     const viaBunny = await waveformMediabunny(blob, token);
-    if (viaBunny || token.cancelled) return viaBunny;
+    if (viaBunny) return viaBunny;
+    if (token.cancelled) {
+      retry = true;
+      return null;
+    }
+    if (blob.size > WAVEFORM_FALLBACK_MAX_BYTES) return null;
     return waveformDecode(blob, token);
   });
   waveforms.set(assetId, p);
+  // a real failure stays cached (tried once per session), only cancelled / missing-file results may be retried
   void p.then((w) => {
-    if (w === null && waveforms.get(assetId) === p) waveforms.delete(assetId);
+    if (w === null && retry && waveforms.get(assetId) === p) waveforms.delete(assetId);
   });
   return p;
 }
@@ -526,4 +567,22 @@ export function releaseDerived(assetId: string): void {
     // a strip still computing closes its own frames when it sees the cancelled token
   }
   waveforms.delete(assetId);
+}
+
+/** drop every cached thing (call when the open project closes or changes) */
+export function releaseAllDerived(): void {
+  const ids = new Set<string>([...tokens.keys(), ...thumbs.keys(), ...thumbUrls.keys(), ...filmstrips.keys(), ...waveforms.keys()]);
+  // timeline canvases may still draw one frame before they unmount, so bitmaps are closed a moment later
+  const late: ImageBitmap[] = [];
+  for (const id of ids) {
+    const done = filmstrips.get(id)?.done;
+    if (done) late.push(...done.frames);
+    filmstrips.delete(id);
+    releaseDerived(id);
+  }
+  if (late.length > 0) {
+    setTimeout(() => {
+      for (const f of late) f.close();
+    }, 2000);
+  }
 }
