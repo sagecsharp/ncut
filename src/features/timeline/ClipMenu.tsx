@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Blend, Box, Copy, Diamond, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { AudioLines, Blend, Box, Copy, Diamond, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -9,6 +9,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsNow, selectEffectsOf, ungroupIdsNow } from './actions';
+import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
 import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
 import { swapCandidates } from './swap';
@@ -53,6 +54,8 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
 
   const swaps = project ? swapCandidates(project.assets, clip) : [];
   const canSplitAll = !!project?.clips.some((c) => time > c.start + 0.05 && time < clipEnd(c) - 0.05);
+
+  const sounds = clipHasSound(project, clip);
 
   const run = (fn: () => void) => () => {
     fn();
@@ -301,6 +304,30 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           >
             {muted ? <Volume2 size={14} /> : <VolumeX size={14} />}
             {muted ? 'unmute' : 'mute'}
+          </button>
+        </>
+      ) : null}
+      {sounds ? (
+        <>
+          <div className="menu-sep" />
+          <div className="menu-hint" aria-hidden="true">
+            beats
+          </div>
+          <button className="menu-item" role="menuitem" title="put a marker on every beat of this clip" onClick={run(() => void markBeats(clip.id, 1))}>
+            <AudioLines size={14} />
+            mark every beat
+          </button>
+          <button className="menu-item" role="menuitem" title="put a marker on every 2nd beat" onClick={run(() => void markBeats(clip.id, 2))}>
+            <AudioLines size={14} />
+            mark every 2nd beat
+          </button>
+          <button className="menu-item" role="menuitem" title="put a marker on every 4th beat (bars)" onClick={run(() => void markBeats(clip.id, 4))}>
+            <AudioLines size={14} />
+            mark every 4th beat
+          </button>
+          <button className="menu-item" role="menuitem" title="remove the beat markers inside this clip" onClick={run(() => void clearBeatMarkers(clip.id))}>
+            <Trash2 size={14} />
+            clear beat markers
           </button>
         </>
       ) : null}
