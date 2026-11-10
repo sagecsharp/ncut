@@ -56,7 +56,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
   };
 
   return (
-    <div className={`timeline-head${track.locked ? ' is-locked' : ''}`}>
+    <div className={`timeline-head${track.locked ? ' is-locked' : ''}`} data-track-id={track.id}>
       <div className="timeline-head-top">
         <span className="timeline-head-kind" title={`${track.kind} track`}>
           {isVideo ? <Video size={13} /> : <Music size={13} />}

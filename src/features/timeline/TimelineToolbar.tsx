@@ -11,6 +11,7 @@ import {
   Redo2,
   Scan,
   Scissors,
+  Snowflake,
   Trash2,
   Undo2,
   Video,
@@ -21,6 +22,7 @@ import { formatDuration, formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { freezeAtPlayhead } from './actions';
 
 interface Props {
   /** zoom to an absolute px/second value, keeping the playhead steady in the viewport */
@@ -109,6 +111,15 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         aria-label="duplicate"
       >
         <Copy size={16} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={freezeAtPlayhead}
+        disabled={!hasClips}
+        title="freeze frame (shift+f)"
+        aria-label="freeze frame"
+      >
+        <Snowflake size={16} />
       </button>
       <span className="timeline-toolbar-sep" />
       <button

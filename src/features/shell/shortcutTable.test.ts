@@ -37,6 +37,15 @@ describe('shortcut table', () => {
       }
     }
   });
+  it('group, ungroup, freeze and select-after have rows and mutate where they edit', () => {
+    expect(findShortcut(key('g', { ctrlKey: true }))?.id).toBe('group');
+    expect(findShortcut(key('G', { ctrlKey: true, shiftKey: true }))?.id).toBe('ungroup');
+    expect(findShortcut(key('F', { shiftKey: true }))?.id).toBe('freeze-frame');
+    expect(findShortcut(key('A', { ctrlKey: true, shiftKey: true }))?.id).toBe('select-after');
+    expect(findShortcut(key('a', { ctrlKey: true }))?.id).toBe('select-all');
+    for (const id of ['group', 'ungroup', 'freeze-frame']) expect(SHORTCUTS.find((s) => s.id === id)?.mutates).toBe(true);
+    expect(SHORTCUTS.find((s) => s.id === 'select-after')?.mutates).toBeFalsy();
+  });
   it('keeps the everyday shortcuts', () => {
     expect(findShortcut(key(' ', { code: 'Space' }))?.id).toBe('play-pause');
     expect(findShortcut(key('s'))?.id).toBe('split');
