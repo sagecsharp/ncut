@@ -512,6 +512,15 @@ export interface ShapeClip extends ClipBase, Spatial {
   points?: number;
   /** star: inner radius as a fraction of the outer one (0.1..0.95, missing = 0.45) */
   inner?: number;
+  /**
+   * draw on: the part of the outline that is drawn, as shares of its length (0..1) measured from the
+   * shape's start point in drawing direction. missing = 0 and 1 = the whole outline. both can be keyframed
+   * (drawEnd from 0 to 1 draws the line on, drawStart from 0 to 1 wipes it off behind). only the outline
+   * (stroke) and the kinds 'line' and 'arrow' follow it; a fill is not cut. an arrow keeps its head at the
+   * drawn end.
+   */
+  drawStart?: number;
+  drawEnd?: number;
 }
 
 /**

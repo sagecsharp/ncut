@@ -139,7 +139,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'backgroundPerLine',
     'stroke2',
   ],
-  shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
+  shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner', 'drawStart', 'drawEnd'],
   camera: ['target', 'focusStrength', 'focusDistance', 'focusRange', 'focusOnTarget'],
   effect: ['timeOffset', 'target', 'fullDuration'],
 };
@@ -272,7 +272,12 @@ export interface EditorState {
   /** ripple: close the gap by shifting later clips on the same track left */
   deleteClips(ids: string[], opts?: ActionOpts & { ripple?: boolean }): void;
   /** copies land right after the originals when there is room. selects and returns the copies. */
-  duplicateClips(ids: string[], opts?: ActionOpts): string[];
+  /**
+   * copies of clips. by default the copies go after the originals in time. `sameTime`: every copy keeps its
+   * start and goes to a track above its original that is free for that span (a new one when there is none),
+   * so it lies exactly over the original (for "leave a copy behind" gestures).
+   */
+  duplicateClips(ids: string[], opts?: ActionOpts & { sameTime?: boolean }): string[];
   /**
    * add ready-made clips in one undo step (captions, a frozen frame...). every clip gets a new id.
    * - newTrack (default true): they all go on ONE new track (video kinds: on top; audio: at the
