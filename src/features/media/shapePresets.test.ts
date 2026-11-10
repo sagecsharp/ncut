@@ -53,6 +53,27 @@ describe('shape presets', () => {
   });
 });
 
+describe('draw on cards', () => {
+  it('draws the circle on as an outline only', () => {
+    const c = byId('drawn-circle').build(1920, 1080);
+    expect(c).toMatchObject({ kind: 'ellipse', filled: false });
+    expect(c.stroke?.width).toBeGreaterThan(0);
+    expect(c.keyframes!.drawEnd!.map((k) => [k.t, k.v])).toEqual([[0, 0], [1, 1]]);
+  });
+  it('draws the underline and the arrow on, from nothing to whole', () => {
+    for (const [id, kind] of [['drawn-underline', 'line'], ['drawn-arrow', 'arrow']] as const) {
+      const b = byId(id).build(1, 1);
+      expect(b.kind).toBe(kind);
+      const keys = b.keyframes!.drawEnd!;
+      expect(keys[0]).toMatchObject({ t: 0, v: 0 });
+      expect(keys[keys.length - 1]).toMatchObject({ v: 1 });
+    }
+  });
+  it('gives every build its own keys', () => {
+    expect(byId('drawn-circle').build(1, 1).keyframes).not.toBe(byId('drawn-circle').build(1, 1).keyframes);
+  });
+});
+
 describe('fitPreview', () => {
   it('keeps the ratio inside the box', () => {
     const b = fitPreview(600, 300, 96, 40);

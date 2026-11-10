@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { AudioClip, CameraClip, Clip, Easing, EffectClip, ImageClip, Keyframe, TextClip, VideoClip } from '../types';
+import type { AudioClip, CameraClip, Clip, Easing, EffectClip, ImageClip, Keyframe, ShapeClip, TextClip, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
+import { createShapeClip } from './factory';
 import {
   EASINGS,
   KEY_EPS,
@@ -695,5 +696,41 @@ describe('withoutKeys', () => {
     const snap = JSON.stringify(v);
     withoutKeys(v, 1);
     expect(JSON.stringify(v)).toBe(snap);
+  });
+});
+
+describe('shape draw on', () => {
+  const sh = (o: Partial<ShapeClip> = {}) => createShapeClip('t', 2, { duration: 4, ...o });
+  it('lists drawStart and drawEnd after the transform props', () => {
+    const p = animProps(sh());
+    expect(p.map((a) => a.prop)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'drawStart', 'drawEnd']);
+    expect(p.find((a) => a.prop === 'drawEnd')).toMatchObject({ min: 0, max: 1 });
+    expect(animProps(image()).some((a) => a.prop === 'drawEnd')).toBe(false);
+  });
+  it('reads missing values as the whole outline', () => {
+    expect(baseValue(sh(), 'drawStart')).toBe(0);
+    expect(baseValue(sh(), 'drawEnd')).toBe(1);
+    expect(baseValue(sh({ drawEnd: 0.3 }), 'drawEnd')).toBe(0.3);
+    expect(baseValue(image(), 'drawEnd')).toBeUndefined();
+  });
+  it('sets the static value', () => {
+    expect(withBaseValue(sh(), 'drawEnd', 0.4).drawEnd).toBe(0.4);
+    const i = image();
+    expect(withBaseValue(i, 'drawEnd', 0.4)).toBe(i);
+  });
+  it('resolveClip writes the animated value onto the clip', () => {
+    const c = sh({ keyframes: { drawEnd: [k(0, 0), k(1, 1)] } });
+    expect(resolveClip(c, 2).drawEnd).toBe(0);
+    expect(resolveClip(c, 2.5).drawEnd).toBeCloseTo(0.5, 9);
+    expect(resolveClip(c, 4).drawEnd).toBe(1);
+    expect(resolveClip(c, 2.5).drawStart).toBeUndefined();
+  });
+  it('keys and unkeys like any other prop', () => {
+    const c = withKeyAt(sh(), 'drawEnd', 2, 0);
+    expect(isAnimated(c, 'drawEnd')).toBe(true);
+    expect(valueAt(c, 'drawEnd', 3)).toBe(0);
+    const back = withoutKeyAt(c, 'drawEnd', 2);
+    expect(isAnimated(back, 'drawEnd')).toBe(false);
+    expect(back.drawEnd).toBe(0);
   });
 });
