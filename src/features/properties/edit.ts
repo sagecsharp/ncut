@@ -1,5 +1,5 @@
 import { useEditor } from '../../store/editorStore';
-import type { ActionOpts } from '../../store/editorStore';
+import type { ActionOpts, ClipPatch } from '../../store/editorStore';
 
 /**
  * one interaction = one undo step, without empty steps.
@@ -37,4 +37,13 @@ export function toColorInput(v: string): string {
   if (!HEX.test(v)) return '#000000';
   if (v.length === 4) return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`.toLowerCase();
   return v.slice(0, 7).toLowerCase();
+}
+
+/**
+ * set optional clip fields from a loose record (null removes a field). the store's ClipPatch type does not
+ * cover every clip type yet, and the store ignores keys a clip type does not have.
+ * live = part of a drag / typing gesture (one undo step, see beginEdit).
+ */
+export function patchClip(id: string, patch: Record<string, unknown>, live = false): void {
+  useEditor.getState().updateClip(id, patch as ClipPatch, live ? liveOpts() : undefined);
 }

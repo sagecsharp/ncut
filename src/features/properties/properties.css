@@ -201,3 +201,15 @@
 .props-switch {
   min-width: 44px;
 }
+
+/* ---------- look: crop ---------- */
+.props-crop {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.props-crop .number-field {
+  width: 100%;
+}

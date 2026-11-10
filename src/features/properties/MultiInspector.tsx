@@ -4,6 +4,8 @@ import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
+import type { VisualClip } from '../../types';
+import { LookButtons } from './LookSection';
 import { Pair, Row, Section, SliderRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 
@@ -113,6 +115,10 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
     }
   };
 
+  const source = useEditor((s) => {
+    const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
+    return c as VisualClip | undefined;
+  });
   return (
     <>
       {sum.visual > 0 ? (
@@ -121,6 +127,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           <Row label="3d" title="put all selected visual clips in 3d space or back to flat">
             <Switch checked={sum.allThreeD} title="3d on or off for all selected visual clips" onChange={setThreeD} />
           </Row>
+          {source ? <LookButtons source={source} ids={ids} /> : null}
         </Section>
       ) : null}
       {sum.audible > 0 ? (
@@ -175,7 +182,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
-  const parts = (['video', 'image', 'audio', 'text', 'effect', 'camera'] as const)
+  const parts = (['video', 'image', 'audio', 'text', 'shape', 'effect', 'camera'] as const)
     .filter((k) => sum[k] > 0)
     .map((k) => `${sum[k]} ${k}`)
     .join(', ');

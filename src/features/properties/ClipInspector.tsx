@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
-import { containSize, getClipBox } from '../../engine/draw';
+import { getClipBox } from '../../engine/draw';
 import { hasKeyframes } from '../../lib/anim';
 import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
@@ -11,11 +11,15 @@ import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip
 import { AnimField } from './AnimField';
 import { EffectSection } from './EffectSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
+import { LookSection } from './LookSection';
+import { ClipMotionSection } from './MotionSection';
+import { ShapeSection } from './ShapeSection';
 import { TextAnimSection, TextStyleSection } from './TextStyle';
 import { TransitionSection } from './TransitionSection';
 import { setValuesNow } from './animEdit';
 import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
+import { coverScale } from './shapeLogic';
 
 const actions = () => useEditor.getState();
 
@@ -88,21 +92,14 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
 
 /* ---------- transform ---------- */
 
-interface TransformSectionProps {
-  id: string;
-  mediaW: number;
-  mediaH: number;
-}
-
-const TransformSection = memo(function TransformSection({ id, mediaW, mediaH }: TransformSectionProps) {
-  const hasMedia = mediaW > 0 && mediaH > 0;
-
+const TransformSection = memo(function TransformSection({ id }: { id: string }) {
+  // fill: scale so the clip's box (media, text or shape) covers the whole canvas
   const fill = () => {
     const p = actions().project;
-    if (!p) return;
-    const fit = containSize(mediaW, mediaH, p.width, p.height);
-    const cover = Math.max(p.width / fit.width, p.height / fit.height);
-    setValuesNow(id, { x: 0, y: 0, scale: cover });
+    const clip = p?.clips.find((c) => c.id === id);
+    if (!p || !clip || !isVisualClip(clip)) return;
+    const box = getClipBox(p, clip);
+    setValuesNow(id, { x: 0, y: 0, scale: coverScale(clip.transform.scale, box.width, box.height, p.width, p.height) });
   };
 
   return (
@@ -117,18 +114,14 @@ const TransformSection = memo(function TransformSection({ id, mediaW, mediaH }: 
           <Crosshair size={14} />
           center
         </button>
-        {hasMedia ? (
-          <>
-            <button type="button" className="btn btn-sm" title="fit inside the canvas (scale 100%)" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1 })}>
-              <Minimize size={14} />
-              fit
-            </button>
-            <button type="button" className="btn btn-sm" title="scale to cover the whole canvas" onClick={fill}>
-              <Maximize size={14} />
-              fill
-            </button>
-          </>
-        ) : null}
+        <button type="button" className="btn btn-sm" title="scale 100%, centered" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1 })}>
+          <Minimize size={14} />
+          fit
+        </button>
+        <button type="button" className="btn btn-sm" title="scale to cover the whole canvas" onClick={fill}>
+          <Maximize size={14} />
+          fill
+        </button>
         <button
           type="button"
           className="btn btn-sm"
@@ -406,7 +399,7 @@ export function ClipInspector({ id }: { id: string }) {
         />
         {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} /> : null}
-        {clip.type === 'camera' ? <CameraSection id={clip.id} /> : null}
+        {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
         {clip.type === 'text' ? (
           <TextSection
             id={clip.id}
@@ -422,8 +415,9 @@ export function ClipInspector({ id }: { id: string }) {
         ) : null}
         {clip.type === 'text' ? <TextStyleSection clip={clip} /> : null}
         {clip.type === 'text' ? <TextAnimSection clip={clip} /> : null}
+        {clip.type === 'shape' ? <ShapeSection clip={clip} /> : null}
         {clip.type !== 'audio' && clip.type !== 'effect' && clip.type !== 'camera' ? (
-          <TransformSection id={clip.id} mediaW={asset?.width ?? 0} mediaH={asset?.height ?? 0} />
+          <TransformSection id={clip.id} />
         ) : null}
         {isVisualClip(clip) ? (
           <ThreeDSection
@@ -435,6 +429,8 @@ export function ClipInspector({ id }: { id: string }) {
             defaultDepth={clip.threeD && (clip.shape === 'box' || clip.shape === 'cylinder') ? defaultThickness(clip) : 0}
           />
         ) : null}
+        {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
+        {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
         {clip.type === 'video' || clip.type === 'audio' ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}

@@ -8,11 +8,13 @@ import {
   TEXT_ANIMS_LOOP,
   TEXT_ANIMS_OUT,
 } from '../../engine/textAnim';
-import type { TextAnimInfo } from '../../engine/textAnim';
 import { useEditor } from '../../store/editorStore';
-import type { TextAnim, TextClip, TextShadow, TextStroke } from '../../types';
+import type { ClipPatch } from '../../store/editorStore';
+import type { TextAnim, TextClip, TextGradient, TextShadow, TextStroke } from '../../types';
 import { ColorField, Row, Section, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
+import { MotionRow } from './MotionSection';
+import { defaultSecondColor } from './shapeLogic';
 
 const actions = () => useEditor.getState();
 
@@ -54,7 +56,10 @@ function Pct({
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
-  const { stroke, shadow } = clip;
+  const { stroke, shadow, gradient } = clip;
+  const setGradient = (patch: Partial<TextGradient>) => {
+    if (gradient) actions().updateClip(id, { gradient: { ...gradient, ...patch } }, liveOpts());
+  };
   const setStroke = (patch: Partial<TextStroke>) => {
     if (stroke) actions().updateClip(id, { stroke: { ...stroke, ...patch } }, liveOpts());
   };
@@ -132,6 +137,64 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         </>
       ) : null}
 
+      <Row label="gradient" title="fill the letters with a gradient instead of one color">
+        <Switch
+          checked={!!gradient}
+          title="gradient on or off"
+          onChange={(v) =>
+            actions().updateClip(id, { gradient: v ? { from: clip.color, to: defaultSecondColor(clip.color), angle: 0 } : null })
+          }
+        />
+        {gradient ? <ColorField title="gradient start color" value={gradient.from} onChange={(c) => setGradient({ from: c })} /> : null}
+      </Row>
+      {gradient ? (
+        <>
+          <Row label="to" title="gradient end color">
+            <ColorField title="gradient end color" value={gradient.to} onChange={(c) => setGradient({ to: c })} />
+          </Row>
+          <Row label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)">
+            <NumberField
+              className="props-grow"
+              suffix="deg"
+              title="gradient angle (degrees)"
+              value={gradient.angle}
+              min={-360}
+              max={360}
+              precision={0}
+              onStart={beginEdit}
+              onChange={(v) => setGradient({ angle: v })}
+            />
+          </Row>
+        </>
+      ) : null}
+
+      <Row label="curve" title="bend each line along a circle (degrees of arc, + arch, - smile, 0 straight)">
+        <NumberField
+          className="props-grow"
+          suffix="deg"
+          title="curve (degrees, 0 = straight)"
+          value={clip.curve ?? 0}
+          min={-360}
+          max={360}
+          precision={0}
+          onStart={beginEdit}
+          onChange={(v) => actions().updateClip(id, { curve: v === 0 ? null : v } as ClipPatch, liveOpts())}
+        />
+      </Row>
+      <Row label="wrap" title="wrap lines longer than this width (px, 0 = off)">
+        <NumberField
+          className="props-grow"
+          suffix="px"
+          title="wrap width (px, 0 = off)"
+          value={clip.wrapWidth ?? 0}
+          min={0}
+          max={20000}
+          precision={0}
+          onStart={beginEdit}
+          onChange={(v) => actions().updateClip(id, { wrapWidth: v === 0 ? null : v } as ClipPatch, liveOpts())}
+        />
+      </Row>
+
       {clip.background !== null ? (
         <>
           <Pct
@@ -158,60 +221,13 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 
 /* ---------- text animation ---------- */
 
-interface AnimRowProps {
-  label: string;
-  title: string;
-  list: TextAnimInfo[];
-  value: TextAnim | null | undefined;
-  defaultDuration: number;
-  durationTitle: string;
-  onChange: (next: TextAnim | null, live: boolean) => void;
-}
-
-function TextAnimRow({ label, title, list, value, defaultDuration, durationTitle, onChange }: AnimRowProps) {
-  const known = value ? list.some((a) => a.id === value.id) : true;
-  return (
-    <Row label={label} title={title}>
-      <select
-        className="select"
-        title={title}
-        aria-label={title}
-        value={value?.id ?? ''}
-        onChange={(e) => onChange(e.target.value === '' ? null : { id: e.target.value, duration: value?.duration ?? defaultDuration }, false)}
-      >
-        <option value="">none</option>
-        {value && !known ? <option value={value.id}>{value.id}</option> : null}
-        {list.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      {value ? (
-        <NumberField
-          className="props-num"
-          suffix="s"
-          title={durationTitle}
-          value={value.duration}
-          min={0.1}
-          max={10}
-          step={0.1}
-          precision={2}
-          onStart={beginEdit}
-          onChange={(v) => onChange({ id: value.id, duration: v }, true)}
-        />
-      ) : null}
-    </Row>
-  );
-}
-
 export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
   const set = (key: 'animIn' | 'animOut' | 'animLoop') => (next: TextAnim | null, live: boolean) =>
     actions().updateClip(id, { [key]: next }, live ? liveOpts() : undefined);
   return (
     <Section id="text-anim" title="text animation">
-      <TextAnimRow
+      <MotionRow
         label="in"
         title="how the text appears"
         list={TEXT_ANIMS_IN}
@@ -220,7 +236,7 @@ export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: T
         durationTitle="how long the entrance takes (seconds)"
         onChange={set('animIn')}
       />
-      <TextAnimRow
+      <MotionRow
         label="out"
         title="how the text leaves"
         list={TEXT_ANIMS_OUT}
@@ -229,7 +245,7 @@ export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: T
         durationTitle="how long the exit takes (seconds)"
         onChange={set('animOut')}
       />
-      <TextAnimRow
+      <MotionRow
         label="loop"
         title="a motion that repeats while the text is on screen"
         list={TEXT_ANIMS_LOOP}
