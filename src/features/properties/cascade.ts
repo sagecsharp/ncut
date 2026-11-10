@@ -5,7 +5,7 @@
  */
 import { animProps, baseValue, evalKeys, valueAt } from '../../lib/anim';
 import type { Clip, Easing, Keyframe, Keyframes, VisualClip } from '../../types';
-import { isTimedClip } from '../../types';
+import { MIN_CLIP_DURATION, isTimedClip } from '../../types';
 import { hash01, MIN_GAP } from './keyTools';
 
 export type CascadeOrder = 'layer' | 'left' | 'right' | 'top' | 'center' | 'edges' | 'random';
@@ -39,14 +39,21 @@ export function hashString(s: string): number {
  * the bottom layer and runs first. x / y are read in the middle of the clip (keys included), where a clip that flies in or out rests. ties keep the
  * layer order (bottom first, then by start).
  */
-export function orderClips<T extends Clip>(clips: readonly T[], order: CascadeOrder, seed: number, tracks: readonly { id: string }[]): T[] {
+export function orderClips<T extends Clip>(
+  clips: readonly T[],
+  order: CascadeOrder,
+  seed: number,
+  tracks: readonly { id: string }[],
+  /** where a clip is on the canvas (attached clips: in the world, not under their parent). default: its own x / y */
+  where?: (clip: T, time: number) => { x: number; y: number } | null | undefined,
+): T[] {
   const layer = new Map(tracks.map((t, i) => [t.id, i]));
   const layerCmp = (a: T, b: T) => (layer.get(b.trackId) ?? 0) - (layer.get(a.trackId) ?? 0) || a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const base = [...clips].sort(layerCmp);
   if (order === 'layer' || base.length < 2) return base;
   // the middle of the clip: where it rests. its start (or end) may be the far end of a fly in / out
   const mid = (c: T) => c.start + c.duration / 2;
-  const pos = new Map(base.map((c) => [c.id, { x: valueAt(c, 'x', mid(c)) ?? 0, y: valueAt(c, 'y', mid(c)) ?? 0 }]));
+  const pos = new Map(base.map((c) => [c.id, where?.(c, mid(c)) ?? { x: valueAt(c, 'x', mid(c)) ?? 0, y: valueAt(c, 'y', mid(c)) ?? 0 }]));
   const key = new Map<string, number>();
   if (order === 'left') for (const c of base) key.set(c.id, pos.get(c.id)!.x);
   else if (order === 'right') for (const c of base) key.set(c.id, -pos.get(c.id)!.x);
@@ -109,25 +116,57 @@ export interface StaggerOpts {
   mode: StaggerMode;
   seed?: number;
   tracks: readonly { id: string }[];
+  where?: (clip: Clip, time: number) => { x: number; y: number } | null | undefined;
+}
+
+/**
+ * the sound of a video: an audio clip grouped with a picture clip that has the same start and length. it is
+ * no member of the cascade, it goes where its picture goes. follower id -> its picture.
+ */
+export function soundOf(clips: readonly Clip[]): Map<string, Clip> {
+  const lead = new Map<string, Clip>();
+  for (const c of clips) {
+    if (c.type !== 'audio' || !c.group) continue;
+    const l = clips.find((o) => o.type !== 'audio' && o.group === c.group && Math.abs(o.start - c.start) < EPS && Math.abs(o.duration - c.duration) < EPS);
+    if (l) lead.set(c.id, l);
+  }
+  return lead;
 }
 
 /**
  * new timeline starts. the first clip in the order keeps its start and every next one starts `stepFrames`
  * later than the one before. step 0 puts all clips at the earliest start ("line up"). 'move' keeps every
  * length. 'trim' keeps every end: the head is cut instead, so a clip never starts earlier than it did and a
- * clip that would get shorter than 2 frames is left out (and reported). places only list clips that change.
+ * clip that would get shorter than 2 frames is left out (and reported). "line up" in 'trim' mode cuts every
+ * head to the LATEST start (the only place all of them can reach). places only list clips that change.
+ * the sound of a video (see soundOf) is placed with its picture.
  */
 export function staggerPlan(clips: readonly Clip[], order: CascadeOrder, stepFrames: number, fps: number, opts: StaggerOpts): StaggerPlan {
-  const ordered = orderClips(clips, order, opts.seed ?? 1, opts.tracks);
-  const plan: StaggerPlan = { places: [], left: [], order: ordered.map((c) => c.id) };
+  const lead = soundOf(clips);
+  const leaders = orderClips(
+    clips.filter((c) => !lead.has(c.id)),
+    order,
+    opts.seed ?? 1,
+    opts.tracks,
+    opts.where,
+  );
+  // every picture is followed by its sound, at the same place in the cascade
+  const ordered: { clip: Clip; slot: number }[] = [];
+  leaders.forEach((c, slot) => {
+    ordered.push({ clip: c, slot });
+    for (const f of clips) if (lead.get(f.id) === c) ordered.push({ clip: f, slot });
+  });
+  const plan: StaggerPlan = { places: [], left: [], order: ordered.map((o) => o.clip.id) };
   if (ordered.length === 0) return plan;
   const rate = fps > 0 ? fps : 30;
   const step = Math.max(0, Math.round(Number.isFinite(stepFrames) ? stepFrames : 0));
-  const earliest = Math.min(...ordered.map((c) => c.start));
-  const first = ordered[0]!.start;
-  const minLen = 2 / rate;
-  ordered.forEach((c, i) => {
-    const target = step === 0 ? earliest : first + (i * step) / rate;
+  const starts = ordered.map((o) => o.clip.start);
+  const lineUp = opts.mode === 'trim' ? Math.max(...starts) : Math.min(...starts);
+  const first = ordered[0]!.clip.start;
+  // the store never makes a clip shorter than this either
+  const minLen = Math.max(2 / rate, MIN_CLIP_DURATION);
+  ordered.forEach(({ clip: c, slot: i }) => {
+    const target = step === 0 ? lineUp : first + (i * step) / rate;
     if (opts.mode === 'move') {
       if (Math.abs(target - c.start) > EPS) plan.places.push({ id: c.id, start: target, duration: c.duration });
       return;
@@ -191,6 +230,24 @@ function mergeSpan(old: readonly Keyframe[] | undefined, fresh: Keyframe[], lo: 
   return [...keep, ...fresh].sort((a, b) => a.t - b.t);
 }
 
+/** the properties a fly may write */
+const FLY_PROPS = ['x', 'y', 'z', 'rotation', 'scale', 'opacity'];
+
+/**
+ * the span an earlier fly on this side left on a property: its two keys at the edge of the clip (the first
+ * key at 0 easing out, or the last key at the end with an ease in before it). null when there is none.
+ */
+function oldFly(keys: readonly Keyframe[] | undefined, incoming: boolean, len: number): { a: number; b: number } | null {
+  if (!keys || keys.length < 2) return null;
+  if (incoming) {
+    const k0 = keys[0]!;
+    return Math.abs(k0.t) <= EPS && k0.ease === 'ease-out' ? { a: 0, b: keys[1]!.t } : null;
+  }
+  const k0 = keys[keys.length - 2]!;
+  const k1 = keys[keys.length - 1]!;
+  return Math.abs(k1.t - len) <= EPS && k0.ease === 'ease-in' ? { a: k0.t, b: len } : null;
+}
+
 /** the ease of the segment that lies on `t` in a key list (the key at or before it) */
 function easeAt(keys: readonly Keyframe[] | undefined, t: number): Easing {
   if (!keys || keys.length === 0) return 'ease';
@@ -204,6 +261,8 @@ function easeAt(keys: readonly Keyframe[] | undefined, t: number): Easing {
  * (properties that are not listed keep what they have). 'in' writes keys at local 0 and `duration`, 'out'
  * at `length - duration` and `length`. the pose at the far end of the span is what the clip has there
  * (its keys, or its static value) so a property that already moves around the span stays continuous.
+ * a fly that is already there on the same side is replaced, not stacked: its keys go (also on properties the
+ * new kind does not use, a scatter followed by a rise only rises) and the rest pose is read behind it.
  * `index` / `count` are the place of the clip in the cascade (not needed by the current kinds).
  */
 export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts): Keyframes {
@@ -220,12 +279,17 @@ export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts)
   const incoming = opts.direction === 'in';
   const lo = incoming ? 0 : len - d;
   const hi = incoming ? d : len;
-  // the time the clip is at rest (the far end from the fly)
-  const seam = incoming ? hi : lo;
-  const seamEase = (prop: string) => easeAt(clip.keyframes?.[prop], seam);
+  // the span that is rewritten on a property: the new fly, widened to an earlier fly on this side
+  const zone = (prop: string): { a: number; b: number } => {
+    const old = oldFly(clip.keyframes?.[prop], incoming, len);
+    return old ? { a: Math.min(lo, old.a), b: Math.max(hi, old.b) } : { a: lo, b: hi };
+  };
+  // the time the clip is at rest (the far end from the fly, behind an earlier fly)
+  const seamOf = (prop: string): number => (incoming ? zone(prop).b : zone(prop).a);
+  const seamEase = (prop: string) => easeAt(clip.keyframes?.[prop], seamOf(prop));
   const rest = (prop: string): number => {
     const keys = clip.keyframes?.[prop];
-    if (keys && keys.length > 0) return evalKeys(keys, seam);
+    if (keys && keys.length > 0) return evalKeys(keys, seamOf(prop));
     return baseValue(clip, prop) ?? 0;
   };
   const kind: FlyKind = opts.kind === 'depth' && !(clip as VisualClip).threeD ? 'zoom' : opts.kind;
@@ -296,7 +360,15 @@ export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts)
           { t: lo, v: r, ease },
           { t: hi, v: far, ease: 'ease' },
         ];
-    out[prop] = mergeSpan(clip.keyframes?.[prop], fresh, lo, hi);
+    const z = zone(prop);
+    out[prop] = mergeSpan(clip.keyframes?.[prop], fresh, z.a, z.b);
+  }
+  // what an earlier fly of another kind left on this side goes: its far key is removed, the rest key stays
+  for (const prop of FLY_PROPS) {
+    if (prop in out || away.has(prop)) continue;
+    const keys = clip.keyframes?.[prop];
+    if (!keys || !oldFly(keys, incoming, len)) continue;
+    out[prop] = incoming ? keys.slice(1) : keys.slice(0, -1);
   }
   return out;
 }

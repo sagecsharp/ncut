@@ -2,6 +2,7 @@
  * cascade on the store: "stagger" (the selected clips start one after the other) and "fly" (each one
  * flies in or out). one undo step each, all or nothing. the planning lives in cascade.ts.
  */
+import { worldTransform } from '../../engine/parent';
 import { isVisualClip } from '../../types';
 import type { Clip, Keyframes, Project } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -10,7 +11,7 @@ import type { ClipMove } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { applyFollowerSpans } from '../timeline/followApply';
 import { withFollowerMoves } from '../timeline/followMoves';
-import { flyPlan, staggerPlan } from './cascade';
+import { flyPlan, hashString, staggerPlan } from './cascade';
 import type { CascadeOrder, FlyDirection, FlyKind, StaggerMode } from './cascade';
 
 const EPS = 1e-6;
@@ -58,7 +59,7 @@ function collides(project: Project, moves: readonly { id: string; start: number;
  * "stagger": the selected clips start one after the other in `order`, `stepFrames` apart (0 = all start
  * together). 'move' keeps every length, 'trim' keeps every end. one undo step. the selection stays.
  */
-export function staggerSelection(order: CascadeOrder, stepFrames: number, mode: StaggerMode, seed = Math.floor(Math.random() * 1e9)): void {
+export function staggerSelection(order: CascadeOrder, stepFrames: number, mode: StaggerMode, seed?: number): void {
   const st = useEditor.getState();
   const project = st.project;
   if (!project) return;
@@ -67,7 +68,11 @@ export function staggerSelection(order: CascadeOrder, stepFrames: number, mode: 
     toast(locked > 0 ? 'those clips are on locked tracks' : 'select 2 or more clips');
     return;
   }
-  const plan = staggerPlan(open, order, stepFrames, project.fps, { mode, seed, tracks: project.tracks });
+  // "random" is the same order every time for the same clips: the seed comes from what is selected
+  const stable = seed ?? hashString(open.map((c) => c.id).sort().join('|'));
+  // attached clips are ordered by where they are on the canvas, not by their place under the parent
+  const where = (c: Clip, time: number) => (isVisualClip(c) && c.parent ? worldTransform(project, c, time) : null);
+  const plan = staggerPlan(open, order, stepFrames, project.fps, { mode, seed: stable, tracks: project.tracks, where });
   const notes = (changed: number): string => {
     let msg = `${changed} ${plural(changed, 'clip', 'clips')} staggered`;
     if (plan.left.length > 0) msg += `, ${plan.left.length} left out (would get too short)`;
