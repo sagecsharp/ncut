@@ -10,7 +10,7 @@ import { applyFollowerSpans, followBase, markFollowGesture } from '../timeline/f
 import { withFollowerMovesFrom } from '../timeline/followMoves';
 import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
-import { AnimField } from './AnimField';
+import { AnimField, InspectedClip } from './AnimField';
 import { AlignButtons } from './AlignButtons';
 import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
@@ -471,6 +471,7 @@ export function ClipInspector({ id }: { id: string }) {
         <span className="props-tag">{typeLabel(clip)}</span>
       </div>
       <div className="panel-body">
+        <InspectedClip.Provider value={clip}>
         <ClipSection
           id={clip.id}
           trackId={clip.trackId}
@@ -534,6 +535,7 @@ export function ClipInspector({ id }: { id: string }) {
         <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
           hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
         />
+        </InspectedClip.Provider>
       </div>
     </section>
   );

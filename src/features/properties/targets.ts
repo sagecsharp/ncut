@@ -17,6 +17,11 @@ function baseLabel(c: Clip): string {
   return name || c.type;
 }
 
+/** the label the camera's "look at" shows for a clip, or null when it is not one of the options (not a visual clip) */
+export function targetLabelOf(clips: readonly Clip[], tracks: readonly Track[], id: string): string | null {
+  return targetOptions(clips, tracks).find((o) => o.id === id)?.label ?? null;
+}
+
 /**
  * every visual clip as an option for the camera's "look at". label = name or text; when two clips would
  * read the same the track name is added, and when that still repeats a number is appended.

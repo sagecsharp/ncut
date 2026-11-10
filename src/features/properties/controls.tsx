@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { ChevronDown, ChevronRight, Pipette } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { beginEdit, isHex, toColorInput } from './edit';
@@ -186,7 +187,42 @@ export function Switch({ checked, title, onChange }: { checked: boolean; title: 
   );
 }
 
-/** a plain select row. options are [value, label]. */
+export interface SelectOpenHandlers {
+  onPointerDown: () => void;
+  onKeyDown: () => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}
+
+/**
+ * for selects with a long list: `open` turns true as soon as the select is touched, focused or gets a key
+ * (before the dropdown opens: pointer down and key down are flushed at once) and false when it loses focus.
+ * render the full list while open and just the selected choice otherwise.
+ */
+export function useSelectOpen(): { open: boolean; handlers: SelectOpenHandlers } {
+  const [open, setOpen] = useState(false);
+  const on = useRef(false);
+  const handlers = useMemo<SelectOpenHandlers>(() => {
+    const start = (sync: boolean) => {
+      if (on.current) return;
+      on.current = true;
+      if (sync) flushSync(() => setOpen(true));
+      else setOpen(true);
+    };
+    return {
+      onPointerDown: () => start(true),
+      onKeyDown: () => start(true),
+      onFocus: () => start(false),
+      onBlur: () => {
+        on.current = false;
+        setOpen(false);
+      },
+    };
+  }, []);
+  return { open, handlers };
+}
+
+/** a plain select row. options are [value, label]. handlers: see useSelectOpen. */
 export function SelectRow({
   label,
   title,
@@ -194,7 +230,9 @@ export function SelectRow({
   options,
   wide,
   onChange,
+  handlers,
 }: {
+  handlers?: SelectOpenHandlers;
   wide?: boolean;
   label: string;
   title: string;
@@ -204,7 +242,7 @@ export function SelectRow({
 }) {
   return (
     <Row label={label} title={title} wide={wide}>
-      <select className="select" title={title} aria-label={title} value={value} onChange={(e) => onChange(e.target.value)}>
+      <select className="select" title={title} aria-label={title} value={value} onChange={(e) => onChange(e.target.value)} {...handlers}>
         {options.map(([v, l]) => (
           <option key={v} value={v}>
             {l}

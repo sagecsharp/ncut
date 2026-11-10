@@ -1,13 +1,15 @@
-import { memo, useMemo } from 'react';
+import { memo, useCallback } from 'react';
 import { RotateCcw, Shuffle } from 'lucide-react';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import { EFFECTS, effectParamValue, getEffect } from '../../engine/effects/registry';
-import { useEditor } from '../../store/editorStore';
+import { useClip, useEditor } from '../../store/editorStore';
+import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
 import { ParentSelect } from './AttachSection';
 import { AnimField } from './AnimField';
 import { overlapsInTime } from './clipEffects';
 import { effectTargetOptions } from './parentOptions';
+import { currentLabel } from './selectModel';
 import { Row, Section } from './controls';
 
 const actions = () => useEditor.getState();
@@ -29,12 +31,12 @@ interface EffectSectionProps {
 
 /** "applies to": everything below the effect's track, or one visual clip. a clip that is gone can be cleared. */
 function AppliesTo({ id, target }: { id: string; target: string | null }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const options = useMemo(() => (clips ? effectTargetOptions({ clips }, id) : []), [clips, id]);
-  const self = clips?.find((c) => c.id === id);
-  const picked = target ? clips?.find((c) => c.id === target) : undefined;
+  const self = useClip(id);
+  const picked = useClip(target ?? undefined);
   const found = !!picked && isVisualClip(picked);
-  const label = options.find((o) => o.id === target)?.label ?? '';
+  // label of the clip it is put on, from the full list (null: none or not a choice). the list itself is only built while the select is open.
+  const label = useEditor((s) => (target && s.project ? currentLabel(effectTargetOptions(s.project, id), target) : null));
+  const build = useCallback((clips: readonly Clip[]) => effectTargetOptions({ clips }, id), [id]);
   const set = (next: string | null) => actions().updateClip(id, { target: next });
   return (
     <>
@@ -43,7 +45,8 @@ function AppliesTo({ id, target }: { id: string; target: string | null }) {
         title="put this effect on one clip, or on everything below it"
         noneLabel="everything below"
         value={target ?? ''}
-        options={options}
+        current={label}
+        build={build}
         onPick={set}
       />
       {target && found ? (

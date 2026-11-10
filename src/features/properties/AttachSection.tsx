@@ -1,22 +1,30 @@
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { Link2Off, Ungroup } from 'lucide-react';
 import { childrenOf, parentOf } from '../../lib/links';
 import { useEditor } from '../../store/editorStore';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
-import { Row, Section } from './controls';
+import { Row, Section, useSelectOpen } from './controls';
 import { attachClips } from './attachActions';
 import { hasAnimatedPose, parentOptions } from './parentOptions';
 import type { ParentOption } from './parentOptions';
+import { closedModel, currentLabel, openModel } from './selectModel';
 
 const actions = () => useEditor.getState();
 
-/** "nothing" + the clips a parent can be, the ones on screen at the same time first */
+/**
+ * "nothing" + the clips a parent can be, the ones on screen at the same time first.
+ * the list is only built and rendered while the select is open (touched, focused or typed into); closed, it holds
+ * the one selected choice with the same text. `current` is the label of the selected clip (selectModel.currentLabel),
+ * null when it is not one of the choices ("missing clip"). `build` makes the full list from the clips and should be
+ * stable (useCallback).
+ */
 export function ParentSelect({
   label,
   title,
   value,
-  options,
+  current,
+  build,
   onPick,
   noneLabel = 'nothing',
 }: {
@@ -24,42 +32,44 @@ export function ParentSelect({
   title: string;
   /** a clip id, '' for nothing, or null when the clips differ */
   value: string | null;
-  options: ParentOption[];
+  current: string | null;
+  build: (clips: readonly Clip[]) => ParentOption[];
   onPick: (id: string | null) => void;
   /** text of the empty choice */
   noneLabel?: string;
 }) {
-  const near = options.filter((o) => o.overlaps);
-  const far = options.filter((o) => !o.overlaps);
-  const known = value === null || value === '' || options.some((o) => o.id === value);
+  const { open, handlers } = useSelectOpen();
+  // subscribed to the clips only while the list is shown
+  const clips = useEditor((s) => (open ? s.project?.clips : undefined));
+  const options = useMemo(() => (open && clips ? build(clips) : null), [open, clips, build]);
+  const model = options ? openModel(value, options, noneLabel) : closedModel(value, current, noneLabel);
   return (
     <Row label={label} title={title}>
       <select
         className="select"
         title={title}
         aria-label={title}
-        value={value ?? '__mixed'}
+        value={model.selected}
         onChange={(e) => onPick(e.target.value === '' ? null : e.target.value)}
+        {...handlers}
       >
-        {value === null ? (
-          <option value="__mixed" disabled>
-            various
+        {model.head.map((h) => (
+          <option key={h.value} value={h.value} disabled={h.disabled}>
+            {h.label}
           </option>
-        ) : null}
-        <option value="">{noneLabel}</option>
-        {!known ? <option value={value}>missing clip</option> : null}
-        {near.length > 0 ? (
+        ))}
+        {model.near.length > 0 ? (
           <optgroup label="at the same time">
-            {near.map((o) => (
+            {model.near.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>
             ))}
           </optgroup>
         ) : null}
-        {far.length > 0 ? (
+        {model.far.length > 0 ? (
           <optgroup label="other times">
-            {far.map((o) => (
+            {model.far.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>
@@ -81,16 +91,18 @@ export const LinksSection = memo(function LinksSection({ clip }: { clip: Clip })
     const project = { clips };
     const parent = visual ? parentOf(project, clip) : null;
     return {
-      options: visual ? parentOptions(project, [id]) : [],
+      // the label of the clip it is attached to, from the full list (only when attached: a closed picker needs no list)
+      parentLabel: parent ? currentLabel(parentOptions(project, [id]), parent.id) : null,
       parent,
       children: visual || clip.type === 'camera' ? childrenOf(project, id) : [],
       groupSize: clip.group ? clips.filter((c) => c.group === clip.group).length : 0,
     };
   }, [clips, clip, id, visual]);
+  const build = useCallback((all: readonly Clip[]) => parentOptions({ clips: all }, [id]), [id]);
   if (!info) return null;
-  const { options, parent, children, groupSize } = info;
+  const { parentLabel, parent, children, groupSize } = info;
   if (!visual && children.length === 0 && groupSize < 2) return null;
-  const parentName = parent ? (options.find((o) => o.id === parent.id)?.label ?? parent.name) : '';
+  const parentName = parent ? (parentLabel ?? parent.name) : '';
 
   return (
     <Section id="attach" title="attach">
@@ -100,7 +112,8 @@ export const LinksSection = memo(function LinksSection({ clip }: { clip: Clip })
             label="attach to"
             title="follow another clip or a camera: it moves, turns and scales with it"
             value={parent ? parent.id : ''}
-            options={options}
+            current={parentLabel}
+            build={build}
             onPick={(pid) => attachClips([id], pid)}
           />
           {parent ? (

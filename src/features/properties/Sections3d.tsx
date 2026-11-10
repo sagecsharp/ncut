@@ -1,21 +1,22 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowLeftRight, Camera, ClipboardPaste, Copy, Eraser, FlipHorizontal2, Maximize, MoveHorizontal, RectangleHorizontal, RectangleVertical, Repeat, RotateCcw, Waves } from 'lucide-react';
 import { hasKeyframes, valueAt } from '../../lib/anim';
 import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import type { Keyframes, LookAt, Shape3D } from '../../types';
+import type { Clip, Keyframes, LookAt, Shape3D } from '../../types';
 import { SHAPES_3D } from '../../types';
 import { AnimField } from './AnimField';
 import { setValuesNow } from './animEdit';
-import { Row, SelectRow, Section, Switch } from './controls';
-import { targetOptions } from './targets';
+import { Row, SelectRow, Section, Switch, useSelectOpen } from './controls';
+import { targetLabelOf, targetOptions } from './targets';
 import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { beginEdit, liveOpts, patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
 import { lookTargetOptions } from './parentOptions';
+import { currentLabel } from './selectModel';
 import { copyKeysAction, fitKeysAction, pasteKeysAction, repeatKeysAction, reverseKeysAction, wiggleAction, wiggleDefault, wiggleProps } from './keyActions';
 import { useKeyClipboard } from './keyClipboard';
 import { dropToFloor, frameWithCamera, layFlat, putInFrontOfCamera, standUp } from './placeActions';
@@ -158,22 +159,23 @@ const SHAPES: [Shape3D, string][] = SHAPES_3D.map((s) => [s, SHAPE_NAMES[s]]);
 
 /** "which clip": the clip a 3d clip faces (lookAt 'clip'). the name beside it selects that clip. */
 const LookTargetRow = memo(function LookTargetRow({ id, target }: { id: string; target: string | null }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const options = useMemo(() => (clips ? lookTargetOptions({ clips }, id) : []), [clips, id]);
-  const picked = target ? options.find((o) => o.id === target) : undefined;
+  // the label of the clip it faces (null: none or not a choice). the full list is only built while the select is open.
+  const picked = useEditor((s) => (target && s.project ? currentLabel(lookTargetOptions(s.project, id), target) : null));
+  const build = useCallback((clips: readonly Clip[]) => lookTargetOptions({ clips }, id), [id]);
   return (
     <>
       <ParentSelect
         label="which clip"
         title="the clip this one keeps facing"
         value={target ?? ''}
-        options={options}
+        current={picked}
+        build={build}
         onPick={(tid) => patchClip(id, { lookTarget: tid })}
       />
-      {picked ? (
+      {target && picked !== null ? (
         <div className="props-stat">
-          <button type="button" className="btn btn-sm" title="select the clip this one faces" onClick={() => actions().select([picked.id])}>
-            {picked.label}
+          <button type="button" className="btn btn-sm" title="select the clip this one faces" onClick={() => actions().select([target])}>
+            {picked}
           </button>
         </div>
       ) : null}
@@ -334,11 +336,33 @@ const CameraMoves = memo(function CameraMoves({ id }: { id: string }) {
   );
 });
 
+/** the camera's "look at" select. the list of clips is only built and rendered while the select is open. */
+function CameraTarget({ id, target }: { id: string; target: string | null }) {
+  const { open, handlers } = useSelectOpen();
+  const current = useEditor((s) => (target && s.project ? targetLabelOf(s.project.clips, s.project.tracks, target) : null));
+  const clips = useEditor((s) => (open ? s.project?.clips : undefined));
+  const tracks = useEditor((s) => (open ? s.project?.tracks : undefined));
+  const full = useMemo(() => (open && clips && tracks ? targetOptions(clips, tracks) : null), [open, clips, tracks]);
+  const known = target !== null && (full ? full.some((o) => o.id === target) : current !== null);
+  const options: [string, string][] = full
+    ? [['', 'none'], ...full.map((o): [string, string] => [o.id, o.label])]
+    : known && target !== null && current !== null
+      ? [[target, current]]
+      : [['', 'none']];
+  return (
+    <SelectRow
+      wide
+      label="look at"
+      title="keep the camera pointed at a clip"
+      value={known ? target : ''}
+      options={options}
+      onChange={(v) => patchClip(id, { target: v === '' ? null : v })}
+      handlers={handlers}
+    />
+  );
+}
+
 export const CameraSection = memo(function CameraSection({ id, target }: { id: string; target: string | null }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const tracks = useEditor((s) => s.project?.tracks);
-  const options = useMemo(() => (clips && tracks ? targetOptions(clips, tracks) : []), [clips, tracks]);
-  const known = target !== null && options.some((o) => o.id === target);
   return (
     <Section id="camera" title="camera">
       <AnimField wide id={id} prop="x" label="move right" title="move the camera right (px)" suffix="px" step={1} precision={0} />
@@ -360,14 +384,7 @@ export const CameraSection = memo(function CameraSection({ id, target }: { id: s
         step={1}
         precision={0}
       />
-      <SelectRow
-        wide
-        label="look at"
-        title="keep the camera pointed at a clip"
-        value={known ? target : ''}
-        options={[['', 'none'], ...options.map((o): [string, string] => [o.id, o.label])]}
-        onChange={(v) => patchClip(id, { target: v === '' ? null : v })}
-      />
+      <CameraTarget id={id} target={target} />
       <div className="props-hint">the camera keeps this clip centered. pan and tilt add an offset.</div>
       <div className="props-hint">the camera for every 3d clip while this clip is active</div>
       <CameraMoves id={id} />

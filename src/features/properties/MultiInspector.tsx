@@ -1,13 +1,12 @@
-import { memo, useState } from 'react';
-import { useMemo } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { AlignHorizontalJustifyStart, Copy, Flag, Group, Trash2, Ungroup } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import type { ActionOpts } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useShallow } from 'zustand/react/shallow';
+import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
-import type { VisualClip } from '../../types';
 import { AlignButtons } from './AlignButtons';
 import { ArrangeSection } from './ArrangeSection';
 import { CascadeSection } from './CascadeSection';
@@ -20,6 +19,8 @@ import { Pair, Row, Section, SelectRow, SliderRow, Switch } from './controls';
 import { fitToMarkers, makeRow } from '../timeline/sequenceActions';
 import type { FitSpan } from '../timeline/sequenceActions';
 import { beginEdit, liveOpts } from './edit';
+import { currentLabel } from './selectModel';
+import { anyGrouped, firstVisual, sharedParent, visualIdsOf } from './selectionSets';
 
 interface Summary {
   video: number;
@@ -109,6 +110,23 @@ function getClips() {
   return useEditor.getState().project?.clips ?? [];
 }
 
+/** "attach all to": the picker reads the clips itself (only while open), so the rest of the controls do not re-render with every clip edit */
+function AttachAll({ ids, want }: { ids: string[]; want: ReadonlySet<string> }) {
+  const value = useEditor((s) => sharedParent(s.project?.clips, want));
+  const current = useEditor((s) => (value && s.project ? currentLabel(parentOptions(s.project, ids), value) : null));
+  const build = useCallback((clips: readonly Clip[]) => parentOptions({ clips }, ids), [ids]);
+  return (
+    <ParentSelect
+      label="attach all to"
+      title="attach every selected visual clip to a clip or a camera. they keep their place on screen."
+      value={value}
+      current={current}
+      build={build}
+      onPick={(pid) => attachClips(ids, pid)}
+    />
+  );
+}
+
 const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[]; sum: Summary }) {
   const setOpacity = (v: number) => {
     const o = liveOpts();
@@ -135,23 +153,17 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
     }
   };
 
-  const clips = useEditor((s) => s.project?.clips);
-  const options = useMemo(() => (clips ? parentOptions({ clips }, ids) : []), [clips, ids]);
-  const parentValue = useMemo(() => {
-    const parents = new Set((clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => (isVisualClip(c) ? (c.parent ?? '') : '')));
-    return parents.size === 1 ? [...parents][0]! : null;
-  }, [clips, ids]);
+  // the selected ids as a Set, built once per selection: filters below are O(clips) instead of O(clips * selected)
+  const want = useMemo(() => new Set(ids), [ids]);
 
-  const visualIds = useMemo(() => (clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => c.id), [clips, ids]);
+  // useShallow: the same list of ids keeps its identity, so the button groups below do not re-render on every drag frame
+  const visualIds = useEditor(useShallow((s) => visualIdsOf(s.project?.clips, want)));
 
   const seqCount = sum.video + sum.image + sum.audio + sum.text + sum.shape;
   const markerCount = useEditor((s) => s.project?.markers?.length ?? 0);
   const [span, setSpan] = useState<FitSpan>(1);
 
-  const source = useEditor((s) => {
-    const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
-    return c as VisualClip | undefined;
-  });
+  const source = useEditor((s) => firstVisual(s.project?.clips, want));
   return (
     <>
       {sum.visual > 0 ? (
@@ -160,13 +172,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           <Row label="3d" title="put all selected visual clips in 3d space or back to flat">
             <Switch checked={sum.allThreeD} title="3d on or off for all selected visual clips" onChange={setThreeD} />
           </Row>
-          <ParentSelect
-            label="attach all to"
-            title="attach every selected visual clip to a clip or a camera. they keep their place on screen."
-            value={parentValue}
-            options={options}
-            onPick={(pid) => attachClips(ids, pid)}
-          />
+          <AttachAll ids={ids} want={want} />
           {source ? <LookButtons source={source} ids={ids} /> : null}
         </Section>
       ) : null}
@@ -266,7 +272,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
-  const anyGroup = useEditor((s) => !!s.project?.clips.some((c) => c.group && s.selection.includes(c.id)));
+  const anyGroup = useEditor((s) => anyGrouped(s.project?.clips, s.selection));
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
   const parts = (['video', 'image', 'audio', 'text', 'shape', 'effect', 'camera'] as const)
     .filter((k) => sum[k] > 0)

@@ -226,7 +226,8 @@ export interface ArrangeTargets {
 export function arrangeTargets(project: Pick<Project, 'clips' | 'tracks'>, ids: readonly string[]): ArrangeTargets {
   const order = new Map(project.tracks.map((t, i) => [t.id, i]));
   const locked = new Set(project.tracks.filter((t) => t.locked).map((t) => t.id));
-  const picked = project.clips.filter((c: Clip): c is VisualClip => ids.includes(c.id) && isVisualClip(c));
+  const want = new Set(ids);
+  const picked = project.clips.filter((c: Clip): c is VisualClip => want.has(c.id) && isVisualClip(c));
   const clips = picked.filter((c) => !c.parent && !locked.has(c.trackId));
   clips.sort((a, b) => (order.get(a.trackId) ?? 0) - (order.get(b.trackId) ?? 0) || a.start - b.start);
   return { clips, skipped: picked.length - clips.length };

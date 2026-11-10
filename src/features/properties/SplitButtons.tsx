@@ -1,7 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import { Columns2, Grid2x2, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Rows2 } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
-import { alignableClips } from './alignActions';
+import { alignCounts } from './selectionSets';
 import { Row, SliderRow } from './controls';
 import { splitScreen } from './splitActions';
 import type { SplitKind } from './splitLayout';
@@ -20,10 +20,9 @@ const KINDS: { kind: SplitKind; icon: typeof Columns2; title: string }[] = [
  * text and shapes are fitted inside. one click, one undo step.
  */
 export const SplitButtons = memo(function SplitButtons({ ids }: { ids: string[] }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const tracks = useEditor((s) => s.project?.tracks);
   const [gap, setGap] = useState(0);
-  const usable = useMemo(() => (clips && tracks ? alignableClips({ clips, tracks }, ids).length : 0), [clips, tracks, ids]);
+  const want = useMemo(() => new Set(ids), [ids]);
+  const usable = useEditor((s) => alignCounts(s.project, want).usable);
   const off = usable < 2;
 
   return (

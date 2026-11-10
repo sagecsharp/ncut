@@ -1,13 +1,14 @@
 import { memo, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { ArrowDownToLine, Camera, ChartSpline, Dices, Eye, EyeOff, Fan, Footprints, Globe, Layers, LayoutGrid, Orbit, RectangleHorizontal, RectangleVertical, Square, Tornado, Columns3 } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
-import { isVisualClip } from '../../types';
-import { ARRANGE_DEFAULTS, ARRANGE_EXTRA_SLIDERS, ARRANGE_READS_OUTWARD, ARRANGE_SLIDERS, arrangeTargets } from './arrange3d';
+import { ARRANGE_DEFAULTS, ARRANGE_EXTRA_SLIDERS, ARRANGE_READS_OUTWARD, ARRANGE_SLIDERS } from './arrange3d';
 import type { ArrangeKey, ArrangeKind } from './arrange3d';
 import { arrangeSelection, flattenSelection, setLookAll } from './arrangeActions';
 import { dropToFloor, layFlat, putInFrontOfCamera, standUp } from './placeActions';
 import { Row, SliderRow, Switch } from './controls';
 import { liveOpts } from './edit';
+import { arrangeCounts } from './selectionSets';
 
 const KINDS: { kind: ArrangeKind; icon: typeof Orbit; title: string }[] = [
   { kind: 'ring', icon: Orbit, title: 'ring: stand in a circle around the vertical axis' },
@@ -27,8 +28,6 @@ const KINDS: { kind: ArrangeKind; icon: typeof Orbit; title: string }[] = [
  * camera / stop facing, and back to 2d. clips attached to a parent or on a locked track are left out.
  */
 export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: string[] }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const tracks = useEditor((s) => s.project?.tracks);
   const [kind, setKind] = useState<ArrangeKind | null>(null);
   const [vals, setVals] = useState<Record<ArrangeKey, number>>({ ...ARRANGE_DEFAULTS });
   const [outward, setOutward] = useState(true);
@@ -40,16 +39,9 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
     setKind(null);
   }
 
-  const { usable, visual, threeD } = useMemo(() => {
-    if (!clips || !tracks) return { usable: 0, visual: 0, threeD: 0 };
-    const t = arrangeTargets({ clips, tracks }, ids);
-    return {
-      usable: t.clips.length,
-      visual: t.clips.length + t.skipped,
-      // only the ones the buttons can change (not on a locked track)
-      threeD: clips.filter((c) => ids.includes(c.id) && isVisualClip(c) && c.threeD && !tracks.find((tr) => tr.id === c.trackId)?.locked).length,
-    };
-  }, [clips, tracks, ids]);
+  // three numbers out of the store: the section re-renders when they change, not on every clip edit or drag frame
+  const want = useMemo(() => new Set(ids), [ids]);
+  const { usable, visual, threeD } = useEditor(useShallow((s) => arrangeCounts(s.project, want)));
 
   const off = usable < 2;
   const slider = kind ? ARRANGE_SLIDERS[kind] : null;

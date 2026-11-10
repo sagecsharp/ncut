@@ -1,4 +1,5 @@
 import { memo, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   AlignCenterHorizontal,
   AlignCenterVertical,
@@ -10,10 +11,10 @@ import {
   AlignVerticalSpaceBetween,
 } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
-import { isVisualClip } from '../../types';
-import { alignSelection, alignableClips, spreadSelection } from './alignActions';
+import { alignSelection, spreadSelection } from './alignActions';
 import type { AlignKind } from './alignLogic';
 import { Row } from './controls';
+import { alignCounts } from './selectionSets';
 
 const KINDS: { kind: AlignKind; icon: typeof AlignStartVertical; one: string; many: string }[] = [
   { kind: 'left', icon: AlignStartVertical, one: 'align left', many: 'align left edges' },
@@ -30,12 +31,9 @@ const KINDS: { kind: AlignKind; icon: typeof AlignStartVertical; one: string; ma
  * not map to the canvas one to one), and the hint says so.
  */
 export const AlignButtons = memo(function AlignButtons({ ids }: { ids: string[] }) {
-  const clips = useEditor((s) => s.project?.clips);
-  const tracks = useEditor((s) => s.project?.tracks);
-  const { usable, visual } = useMemo(() => {
-    if (!clips || !tracks) return { usable: 0, visual: 0 };
-    return { usable: alignableClips({ clips, tracks }, ids).length, visual: clips.filter((c) => ids.includes(c.id) && isVisualClip(c)).length };
-  }, [clips, tracks, ids]);
+  // two numbers out of the store: the buttons re-render when they change, not on every clip edit or drag frame
+  const want = useMemo(() => new Set(ids), [ids]);
+  const { usable, visual } = useEditor(useShallow((s) => alignCounts(s.project, want)));
   const many = ids.length > 1;
   const need = many ? 2 : 1;
   const off = usable < need;
