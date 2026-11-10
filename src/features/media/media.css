@@ -1,0 +1,228 @@
+.media-panel {
+  height: 100%;
+}
+
+.media-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  outline: 1px dashed transparent;
+  outline-offset: -4px;
+}
+.media-tab.is-dropping {
+  outline-color: var(--accent);
+}
+.media-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  opacity: 0.85;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.media-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.media-importing {
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+
+.media-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-2);
+}
+.media-filter-row {
+  display: flex;
+  gap: 2px;
+}
+.media-filter-row .btn.is-active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.media-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+}
+.media-search .input {
+  flex: 1;
+}
+
+.media-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-2);
+}
+
+.media-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  cursor: grab;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+.media-card:hover {
+  background: var(--surface-4);
+}
+.media-card:active {
+  cursor: grabbing;
+}
+
+.media-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-faint);
+}
+.media-thumb.is-audio {
+  color: var(--clip-audio);
+}
+.media-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.media-badge {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 1.3;
+  pointer-events: none;
+}
+.media-badge-kind {
+  left: 3px;
+  top: 3px;
+}
+.media-badge-dur {
+  right: 3px;
+  bottom: 3px;
+}
+
+.media-actions {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  display: none;
+  gap: 2px;
+}
+.media-card:hover .media-actions,
+.media-card:focus-within .media-actions {
+  display: flex;
+}
+.media-actions .icon-btn {
+  background: var(--surface-0);
+  color: var(--text);
+}
+.media-actions .icon-btn:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.media-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
+.media-rename {
+  width: 100%;
+}
+
+/* text presets */
+.media-text-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+.media-text-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  color: var(--text);
+  text-align: left;
+  cursor: grab;
+}
+.media-text-card:hover {
+  background: var(--surface-4);
+}
+.media-text-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+}
+.media-text-sample {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.media-text-sample.is-boxed {
+  padding: 2px 8px;
+  background: var(--surface-3);
+}
+.media-text-sample.is-left {
+  align-self: flex-end;
+  margin-right: auto;
+  margin-left: var(--space-2);
+}
+.media-text-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+.media-text-hint {
+  color: var(--text-faint);
+}
