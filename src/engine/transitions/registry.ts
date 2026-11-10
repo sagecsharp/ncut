@@ -6,6 +6,7 @@
 import { TRANSITION_GLSL } from './defs';
 import { GLSL_PACK2 } from './defs2';
 import { GLSL_3D } from './defs3d';
+import { GLSL_PACK4 } from './defs4';
 
 export type TransitionCategory = 'fade' | 'move' | 'wipe' | 'stylize' | '3d';
 
@@ -104,9 +105,26 @@ const LIST: [id: string, name: string, category: TransitionCategory][] = [
   ['dreamy', 'dreamy', 'stylize'],
   ['shake-cut', 'shake cut', 'stylize'],
   ['color-pulse', 'color pulse', 'stylize'],
+  // pack 4
+  ['ink-bleed', 'ink bleed', 'wipe'],
+  ['hex-reveal', 'hex reveal', 'wipe'],
+  ['dots', 'dots', 'wipe'],
+  ['plus', 'plus', 'wipe'],
+  ['zigzag', 'zigzag', 'wipe'],
+  ['tile-pop', 'tile pop', 'wipe'],
+  ['curtains', 'curtains', 'wipe'],
+  ['comb', 'comb', 'move'],
+  ['melt', 'melt', 'move'],
+  ['flip-tiles', 'flip tiles', 'move'],
+  ['shatter', 'shatter', 'stylize'],
+  ['swirl-through', 'swirl through', 'stylize'],
+  ['pinch', 'pinch', 'stylize'],
+  ['liquid', 'liquid', 'stylize'],
+  ['prism', 'prism', 'stylize'],
+  ['glass-tiles', 'glass tiles', 'stylize'],
 ];
 
-const GLSL: Record<string, string> = { ...TRANSITION_GLSL, ...GLSL_PACK2, ...GLSL_3D };
+const GLSL: Record<string, string> = { ...TRANSITION_GLSL, ...GLSL_PACK2, ...GLSL_3D, ...GLSL_PACK4 };
 
 export const TRANSITIONS: TransitionDef[] = LIST.map(([id, name, category]) => ({
   id,
