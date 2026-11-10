@@ -1,6 +1,4 @@
-import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
-import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { isVisualClip } from '../../types';
 import type { Keyframes } from '../../types';
@@ -32,9 +30,20 @@ export function applyPath(id: string, opts: PathOptions): boolean {
     return false;
   }
   const had = pathProps(clip, opts).filter((k) => (clip.keyframes?.[k]?.length ?? 0) > 0);
-  const now = clamp(usePlayback.getState().time, clip.start, clip.start + clip.duration);
-  useEditor.getState().setClipKeyframes(clip.id, { ...clip.keyframes, ...next }, { time: now });
-  useUi.getState().toast(had.length > 0 ? `path replaced the keys on ${had.join(' / ')}` : 'path added');
+  // a path owns the whole position: keys an earlier path left on x / y / z that this one does not write go too
+  // (a circle after a spiral must not keep climbing). they freeze at the clip's start, where every path begins
+  const merged: Keyframes = { ...clip.keyframes, ...next };
+  const cleared = POSITION.filter((k) => !(k in next) && (clip.keyframes?.[k]?.length ?? 0) > 0);
+  for (const k of cleared) delete merged[k];
+  const before = useEditor.getState().project;
+  useEditor.getState().setClipKeyframes(clip.id, merged, { time: clip.start });
+  if (useEditor.getState().project === before) {
+    useUi.getState().toast('already on that path');
+    return true;
+  }
+  let msg = had.length > 0 ? `path replaced the keys on ${had.join(' / ')}` : 'path added';
+  if (cleared.length > 0) msg += `, the keys on ${cleared.join(' / ')} were removed`;
+  useUi.getState().toast(msg);
   return true;
 }
 

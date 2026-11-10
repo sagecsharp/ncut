@@ -3,6 +3,7 @@
  * seconds, `ease` on a key describes the segment AFTER it). nothing here mutates its input, results are
  * sorted by time and no two keys of one property are closer than MIN_GAP.
  */
+import { evalKeys } from '../../lib/anim';
 import type { Easing, Keyframe, Keyframes } from '../../types';
 
 /** two keys of one property are never closer than this (seconds) */
@@ -175,6 +176,35 @@ export function hash01(seed: number, index: number): number {
   h = Math.imul(h ^ (h >>> 15), 0x846ca68b) >>> 0;
   h = (h ^ (h >>> 16)) >>> 0;
   return h / 4294967296;
+}
+
+/**
+ * a shake laid over an animation that is already there. `offsets` are wiggle keys around 0 (wiggleKeys with base
+ * 0) over 0 .. duration. every old key stays where it is (its value gets the shake at that moment, its ease is
+ * kept), the wiggle keys are added between them on the old curve. old keys outside the clip are untouched.
+ * when the result would not fit the key cap the wiggle keys are thinned; null when the old keys alone fill it.
+ */
+export function wiggleOnto(old: readonly Keyframe[], offsets: readonly Keyframe[], duration: number): Keyframe[] | null {
+  if (old.length === 0) return offsets.map((k) => ({ ...k }));
+  const inside = old.filter((k) => k.t >= -GAP_TOL && k.t <= duration + GAP_TOL);
+  const room = MAX_KEYS_PER_PROP - old.length;
+  if (room < 2) return null;
+  // wiggle keys that do not sit on an old key
+  let extra = offsets.filter((k) => !inside.some((o) => Math.abs(o.t - k.t) < MIN_GAP));
+  if (extra.length > room) {
+    const step = Math.ceil(extra.length / room);
+    extra = extra.filter((_, i) => i % step === 0);
+  }
+  const shake = (t: number) => (offsets.length > 0 ? evalKeys(offsets as Keyframe[], t) : 0);
+  const segEase = (t: number): Easing => {
+    let e: Easing = old[0]!.ease;
+    for (const k of old) if (k.t <= t + GAP_TOL) e = k.ease;
+    // a piece of a straight or held segment is straight or held; a piece of a curve is close to a soft ease
+    return e === 'linear' || e === 'hold' ? e : 'ease';
+  };
+  const out: Keyframe[] = old.map((k) => (k.t >= -GAP_TOL && k.t <= duration + GAP_TOL ? { ...k, v: k.v + shake(k.t) } : { ...k }));
+  for (const k of extra) out.push({ t: k.t, v: evalKeys(old as Keyframe[], k.t) + k.v, ease: segEase(k.t) });
+  return out.sort((a, b) => a.t - b.t);
 }
 
 /** keys for ONE property: a seeded random walk around base that starts and ends at rest */

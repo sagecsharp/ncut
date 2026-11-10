@@ -110,8 +110,26 @@ describe('applyPath', () => {
     applyPath('a', path({ kind: 'circle' }));
     applyPath('a', path({ kind: 'hop' }));
     expect(ed().past.length).toBe(2);
-    expect(Object.keys(clipOf('a').keyframes!)).toContain('y');
-    expect(lastToast()).toBe('path replaced the keys on y');
+    // a path owns the whole position: the circle's x keys go, the clip hops in place
+    expect(Object.keys(clipOf('a').keyframes!)).toEqual(['y']);
+    expect(lastToast()).toBe('path replaced the keys on y, the keys on x were removed');
+  });
+
+  it('a circle after a spiral on a 3d clip stops climbing', () => {
+    open((t) => [image(t[0]!, 'a', 0, 4, { threeD: true })]);
+    applyPath('a', path({ kind: 'spiral' }));
+    expect(Object.keys(clipOf('a').keyframes!).sort()).toEqual(['x', 'y', 'z']);
+    applyPath('a', path({ kind: 'circle' }));
+    expect(Object.keys(clipOf('a').keyframes!).sort()).toEqual(['x', 'z']);
+    expect((clipOf('a') as ImageClip).transform.y).toBeCloseTo(0, 6);
+  });
+
+  it('the same path again says so and adds no step', () => {
+    open((t) => [image(t[0]!, 'a', 0, 4)]);
+    applyPath('a', path({ kind: 'circle' }));
+    applyPath('a', path({ kind: 'circle' }));
+    expect(ed().past.length).toBe(1);
+    expect(lastToast()).toBe('already on that path');
   });
 
   it('laps are held to 0.25 .. 10 and a path never has more than 240 keys', () => {

@@ -71,6 +71,15 @@ export function splitText(id: string, mode: SplitMode): number {
   const lookers = p.clips.filter((c) => isVisualClip(c) && c.lookTarget === id).map((c) => c.id);
   const cameras = p.clips.filter((c) => isCameraClip(c) && c.target === id).map((c) => c.id);
 
+  // what hangs on the text is re-pointed to a piece. on a locked track that cannot be written, and the clip
+  // would be left behind without its parent / target
+  const lockedTracks = new Set(p.tracks.filter((t) => t.locked).map((t) => t.id));
+  const hanging = [...kids.map((c) => c.id), ...lookers, ...cameras];
+  if (hanging.some((hid) => lockedTracks.has(p.clips.find((c) => c.id === hid)?.trackId ?? ''))) {
+    ui.toast('a clip that is attached to this text (or looks at it) is on a locked track: unlock it first');
+    return 0;
+  }
+
   st.pushHistory();
   const skip = { skipHistory: true };
   st.deleteClips([id], skip);

@@ -31,13 +31,13 @@ export const MIN_TURNS = 0.25;
 export const MAX_TURNS = 10;
 
 export const PATH_KINDS: { id: PathKind; label: string; hint: string }[] = [
-  { id: 'circle', label: 'circle', hint: 'goes around in a circle and comes back to where it started' },
-  { id: 'eight', label: 'figure eight', hint: 'draws an eight and comes back to where it started' },
+  { id: 'circle', label: 'circle', hint: 'goes around in a circle. whole laps come back to where it started' },
+  { id: 'eight', label: 'figure eight', hint: 'draws an eight. whole laps come back to where it started' },
   { id: 'spiral', label: 'spiral', hint: 'circles outward from where it is (a 3d clip also rises)' },
   { id: 'swing', label: 'swing', hint: 'swings left and right like a pendulum' },
-  { id: 'hop', label: 'hop', hint: 'bounces up and down in place' },
+  { id: 'hop', label: 'hop', hint: 'bounces up and down in place, a whole hop per lap' },
   { id: 'zigzag', label: 'zigzag', hint: 'sweeps left and right while moving down (a 3d clip moves away)' },
-  { id: 'drift', label: 'drift', hint: 'wanders slowly around and comes back to where it started' },
+  { id: 'drift', label: 'drift', hint: 'wanders slowly around and comes back to where it started (whole laps)' },
 ];
 
 const SAMPLES_PER_LAP = 24;
@@ -184,7 +184,8 @@ export function pathKeys(clip: Clip, opts: PathOptions, project: { width: number
       const p = SWING_ANGLE * Math.sin(TAU * turns * (i === n ? 1 : i / n)) * dir;
       a.push(len * Math.sin(p));
       b.push(-len * (1 - Math.cos(p)));
-      tilt.push(p * DEG);
+      // the top of the clip points at the pivot above it: at the right end it leans left (clockwise is positive)
+      tilt.push(-p * DEG);
     }
   } else if (opts.kind === 'hop') {
     const hops = Math.max(1, Math.round(turns));
