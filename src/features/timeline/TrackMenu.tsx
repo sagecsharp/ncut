@@ -44,6 +44,10 @@ function addEverywhere(trackId: string, replace: boolean): void {
 function removeEverywhere(trackId: string): void {
   const project = useEditor.getState().project;
   if (!project) return;
+  if (project.tracks.find((t) => t.id === trackId)?.locked) {
+    useUi.getState().toast('this track is locked');
+    return;
+  }
   const patches = planRemoveTransitions(project, trackId);
   if (patches.length === 0) {
     useUi.getState().toast('nothing to do: no transitions on this track');
