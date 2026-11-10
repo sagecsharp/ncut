@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { Toasts } from './components/ui/Toasts';
 import { loadEditorLayout, preloadEditor } from './features/editor/loadEditor';
 import { ProjectsScreen } from './features/projects/ProjectsScreen';
+import { signalShellReady } from './features/shell/openShellFile';
 import { useEditor } from './store/editorStore';
 import { closeProject, openProjectById, projectIdFromHash } from './store/session';
 
@@ -37,6 +38,11 @@ export function App() {
       if (e.target instanceof Element && e.target.closest('.projects-card')) preloadEditor();
     };
     window.addEventListener('pointerdown', warmEditor, true);
+    // the first screen is on its way to the glass: the desktop shell may show its window and hand over a file
+    let frame = requestAnimationFrame(() => {
+      frame = 0;
+      setTimeout(signalShellReady, 0);
+    });
     // a file dropped outside a drop zone would make the browser open it and leave the editor
     const blockFileNav = (e: DragEvent) => {
       if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
@@ -48,6 +54,7 @@ export function App() {
     return () => {
       cancelled = true;
       window.removeEventListener('pointerdown', warmEditor, true);
+      if (frame) cancelAnimationFrame(frame);
       window.removeEventListener('dragover', blockFileNav);
       window.removeEventListener('drop', blockFileNav);
       window.removeEventListener('popstate', sync);
