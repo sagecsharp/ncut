@@ -8,6 +8,7 @@ import type { MediaAsset, TrackKind } from '../../types';
 import { DEFAULT_EFFECT_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
+import { getEffect } from '../../engine/effects/registry';
 import { snapToFrame } from '../../lib/time';
 import { clipEnd, collectSnapPoints, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { importFiles } from '../../media/importer';
@@ -51,6 +52,11 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
   const asset = assets.find((a) => a.id === payload.assetId);
   if (!asset) return 1;
   return asset.kind === 'image' ? DEFAULT_IMAGE_DURATION : Math.max(asset.duration, 0.1);
+}
+
+function ghostLabel(payload: DragPayload | null): string {
+  if (!payload || payload.kind !== 'effect') return '';
+  return getEffect(payload.effect)?.name ?? payload.effect;
 }
 
 function readPayload(e: ReactDragEvent): DragPayload | null {
@@ -152,7 +158,8 @@ export function createDnd(env: DndEnv) {
           w: target.duration * zoom,
           h: layout.heights[target.laneIndex]! - CLIP_INSET * 2,
         },
-        last.payload?.kind === 'text' ? 'text' : 'asset',
+        last.payload?.kind === 'text' ? 'text' : last.payload?.kind === 'effect' ? 'effect' : 'asset',
+        ghostLabel(last.payload),
       );
     } else {
       env.overlays.setGhost(null);

@@ -52,7 +52,7 @@ export class Overlays {
     if (el.hidden) el.hidden = false;
   }
 
-  setGhost(r: OverlayRect | null, kind?: 'asset' | 'text'): void {
+  setGhost(r: OverlayRect | null, kind?: 'asset' | 'text' | 'effect', label?: string): void {
     const el = this.ghostEl;
     if (!el) return;
     if (!r) {
@@ -63,6 +63,9 @@ export class Overlays {
     el.style.width = `${Math.max(2, r.w)}px`;
     el.style.height = `${r.h}px`;
     el.dataset.kind = kind ?? 'asset';
+    const text = label ?? '';
+    const span = el.firstElementChild;
+    if (span && span.textContent !== text) span.textContent = text;
     if (el.hidden) el.hidden = false;
   }
 

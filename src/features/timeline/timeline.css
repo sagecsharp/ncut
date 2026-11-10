@@ -242,7 +242,9 @@
   border-bottom: 1px solid var(--border);
 }
 .timeline-zone-lane.is-hot {
-  background: var(--accent-muted);
+  background: var(--surface-5);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .timeline-filler-lane {
   flex: none;
@@ -258,7 +260,7 @@
   top: 3px;
   overflow: hidden;
   background: var(--clip-video);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   cursor: grab;
   touch-action: none;
@@ -272,6 +274,20 @@
 }
 .timeline-clip.is-text {
   background: var(--clip-text);
+}
+.timeline-clip.is-effect {
+  background: var(--clip-effect);
+  border: 1px dashed var(--text-dim);
+}
+.timeline-clip.is-effect .timeline-clip-label {
+  background: none;
+}
+.timeline-clip.is-effect .timeline-fade {
+  background: var(--clip-label);
+  opacity: 0.2;
+}
+.timeline-clip-icon {
+  flex: none;
 }
 .timeline-clip.is-selected {
   z-index: 1;
@@ -373,6 +389,17 @@
   border-radius: var(--radius-sm);
   background: var(--accent-muted);
   opacity: 0.85;
+  overflow: hidden;
+}
+.timeline-ghost-label {
+  display: block;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .timeline-marquee {
   position: absolute;
