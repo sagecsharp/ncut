@@ -6,7 +6,8 @@ import { useUi } from '../../store/ui';
 import { planCloseGaps } from './gaps';
 import { withFollowerMoves } from './followMoves';
 import { GAP_SECONDS, planInsertGap } from './gapInsert';
-import { revealScrollLeft } from './followScroll';
+import { nearestScrollDelta, revealScrollLeft } from './followScroll';
+import { CLIP_INSET, laneHeight } from './layout';
 import { effectsOn } from './effectTarget';
 import { notifyView, view } from './view';
 import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
@@ -130,8 +131,20 @@ export function revealClip(id: string): void {
   for (const el of scroller.querySelectorAll<HTMLElement>('[data-clip-id]')) {
     if (el.dataset.clipId === id) {
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      break;
+      return;
     }
+  }
+  // the clip is not mounted (a lane only mounts the clips near its scroll window): the same vertical move from its lane
+  for (const lane of scroller.querySelectorAll<HTMLElement>('[data-track-id]')) {
+    if (lane.dataset.trackId !== clip.trackId) continue;
+    const track = st.project?.tracks.find((t) => t.id === clip.trackId);
+    if (!track) return;
+    const sr = scroller.getBoundingClientRect();
+    const lr = lane.getBoundingClientRect();
+    const top = lr.top + CLIP_INSET;
+    const dy = nearestScrollDelta(top, top + laneHeight(track.kind) - CLIP_INSET * 2, sr.top + scroller.clientTop, sr.top + scroller.clientTop + scroller.clientHeight);
+    if (dy !== 0) scroller.scrollTop += dy;
+    return;
   }
 }
 

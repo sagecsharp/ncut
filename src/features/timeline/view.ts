@@ -39,6 +39,20 @@ export function notifyView(): void {
   for (const fn of listeners) fn();
 }
 
+const mountListeners = new Set<() => void>();
+
+/** called when clips were mounted because the lane window moved (not by an edit), so dom marks can be put on again */
+export function subscribeClipMount(fn: () => void): () => void {
+  mountListeners.add(fn);
+  return () => {
+    mountListeners.delete(fn);
+  };
+}
+
+export function notifyClipMount(): void {
+  for (const fn of mountListeners) fn();
+}
+
 export function markUserScroll(ms = 1200): void {
   interaction.userScrollUntil = performance.now() + ms;
 }

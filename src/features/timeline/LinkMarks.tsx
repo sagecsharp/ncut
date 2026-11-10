@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { useEditor } from '../../store/editorStore';
 import { hoverLinkedIds, linkedIds } from './effectTarget';
+import { subscribeClipMount } from './view';
 
 /**
  * quiet marks between an effect clip and the clip it is put on: the selected effect's target gets a
@@ -37,6 +38,20 @@ export function LinkMarks({ scrollerRef }: { scrollerRef: RefObject<HTMLElement 
   useLayoutEffect(() => {
     apply.current();
   });
+
+  // a lane mounts clips when its window moves (scroll / zoom): put the marks on those too, once per tick
+  useEffect(() => {
+    let queued = false;
+    const unsub = subscribeClipMount(() => {
+      if (queued) return;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        apply.current();
+      });
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     const root = scrollerRef.current;
