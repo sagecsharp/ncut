@@ -10,6 +10,7 @@ import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { AlignButtons } from './AlignButtons';
 import { ArrangeSection } from './ArrangeSection';
+import { CascadeSection } from './CascadeSection';
 import { SplitButtons } from './SplitButtons';
 import { LookButtons } from './LookSection';
 import { ParentSelect } from './AttachSection';
@@ -225,6 +226,9 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           />
         </Section>
       ) : null}
+      <Section id="m-cascade" title="cascade" defaultOpen={false}>
+        <CascadeSection hasVisual={visualIds.length > 0} />
+      </Section>
       <Section id="m-fades" title="fades">
         <Row label="fade" title="fade in and fade out in seconds">
           <Pair>

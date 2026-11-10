@@ -1,0 +1,17 @@
+.cascade-num {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.cascade-pair {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.cascade-pair > .btn {
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
+  gap: 6px;
+}
