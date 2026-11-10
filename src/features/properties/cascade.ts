@@ -120,15 +120,50 @@ export interface StaggerOpts {
 }
 
 /**
- * the sound of a video: an audio clip grouped with a picture clip that has the same start and length. it is
- * no member of the cascade, it goes where its picture goes. follower id -> its picture.
+ * the sound of a video: an audio clip grouped with a picture clip that has the same start (the lengths may
+ * differ: a picture whose tail was trimmed still has its sound). it is no member of the cascade, it goes where
+ * its picture goes. follower id -> its picture. when a group has several pictures at that start, an audio
+ * goes to the one with the same asset (an extracted audio keeps the asset of its video), then the same
+ * trimStart and speed, and two audios of different assets never share a picture while another is free.
  */
 export function soundOf(clips: readonly Clip[]): Map<string, Clip> {
   const lead = new Map<string, Clip>();
+  // picture id -> assets of the audios that already follow it
+  const claims = new Map<string, string[]>();
+  const claim = (pic: Clip, audio: Clip) => {
+    lead.set(audio.id, pic);
+    const list = claims.get(pic.id) ?? [];
+    list.push(audio.type === 'audio' ? audio.assetId : '');
+    claims.set(pic.id, list);
+  };
+  const sameCut = (pic: Clip, audio: Clip) => isTimedClip(pic) && audio.type === 'audio' && Math.abs(pic.trimStart - audio.trimStart) < EPS && Math.abs(pic.speed - audio.speed) < EPS;
+  const pending: { audio: Clip; cands: Clip[] }[] = [];
+  // first the audios that have a picture of their own asset
   for (const c of clips) {
     if (c.type !== 'audio' || !c.group) continue;
-    const l = clips.find((o) => o.type !== 'audio' && o.group === c.group && Math.abs(o.start - c.start) < EPS && Math.abs(o.duration - c.duration) < EPS);
-    if (l) lead.set(c.id, l);
+    const cands = clips.filter((o) => o.type !== 'audio' && o.group === c.group && Math.abs(o.start - c.start) < EPS);
+    if (cands.length === 0) continue;
+    const own = cands.filter((o) => 'assetId' in o && o.assetId === c.assetId);
+    if (own.length === 0) {
+      pending.push({ audio: c, cands });
+      continue;
+    }
+    let best = own[0]!;
+    let bestKey = Infinity;
+    own.forEach((o, i) => {
+      const key = (sameCut(o, c) ? 0 : 1e6) + (claims.get(o.id)?.length ?? 0) * 1e3 + i;
+      if (key < bestKey) {
+        bestKey = key;
+        best = o;
+      }
+    });
+    claim(best, c);
+  }
+  // the rest: the first picture that has no sound of another asset yet (else the first one)
+  for (const { audio, cands } of pending) {
+    const asset = audio.type === 'audio' ? audio.assetId : '';
+    const free = cands.find((o) => (claims.get(o.id) ?? []).every((a) => a === asset)) ?? cands[0]!;
+    claim(free, audio);
   }
   return lead;
 }
@@ -165,24 +200,41 @@ export function staggerPlan(clips: readonly Clip[], order: CascadeOrder, stepFra
   const first = ordered[0]!.clip.start;
   // the store never makes a clip shorter than this either
   const minLen = Math.max(2 / rate, MIN_CLIP_DURATION);
-  ordered.forEach(({ clip: c, slot: i }) => {
-    const target = step === 0 ? lineUp : first + (i * step) / rate;
-    if (opts.mode === 'move') {
+  if (opts.mode === 'move') {
+    for (const { clip: c, slot: i } of ordered) {
+      const target = step === 0 ? lineUp : first + (i * step) / rate;
       if (Math.abs(target - c.start) > EPS) plan.places.push({ id: c.id, start: target, duration: c.duration });
-      return;
     }
-    const end = c.start + c.duration;
-    // only the head can be cut: a clip never starts earlier than it did
-    const start = Math.max(target, c.start);
-    if (start - c.start <= EPS) return;
-    if (end - start < minLen - EPS) {
-      plan.left.push({ id: c.id, reason: 'short' });
-      return;
+    return plan;
+  }
+  // 'trim': a picture and its sound are cut by the same amount or not at all (one that would get too short
+  // keeps the pair where it is, and every clip of the pair is counted as left out)
+  const slots = new Map<number, { clip: Clip; slot: number }[]>();
+  for (const o of ordered) {
+    const list = slots.get(o.slot) ?? [];
+    list.push(o);
+    slots.set(o.slot, list);
+  }
+  for (const members of slots.values()) {
+    const target = step === 0 ? lineUp : first + (members[0]!.slot * step) / rate;
+    const places: StaggerPlace[] = [];
+    let tooShort = false;
+    for (const { clip: c } of members) {
+      const end = c.start + c.duration;
+      // only the head can be cut: a clip never starts earlier than it did
+      const start = Math.max(target, c.start);
+      if (start - c.start <= EPS) continue;
+      if (end - start < minLen - EPS) {
+        tooShort = true;
+        continue;
+      }
+      const place: StaggerPlace = { id: c.id, start, duration: end - start };
+      if (isTimedClip(c)) place.trimStart = Math.max(0, c.trimStart + (start - c.start) * c.speed);
+      places.push(place);
     }
-    const place: StaggerPlace = { id: c.id, start, duration: end - start };
-    if (isTimedClip(c)) place.trimStart = Math.max(0, c.trimStart + (start - c.start) * c.speed);
-    plan.places.push(place);
-  });
+    if (tooShort) for (const { clip: c } of members) plan.left.push({ id: c.id, reason: 'short' });
+    else plan.places.push(...places);
+  }
   return plan;
 }
 
@@ -233,11 +285,21 @@ function mergeSpan(old: readonly Keyframe[] | undefined, fresh: Keyframe[], lo: 
 /** the properties a fly may write */
 const FLY_PROPS = ['x', 'y', 'z', 'rotation', 'scale', 'opacity'];
 
+/** two fly spans count as one fly when their ends differ by less than this (seconds) */
+const SPAN_TOL = 0.01;
+/** a fly is never longer than max(half the clip, this): longer motions are the user's own animation */
+const FLY_SPAN_CAP = 3;
+
+interface Span {
+  a: number;
+  b: number;
+}
+
 /**
- * the span an earlier fly on this side left on a property: its two keys at the edge of the clip (the first
- * key at 0 easing out, or the last key at the end with an ease in before it). null when there is none.
+ * the shape one key list has after a fly on this side: the first key at 0 easing out (in), or the last key
+ * at the end with an ease in key before it (out). returns the span of the two keys, or null.
  */
-function oldFly(keys: readonly Keyframe[] | undefined, incoming: boolean, len: number): { a: number; b: number } | null {
+function flyShape(keys: readonly Keyframe[] | undefined, incoming: boolean, len: number): Span | null {
   if (!keys || keys.length < 2) return null;
   if (incoming) {
     const k0 = keys[0]!;
@@ -248,12 +310,35 @@ function oldFly(keys: readonly Keyframe[] | undefined, incoming: boolean, len: n
   return Math.abs(k1.t - len) <= EPS && k0.ease === 'ease-in' ? { a: k0.t, b: len } : null;
 }
 
+/**
+ * the span of an earlier fly on this side. every fly writes opacity, so only an opacity track with the fly
+ * shape (and a short span) counts: a user animation that merely looks like one on x or y is not a fly.
+ */
+function flyOf(clip: Clip, incoming: boolean, len: number): Span | null {
+  const sp = flyShape(clip.keyframes?.opacity, incoming, len);
+  return sp && sp.b - sp.a <= Math.max(len / 2, FLY_SPAN_CAP) + EPS ? sp : null;
+}
+
+/** the span of the fly on one property: its keys have the fly shape AND the same span as the fly (`ref`) */
+function propFly(keys: readonly Keyframe[] | undefined, incoming: boolean, len: number, ref: Span | null): Span | null {
+  if (!ref) return null;
+  const sp = flyShape(keys, incoming, len);
+  return sp && Math.abs(sp.a - ref.a) <= SPAN_TOL && Math.abs(sp.b - ref.b) <= SPAN_TOL ? sp : null;
+}
+
 /** the ease of the segment that lies on `t` in a key list (the key at or before it) */
 function easeAt(keys: readonly Keyframe[] | undefined, t: number): Easing {
   if (!keys || keys.length === 0) return 'ease';
   let e: Easing = keys[0]!.ease;
   for (const k of keys) if (k.t <= t + EPS) e = k.ease;
   return e;
+}
+
+export interface FlyResult {
+  /** the new key list of every property that is touched (the others keep what they have) */
+  keys: Keyframes;
+  /** properties of `keys` that end up with fewer than 2 keys: they are no animation any more. the value is their rest value */
+  unkeyed: { prop: string; value: number }[];
 }
 
 /**
@@ -263,32 +348,71 @@ function easeAt(keys: readonly Keyframe[] | undefined, t: number): Easing {
  * (its keys, or its static value) so a property that already moves around the span stays continuous.
  * a fly that is already there on the same side is replaced, not stacked: its keys go (also on properties the
  * new kind does not use, a scatter followed by a rise only rises) and the rest pose is read behind it.
+ * an earlier fly is only recognised when the opacity track AND the property have its shape with the same
+ * span, so a slide the user keyed by hand is kept. a fly on the other side that touches or overlaps the new
+ * one gives the rest pose (from its own inner key); when both cannot fit each gets at most half the clip.
  * `index` / `count` are the place of the clip in the cascade (not needed by the current kinds).
  */
 export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts): Keyframes {
+  return flyPlanFull(clip, index, count, opts).keys;
+}
+
+/** flyPlan with the properties that stop being animated (see FlyResult.unkeyed) */
+export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyOpts): FlyResult {
   void index;
   void count;
+  const none: FlyResult = { keys: {}, unkeyed: [] };
   const props = animProps(clip);
   const can = new Map(props.map((p) => [p.prop, p]));
   // only visual clips fly
-  if (!can.has('opacity')) return {};
+  if (!can.has('opacity')) return none;
   const len = clip.duration;
-  const d = Math.min(Math.max(opts.duration, 0), len);
-  if (!(d >= 2 * MIN_GAP)) return {};
+  let d = Math.min(Math.max(opts.duration, 0), len);
+  if (!(d >= 2 * MIN_GAP)) return none;
   const amount = clamp01(opts.amount);
   const incoming = opts.direction === 'in';
+
+  // an earlier fly on this side (replaced) and one on the other side (kept, may touch this one)
+  const same = flyOf(clip, incoming, len);
+  const other = flyOf(clip, !incoming, len);
+  // the other fly touches this one when its inner key is inside or at the edge of the new span
+  const touches = !!other && (incoming ? other.a <= d + MIN_GAP : other.b >= len - d - MIN_GAP);
+  const overlaps = !!other && (incoming ? other.a < d - MIN_GAP : other.b > len - d + MIN_GAP);
+  const half = len / 2;
+  // keys of the other fly that move to the middle of the clip so both flies fit
+  const retimed = new Map<string, Keyframe[]>();
+  if (overlaps && other) {
+    d = Math.min(d, half);
+    if (!(d >= 2 * MIN_GAP)) return none;
+    for (const prop of FLY_PROPS) {
+      const keys = clip.keyframes?.[prop];
+      if (!keys || !propFly(keys, !incoming, len, other)) continue;
+      const list = keys.slice();
+      const at = incoming ? list.length - 2 : 1;
+      list[at] = { ...list[at]!, t: half };
+      retimed.set(prop, list);
+    }
+  }
   const lo = incoming ? 0 : len - d;
   const hi = incoming ? d : len;
+  const keysOf = (prop: string): readonly Keyframe[] | undefined => retimed.get(prop) ?? clip.keyframes?.[prop];
+  // the earlier fly of this side on a property
+  const oldOf = (prop: string): Span | null => propFly(clip.keyframes?.[prop], incoming, len, same);
   // the span that is rewritten on a property: the new fly, widened to an earlier fly on this side
-  const zone = (prop: string): { a: number; b: number } => {
-    const old = oldFly(clip.keyframes?.[prop], incoming, len);
+  const zone = (prop: string): Span => {
+    const old = oldOf(prop);
     return old ? { a: Math.min(lo, old.a), b: Math.max(hi, old.b) } : { a: lo, b: hi };
   };
   // the time the clip is at rest (the far end from the fly, behind an earlier fly)
   const seamOf = (prop: string): number => (incoming ? zone(prop).b : zone(prop).a);
-  const seamEase = (prop: string) => easeAt(clip.keyframes?.[prop], seamOf(prop));
+  const seamEase = (prop: string) => easeAt(keysOf(prop), seamOf(prop));
   const rest = (prop: string): number => {
     const keys = clip.keyframes?.[prop];
+    if (touches && other && keys) {
+      // next to a fly of the other side: its own rest key (at its inner end) is the rest pose, never its far pose
+      const o = propFly(keys, !incoming, len, other);
+      if (o) return evalKeys(keys, incoming ? o.a : o.b);
+    }
     if (keys && keys.length > 0) return evalKeys(keys, seamOf(prop));
     return baseValue(clip, prop) ?? 0;
   };
@@ -346,6 +470,7 @@ export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts)
   set('opacity', 0);
 
   const out: Keyframes = {};
+  const unkeyed: { prop: string; value: number }[] = [];
   const ease: Easing = incoming ? 'ease-out' : 'ease-in';
   for (const [prop, far] of away) {
     const r = rest(prop);
@@ -361,14 +486,18 @@ export function flyPlan(clip: Clip, index: number, count: number, opts: FlyOpts)
           { t: hi, v: far, ease: 'ease' },
         ];
     const z = zone(prop);
-    out[prop] = mergeSpan(clip.keyframes?.[prop], fresh, z.a, z.b);
+    out[prop] = mergeSpan(keysOf(prop), fresh, z.a, z.b);
   }
   // what an earlier fly of another kind left on this side goes: its far key is removed, the rest key stays
+  // (only on properties that carry that fly: same shape, same span)
   for (const prop of FLY_PROPS) {
-    if (prop in out || away.has(prop)) continue;
-    const keys = clip.keyframes?.[prop];
-    if (!keys || !oldFly(keys, incoming, len)) continue;
-    out[prop] = incoming ? keys.slice(1) : keys.slice(0, -1);
+    if (prop in out || !oldOf(prop)) continue;
+    const keys = keysOf(prop)!;
+    const left = incoming ? keys.slice(1) : keys.slice(0, -1);
+    out[prop] = left;
+    if (left.length < 2) unkeyed.push({ prop, value: left[0]!.v });
   }
-  return out;
+  // keys of the other fly that moved to the middle, on properties this fly did not write
+  for (const [prop, list] of retimed) if (!(prop in out)) out[prop] = list;
+  return { keys: out, unkeyed };
 }

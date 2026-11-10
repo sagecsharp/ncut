@@ -4,14 +4,14 @@
  */
 import { worldTransform } from '../../engine/parent';
 import { isVisualClip } from '../../types';
-import type { Clip, Keyframes, Project } from '../../types';
+import type { Clip, Keyframes, Project, Transform } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { applyFollowerSpans } from '../timeline/followApply';
 import { withFollowerMoves } from '../timeline/followMoves';
-import { flyPlan, hashString, staggerPlan } from './cascade';
+import { flyPlanFull, hashString, staggerPlan } from './cascade';
 import type { CascadeOrder, FlyDirection, FlyKind, StaggerMode } from './cascade';
 
 const EPS = 1e-6;
@@ -131,10 +131,10 @@ export function flySelection(kind: FlyKind, direction: FlyDirection, amount: num
     return;
   }
   const ordered = [...open].sort((a, b) => a.start - b.start);
-  const writes: { clip: Clip; keys: Keyframes }[] = [];
+  const writes: { clip: Clip; keys: Keyframes; unkeyed: { prop: string; value: number }[] }[] = [];
   ordered.forEach((clip, i) => {
-    const keys = flyPlan(clip, i, ordered.length, { kind, direction, amount, duration, seed, width: project.width, height: project.height });
-    if (Object.keys(keys).length > 0) writes.push({ clip, keys });
+    const { keys, unkeyed } = flyPlanFull(clip, i, ordered.length, { kind, direction, amount, duration, seed, width: project.width, height: project.height });
+    if (Object.keys(keys).length > 0) writes.push({ clip, keys, unkeyed });
   });
   if (writes.length === 0) {
     toast('nothing to change, the clips are too short for that length');
@@ -142,7 +142,16 @@ export function flySelection(kind: FlyKind, direction: FlyDirection, amount: num
   }
   st.pushHistory();
   for (const w of writes) {
-    useEditor.getState().setClipKeyframes(w.clip.id, { ...w.clip.keyframes, ...w.keys }, { skipHistory: true, time: w.clip.start });
+    const merged: Keyframes = { ...w.clip.keyframes, ...w.keys };
+    // a property left with fewer than 2 keys is no animation: its keys go and it rests on its static value
+    for (const u of w.unkeyed) delete merged[u.prop];
+    useEditor.getState().setClipKeyframes(w.clip.id, merged, { skipHistory: true, time: w.clip.start });
+    // setClipKeyframes froze those properties at the clip start (the far pose of a fly in): write the rest pose over it
+    if (w.unkeyed.length > 0) {
+      const patch: Record<string, number> = {};
+      for (const u of w.unkeyed) patch[u.prop] = u.value;
+      useEditor.getState().updateTransform(w.clip.id, patch as Partial<Transform>, { skipHistory: true });
+    }
   }
   const n = writes.length;
   let msg = `${n} ${plural(n, 'clip flies', 'clips fly')} ${direction === 'in' ? 'in' : 'out'}`;
