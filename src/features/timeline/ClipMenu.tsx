@@ -13,7 +13,7 @@ import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsN
 import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
 import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
-import { cutAtMarkers, fitToMarkers, makeRow, markerInsideClip, sequenceableIds } from './sequenceActions';
+import { cutAtMarkers, fitToMarkers, makeRow, canCutAtMarkers, sequenceableIds } from './sequenceActions';
 import { swapCandidates } from './swap';
 
 interface Props {
@@ -60,7 +60,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const sounds = clipHasSound(project, clip);
   const seqIds = sequenceableIds(project, ids);
   const hasMarkers = (project?.markers?.length ?? 0) > 0;
-  const cutIds = picked.filter((c) => markerInsideClip(project, c)).map((c) => c.id);
+  const cutIds = picked.filter((c) => canCutAtMarkers(project, c)).map((c) => c.id);
 
   // a single text clip: the ways it can be split into one clip per piece (only the ones that would do something)
   const splitPlansHere = ids.length === 1 && clip.type === 'text' ? splitPlans(clip) : null;

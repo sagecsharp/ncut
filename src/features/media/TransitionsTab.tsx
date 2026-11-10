@@ -5,9 +5,10 @@ import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { beginDrag, endDrag } from '../../lib/dnd';
 import { isVisualClip } from '../../types';
-import type { VisualClip } from '../../types';
+import type { Project, VisualClip } from '../../types';
 import { TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
 import type { TransitionDef } from '../../engine/transitions/registry';
+import { previousClipOnTrack } from '../../lib/transitions';
 import { rememberTransition, transitionFor } from './transitionApply';
 import { calmPool, planShuffle } from './transitionBatch';
 import { FavoriteStar } from './FavoriteStar';
@@ -135,6 +136,15 @@ let shuffleSeed = (Date.now() >>> 0) || 1;
 /** the id the last press ended on (the next press starts on something else) */
 let shuffleLast: string | undefined;
 
+/** why a shuffle had nothing to do: locked tracks, no cut under the selection, or cuts too short */
+function shuffleReason(project: Project, selection: readonly string[]): string {
+  const picked = project.clips.filter((c): c is VisualClip => selection.includes(c.id) && isVisualClip(c));
+  const open = picked.filter((c) => !project.tracks.find((t) => t.id === c.trackId)?.locked);
+  if (picked.length > 0 && open.length === 0) return 'this track is locked';
+  if (open.some((c) => previousClipOnTrack(project, c))) return 'those cuts are too short for a transition';
+  return 'select clips that start on a cut first';
+}
+
 function shuffleSelection(): void {
   const { project, selection, updateClip } = useEditor.getState();
   if (!project) return;
@@ -143,7 +153,7 @@ function shuffleSelection(): void {
   shuffleSeed = (Math.imul(shuffleSeed, 1664525) + 1013904223) >>> 0;
   const patches = planShuffle(project, selection, pool, shuffleSeed, shuffleLast);
   if (patches.length === 0) {
-    useUi.getState().toast('select clips that start on a cut first');
+    useUi.getState().toast(shuffleReason(project, selection));
     return;
   }
   useEditor.getState().pushHistory();

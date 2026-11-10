@@ -861,6 +861,15 @@ function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number
   return { glyphs, words: Math.max(1, word) };
 }
 
+/**
+ * the letter layout of a text clip at rest, the one the letter by letter draw uses (and fills the box's glyph cache with).
+ * for tools that need where every letter sits without drawing. throws when no 2d canvas exists to measure with.
+ */
+export function glyphLayout(clip: TextClip): { glyphs: TextGlyph[]; words: number } {
+  const m = measureText(clip);
+  return (m.glyphCache ??= layoutGlyphs(getMeasureCtx(), clip, m, 0));
+}
+
 function roundedRect(ctx: Ctx, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   if (r > 0 && typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, r);

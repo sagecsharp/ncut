@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { beatsInClip, detectBeats, snapToOnsets, thinBeats } from './beats';
+import { beatsInClip, beatsInClipIndexed, detectBeats, snapToOnsets, thinBeats } from './beats';
 
 const PPS = 50;
 
@@ -127,6 +127,15 @@ describe('beatsInClip', () => {
   });
   it('speed 0.5 doubles the spacing', () => {
     expect(beatsInClip(beats, { start: 1, duration: 4, trimStart: 1, speed: 0.5 })).toEqual([1, 3, 5]);
+  });
+});
+
+describe('beatsInClipIndexed', () => {
+  it('numbers by the place in the whole sound, not in the trimmed clip', () => {
+    const beats = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const r = beatsInClipIndexed(beats, { start: 5, duration: 3, trimStart: 2.5, speed: 1 });
+    expect(r.map((b) => b.index)).toEqual([3, 4, 5]);
+    expect(r.map((b) => b.time)).toEqual([5.5, 6.5, 7.5]);
   });
 });
 

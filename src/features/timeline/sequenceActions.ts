@@ -159,6 +159,19 @@ export function makeRow(ids: readonly string[]): void {
   useUi.getState().toast(`${n} clips in a row${prep.leftOut > 0 ? `, ${prep.leftOut} on locked tracks left out` : ''}`);
 }
 
+/** how many places start AND end on a marker, and how many follow after the last marker */
+export function fitCounts(places: readonly SeqPlace[], markers: readonly number[]): { fitted: number; after: number } {
+  const on = (t: number) => markers.some((m) => Math.abs(m - t) < 1e-4);
+  const last = markers.length ? markers[markers.length - 1]! : 0;
+  let fitted = 0;
+  let after = 0;
+  for (const p of places) {
+    if (on(p.start) && on(p.start + p.duration)) fitted++;
+    if (p.start > last + 1e-4) after++;
+  }
+  return { fitted, after };
+}
+
 /** "fit to the markers": clip i starts on a marker and ends on the marker `span` markers later. */
 export function fitToMarkers(ids: readonly string[], span: FitSpan = 1): void {
   const project = useEditor.getState().project;
@@ -176,10 +189,19 @@ export function fitToMarkers(ids: readonly string[], span: FitSpan = 1): void {
     return;
   }
   if (!apply(project, prep, plan.places)) return;
-  let msg = `${prep.clips.length} clips on the markers`;
+  const { fitted, after } = fitCounts(plan.places, markers);
+  let msg = `${fitted} ${plural(fitted, 'clip', 'clips')} on the markers`;
+  if (after > 0) msg += `, ${after} after the last marker`;
   if (plan.short > 0) msg += `, ${plan.short} ${plural(plan.short, 'clip is shorter than its beat', 'clips are shorter than their beat')}`;
   if (prep.leftOut > 0) msg += `, ${prep.leftOut} on locked tracks left out`;
   useUi.getState().toast(msg);
+}
+
+/** true when "cut at the markers" would cut this clip: not effect / camera, not on a locked track, a marker inside */
+export function canCutAtMarkers(project: Project | null | undefined, clip: Clip): boolean {
+  if (!project || !isSequenceable(clip)) return false;
+  if (project.tracks.find((t) => t.id === clip.trackId)?.locked) return false;
+  return markerInsideClip(project, clip);
 }
 
 /** "cut at the markers": every selected clip is split at every marker inside it. one undo step. */
@@ -189,8 +211,7 @@ export function cutAtMarkers(ids: readonly string[]): void {
   if (!project) return;
   const margin = cutMargin(project);
   const times = markerList(project);
-  const locked = new Set(project.tracks.filter((t) => t.locked).map((t) => t.id));
-  const clips = project.clips.filter((c) => ids.includes(c.id) && isSequenceable(c) && !locked.has(c.trackId));
+  const clips = project.clips.filter((c) => ids.includes(c.id) && canCutAtMarkers(project, c));
   const all = new Set<number>();
   for (const c of clips) for (const t of markersInside(times, c.start, clipEnd(c), margin)) all.add(t);
   if (all.size === 0) {
