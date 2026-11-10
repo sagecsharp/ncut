@@ -132,9 +132,11 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'wrapWidth',
     'highlight',
     'extrude',
+    'counter',
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
   camera: ['target'],
+  effect: ['timeOffset', 'target'],
 };
 
 export interface ClipMove {

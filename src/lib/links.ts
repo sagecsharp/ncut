@@ -1,6 +1,6 @@
 /**
  * links between clips by id: parent (Spatial.parent), look targets (Spatial.lookTarget), groups
- * (ClipBase.group) and camera targets.
+ * (ClipBase.group), camera targets and the clip an effect is put on (EffectClip.target).
  * pure, no math: the geometry of parenting lives in engine/parent.ts.
  */
 import type { Clip, Project } from '../types';
@@ -89,6 +89,7 @@ export function relinkCopies(copies: Clip[], idMap: ReadonlyMap<string, string>,
     if (isVisualClip(next) && next.parent && idMap.has(next.parent)) next = { ...next, parent: idMap.get(next.parent)! };
     if (isVisualClip(next) && next.lookTarget && idMap.has(next.lookTarget)) next = { ...next, lookTarget: idMap.get(next.lookTarget)! };
     if (isCameraClip(next) && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
+    if (next.type === 'effect' && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
     if (next.group) {
       if ((groupCount.get(next.group) ?? 0) >= 2) {
         let g = newGroup.get(next.group);
@@ -114,6 +115,8 @@ export function unlinkRemoved(clips: Clip[], removed: ReadonlySet<string>): Clip
     if (isVisualClip(c) && c.lookTarget && removed.has(c.lookTarget)) c = { ...c, lookTarget: null };
     if (isVisualClip(c) && c.parent && removed.has(c.parent)) return { ...c, parent: null };
     if (isCameraClip(c) && c.target && removed.has(c.target)) return { ...c, target: null };
+    // an effect that was on one clip does not turn into an effect on everything when that clip goes:
+    // it keeps pointing at the id that is gone, which means "does nothing" (see EffectClip.target)
     return c;
   });
 }

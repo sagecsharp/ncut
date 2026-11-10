@@ -337,6 +337,26 @@ export interface TextHighlight {
 }
 
 /**
+ * a running number: the text shows a number that counts from one value to another over the length
+ * of the clip. every "{n}" in the clip's text is replaced by the number; a text without "{n}" shows
+ * only the number. see counterValue / counterText in engine/counter.ts.
+ */
+export interface TextCounter {
+  /** the number at the start of the clip */
+  from: number;
+  /** the number it ends on */
+  to: number;
+  /** digits after the point, 0..4 */
+  decimals: number;
+  /** group the digits in threes: 1,234,567. missing = false. */
+  separator?: boolean;
+  /** how it moves: 'linear' = steady, 'out' = fast then settling, 'in-out' = slow, fast, slow. missing = 'out'. */
+  ease?: 'linear' | 'out' | 'in-out';
+  /** seconds at the end of the clip where the final number just stays. missing = 0. */
+  hold?: number;
+}
+
+/**
  * a solid side for the letters: the text is repeated behind itself along a direction, like block
  * letters or a long hard shadow. drawn under the fill and the outline. see engine/text.ts.
  */
@@ -387,6 +407,8 @@ export interface TextClip extends ClipBase, Spatial {
   highlight?: TextHighlight | null;
   /** block letters / long shadow. null / missing = off. */
   extrude?: TextExtrude | null;
+  /** a running number inside the text. null / missing = off. */
+  counter?: TextCounter | null;
   /* ---- animation ---- */
   animIn?: TextAnim | null;
   animOut?: TextAnim | null;
@@ -452,6 +474,14 @@ export interface EffectClip extends ClipBase {
    * effect clip is split, so the animation carries on across the cut instead of starting over.
    */
   timeOffset?: number;
+  /**
+   * id of ONE visual clip (video, image, text, shape) this effect is put on. null / missing = the
+   * normal adjustment layer: everything under the effect's track. with a target the effect changes
+   * only that clip's picture, wherever the two tracks are in the stack, while both clips are on
+   * screen; the rest of the frame is left alone. an unknown id, a target that is not a visual clip
+   * or the effect itself = the effect does nothing. see engine/draw.ts.
+   */
+  target?: string | null;
 }
 
 /**
