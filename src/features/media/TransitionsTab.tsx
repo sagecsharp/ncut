@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Shuffle } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { beginDrag, endDrag } from '../../lib/dnd';
@@ -8,7 +8,8 @@ import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
 import type { TransitionDef } from '../../engine/transitions/registry';
-import { transitionFor } from './transitionApply';
+import { rememberTransition, transitionFor } from './transitionApply';
+import { calmPool, planShuffle } from './transitionBatch';
 import { FavoriteStar } from './FavoriteStar';
 import { pickFavorites, useFavorites } from './favorites';
 import { renderTransition } from '../../engine/transitions/runner';
@@ -126,6 +127,29 @@ function applyTo(def: TransitionDef): void {
   }
   useEditor.getState().pushHistory();
   for (const c of targets) updateClip(c.id, { transition: transitionFor(def.id, c.transition) }, { skipHistory: true });
+  rememberTransition(def.id, targets[0]!.transition?.duration);
+}
+
+/** moves on every press, so the same selection gets new picks each time */
+let shuffleSeed = (Date.now() >>> 0) || 1;
+/** the id the last press ended on (the next press starts on something else) */
+let shuffleLast: string | undefined;
+
+function shuffleSelection(): void {
+  const { project, selection, updateClip } = useEditor.getState();
+  if (!project) return;
+  const starred = pickFavorites(useFavorites.getState().transitions, TRANSITIONS);
+  const pool = (starred.length > 0 ? starred : calmPool(TRANSITIONS)).map((t) => t.id);
+  shuffleSeed = (Math.imul(shuffleSeed, 1664525) + 1013904223) >>> 0;
+  const patches = planShuffle(project, selection, pool, shuffleSeed, shuffleLast);
+  if (patches.length === 0) {
+    useUi.getState().toast('select clips that start on a cut first');
+    return;
+  }
+  useEditor.getState().pushHistory();
+  for (const p of patches) updateClip(p.clipId, { transition: p.transition }, { skipHistory: true });
+  shuffleLast = patches[patches.length - 1]!.transition?.id;
+  useUi.getState().toast(`shuffled ${patches.length} transition${patches.length === 1 ? '' : 's'}`);
 }
 
 /* ---------- card ---------- */
@@ -269,6 +293,17 @@ export function TransitionsTab() {
           />
         </div>
         <div className="media-fx-hint">a transition blends into a clip from the one before it</div>
+        <div className="media-filter-row">
+          <button
+            type="button"
+            className="btn btn-sm"
+            title="give every selected clip that starts on a cut a different transition, from your favorites (or calm ones when there are none)"
+            onClick={shuffleSelection}
+          >
+            <Shuffle size={14} />
+            shuffle onto the selection
+          </button>
+        </div>
       </div>
       <div className="media-scroll">
         {favorites.length > 0 ? (

@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { Equal } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import {
   DEFAULT_TRANSITION_DURATION,
@@ -10,6 +11,9 @@ import {
 } from '../../engine/transitions/registry';
 import { previousClipOnTrack } from '../../lib/transitions';
 import { useEditor } from '../../store/editorStore';
+import { useUi } from '../../store/ui';
+import { rememberTransition } from '../media/transitionApply';
+import { planSameLength } from '../media/transitionBatch';
 import type { Clip, Transition } from '../../types';
 import { Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
@@ -33,7 +37,23 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
 
   const pick = (value: string) => {
     if (value === '') actions().updateClip(id, { transition: null });
-    else actions().updateClip(id, { transition: { id: value, duration: transition?.duration ?? DEFAULT_TRANSITION_DURATION } });
+    else {
+      actions().updateClip(id, { transition: { id: value, duration: transition?.duration ?? DEFAULT_TRANSITION_DURATION } });
+      rememberTransition(value, transition?.duration);
+    }
+  };
+
+  const sameLength = () => {
+    const project = actions().project;
+    if (!project || !transition) return;
+    const patches = planSameLength(project, clip.trackId, id);
+    if (patches.length === 0) {
+      useUi.getState().toast('nothing to do: no other transition on this track needs changing');
+      return;
+    }
+    actions().pushHistory();
+    for (const p of patches) actions().updateClip(p.clipId, { transition: p.transition }, { skipHistory: true });
+    useUi.getState().toast(`${patches.length} transition${patches.length === 1 ? '' : 's'} set to ${transition.duration.toFixed(2)}s`);
   };
 
   return (
@@ -69,9 +89,25 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
             step={0.1}
             precision={2}
             onStart={beginEdit}
-            onChange={(v) => actions().updateClip(id, { transition: { id: transition.id, duration: v } }, liveOpts())}
+            onChange={(v) => {
+              actions().updateClip(id, { transition: { id: transition.id, duration: v } }, liveOpts());
+              rememberTransition(transition.id, v);
+            }}
           />
         </Row>
+      ) : null}
+      {transition ? (
+        <div className="props-buttons">
+          <button
+            type="button"
+            className="btn btn-sm"
+            title="copy this length to the other transitions of this track (each is kept inside what its cut allows)"
+            onClick={sameLength}
+          >
+            <Equal size={14} />
+            use this length on every cut of the track
+          </button>
+        </div>
       ) : null}
       <div className="props-hint">{prevName !== null ? `blends from "${prevName}" into this clip` : 'starts from empty'}</div>
     </Section>
