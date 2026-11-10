@@ -8,6 +8,7 @@ import { usePlayback } from '../../store/playback';
 import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
+import { AlignButtons } from './AlignButtons';
 import { LookButtons } from './LookSection';
 import { ParentSelect } from './AttachSection';
 import { attachClips } from './attachActions';
@@ -136,6 +137,8 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
     return parents.size === 1 ? [...parents][0]! : null;
   }, [clips, ids]);
 
+  const visualIds = useMemo(() => (clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => c.id), [clips, ids]);
+
   const source = useEditor((s) => {
     const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
     return c as VisualClip | undefined;
@@ -156,6 +159,11 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
             onPick={(pid) => attachClips(ids, pid)}
           />
           {source ? <LookButtons source={source} ids={ids} /> : null}
+        </Section>
+      ) : null}
+      {sum.visual > 0 ? (
+        <Section id="m-align" title="align">
+          <AlignButtons ids={visualIds} />
         </Section>
       ) : null}
       {sum.audible > 0 ? (

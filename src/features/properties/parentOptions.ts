@@ -46,6 +46,19 @@ export function lookTargetOptions(project: Pick<Project, 'clips'>, id: string): 
   );
 }
 
+/**
+ * the clips an effect clip can be put on ("applies to"): visual clips only (no cameras), never the effect itself.
+ * clips that overlap the effect in time come first. same labels and order as parentOptions.
+ */
+export function effectTargetOptions(project: Pick<Project, 'clips'>, effectId: string): ParentOption[] {
+  const from = project.clips.filter((c) => c.id === effectId);
+  if (from.length === 0) return [];
+  return labelOptions(
+    project.clips.filter((c) => isVisualClip(c) && c.id !== effectId),
+    from,
+  );
+}
+
 /** labels (name, + type when repeated, + number) and the overlap-first order shared by the clip pickers */
 function labelOptions(cands: Clip[], from: Clip[]): ParentOption[] {
   const names = cands.map(baseName);

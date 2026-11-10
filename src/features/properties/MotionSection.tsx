@@ -8,9 +8,10 @@ import {
   DEFAULT_CLIP_MOTION_LOOP,
   DEFAULT_CLIP_MOTION_OUT,
 } from '../../engine/clipAnim';
-import type { ClipAnim, VisualClip } from '../../types';
+import { MOTION_BLUR_STYLES } from '../../types';
+import type { ClipAnim, MotionBlurStyle, VisualClip } from '../../types';
 import { Row, Section, SliderRow, Switch } from './controls';
-import { DEFAULT_MOTION_BLUR, setBlurValue } from './colorLogic';
+import { DEFAULT_MOTION_BLUR, setBlurStyle, setBlurValue } from './colorLogic';
 import { visibleMotions } from './motionLogic';
 import { beginEdit, patchClip } from './edit';
 
@@ -63,6 +64,12 @@ export function MotionRow({ label, title, list, value, defaultDuration, duration
   );
 }
 
+const BLUR_KINDS: Record<MotionBlurStyle, { label: string; title: string }> = {
+  even: { label: 'smooth', title: 'smooth: an even smear of the whole movement' },
+  trail: { label: 'trail', title: 'trail: the clip stays sharp where it is and leaves a fading tail behind it' },
+  ghost: { label: 'ghost', title: 'ghost: a few separate see-through copies behind the clip (a strobe look)' },
+};
+
 export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { clip: VisualClip }) {
   const id = clip.id;
   const threeD = !!clip.threeD;
@@ -108,6 +115,25 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
       </Row>
       {clip.motionBlur ? (
         <>
+          <Row label="kind" title="what the blur looks like">
+            <div className="props-seg">
+              {MOTION_BLUR_STYLES.map((k) => {
+                const on = (clip.motionBlur?.style ?? 'even') === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    className={`btn btn-sm${on ? ' btn-primary' : ''}`}
+                    title={BLUR_KINDS[k].title}
+                    aria-pressed={on}
+                    onClick={() => patchClip(id, { motionBlur: setBlurStyle(clip.motionBlur, k) })}
+                  >
+                    {BLUR_KINDS[k].label}
+                  </button>
+                );
+              })}
+            </div>
+          </Row>
           <SliderRow
             label="amount"
             title="how long the shutter stays open, as a share of one frame (%)"

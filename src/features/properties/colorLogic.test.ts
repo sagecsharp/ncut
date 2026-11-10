@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { setAdjustValue, setBlurValue } from './colorLogic';
+import { setAdjustValue, setBlurStyle, setBlurValue } from './colorLogic';
 
 describe('setAdjustValue', () => {
   it('creates an adjust from the first change', () => {
@@ -29,5 +29,20 @@ describe('setBlurValue', () => {
   });
   it('starts from the defaults', () => {
     expect(setBlurValue(null, 'shutter', 1)).toEqual({ shutter: 1, samples: 8 });
+  });
+});
+
+describe('setBlurStyle', () => {
+  it('stores a kind and keeps the numbers', () => {
+    expect(setBlurStyle({ shutter: 1, samples: 12 }, 'trail')).toEqual({ shutter: 1, samples: 12, style: 'trail' });
+    expect(setBlurStyle(null, 'ghost')).toEqual({ shutter: 0.5, samples: 8, style: 'ghost' });
+  });
+  it('smooth removes the field', () => {
+    const next = setBlurStyle({ shutter: 1, samples: 12, style: 'ghost' }, 'even');
+    expect(next).toEqual({ shutter: 1, samples: 12 });
+    expect('style' in next).toBe(false);
+  });
+  it('slider changes keep the kind', () => {
+    expect(setBlurValue({ shutter: 1, samples: 12, style: 'trail' }, 'samples', 20)).toEqual({ shutter: 1, samples: 20, style: 'trail' });
   });
 });

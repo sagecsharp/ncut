@@ -128,4 +128,10 @@ describe('look clipboard', () => {
   it('clears the mask when the source had none', () => {
     expect(lookPatch(captureLook(image), 'image').mask).toBeNull();
   });
+  it('carries the motion blur kind', () => {
+    const blurred: VisualClip = { ...image, motionBlur: { shutter: 1, samples: 10, style: 'ghost' } };
+    const look = captureLook(blurred);
+    expect(look.values.motionBlur).toEqual({ shutter: 1, samples: 10, style: 'ghost' });
+    expect(lookPatch(look, 'text').motionBlur).toEqual({ shutter: 1, samples: 10, style: 'ghost' });
+  });
 });
