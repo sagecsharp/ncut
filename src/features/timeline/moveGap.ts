@@ -25,7 +25,9 @@ export function singleTrack(tracks: Pick<Track, 'id'>[], items: GapItem[]): { in
  * the index a new track gets when the moved clips are held over a border, or null when the
  * move does not open one: too little vertical travel, clips from several tracks, a track
  * that would break the video-first order, or a move that only swaps one empty track for another.
- * `clips` are the clips as the drag found them.
+ * `clips` are the clips as the drag found them. `pressIndex` is the border the press itself was on (a clip
+ * grabbed by its top or bottom edge sits inside that band): that one never opens, a hand that drifts a little
+ * while sliding the clip sideways would make a track nobody asked for.
  */
 export function gapForMove(
   tracks: Pick<Track, 'id' | 'kind'>[],
@@ -33,8 +35,9 @@ export function gapForMove(
   items: GapItem[],
   index: number | null,
   movedY: number,
+  pressIndex: number | null = null,
 ): number | null {
-  if (index === null || Math.abs(movedY) < GAP_MOVE_PX) return null;
+  if (index === null || index === pressIndex || Math.abs(movedY) < GAP_MOVE_PX) return null;
   const one = singleTrack(tracks, items);
   if (!one || !gapAllows(tracks, index, one.kind)) return null;
   if (index === one.index || index === one.index + 1) {

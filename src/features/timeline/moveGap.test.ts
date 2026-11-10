@@ -18,6 +18,9 @@ describe('gapForMove', () => {
   });
   it('too little vertical movement', () => {
     expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 1, 7)).toBeNull();
+    // the border the clip was grabbed on never opens, any other one does
+    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 1, 12, 1)).toBeNull();
+    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 2, 60, 1)).toBe(2);
     expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 1, 8)).toBe(1);
   });
   it('items from two tracks', () => {

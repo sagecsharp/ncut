@@ -417,7 +417,9 @@ export function createGestures(env: GestureEnv) {
     let zone: 'top' | 'bottom' | null = null;
     const ly = laneY(m.geo, m.cy);
     const movedY = m.cy - m.startY + (view.scrollTop - m.startScrollTop);
-    const gap = gapForMove(project.tracks, m.baseClips, m.items, hitGap(m.layout, ly), movedY);
+    // where the press was, in today's lane coordinates
+    const pressGap = hitGap(m.layout, ly - movedY);
+    const gap = gapForMove(project.tracks, m.baseClips, m.items, hitGap(m.layout, ly), movedY, pressGap);
     if (gap !== null) {
       // over a border the clips stay on their own track and follow the pointer in time
     } else if (hit.type === 'lane') {
@@ -436,7 +438,7 @@ export function createGestures(env: GestureEnv) {
     } else {
       const one = singleTrack(project.tracks, m.items);
       const kind = one?.kind;
-      if (one && (hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio')) zone = hit.where;
+      if (one && ((hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio'))) zone = hit.where;
     }
     m.zone = zone;
     m.gap = gap;
