@@ -12,7 +12,7 @@ import { getLastEffect, setLastEffect } from './lastEffect';
 import { SHAPE_PRESETS } from '../media/shapePresets';
 import { openPalette } from './paletteStore';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
-import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
+import { collectSnapPoints, projectDuration } from '../../lib/timelineOps';
 import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, trimToPlayhead, ungroupIdsNow } from '../timeline/actions';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
