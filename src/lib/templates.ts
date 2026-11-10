@@ -495,6 +495,116 @@ function carousel(project: Project): Project {
   return b.finish(project, '#0e1013');
 }
 
+function rackFocus(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 7;
+  // the distance from the home camera to the z = 0 plane (see scene3d/camera.ts homeDistance)
+  const home = b.h / 2 / Math.tan((50 * Math.PI) / 360);
+  const spots = [
+    { name: 'near', x: -300 * u, z: -380 * u, color: '#ff8a6b' },
+    { name: 'middle', x: 130 * u, z: 160 * u, color: ACCENT },
+    { name: 'far', x: 760 * u, z: 800 * u, color: '#9ad1ff' },
+  ];
+  const at = (z: number) => home + z;
+
+  // the focus is pulled from the near card to the far one and back to the middle: keys on focusDistance
+  b.camera(b.track('camera'), 0, {
+    duration: len,
+    focusStrength: 0.85,
+    focusDistance: at(spots[0]!.z),
+    keyframes: {
+      focusDistance: [
+        { t: 0, v: at(spots[0]!.z), ease: 'ease' },
+        { t: 1.5, v: at(spots[0]!.z), ease: 'ease' },
+        { t: 3, v: at(spots[2]!.z), ease: 'ease' },
+        { t: 4.5, v: at(spots[2]!.z), ease: 'ease' },
+        { t: 6, v: at(spots[1]!.z), ease: 'ease' },
+      ],
+      x: ramp(-70 * u, 70 * u, len, 'linear'),
+    },
+  });
+  // flat layers are never blurred: this line stays sharp the whole time
+  b.text(b.track('caption'), 0.4, {
+    duration: len - 0.4,
+    name: 'caption',
+    text: 'pull the focus',
+    fontSize: 46 * u,
+    color: DIM,
+    letterSpacing: 0.2,
+    animIn: { id: 'fade', duration: 0.6 },
+    transform: { x: 0, y: b.h / 2 - 90 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  for (const s of spots) {
+    b.text(b.track(`${s.name} label`), 0, {
+      duration: len,
+      name: `${s.name} label`,
+      text: s.name,
+      fontSize: 84 * u,
+      fontWeight: 700,
+      color: '#111111',
+      threeD: true,
+      transform: { x: s.x, y: 0, scale: 1, rotation: 0, opacity: 1, z: s.z - 4 * u, rotY: 0 },
+    });
+  }
+  for (const s of spots) {
+    b.shape(b.track(s.name), 0, {
+      duration: len,
+      name: s.name,
+      kind: 'rect',
+      width: 380 * u,
+      height: 520 * u,
+      color: s.color,
+      color2: '#1a1c20',
+      gradientAngle: 90,
+      radius: 0.07,
+      threeD: true,
+      transform: { x: s.x, y: 0, scale: 1, rotation: 0, opacity: 1, z: s.z, rotY: 0 },
+    });
+  }
+  return b.finish(project, '#0c0d10');
+}
+
+function timer(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 10;
+
+  b.text(b.track('label'), 0, {
+    duration: len,
+    name: 'label',
+    text: 'starting in',
+    fontSize: 54 * u,
+    color: DIM,
+    letterSpacing: 0.2,
+    animIn: { id: 'fade', duration: 0.5 },
+    transform: { x: 0, y: -215 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  // seconds, written as m:ss. steady digits keep the colon where it is while the number runs
+  b.text(b.track('timer'), 0, {
+    duration: len,
+    name: 'timer',
+    text: '{n}',
+    fontSize: 300 * u,
+    fontWeight: 700,
+    color: INK,
+    counter: { from: len, to: 0, decimals: 0, ease: 'linear', format: 'time', fixedWidth: true },
+    transform: { x: 0, y: 20 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  // a bar that runs out with the time
+  b.shape(b.track('bar'), 0, {
+    duration: len,
+    name: 'bar',
+    kind: 'rect',
+    width: 760 * u,
+    height: 10 * u,
+    color: ACCENT,
+    keyframes: { scale: ramp(1, 0.02, len, 'linear') },
+    transform: { x: 0, y: 230 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  return b.finish(project, '#0b0c0e');
+}
+
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
@@ -504,6 +614,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'stats', name: 'numbers', description: 'three numbers that count up, each with a label under it', build: stats },
   { id: 'winter', name: 'snow title', description: 'a block title in falling snow and mist over an evening sky', build: winter },
   { id: 'carousel', name: 'carousel', description: 'eight cards on a turning ring in 3d: they are attached to the pole in the middle', build: carousel },
+  { id: 'rack-focus', name: 'rack focus', description: 'three cards at different depths while the camera pulls the focus from one to the next', build: rackFocus },
+  { id: 'timer', name: 'timer', description: 'a ten second count down written as m:ss, with a bar that runs out', build: timer },
 ];
 
 export function getTemplate(id: string | null | undefined): ProjectTemplate | undefined {
