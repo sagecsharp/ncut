@@ -56,7 +56,7 @@ export const PathSection = memo(function PathSection({ id }: { id: string }) {
       <Row label="other way" title="go the other direction">
         <input type="checkbox" className="checkbox" title="go the other direction" checked={vals.reverse} onChange={(e) => set({ reverse: e.target.checked })} />
       </Row>
-      <Row label="face the way it moves" title="turn the clip to look along the path (a hop stays as it is)" wide>
+      <Row label="face ahead" title="turn the clip to face the way it moves (a hop stays as it is)" wide>
         <input type="checkbox" className="checkbox" title="turn the clip to look along the path" checked={vals.face} onChange={(e) => set({ face: e.target.checked })} />
       </Row>
       <div className="path-btns">
@@ -64,7 +64,7 @@ export const PathSection = memo(function PathSection({ id }: { id: string }) {
           <Route size={14} />
           <span>apply</span>
         </button>
-        <button type="button" className="btn" title="clear the x / y / z keys, the clip stays where it starts. the turning keys of 'face the way it moves' are left in place." onClick={() => removePath(id)}>
+        <button type="button" className="btn" title="clear the x / y / z keys, the clip stays where it starts. the turning keys of 'face ahead' are left in place." onClick={() => removePath(id)}>
           <Trash2 size={14} />
           <span>remove</span>
         </button>
