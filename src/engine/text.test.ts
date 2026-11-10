@@ -34,6 +34,8 @@ import {
 import { textAnimActive, textAnimUnits } from './textAnim';
 import { ensureFont } from '../lib/fonts';
 import { resolveCounter } from './counter';
+import { resolveClip } from '../lib/anim';
+import { applyClipMotion } from './clipAnim';
 
 vi.mock('../lib/fonts', () => ({ ensureFont: vi.fn(async () => true), fontsVersion: () => 0 }));
 
@@ -254,6 +256,29 @@ describe('remapPoint', () => {
     // the letter's x axis points down, so (0, 5) is 5 along the letter's x axis
     expect(x).toBeCloseTo(5);
     expect(y).toBeCloseTo(0);
+  });
+});
+
+describe('a resolved copy of a text clip reads the caches of the stored clip', () => {
+  const key = (t: number, v: number) => ({ t, v, ease: 'linear' as const });
+  it('textSignature of a keyframed / moving copy is the stored clip signature, and the other signature flavour too', () => {
+    const raw = createTextClip('tk', 0, { text: 'moving', stroke: { color: '#000', width: 0.1 }, extrude: { depth: 0.2, angle: 45, color: '#888' } });
+    raw.keyframes = { x: [key(0, 0), key(2, 100)], opacity: [key(0, 0), key(2, 1)] };
+    raw.motionIn = { id: 'pop', duration: 1 };
+    const moved = applyClipMotion(resolveClip(raw, 0.5), 0.5, { width: 1920, height: 1080 });
+    expect(moved).not.toBe(raw);
+    expect(moved.transform).not.toEqual(raw.transform);
+    // the copy has other transform values and the very same signature; both flavours
+    expect(textSignature(moved)).toBe(textSignature(raw));
+    expect(textSignature(moved, true)).toBe(textSignature(raw, true));
+    expect(textSignature(moved, true)).not.toBe(textSignature(moved));
+    // and the box is the one object of the stored clip
+    expect(measureText(moved)).toBe(measureText(raw));
+  });
+  it('a copy with another text (a counter) is its own clip: its signature follows its own text', () => {
+    const raw = createTextClip('tc', 0, { text: 'one' });
+    const other = { ...raw, text: 'two' };
+    expect(textSignature(other)).not.toBe(textSignature(raw));
   });
 });
 
