@@ -9,6 +9,7 @@ import { PACK2_MOTION_EFFECTS } from './defs/pack2-motion';
 import { PACK2_STYLIZE_EFFECTS } from './defs/pack2-stylize';
 import { PACK3_BLUR_EFFECTS } from './defs/pack3-blur';
 import { PACK3_OVERLAY_EFFECTS } from './defs/pack3-overlay';
+import { PACK4_COLOR_EFFECTS, PACK4_DISTORT_EFFECTS, PACK4_STYLIZE_EFFECTS } from './defs/pack4';
 import { STYLIZE_EFFECTS } from './defs/stylize';
 import type { EffectCategory, EffectDef } from './types';
 
@@ -21,10 +22,13 @@ export const EFFECTS: EffectDef[] = [
   ...PACK3_BLUR_EFFECTS,
   ...COLOR_EFFECTS,
   ...PACK2_COLOR_EFFECTS,
+  ...PACK4_COLOR_EFFECTS,
   ...DISTORT_EFFECTS,
   ...PACK2_DISTORT_EFFECTS,
+  ...PACK4_DISTORT_EFFECTS,
   ...STYLIZE_EFFECTS,
   ...PACK2_STYLIZE_EFFECTS,
+  ...PACK4_STYLIZE_EFFECTS,
   ...PACK3_OVERLAY_EFFECTS,
 ];
 
