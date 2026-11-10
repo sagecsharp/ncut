@@ -79,6 +79,27 @@ describe('3d solid presets', () => {
       expect(solidOf(byId(id))).toBe(shape);
     }
   });
+  it('the five outline and tube solids have a size, a thickness and keep the figure undistorted', () => {
+    const want: [string, string][] = [['capsule', 'capsule'], ['prism', 'prism'], ['hexagon-3d', 'hexagon'], ['star-3d', 'star'], ['heart-3d', 'heart']];
+    for (const [id, shape] of want) {
+      const b = byId(id).build(1920, 1080);
+      expect(b).toMatchObject({ threeD: true, shape, kind: 'rect' });
+      expect(b.width).toBeGreaterThan(0);
+      expect(b.height).toBeGreaterThan(0);
+      expect(b.shapeDepth).toBeGreaterThan(0);
+      expect(solidOf(byId(id))).toBe(shape);
+      expect(b.transform!.rotY).not.toBe(0);
+    }
+    // a regular hexagon is 0.866 as wide as tall, an equilateral prism triangle 1.155 as wide as tall
+    const hex = byId('hexagon-3d').build(1, 1);
+    expect(hex.width! / hex.height!).toBeCloseTo(0.866, 1);
+    const pr = byId('prism').build(1, 1);
+    expect(pr.width! / pr.height!).toBeCloseTo(1.155, 1);
+  });
+  it('card ids stay unique', () => {
+    const ids = SHAPE_PRESETS.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
   it('keep a full transform with a little tilt', () => {
     const tr = byId('cone').build(1, 1).transform!;
     expect(tr).toMatchObject({ x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 });

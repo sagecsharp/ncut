@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SHAPES_3D } from '../../types';
-import { DEFAULT_SEGMENTS, TORUS_TUBE, interleave, knownShape, shapeMesh } from './meshes';
+import { outlineFor } from './outline2d';
+import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, interleave, knownShape, shapeMesh } from './meshes';
 
 describe('shape meshes', () => {
   for (const shape of SHAPES_3D) {
@@ -43,8 +44,8 @@ describe('shape meshes', () => {
           const area = Math.hypot(u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!);
           if (!(area > 1e-9)) bad++;
         }
-        // the sphere poles legitimately collapse one triangle per segment (existing mesh, unchanged)
-        expect(bad).toBeLessThanOrEqual(shape === 'sphere' ? 2 * DEFAULT_SEGMENTS : 0);
+        // the sphere and capsule poles legitimately collapse one triangle per segment
+        expect(bad).toBeLessThanOrEqual(shape === 'sphere' || shape === 'capsule' ? 2 * DEFAULT_SEGMENTS : 0);
       });
       it('is built once per shape and segment count', () => {
         expect(shapeMesh(shape)).toBe(m);
@@ -108,6 +109,71 @@ describe('shape meshes', () => {
     for (let i = 0; i < m.positions.length; i += 3) {
       expect(Math.hypot(m.positions[i]!, m.positions[i + 1]!)).toBeGreaterThanOrEqual(ring * (1 - TORUS_TUBE) - 1e-6);
     }
+  });
+
+  it('capsule: a tube along y with round ends, the picture wraps like on the cylinder', () => {
+    const seg = 16;
+    const m = shapeMesh('capsule', seg);
+    let top = Infinity;
+    let bottom = -Infinity;
+    let maxR = 0;
+    for (let i = 0; i < m.positions.length; i += 3) {
+      top = Math.min(top, m.positions[i + 1]!);
+      bottom = Math.max(bottom, m.positions[i + 1]!);
+      maxR = Math.max(maxR, Math.hypot(m.positions[i]!, m.positions[i + 2]!));
+    }
+    expect(top).toBeCloseTo(-0.5, 6);
+    expect(bottom).toBeCloseTo(0.5, 6);
+    expect(maxR).toBeCloseTo(0.5, 6);
+    // the straight part: rows at the cap seams are at y = -0.5 + cap and 0.5 - cap, v = cap and 1 - cap
+    const rows = 2 * (Math.round(seg / 4) + 1);
+    expect(m.positions.length / 3).toBe(rows * (seg + 1));
+    const seam = (Math.round(seg / 4) + 1) * (seg + 1) - 1; // last vertex of the top cap's equator row
+    expect(m.positions[seam * 3 + 1]).toBeCloseTo(-0.5 + CAPSULE_CAP, 6);
+    expect(m.uvs[seam * 2 + 1]).toBeCloseTo(CAPSULE_CAP, 6);
+    // u = 0.5 faces the viewer (z negative) like the cylinder
+    const mid = (Math.round(seg / 4) + 1) * (seg + 1) - 1 - seg / 2;
+    expect(m.uvs[mid * 2]).toBeCloseTo(0.5, 6);
+    expect(m.positions[mid * 3 + 2]).toBeCloseTo(-0.5, 6);
+    // segments change the mesh
+    expect(shapeMesh('capsule', 8)).not.toBe(shapeMesh('capsule', 32));
+  });
+
+  for (const kind of ['prism', 'hexagon', 'star', 'heart'] as const) {
+    it(`${kind}: front face toward the viewer, mirrored back face, a side wall all around`, () => {
+      const o = outlineFor(kind);
+      const n = o.points.length / 2;
+      const m = shapeMesh(kind);
+      expect(m.positions.length / 3).toBe(3 * n);
+      expect(m.indices.length).toBe(o.triangles.length * 2 + n * 6);
+      for (let i = 0; i < n; i++) {
+        // front ring
+        expect(m.positions[i * 3 + 2]).toBe(-0.5);
+        expect(m.uvs[i * 2]).toBeCloseTo(o.points[i * 2]! + 0.5, 5);
+        // wall back ring has the same picture position
+        expect(m.positions[(n + i) * 3 + 2]).toBe(0.5);
+        expect(m.uvs[(n + i) * 2]).toBe(m.uvs[i * 2]);
+        // back face: same place, mirrored u
+        expect(m.positions[(2 * n + i) * 3 + 2]).toBe(0.5);
+        expect(m.uvs[(2 * n + i) * 2]).toBeCloseTo(1 - m.uvs[i * 2]!, 6);
+        expect(m.uvs[(2 * n + i) * 2 + 1]).toBe(m.uvs[i * 2 + 1]);
+      }
+      // front triangles have positive area in x, y like the box front; back ones are the other way
+      const ar = (a: number, b: number, c: number) =>
+        (m.positions[b * 3]! - m.positions[a * 3]!) * (m.positions[c * 3 + 1]! - m.positions[a * 3 + 1]!) -
+        (m.positions[b * 3 + 1]! - m.positions[a * 3 + 1]!) * (m.positions[c * 3]! - m.positions[a * 3]!);
+      for (let t = 0; t < o.triangles.length * 2; t += 6) {
+        expect(ar(m.indices[t]!, m.indices[t + 1]!, m.indices[t + 2]!)).toBeGreaterThan(0);
+        expect(ar(m.indices[t + 3]!, m.indices[t + 4]!, m.indices[t + 5]!)).toBeLessThan(0);
+      }
+    });
+  }
+
+  it('the outline shapes ignore the segment count (except the heart curve)', () => {
+    expect(shapeMesh('star', 6)).toBe(shapeMesh('star', 90));
+    expect(shapeMesh('hexagon', 6)).toBe(shapeMesh('hexagon', 90));
+    expect(shapeMesh('prism', 6)).toBe(shapeMesh('prism', 90));
+    expect(shapeMesh('heart', 12)).not.toBe(shapeMesh('heart', 96));
   });
 
   it('unknown ids fall back to the plane', () => {
