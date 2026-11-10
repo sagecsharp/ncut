@@ -23,12 +23,13 @@ import {
 } from 'mediabunny';
 import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
-import { neededClipsAt, releaseRenderResources, renderFrame, temporalReach } from '../../engine/draw';
+import { releaseRenderResources, renderFrame } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
 import { buildPalette, createGifEncoder, gifDelayCs, indexFrame } from '../../lib/gif';
 import { gifExportFps, gifSizeWarning, paletteSampleFrames, sampleSize } from './gifPlan';
+import { neededForFrame } from './reach';
 import { type TimeRange, clampRange, frameTime, rangeFrameCount } from './range';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, createAudioMixer, sliceAudioBuffer } from './audioMix';
@@ -246,7 +247,7 @@ export function clipEdgeTimestamp(clip: VideoClip, fps: number, assetDuration: n
   return Math.min(maxT, Math.max(minT, 0, clip.trimStart + local * clip.speed));
 }
 
-/** source timestamps (seconds in the asset) for every output frame where the clip is visible */
+/** source timestamps (seconds in the asset) for every output frame where the clip is visible (`only` = just those frames) */
 export function clipTimestamps(
   clip: VideoClip,
   fps: number,
@@ -254,6 +255,7 @@ export function clipTimestamps(
   assetDuration: number,
   firstTimestamp = 0,
   rangeStart = 0,
+  only?: ReadonlySet<number>,
 ): Float64Array {
   const end = clip.start + clip.duration;
   // output frame i shows timeline time rangeStart + i / fps
@@ -264,6 +266,7 @@ export function clipTimestamps(
   const minT = Math.min(maxT, Math.max(0, firstTimestamp));
   const out: number[] = [];
   for (let i = from; i <= to; i++) {
+    if (only && !only.has(i)) continue;
     const t = frameTime(rangeStart, i, fps);
     if (t >= clip.start - EPS && t < end - EPS) {
       out.push(Math.min(maxT, Math.max(minT, 0, clip.trimStart + (t - clip.start) * clip.speed)));
@@ -389,11 +392,12 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     if (signal?.aborted) throw abortError();
 
     // ---- inputs for visible video / image clips (a gif export opens them twice: palette pass, encode pass) ----
-    const openSources = async () => {
-    // clips a transition shows inside the range without the clip playing there: it ended before the range
-    // (still needed at the first frame) or starts after it (needed at the last frame)
+    // `onlyFrames` = open the feeds for just those output frames (the gif palette pass)
+    const openSources = async (onlyFrames?: ReadonlySet<number>) => {
+    // clips a transition or a temporal effect (motion blur, echo) shows inside the range without the clip playing
+    // there: it ended before the range (still needed at the first frame) or starts after it (needed at the last frame)
     const neededAtStart = new Set(
-      [...neededClipsAt(project, rangeStart), ...neededClipsAt(project, frameTime(rangeStart, Math.max(0, totalFrames - 1), fps))].map((c) => c.id),
+      [...neededForFrame(project, rangeStart), ...neededForFrame(project, frameTime(rangeStart, Math.max(0, totalFrames - 1), fps))].map((c) => c.id),
     );
     const hiddenTrack = new Set(project.tracks.filter((t) => t.kind !== 'video' || t.hidden).map((t) => t.id));
     for (const clip of project.clips) {
@@ -438,7 +442,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         const first = await track.getFirstTimestamp();
         // one pooled canvas is enough: each frame is drawn right after it is pulled
         const sink = new CanvasSink(track, { poolSize: 1 });
-        let stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart);
+        let stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart, onlyFrames);
         const edgeOnly = stamps.length === 0;
         if (edgeOnly) {
           if (!neededAtStart.has(clip.id)) continue;
@@ -469,20 +473,6 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       }
     }
 
-    };
-
-    // the clips whose picture frame t can show: the ones on screen, the ones a transition holds, and under a
-    // motion blur / echo / frame blend also the ones on screen in the other moments that effect mixes in
-    // (around a cut the clip before holds its last frame and the clip after shows its first one)
-    const neededFor = (t: number) => {
-      const out = neededClipsAt(project, t);
-      const reach = temporalReach(project, t);
-      if (!reach) return out;
-      for (const off of [-reach.back, -reach.back / 2, reach.ahead / 2, reach.ahead]) {
-        if (off === 0) continue;
-        for (const c of neededClipsAt(project, Math.max(0, t + off))) if (!out.includes(c)) out.push(c);
-      }
-      return out;
     };
 
     // advance the decoders of the video clips visible at time t. a clip that a transition shows
@@ -523,7 +513,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     // free the decoder + canvas of video clips that just played their last frame
     const freeFeeds = async (i: number, visible: readonly Project['clips'][number][]) => {
       const nextT = frameTime(rangeStart, i + 1, fps);
-      const neededNext = neededFor(nextT);
+      const neededNext = neededForFrame(project, nextT);
       for (const clip of visible) {
         if (clip.type !== 'video' || clip.start + clip.duration - EPS > nextT) continue;
         // a transition out of the clip still shows its last frame
@@ -551,7 +541,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     const stepFrame = async (i: number, draw: (t: number) => Promise<void> | void) => {
       // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
       const t = frameTime(rangeStart, i, fps);
-      const visible = neededFor(t);
+      const visible = neededForFrame(project, t);
       await advanceFeeds(t, visible);
       await draw(t);
       await freeFeeds(i, visible);
@@ -559,7 +549,9 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
     // ---- gif: pass 1 samples a few small frames for one global palette, pass 2 encodes every frame ----
     const exportGifFrames = async (): Promise<Blob> => {
-      const sampleFrames = new Set(paletteSampleFrames(totalFrames));
+      // increasing order: the pass-1 feeds hold only these frames, so nothing in between is decoded
+      const sampleList = [...new Set(paletteSampleFrames(totalFrames))].sort((a, b) => a - b);
+      const sampleFrames = new Set(sampleList);
       const small = sampleSize(width, height);
       const sc = new OffscreenCanvas(small.width, small.height);
       const sctx = sc.getContext('2d', { alpha: false, willReadFrequently: true });
@@ -568,18 +560,16 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       const samples = new Uint8Array(sampleFrames.size * small.width * small.height * 4);
       let filled = 0;
 
-      await openSources();
+      await openSources(sampleFrames);
       lastYield = performance.now();
-      for (let i = 0; i < totalFrames; i++) {
+      for (let k = 0; k < sampleList.length; k++) {
         if (signal?.aborted) throw abortError();
-        const wanted = sampleFrames.has(i);
-        await stepFrame(i, (t) => {
-          if (!wanted) return;
+        await stepFrame(sampleList[k]!, (t) => {
           renderFrame(sctx, project, t, resolver);
           samples.set(sctx.getImageData(0, 0, small.width, small.height).data, filled);
           filled += small.width * small.height * 4;
         });
-        report('palette', 0.02 + 0.18 * ((i + 1) / totalFrames), 0, false);
+        report('palette', 0.02 + 0.18 * ((k + 1) / sampleList.length), 0, false);
         if (performance.now() - lastYield > 14) await yieldToUi();
       }
       const palette = buildPalette(samples.subarray(0, filled), 256);
