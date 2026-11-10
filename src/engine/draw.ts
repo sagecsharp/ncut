@@ -11,6 +11,8 @@ import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
 import { resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
+import { beatGridOf } from './beatFx';
+import { type BeatGrid, LINE_NUDGE, cycleLength, cyclePhase, parseEffectBeat, pulseEnvelope } from '../lib/tempo';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
@@ -404,14 +406,36 @@ export function hasEffectsAt(project: Project, time: number): boolean {
   return false;
 }
 
-/** the gpu pass for an effect clip at a time, or null (unknown effect, temporal effect, faded to nothing) */
-export function effectPassAt(raw: EffectClip, time: number): EffectPass | null {
+/**
+ * the gpu pass for an effect clip at a time, or null (unknown effect, temporal effect, faded to nothing).
+ * `grid` = the beat grid the effect follows (beatGridOf), null / missing = the effect runs on plain seconds.
+ * with a grid and EffectClip.beat, the cycle is `every` beats and its lines are grid.origin + n * cycle:
+ *  - pulse: the amount is multiplied by an envelope that is 1 on a line and falls to 1 - pulse before the next one
+ *  - lock (only effects with def.sync): the look restarts at phase 0 on every line. the clock is the time since the
+ *    last line at or before the clip start (the grid is fixed on the timeline, so timeOffset is not part of it and a
+ *    split or a head trim keeps the look by itself), and the rate param is replaced by one that makes a cycle of the
+ *    effect as long as the cycle of the beat (its stored value and keyframes are ignored).
+ */
+export function effectPassAt(raw: EffectClip, time: number, grid?: BeatGrid | null): EffectPass | null {
   const def = getEffect(raw.effect);
   if (!def || def.temporal) return null;
   const clip = resolveClip(raw, time);
-  const amount = clip.amount * fadeFactor(clip, time);
+  let amount = clip.amount * fadeFactor(clip, time);
   if (!(amount > 0.001)) return null;
-  return { def, time: Math.max(0, time - clip.start + (raw.timeOffset ?? 0)), duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params: clip.params };
+  let passTime = Math.max(0, time - clip.start + (raw.timeOffset ?? 0));
+  let params = clip.params;
+  const beat = grid && raw.beat ? parseEffectBeat(raw.beat) : null;
+  if (grid && beat && grid.step > 0) {
+    const at = cyclePhase(grid, beat.every, time);
+    if (beat.pulse > 0) amount *= pulseEnvelope(beat.pulse, at.phase);
+    if (beat.lock && def.sync) {
+      const cycle = cycleLength(grid, beat.every);
+      const first = cyclePhase(grid, beat.every, clip.start);
+      passTime = Math.max(0, (at.cycles - first.index + (at.phase === 0 ? LINE_NUDGE : 0)) * cycle);
+      params = { ...params, [def.sync.param]: 1 / (cycle * def.sync.cycles) };
+    }
+  }
+  return { def, time: passTime, duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params };
 }
 
 /**
@@ -1610,7 +1634,7 @@ export function clipFxPasses(project: Project, fx: TargetIndex | null, clipId: s
   if (!list) return null;
   let passes: EffectPass[] | null = null;
   for (const e of list) {
-    const pass = effectPassAt(e, frameTime);
+    const pass = effectPassAt(e, frameTime, beatGridOf(project, e));
     if (pass) (passes ??= []).push(pass);
   }
   return passes;
@@ -1917,7 +1941,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     const it = items[k]!;
     if (it.kind === 'effect') {
       // temporal effects were handled above (or sit too deep): effectPassAt skips them
-      const pass = effectPassAt(it.clip, time);
+      const pass = effectPassAt(it.clip, time, beatGridOf(project, it.clip));
       if (pass) {
         flush3d();
         pending.push(pass);

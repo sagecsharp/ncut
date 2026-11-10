@@ -575,6 +575,15 @@ export interface EffectClip extends ClipBase {
    * or the effect itself = the effect does nothing. see engine/draw.ts.
    */
   target?: string | null;
+  /**
+   * follow the tempo (bpm) of a clip with sound, evaluated when a frame is drawn (nothing is baked into keyframes).
+   * missing / null = off. see lib/tempo.ts (EffectBeat) and engine/draw.ts (effectPassAt).
+   * - source: id of the clip whose tempo to follow. missing / null / a clip that has no tempo any more = the sound under the effect.
+   * - every: one cycle every this many beats.
+   * - pulse: 0..1. the strength hits full on every cycle line and falls off until the next one.
+   * - lock: only for effects that repeat on their own (EffectDef.sync): their rhythm follows the cycle.
+   */
+  beat?: { source?: string | null; every: number; pulse: number; lock: boolean } | null;
 }
 
 /**

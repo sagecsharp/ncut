@@ -145,6 +145,7 @@ vec4 effect(vec2 uv) {
     category: 'stylize',
     description: 'thin dark lines across the picture, like a monitor',
     posterTime: 0.5,
+    sync: { param: 'scroll', cycles: 1 },
     params: [
       { key: 'size', label: 'line size', min: 3, max: 16, step: 1, default: 4, unit: 'px' },
       { key: 'darkness', label: 'darkness', min: 0, max: 100, step: 1, default: 45, unit: '%' },

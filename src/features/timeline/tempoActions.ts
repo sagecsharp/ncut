@@ -2,7 +2,7 @@
  * the tempo of a clip with sound: listen for it (detect), and who can lend a beat grid to the keyframes of
  * another clip (beat sources).
  */
-import { type BeatGrid, clipGrid, settleBpm, showBpm, timelineBpm } from '../../lib/tempo';
+import { type BeatGrid, rankTempoClips, settleBpm, showBpm } from '../../lib/tempo';
 import { getWaveform } from '../../media/derived';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
@@ -69,16 +69,8 @@ export interface BeatSource {
  * comes first, then the ones that play at the same time (the longest overlap first), then the rest by time.
  */
 export function beatSources(project: Project, clip: Pick<Clip, 'id' | 'start' | 'duration'>): BeatSource[] {
-  const end = clip.start + clip.duration;
-  const found: Array<BeatSource & { rank: number; start: number }> = [];
-  for (const c of project.clips) {
-    if (c.type !== 'audio' && c.type !== 'video') continue;
-    const grid = clipGrid(c);
-    if (!grid || !clipHasSound(project, c)) continue;
-    const overlap = Math.max(0, Math.min(end, c.start + c.duration) - Math.max(clip.start, c.start));
+  return rankTempoClips(project, clip, clip.id).map(({ clip: c, grid, heard }) => {
     const name = c.name || project.assets.find((a) => a.id === c.assetId)?.name || c.type;
-    found.push({ id: c.id, label: `${name} · ${timelineBpm(c)} bpm`, grid, rank: c.id === clip.id ? Infinity : overlap, start: c.start });
-  }
-  found.sort((a, b) => b.rank - a.rank || a.start - b.start);
-  return found.map(({ id, label, grid }) => ({ id, label, grid }));
+    return { id: c.id, label: `${name} · ${heard} bpm`, grid };
+  });
 }

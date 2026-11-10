@@ -18,7 +18,8 @@ lib/factory.ts           createProject, createClipFromAsset, createTextClip, CAN
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
 lib/tempo.ts             the tempo of a clip's sound (bpm + where a beat falls) as a beat grid on the timeline that
-                         follows the clip's start, trim and speed. tap tempo. pure
+                         follows the clip's start, trim and speed. tap tempo. which sound an effect clip follows (EffectClip.beat),
+                         cycle lines, the pulse envelope. pure
 lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
 lib/links.ts             ids that point at other clips: parent (attach), look target, camera target, the clip an effect
                          sits on, groups. cycle checks, relinking copies and split halves
@@ -125,6 +126,11 @@ numbers at draw time (effects get a per-clip `seed`).
   an effect with `temporal` (motion blur, echo) instead asks the renderer to draw the layers below at
   several sub-frame times and averages them. that is a real shutter: it blurs transform, camera and
   effect motion, in preview and export alike.
+- effects and the tempo: `EffectClip.beat` links an effect to the tempo of a clip with sound (the sound under it, or one
+  clip by id). `effectPassAt(clip, time, grid)` gets the grid from `engine/beatFx.ts` (cached per clips array) and, at
+  draw time, multiplies the amount by a pulse that is 1 on every cycle line and falls off until the next, and, with the
+  lock and an effect whose def has `sync` (a rate param in hz), restarts the look on every line and replaces the rate so
+  one cycle of the effect is one beat cycle. nothing is baked into keyframes.
 - transitions: `clip.transition` belongs to the INCOMING clip and is centered on the cut. each side is
   painted alone (frozen on its edge frame outside its own range) and mixed by a glsl
   `vec4 transition(vec2 uv, float p)`.

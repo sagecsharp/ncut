@@ -26,6 +26,7 @@ vec4 effect(vec2 uv) {
     category: 'motion',
     description: 'rotation wobble around the center with a small sideways sway',
     posterTime: 0.4,
+    sync: { param: 'speed', cycles: 1 },
     params: [
       { key: 'angle', label: 'angle', min: 0, max: 30, step: 0.5, default: 8, unit: 'deg' },
       { key: 'speed', label: 'speed', min: 0.2, max: 10, step: 0.1, default: 2.5, unit: 'hz' },
@@ -48,6 +49,7 @@ vec4 effect(vec2 uv) {
     category: 'motion',
     description: 'the picture punches in or out on a beat and eases back',
     posterTime: 0.15,
+    sync: { param: 'rate', cycles: 1 },
     params: [
       { key: 'zoom', label: 'zoom', min: -50, max: 100, step: 1, default: 30, unit: '%' },
       { key: 'rate', label: 'rate', min: 0.2, max: 8, step: 0.1, default: 1.5, unit: 'hz' },

@@ -8,6 +8,7 @@ export const COLOR_EFFECTS: EffectDef[] = [
     category: 'color',
     description: 'two color gradient map that changes color pair on a fast beat',
     posterTime: 0.3,
+    sync: { param: 'rate', cycles: 1 },
     params: [
       { key: 'rate', label: 'rate', min: 1, max: 30, step: 0.5, default: 8, unit: 'hz' },
       { key: 'contrast', label: 'contrast', min: 20, max: 300, step: 5, default: 100, unit: '%' },
@@ -42,6 +43,7 @@ vec4 effect(vec2 uv) {
     category: 'color',
     description: 'a soft color overlay that travels around the whole hue wheel',
     posterTime: 0.5,
+    sync: { param: 'speed', cycles: 1 },
     params: [
       { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 35, unit: '%' },
       { key: 'speed', label: 'speed', min: 0.05, max: 3, step: 0.05, default: 0.42, unit: 'hz' },
@@ -72,6 +74,7 @@ vec4 effect(vec2 uv) {
     category: 'color',
     description: 'rhythmic exposure flashes that bloom to white and fall back',
     posterTime: 0.05,
+    sync: { param: 'rate', cycles: 1 },
     params: [
       { key: 'rate', label: 'rate', min: 0.2, max: 12, step: 0.1, default: 2, unit: 'hz' },
       { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 80, unit: '%' },

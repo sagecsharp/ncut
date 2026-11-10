@@ -2,6 +2,7 @@ import { memo, useCallback } from 'react';
 import { RotateCcw, Shuffle } from 'lucide-react';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import { EFFECTS, effectParamValue, getEffect } from '../../engine/effects/registry';
+import { effectBeatGrid } from '../../lib/tempo';
 import { useClip, useEditor } from '../../store/editorStore';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
@@ -9,6 +10,7 @@ import { ParentSelect } from './AttachSection';
 import { AnimField } from './AnimField';
 import { overlapsInTime } from './clipEffects';
 import { effectTargetOptions } from './parentOptions';
+import { lockedParam } from './effectBeatLogic';
 import { currentLabel } from './selectModel';
 import { Row, Section } from './controls';
 
@@ -90,6 +92,11 @@ function resetEffect(id: string): void {
 
 export const EffectSection = memo(function EffectSection({ id, name, effect, params, target }: EffectSectionProps) {
   const def = getEffect(effect);
+  // the param the tempo drives (lock on in "on the beat" and a tempo to follow)
+  const locked = useEditor((s) => {
+    const clip = s.project?.clips.find((c) => c.id === id);
+    return s.project && clip?.type === 'effect' ? lockedParam(def, clip.beat, effectBeatGrid(s.project, clip) !== null) : null;
+  });
 
   if (!def) {
     return (
@@ -143,7 +150,11 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
         fallback={1}
       />
       {def.params.map((p) =>
-        p.options ? (
+        p.key === locked ? (
+          <Row key={p.key} label={p.label} title="the tempo drives this one while the lock in on the beat is on">
+            <span className="props-hint">follows the tempo</span>
+          </Row>
+        ) : p.options ? (
           <Row key={p.key} label={p.label} title={p.label}>
             <select
               className="select"

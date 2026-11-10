@@ -14,6 +14,7 @@ import { AnimField, InspectedClip } from './AnimField';
 import { AlignButtons } from './AlignButtons';
 import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
+import { EffectBeatSection } from './EffectBeatSection';
 import { FocusSection } from './FocusSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
 import { BeatSyncSection, TempoSection } from './BeatSections';
@@ -489,6 +490,7 @@ export function ClipInspector({ id }: { id: string }) {
         <AnimationSection id={clip.id} keyframes={clip.keyframes} start={clip.start} duration={clip.duration} />
         <BeatSyncSection id={clip.id} has={hasKeys(clip)} />
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
+        {clip.type === 'effect' ? <EffectBeatSection id={clip.id} effect={clip.effect} beat={clip.beat} /> : null}
         {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
         {clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
         {clip.type === 'text' ? (

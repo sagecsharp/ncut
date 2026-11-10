@@ -23,7 +23,7 @@
 - **timeline** with video, image, text, shape and audio tracks
 - **real time preview**, move / scale / rotate right on the picture
 - **keyframes** on almost every number
-- **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat
+- **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat, and effects can pulse and lock their rhythm to it
 - **3d**: clips become planes or solids in one unlit scene, with cameras and a scene view driven like blender (or like unity, one switch in the settings)
 - **86 effects, 87 transitions**, motion blur, masks, green screen
 - **text** with 29 fonts plus your own, letter animations, captions

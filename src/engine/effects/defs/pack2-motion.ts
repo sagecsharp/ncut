@@ -93,6 +93,7 @@ vec4 effect(vec2 uv) {
     category: 'motion',
     description: 'anime style streaks rushing out from a point, redrawn in steps',
     posterTime: 0.4,
+    sync: { param: 'speed', cycles: 1 },
     params: [
       { key: 'strength', label: 'strength', min: 0, max: 100, step: 1, default: 70, unit: '%' },
       { key: 'density', label: 'density', min: 8, max: 300, step: 1, default: 90, unit: 'x' },

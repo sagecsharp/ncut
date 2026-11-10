@@ -90,6 +90,12 @@ export interface EffectDef {
   /** clip-local time in seconds that shows the effect well (for the still thumbnail). default 1. */
   posterTime?: number;
   /**
+   * effects that repeat on their own: `param` (a number param in hz, never a choice) times `cycles` is how often the look
+   * repeats per second, with phase 0 at u_time = 0. "lock" (EffectClip.beat) replaces that param by one that makes a cycle
+   * as long as the beat cycle. only set it where the glsl is periodic (or steps) in u_time at exactly that rate.
+   */
+  sync?: { param: string; cycles: number };
+  /**
    * temporal effects only: the moments to blend for one frame. when present the frame renderer blends
    * the layers below at these times and `glsl` is only used for the effects tab thumbnail.
    * `quality` is 1 for export and lower for the live preview (use fewer samples).
