@@ -21,6 +21,7 @@ import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playback';
 import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './previewSync';
+import { ScrubFeed } from './scrubFeed';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
 import { ParkingLot } from './mediaPark';
@@ -43,13 +44,15 @@ const DRIFT = 0.15;
 const HOLD_MAX_MS = 500;
 /** how long a freshly created element may still be loading before it stops holding the picture */
 const LOAD_HOLD_MS = 1000;
+/** a drag that the scrub feed serves: the element seeks to the playhead once it rested this long */
+const SETTLE_MS = 80;
 /** image bitmaps kept alive beyond the ones needed around the playhead */
 const IMAGE_LRU = 8;
 /** the eviction pass runs again when the playhead moved this far (seconds), or the project / image count changed */
 const EVICT_STEP = 0.5;
 
 type RvfcElement = HTMLVideoElement & {
-  requestVideoFrameCallback?: (cb: () => void) => number;
+  requestVideoFrameCallback?: (cb: (now: number, meta?: { mediaTime?: number }) => void) => number;
   cancelVideoFrameCallback?: (handle: number) => void;
 };
 
@@ -86,6 +89,16 @@ interface MediaEntry {
   rateMute: boolean;
   /** a running clock drives this video by seeks (backwards / unplayable rate): see previewSync */
   scrub: boolean;
+  /** paused: the source time the playhead wants right now (NaN while playing or off the clip) */
+  target: number;
+  /** start time of the frame the element shows (requestVideoFrameCallback), NaN until it said so */
+  shown: number;
+  /** decoded frames for a drag that is faster than the element's seeks (scrubFeed.ts), made on the first such drag */
+  feed: ScrubFeed | null;
+  /** timer of the element's seek that waits for the drag to rest (0: none) */
+  settle: number;
+  /** seek tolerance of the last paused pass (seconds) */
+  tol: number;
   cleanup: () => void;
 }
 
@@ -332,7 +345,7 @@ export class PreviewEngine {
     if (this.disposed || !project || typeof OffscreenCanvas === 'undefined') return null;
     // a video that is still landing on this frame would be captured one frame behind: wait for it, but not for long
     const waitStart = performance.now();
-    while (this.anySeeking(project, usePlayback.getState().time) && performance.now() - waitStart < HOLD_MAX_MS) {
+    while (this.anySeeking(project, usePlayback.getState().time, false, true) && performance.now() - waitStart < HOLD_MAX_MS) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
       if (this.disposed) return null;
     }
@@ -489,7 +502,8 @@ export class PreviewEngine {
     }
   }
 
-  private anySeeking(project: Project, time: number, playing = false): boolean {
+  /** `strict`: the element itself must have landed, a frame of the scrub feed does not count (a saved still) */
+  private anySeeking(project: Project, time: number, playing = false, strict = false): boolean {
     const now = performance.now();
     for (const clip of project.clips) {
       if (clip.type !== 'video') continue;
@@ -497,6 +511,8 @@ export class PreviewEngine {
       const entry = this.pool.get(clip.id);
       if (!entry || entry.failed) continue;
       const el = entry.el;
+      // a drag: the feed has a nearer frame than the element, paint that one instead of waiting for the seek
+      if (!strict && !playing && this.scrubSource(entry)) continue;
       // a new element is not "seeking" yet but has nothing to show until its first frame loads
       if (
         blocksPaint({
@@ -518,6 +534,9 @@ export class PreviewEngine {
       const entry = this.pool.get(clip.id);
       if (!entry || entry.kind !== 'video') return null;
       const v = entry.el as HTMLVideoElement;
+      // the feed's frame first: a seeking element can have nothing to draw for a moment (readyState drops)
+      const scrubbed = this.scrubSource(entry);
+      if (scrubbed) return scrubbed;
       if (v.readyState < 2 || v.videoWidth === 0) return null;
       if (!entry.source) entry.source = { image: v, width: v.videoWidth, height: v.videoHeight };
       else {
@@ -528,6 +547,48 @@ export class PreviewEngine {
     }
     return this.imageSource(clip.assetId);
   };
+
+  /**
+   * paused, the playhead is being dragged: the frame of the entry's scrub feed, when that is nearer to the wanted
+   * time than the frame the element shows. null: the element's picture is the one to draw
+   */
+  private scrubSource(entry: MediaEntry): DrawSource | null {
+    const feed = entry.feed;
+    if (!feed || entry.kind !== 'video' || !Number.isFinite(entry.target) || !Number.isFinite(entry.shown)) return null;
+    if (usePlayback.getState().playing) return null;
+    const v = entry.el as HTMLVideoElement;
+    return feed.nearer(entry.target, entry.shown, v.videoWidth, v.videoHeight);
+  }
+
+  /** the element seeks to the playhead when no newer wanted time came for SETTLE_MS */
+  private settleLater(entry: MediaEntry): void {
+    if (entry.settle) window.clearTimeout(entry.settle);
+    entry.settle = window.setTimeout(() => {
+      entry.settle = 0;
+      if (this.disposed || this.pool.get(entry.clipId) !== entry || entry.failed) return;
+      if (usePlayback.getState().playing || !Number.isFinite(entry.target)) return;
+      this.seek(entry, entry.target, entry.tol);
+    }, SETTLE_MS);
+  }
+
+  private dropSettle(entry: MediaEntry): void {
+    if (!entry.settle) return;
+    window.clearTimeout(entry.settle);
+    entry.settle = 0;
+  }
+
+  /** the drag is ahead of the element's seeks: let the entry's feed decode towards the wanted time */
+  private feedWant(entry: MediaEntry, target: number): void {
+    if (!entry.feed) {
+      const blob = getAssetBlob(entry.assetId);
+      if (!blob) return;
+      entry.feed = new ScrubFeed(blob, () => {
+        if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        if (!usePlayback.getState().playing) this.invalidate();
+      });
+    }
+    entry.feed.want(target);
+  }
 
   /* ---------- images ---------- */
 
@@ -773,6 +834,7 @@ export class PreviewEngine {
     entry.rateMute = false;
     const wasScrub = entry.scrub;
     entry.scrub = false;
+    entry.target = Number.NaN;
     // leaving a scrub (shuttle changed or stopped, clip no longer under the playhead): drop the stale deferred
     // target, the normal path aims again
     if (wasScrub && (!active || !playing || rate === 1)) entry.want = null;
@@ -783,6 +845,7 @@ export class PreviewEngine {
     const toSource = (t: number) => clamp(t, 0, Math.max(0, dur - 0.001));
 
     if (!active) {
+      this.dropSettle(entry);
       // lookahead (or just ended): keep it parked on its first frame, silent
       if (!el.paused) el.pause();
       const park = toSource(clip.trimStart);
@@ -795,9 +858,26 @@ export class PreviewEngine {
     const target = toSource(sourceTimeAt(clip, time));
     if (!playing) {
       if (!el.paused) el.pause();
+      entry.target = target;
+      entry.tol = halfFrame;
+      // the element is still on its way to an older time (or waits for the drag to rest): a drag it cannot keep up with
+      if (entry.kind === 'video' && (el.seeking || entry.settle !== 0)) {
+        this.feedWant(entry, target);
+        if (entry.feed?.leads(target)) {
+          // the feed brings the pictures. the element would start every seek at a key frame and take the decoder
+          // from the feed: it goes to the playhead once, when the drag rests
+          entry.want = null;
+          this.settleLater(entry);
+          return;
+        }
+      }
+      this.dropSettle(entry);
       this.seek(entry, target, halfFrame);
       return;
     }
+    // the clock runs: the decoder of the feed is given back
+    this.dropSettle(entry);
+    entry.feed?.rest();
 
     // rate 1 is the plain path. other rates: the element plays at clip speed * rate, or (backwards, or a rate
     // browsers refuse) it stays paused and is seeked to the clock like a scrub. audio is silent in that case,
@@ -909,6 +989,11 @@ export class PreviewEngine {
       holdUntil: 0,
       rateMute: false,
       scrub: false,
+      target: Number.NaN,
+      shown: Number.NaN,
+      feed: null,
+      settle: 0,
+      tol: 0.001,
       cleanup: () => undefined,
     };
 
@@ -952,8 +1037,10 @@ export class PreviewEngine {
     // redraw exactly when a new video frame is presented (paused redraws; while playing the clock draws)
     const v = el as RvfcElement;
     if (isVideo && typeof v.requestVideoFrameCallback === 'function') {
-      const onFrame = () => {
+      const onFrame = (_now: number, meta?: { mediaTime?: number }) => {
         if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        // which frame the element shows now (a paused seek can say 'seeked' before its picture is there)
+        entry.shown = typeof meta?.mediaTime === 'number' ? meta.mediaTime : Number.NaN;
         this.framesPresented++;
         if (!usePlayback.getState().playing) this.invalidate();
         entry.rvfc = v.requestVideoFrameCallback!(onFrame);
@@ -987,6 +1074,9 @@ export class PreviewEngine {
 
   private destroyEntry(entry: MediaEntry): void {
     entry.cleanup();
+    this.dropSettle(entry);
+    entry.feed?.dispose();
+    entry.feed = null;
     if (this.pool.get(entry.clipId) === entry) this.pool.delete(entry.clipId);
     entry.source = null;
     if (this.canPark(entry)) {

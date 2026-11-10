@@ -72,7 +72,8 @@ features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followAppl
                          beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks).
                          sequence.ts + sequenceActions.ts (clips in a row, fitted to the markers, cut at the markers)
 features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizmo.ts (handles, axis lock),
-                         sceneHelpers.ts (focus plane, floor grid, readouts)
+                         sceneHelpers.ts (focus plane, floor grid, readouts). scrubFeed.ts + scrubPlan.ts: decoded
+                         frames for the paused preview while the playhead is dragged forward through a video
 features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
                          frame with the camera, floor), FocusSection (depth of field), splitLayout.ts + splitActions.ts
                          (split screen: the canvas cut into cells, every selected clip fitted into one),
@@ -227,7 +228,18 @@ scrubbing, dragging clips and zooming, with dozens of clips.
    (`media/shrink.ts`). waits that are not work have no place here: no cache lookup for a file imported in this
    session (indexeddb has one queue per site and it is busy copying that file), no `toBlob` for small pictures.
 8. media elements are pooled and reused. while playing, do not seek a video every frame: let it play and only
-   correct when it drifts (> ~0.15 s) from the clock.
+   correct when it drifts (> ~0.15 s) from the clock. paused, a drag of the playhead is not a row of seeks either:
+   a video element starts every seek at a key frame, which is 60 to 100 ms per picture with a 4k file (6 to 10
+   pictures a second on screen). the first move that finds the element still seeking opens a scrub feed for the
+   clip (`features/preview/scrubFeed.ts`): a decoder of its own, the one the export uses, that keeps decoding on
+   while the playhead moves forward and starts at the key frame before the wanted time after a jump (the frames
+   on the way are shown as they come). the engine draws the feed's frame only while it is nearer to the wanted
+   time than the frame the element shows (`scrubPlan.feedIsNearer`, the element's frame is known from
+   requestVideoFrameCallback), and while the feed leads the element does not seek at all: it goes to the playhead
+   once, `SETTLE_MS` after the last move, so the resting picture is the element's as before (checked: the same
+   pixels as a plain jump to that time). moving backwards, see-through and hdr video, files whose first frame is
+   not at 0 and files the decoder cannot read stay with the element alone. the feed gives its decoder and
+   canvases back after 3 s without a move and when playback starts.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
    observer, object url, raf and ImageBitmap you create.
 
