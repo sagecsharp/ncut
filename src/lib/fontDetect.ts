@@ -4,6 +4,8 @@
  * pure: the width function is injected. import-safe in node.
  */
 
+import { createCanvas } from './canvas';
+
 const GENERIC = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong']);
 
 /** a css generic family or an empty name: always there */
@@ -48,7 +50,7 @@ function getCtx(): NonNullable<typeof ctx> | null {
   ctx = null;
   try {
     if (typeof OffscreenCanvas !== 'undefined') ctx = new OffscreenCanvas(8, 8).getContext('2d');
-    else if (typeof document !== 'undefined') ctx = document.createElement('canvas').getContext('2d');
+    else if (typeof document !== 'undefined') ctx = createCanvas(8, 8).getContext('2d');
   } catch {
     ctx = null;
   }

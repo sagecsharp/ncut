@@ -8,6 +8,7 @@
 import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
+import { createCanvas } from '../lib/canvas';
 import { resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
@@ -491,7 +492,7 @@ function scratchFor(like: Ctx, channel: Channel, name: string, precise = false):
   if (sc === undefined) {
     let canvas: AnyCanvas | null = null;
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(src.width, src.height);
-    else if (typeof document !== 'undefined') canvas = document.createElement('canvas');
+    else if (typeof document !== 'undefined') canvas = createCanvas(src.width, src.height);
     let c: Ctx | null = null;
     if (canvas && precise) {
       try {
@@ -596,9 +597,7 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
     else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas = createCanvas(w, h);
     } else return null;
   }
   const c = canvas.getContext('2d') as Ctx | null;
@@ -649,9 +648,7 @@ function textSide(t: TextTexture, clip: TextClip, time: number, color: string): 
     dropSide(t);
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
     else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas = createCanvas(w, h);
     } else return null;
   }
   const c = canvas.getContext('2d') as Ctx | null;
@@ -710,9 +707,7 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
     else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas = createCanvas(w, h);
     } else return null;
   }
   const c = canvas.getContext('2d') as Ctx | null;
@@ -860,9 +855,7 @@ function lookedTexture(
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
     else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas = createCanvas(w, h);
     } else return { image: out as TexImageSource, key: undefined };
   }
   const c = canvas.getContext('2d') as Ctx | null;
@@ -918,9 +911,7 @@ function maskedTexture(
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(ow, oh);
     else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = ow;
-      canvas.height = oh;
+      canvas = createCanvas(ow, oh);
     } else return { image: out as TexImageSource, key: undefined };
   }
   const c = canvas.getContext('2d') as Ctx | null;

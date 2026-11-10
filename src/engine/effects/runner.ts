@@ -4,6 +4,7 @@
  */
 import { MAIN, PRELUDE, VERTEX_SRC } from './glsl';
 import type { EffectDef, EffectPass } from './types';
+import { createCanvas } from '../../lib/canvas';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -33,7 +34,7 @@ export function fragmentSource(def: EffectDef): string {
 
 function makeCanvas(): GLCanvas | null {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(2, 2);
-  if (typeof document !== 'undefined') return document.createElement('canvas');
+  if (typeof document !== 'undefined') return createCanvas();
   return null;
 }
 

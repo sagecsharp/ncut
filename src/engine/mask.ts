@@ -6,6 +6,7 @@
  * canvas code (maskedPicture) so it can be tested without a dom.
  */
 import type { Mask, VisualClip } from '../types';
+import { createCanvas } from '../lib/canvas';
 
 export const DEFAULT_MASK: Mask = { shape: 'ellipse', x: 0, y: 0, width: 0.8, height: 0.8, rotation: 0, feather: 0.05, invert: false };
 
@@ -181,9 +182,7 @@ function makeSurface(w: number, h: number, readback = false): Surface | null {
   let canvas: AnyCanvas | null = null;
   if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
   else if (typeof document !== 'undefined') {
-    canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
+    canvas = createCanvas(w, h);
   }
   if (!canvas) return null;
   const ctx = (canvas.getContext('2d', readback ? { willReadFrequently: true } : undefined) as Ctx | null) ?? null;

@@ -4,6 +4,7 @@
  */
 import { PRELUDE, VERTEX_SRC } from '../effects/glsl';
 import type { TransitionDef } from './registry';
+import { createCanvas } from '../../lib/canvas';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -61,7 +62,7 @@ interface Program {
 
 function makeCanvas(): GLCanvas | null {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(2, 2);
-  if (typeof document !== 'undefined') return document.createElement('canvas');
+  if (typeof document !== 'undefined') return createCanvas();
   return null;
 }
 

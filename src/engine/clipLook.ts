@@ -11,6 +11,7 @@
  * then color adjust, then alpha = source alpha * key alpha, then premultiply for the output.
  */
 import type { ChromaKey, ClipAdjust, VisualClip } from '../types';
+import { createCanvas } from '../lib/canvas';
 
 export const DEFAULT_ADJUST: ClipAdjust = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 };
 export const DEFAULT_CHROMA_KEY: ChromaKey = { color: '#00d000', tolerance: 0.3, softness: 0.1, spill: 0.5 };
@@ -287,7 +288,7 @@ const failed = new Set<string>();
 
 function makeCanvas(): GLCanvas | null {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(2, 2);
-  if (typeof document !== 'undefined') return document.createElement('canvas');
+  if (typeof document !== 'undefined') return createCanvas();
   return null;
 }
 

@@ -8,6 +8,7 @@ import { isExporting } from './exportState';
 import type { TextAlign, TextClip, TextGradient, TextStroke } from '../types';
 import type { CounterMark, DigitRange } from './counter';
 import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
+import { createCanvas } from '../lib/canvas';
 
 export const TEXT_LINE_HEIGHT = 1.25;
 /** padding of the text background box, as a fraction of the font size */
@@ -21,7 +22,7 @@ function getMeasureCtx(): Ctx {
   if (typeof OffscreenCanvas !== 'undefined') {
     measureCtx = new OffscreenCanvas(8, 8).getContext('2d');
   }
-  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  if (!measureCtx) measureCtx = createCanvas().getContext('2d');
   if (!measureCtx) throw new Error('2d canvas is not available');
   return measureCtx;
 }
