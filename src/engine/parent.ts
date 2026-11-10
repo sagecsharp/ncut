@@ -23,7 +23,7 @@ import type { CameraClip, Clip, Project, Transform, VisualClip } from '../types'
 import { isCameraClip, isVisualClip } from '../types';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { cameraFromClip, cameraRig, cameraWorldMatrix, homeEye } from './scene3d/camera';
-import { DEG, type Mat4 } from './scene3d/math';
+import { DEG, type Mat4, type Vec3 } from './scene3d/math';
 
 /* ---------- small double precision matrices (column-major, like scene3d/math) ---------- */
 
@@ -283,6 +283,24 @@ export function parentModelMatrix(project: Project, clip: VisualClip, time: numb
   const p = clip.parent ? parentOf(project, clip) : null;
   if (!p) return null;
   return Float32Array.from(frameOf(project, p as VisualClip | CameraClip, clampTime(p, time), 1));
+}
+
+/**
+ * the world point a clip with lookAt 'clip' faces at a time (Spatial.lookTarget): the target's center after
+ * keyframes, motions and parents (a 2d target lies in the canvas plane at z 0), or a camera clip's eye. the
+ * target's time is clamped into its own range. null = no turn: not lookAt 'clip', no / unknown / own target,
+ * or a target that is not a visual or camera clip.
+ * positions never depend on any clip's own look turn, so two clips looking at each other need no recursion
+ * (a child of a clip that looks somewhere counts from that parent's un-turned frame).
+ */
+export function clipLookPoint(project: Project, clip: VisualClip, time: number): Vec3 | null {
+  if (clip.lookAt !== 'clip' || !clip.lookTarget || clip.lookTarget === clip.id) return null;
+  const t = project.clips.find((c) => c.id === clip.lookTarget);
+  if (!t || !(isVisualClip(t) || isCameraClip(t))) return null;
+  const tt = clampTime(t, time);
+  if (isCameraClip(t)) return cameraRig(cameraFromClip(t, tt, project), project.width, project.height).eye;
+  const f = frameOf(project, t, tt, 0);
+  return [f[12]!, f[13]!, f[14]!];
 }
 
 /** the Euler angles (degrees) of clipModelMatrix's rotation order from a pure rotation matrix (column-major, 3x3 part used) */

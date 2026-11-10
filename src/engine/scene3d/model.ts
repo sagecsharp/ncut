@@ -1,7 +1,7 @@
 /** where a 3d clip's plane sits in the world. */
 import type { LookAt, Project, Transform, VisualClip } from '../../types';
 import type { ClipBox } from '../draw';
-import { parentModelMatrix } from '../parent';
+import { clipLookPoint, parentModelMatrix } from '../parent';
 import { DEG, type Mat4, type Vec3, basis, cross, mul, normalize, rotationX, rotationY, rotationZ, scaling, sub, translation, transformPoint } from './math';
 
 /**
@@ -11,16 +11,22 @@ import { DEG, type Mat4, type Vec3, basis, cross, mul, normalize, rotationX, rot
  * user facing signs: turn > 0 faces the plane to the right (its right edge moves away),
  * tilt > 0 leans the top edge away, rotation > 0 spins clockwise.
  * with lookAt the plane first faces the camera, and turn / tilt / spin are applied on top of that.
+ * lookAt 'clip' faces `lookPoint` (clipLookPoint) the same way as 'camera' faces the eye: the "eye" is just
+ * the point to look at. without a point (or when it is the plane's own center) there is no turn.
  */
-export function clipModelMatrix(box: ClipBox, transform: Transform, lookAt: LookAt | undefined, eye: Vec3, parent?: Mat4 | null): Mat4 {
+export function clipModelMatrix(box: ClipBox, transform: Transform, lookAt: LookAt | undefined, eye: Vec3, parent?: Mat4 | null, lookPoint?: Vec3 | null): Mat4 {
   // with a parent (engine/parent parentModelMatrix) x / y / z are offsets in the parent's frame and box.cx / cy are not used.
   // the parent's rotation and uniform scale come with the matrix; lookAt replaces the rotation but keeps the scale.
   const frame = parent ? mul(parent, translation(transform.x, transform.y, transform.z ?? 0)) : null;
   const center: Vec3 = frame ? [frame[12]!, frame[13]!, frame[14]!] : [box.cx, box.cy, transform.z ?? 0];
-  let m = frame && !(lookAt === 'camera' || lookAt === 'cameraY') ? frame : translation(center[0], center[1], center[2]);
-  if (lookAt === 'camera' || lookAt === 'cameraY') {
+  // the point the plane turns to face
+  const aim: Vec3 | null = lookAt === 'camera' || lookAt === 'cameraY' ? eye : lookAt === 'clip' && lookPoint ? lookPoint : null;
+  const same = !!aim && lookAt === 'clip' && aim[0] === center[0] && aim[1] === center[1] && aim[2] === center[2];
+  const turn = !!aim && !same;
+  let m = frame && !turn ? frame : translation(center[0], center[1], center[2]);
+  if (turn && aim) {
     // local +z points away from the viewer, so it follows the line from the eye to the plane
-    let f = sub(center, eye);
+    let f = sub(center, aim);
     if (lookAt === 'cameraY') f = [f[0], 0, f[2]];
     f = normalize(f);
     if (f[0] === 0 && f[1] === 0 && f[2] === 0) f = [0, 0, 1];
@@ -55,5 +61,5 @@ export function planeCorners(model: Mat4): [Vec3, Vec3, Vec3, Vec3] {
  * applied (like the layer the renderer draws), `box` is getClipBox of it.
  */
 export function clipWorldModel(project: Project, clip: VisualClip, time: number, box: ClipBox, eye: Vec3): Mat4 {
-  return clipModelMatrix(box, clip.transform, clip.lookAt, eye, clip.parent ? parentModelMatrix(project, clip, time) : null);
+  return clipModelMatrix(box, clip.transform, clip.lookAt, eye, clip.parent ? parentModelMatrix(project, clip, time) : null, clipLookPoint(project, clip, time));
 }

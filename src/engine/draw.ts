@@ -11,7 +11,8 @@ import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { clipLookSignature, clipLookTexture, hasClipLook } from './clipLook';
-import { parentModelMatrix, worldTransformOf } from './parent';
+import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
+import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
 import { renderEffects } from './effects/runner';
@@ -43,6 +44,7 @@ export function releaseRenderResources(channel: 'preview' | 'export'): void {
     }
     scratches.delete(key);
   }
+  releaseMaskResources(channel === 'export' ? 'export' : 'preview');
   // the text / shape texture caches are shared by both channels (the gl runners key their uploads on them),
   // so they stay. they are bounded (64 entries) and pruned when the project changes.
   // the gl runners (effects, transitions, scene3d) expose no per channel dispose yet, nothing to call there.
@@ -545,10 +547,11 @@ let cacheClips: readonly Clip[] | null = null;
 function syncTextureCaches(project: Project): void {
   if (project.clips === cacheClips) return;
   cacheClips = project.clips;
-  if (textTextures.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0) return;
+  if (textTextures.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0) return;
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
+  for (const id of [...maskCopies.keys()]) if (!ids.has(id)) maskCopies.delete(id);
   for (const id of [...textTextures.keys()]) if (!ids.has(id)) textTextures.delete(id);
   for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
 }
@@ -558,11 +561,43 @@ function syncTextureCaches(project: Project): void {
 type LookChannel = 'preview' | 'export';
 const lookChannel = (c: Channel): LookChannel => (c === 'export' ? 'export' : 'preview');
 
-/** a 2d source with the clip's look applied. only valid until the next look on the same channel: draw it right away. */
-function lookSource(source: DrawSource, clip: VisualClip, channel: Channel): DrawSource {
-  if (!hasClipLook(clip)) return source;
-  const image = clipLookTexture(source.image, source.width, source.height, clip, lookChannel(channel));
-  return image === source.image ? source : { image, width: source.width, height: source.height };
+/** a flat picture to draw. pad (text / shape pictures) = room around the clip box on every side, in pixels at scale 1 */
+type FlatSource = DrawSource & { pad?: number };
+
+/**
+ * the clip's look, then its mask, on a picture. returns `source` itself (no allocation) when the clip has neither.
+ * only valid until the next call on the same channel: draw it right away.
+ */
+function processed(source: FlatSource, clip: VisualClip, channel: Channel): FlatSource {
+  let out = source;
+  if (hasClipLook(clip)) {
+    const image = clipLookTexture(out.image, out.width, out.height, clip, lookChannel(channel));
+    if (image !== out.image) out = { ...out, image };
+  }
+  if (hasMask(clip)) {
+    const image = maskedPicture(out.image, out.width, out.height, clip, lookChannel(channel));
+    if (image !== out.image) {
+      const c = image as AnyCanvas;
+      out = { ...out, image, width: c.width || out.width, height: c.height || out.height };
+    }
+  }
+  return out;
+}
+
+/**
+ * the picture a flat clip is drawn from: a video / image source with look and mask applied. a text / shape clip
+ * with a look or a mask is first rendered into its texture (the one 3d uses), then looked and masked; without
+ * either it returns null and is drawn directly.
+ */
+function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | null, time: number, channel: Channel): FlatSource | null {
+  if (clip.type === 'text' || clip.type === 'shape') {
+    if (!hasClipLook(clip) && !hasMask(clip)) return null;
+    syncTextureCaches(project);
+    const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
+    if (!t) return null;
+    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel);
+  }
+  return source ? processed(source, clip, channel) : null;
 }
 
 /**
@@ -619,6 +654,61 @@ function lookedTexture(
   return { image: canvas as TexImageSource, key: outKey };
 }
 
+/** 3d: the masked picture of a clip, copied for the same reason as lookedTexture (maskedPicture reuses one canvas per channel) */
+interface MaskCopy {
+  sig: string;
+  srcKey: string | undefined;
+  w: number;
+  h: number;
+  canvas: AnyCanvas;
+  key: string | undefined;
+}
+const maskCopies = new Map<string, MaskCopy>();
+let maskSerial = 0;
+
+function maskedTexture(
+  clip: VisualClip,
+  image: TexImageSource,
+  w: number,
+  h: number,
+  key: string | undefined,
+  channel: Channel,
+): { image: TexImageSource; key: string | undefined } {
+  const sig = maskSignature(clip);
+  const hit = maskCopies.get(clip.id);
+  if (key !== undefined && hit && hit.srcKey === key && hit.sig === sig && hit.w === w && hit.h === h) {
+    return { image: hit.canvas, key: hit.key };
+  }
+  const out = maskedPicture(image as CanvasImageSource, w, h, clip, lookChannel(channel));
+  if (out === (image as CanvasImageSource)) return { image, key };
+  const oc = out as AnyCanvas;
+  const ow = oc.width;
+  const oh = oc.height;
+  let canvas: AnyCanvas | null = hit && hit.canvas.width === ow && hit.canvas.height === oh ? hit.canvas : null;
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(ow, oh);
+    else if (typeof document !== 'undefined') {
+      canvas = document.createElement('canvas');
+      canvas.width = ow;
+      canvas.height = oh;
+    } else return { image: out as TexImageSource, key: undefined };
+  }
+  const c = canvas.getContext('2d') as Ctx | null;
+  if (!c) return { image: out as TexImageSource, key: undefined };
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'copy';
+  c.drawImage(out, 0, 0);
+  const outKey = key === undefined ? undefined : `mask:${clip.id}:${++maskSerial}`;
+  maskCopies.delete(clip.id);
+  maskCopies.set(clip.id, { sig, srcKey: key, w, h, canvas, key: outKey });
+  if (maskCopies.size > 32) {
+    const first = maskCopies.keys().next().value;
+    if (first !== undefined) maskCopies.delete(first);
+  }
+  return { image: canvas as TexImageSource, key: outKey };
+}
+
 export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, channel: Channel = 'default'): Plane3D | null {
   syncTextureCaches(project);
   const { clip, source } = layer;
@@ -665,7 +755,20 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     image = looked.image;
     cacheKey = looked.key;
   }
-  let model = clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye, clip.parent ? parentModelMatrix(project, clip, layer.time) : null);
+  // the mask comes after the look and before crop / radius / placement
+  if (lw > 0 && lh > 0 && hasMask(clip)) {
+    const masked = maskedTexture(clip, image, lw, lh, cacheKey, channel);
+    image = masked.image;
+    cacheKey = masked.key;
+  }
+  let model = clipModelMatrix(
+    box,
+    clip.transform,
+    clip.lookAt,
+    rig.eye,
+    clip.parent ? parentModelMatrix(project, clip, layer.time) : null,
+    clip.lookAt === 'clip' ? clipLookPoint(project, clip, layer.time) : null,
+  );
   let uv: [number, number, number, number] | undefined;
   let radius: number | undefined;
   let size: [number, number] | undefined;
@@ -836,7 +939,7 @@ const OPEN_SIDE = 1e5;
  * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
  * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
  */
-function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: DrawSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
+function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
   // under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path)
   let clip = clip0;
   if (clip0.parent) {
@@ -865,7 +968,15 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: DrawSo
       ctx.clip();
     }
     // a rect shape rounds itself (shape.ts), other shapes and text ignore radius
-    if (clip.type === 'text') drawText(ctx, clip, time - clip.start);
+    if (source && source.pad !== undefined) {
+      // a text / shape picture that went through a look or a mask (a texture with room around the box)
+      try {
+        const p = source.pad * clip.transform.scale;
+        ctx.drawImage(source.image, -box.width / 2 - p, -box.height / 2 - p, box.width + p * 2, box.height + p * 2);
+      } catch {
+        // not drawable: skipped
+      }
+    } else if (clip.type === 'text') drawText(ctx, clip, time - clip.start);
     else drawShape(ctx, clip, box.width, box.height, clip.transform.scale);
   } else if (source) {
     try {
@@ -908,9 +1019,9 @@ function samePose(a: Transform, aa: number, b: Transform, ba: number): boolean {
  * pose (keyframes, motions, parents, fades), summed premultiplied on a scratch layer ('lighter' at 1 / samples) and
  * laid over the frame with the clip's blend mode. the picture itself (video frame, text animation) is the one of the
  * real time, only the placement is blurred. false = nothing to blur (a still clip), the caller draws it plain.
- * not used inside a transition (those layers are drawn plain).
+ * inside a transition (blend false) the layer is mixed with normal blending, the mixed result carries the blend.
  */
-function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: DrawSource | null, time: number, env: Env): boolean {
+function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true): boolean {
   const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
   if (times.length < 2) return false;
   const end = Math.max(raw.start, clipEnd(raw) - 1e-4);
@@ -945,7 +1056,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: DrawS
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = blendOp(raw.blend) ?? 'source-over';
+  ctx.globalCompositeOperation = (blend ? blendOp(raw.blend) : null) ?? 'source-over';
   ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
   ctx.restore();
   return true;
@@ -963,7 +1074,12 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     if (!source) return false;
   }
   if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig(), env.channel);
-  else paintFlat(ctx, project, clip, source && lookSource(source, clip, env.channel), alpha, time, false);
+  else {
+    const pic = prepareFlat(project, clip, source, time, env.channel);
+    // the motion blur of a clip inside a transition (a frozen side has no entrance / exit to blur)
+    const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
+    if (!(raw.motionBlur && paintBlurred(ctx, project, blurRaw, pic, time, env, false))) paintFlat(ctx, project, clip, pic, alpha, time, false);
+  }
   return true;
 }
 
@@ -1133,9 +1249,9 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       continue;
     }
     flush3d();
-    if (source) source = lookSource(source, clip, env.channel);
-    if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env)) continue;
-    paintFlat(ctx, project, clip, source, alpha, time);
+    const pic = prepareFlat(project, clip, source, time, env.channel);
+    if (raw.motionBlur && paintBlurred(ctx, project, raw, pic, time, env)) continue;
+    paintFlat(ctx, project, clip, pic, alpha, time);
   }
   flush3d();
   flushEffects();
