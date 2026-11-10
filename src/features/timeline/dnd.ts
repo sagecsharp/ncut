@@ -14,14 +14,15 @@ import { CUT_EPS } from '../../lib/transitions';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { snapToFrame } from '../../lib/time';
-import { clipEnd, collectSnapPoints, findFreeStart, snapTime } from '../../lib/timelineOps';
+import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
+import { timelineSnapPoints } from './markers';
 import { importFiles } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { CLIP_INSET, HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
 import type { Layout } from './layout';
-import type { Overlays } from './overlays';
+import type { GhostKind, Overlays } from './overlays';
 import { view } from './view';
 
 export interface DndEnv {
@@ -66,10 +67,22 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
   return asset.kind === 'image' ? DEFAULT_IMAGE_DURATION : Math.max(asset.duration, 0.1);
 }
 
+function ghostKind(payload: DragPayload | null): GhostKind {
+  switch (payload?.kind) {
+    case 'text':
+    case 'shape':
+    case 'effect':
+    case 'camera':
+      return payload.kind;
+    default:
+      return 'asset';
+  }
+}
+
 function ghostLabel(payload: DragPayload | null): string {
   if (!payload) return '';
   if (payload.kind === 'camera') return 'camera';
-  if (payload.kind === 'shape') return payload.preset?.kind ?? 'shape';
+  if (payload.kind === 'shape') return payload.preset?.name ?? payload.preset?.kind ?? 'rect';
   if (payload.kind === 'transition') return getTransition(payload.transition)?.name ?? payload.transition;
   if (payload.kind !== 'effect') return '';
   return getEffect(payload.effect)?.name ?? payload.effect;
@@ -119,7 +132,7 @@ export function createDnd(env: DndEnv) {
       const r = el.getBoundingClientRect();
       geo = { left: r.left, top: r.top };
     }
-    if (!points) points = collectSnapPoints(project, [], [usePlayback.getState().time]);
+    if (!points) points = timelineSnapPoints(project, [], [usePlayback.getState().time]);
     if (!layout) layout = computeLayout(project.tracks);
     return true;
   }
@@ -228,13 +241,7 @@ export function createDnd(env: DndEnv) {
           w: target.duration * zoom,
           h: layout.heights[target.laneIndex]! - CLIP_INSET * 2,
         },
-        last.payload?.kind === 'text'
-          ? 'text'
-          : last.payload?.kind === 'effect'
-            ? 'effect'
-            : last.payload?.kind === 'camera'
-              ? 'camera'
-              : 'asset',
+        ghostKind(last.payload),
         ghostLabel(last.payload),
       );
     } else {

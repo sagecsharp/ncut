@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Camera, Sparkles, VolumeX } from 'lucide-react';
+import { Camera, Shapes, Sparkles, VolumeX } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
 import { hasKeyframes } from '../../lib/anim';
 import { ClipCanvas } from './ClipCanvas';
@@ -24,7 +24,7 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
   const h = laneH - CLIP_INSET * 2;
   const handleW = Math.round(Math.min(7, Math.max(2, w / 3)));
   const muted = (clip.type === 'video' || clip.type === 'audio') && clip.muted;
-  let label = clip.type === 'text' ? clip.text.replace(/\s+/g, ' ') : clip.name;
+  let label = clip.type === 'text' ? clip.text.replace(/\s+/g, ' ') : clip.type === 'shape' ? clip.name || clip.kind : clip.name;
   const isEffect = clip.type === 'effect';
   if (clip.type === 'effect' && w >= 96) {
     const pct = Math.round(clip.amount * 100);
@@ -45,6 +45,7 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
       <div className="timeline-clip-label">
         {muted ? <VolumeX size={11} aria-label="muted" /> : null}
         {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
+        {clip.type === 'shape' && w >= 40 ? <Shapes size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'camera' && w >= 40 ? <Camera size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         <span className="timeline-clip-name">{label}</span>
       </div>

@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useRef } from 'react';
 import { Blend, Box, Copy, Diamond, ListEnd, Scissors, Square, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useFloatingMenu } from './menuBehavior';
 
 interface Props {
   x: number;
@@ -16,46 +17,10 @@ interface Props {
 /** right click menu for a clip. closes on outside click, escape, scroll, resize and blur. */
 export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x, y });
   const clip = useEditor((s) => s.project?.clips.find((c) => c.id === clipId));
   const selection = useEditor((s) => s.selection);
 
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPos({
-      x: Math.max(4, Math.min(x, window.innerWidth - r.width - 4)),
-      y: Math.max(4, Math.min(y, window.innerHeight - r.height - 4)),
-    });
-  }, [x, y]);
-
-  useEffect(() => {
-    const onDown = (e: Event) => {
-      if (ref.current && e.target instanceof Node && ref.current.contains(e.target)) return;
-      onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('pointerdown', onDown, true);
-    window.addEventListener('keydown', onKey, true);
-    window.addEventListener('scroll', onClose, true);
-    window.addEventListener('wheel', onClose, { capture: true, passive: true });
-    window.addEventListener('resize', onClose);
-    window.addEventListener('blur', onClose);
-    return () => {
-      window.removeEventListener('pointerdown', onDown, true);
-      window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('scroll', onClose, true);
-      window.removeEventListener('wheel', onClose, true);
-      window.removeEventListener('resize', onClose);
-      window.removeEventListener('blur', onClose);
-    };
-  }, [onClose]);
+  const pos = useFloatingMenu(ref, x, y, onClose);
 
   if (!clip) return null;
   const ids = selection.includes(clipId) ? selection : [clipId];

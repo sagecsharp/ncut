@@ -275,6 +275,10 @@
 .timeline-clip.is-text {
   background: var(--clip-text);
 }
+.timeline-clip.is-shape {
+  background: var(--clip-text);
+  border-color: var(--text-dim);
+}
 .timeline-clip.is-effect {
   background: var(--clip-effect);
   border: 1px dashed var(--text-dim);
@@ -457,7 +461,42 @@
 .timeline-ghost[data-kind='transition'] {
   border-style: solid;
 }
+.timeline-ghost[data-kind='shape'] {
+  border-style: dotted;
+}
+.timeline-readout {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 4;
+  padding: 0 4px;
+  background: var(--surface-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 13px;
+  white-space: nowrap;
+}
+.timeline-marker-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.3;
+}
+.timeline-marker-input {
+  position: fixed;
+  z-index: 60;
+  width: 160px;
+}
+.timeline-selection {
+  color: var(--text-dim);
+}
 .timeline-snap[hidden],
+.timeline-readout[hidden],
 .timeline-ghost[hidden],
 .timeline-marquee[hidden] {
   display: none;

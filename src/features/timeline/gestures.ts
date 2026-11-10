@@ -9,15 +9,17 @@ import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent }
 import type { Clip, ClipType } from '../../types';
 import { trackKindForClip } from '../../types';
 import { keyTimes } from '../../lib/anim';
-import { snapToFrame } from '../../lib/time';
+import { formatTimecode, snapToFrame } from '../../lib/time';
 import { previousClipOnTrack, transitionSpan } from '../../lib/transitions';
 import { MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
-import { clipEnd, collectSnapPoints, findFreeStart, snapTime } from '../../lib/timelineOps';
+import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { hitKey } from './keyGeometry';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
+import { hitMarker, markerTimes, timelineSnapPoints } from './markers';
+import type { MarkerMenuRequest } from './MarkerUi';
 import type { Layout } from './layout';
 import type { Overlays } from './overlays';
 import { interaction, notifyView, view } from './view';
@@ -32,6 +34,9 @@ export interface GestureEnv {
   getScroller(): HTMLElement | null;
   overlays: Overlays;
   openMenu(req: MenuRequest): void;
+  openMarkerMenu(req: MarkerMenuRequest): void;
+  /** start renaming a marker with the input near client x / y */
+  renameMarker(id: string, x: number, y: number): void;
 }
 
 interface Geo {
@@ -118,7 +123,17 @@ interface MarqueeGesture extends Base {
   lastKey: string;
 }
 
-type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture | KeyGesture | TransitionGesture;
+/** a press on a marker flag: click = jump to it, drag = move it */
+interface MarkerGesture extends Base {
+  kind: 'marker';
+  id: string;
+  time: number;
+  /** marker time minus pointer time at press */
+  offset: number;
+  points: number[];
+}
+
+type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture | KeyGesture | TransitionGesture | MarkerGesture;
 
 const DRAG_THRESHOLD = 3;
 const EDGE = 36;
@@ -291,12 +306,15 @@ export function createGestures(env: GestureEnv) {
       case 'transition':
         stepTransition(cur);
         break;
+      case 'marker':
+        stepMarker(cur);
+        break;
     }
   }
 
   function finish(cur: Gesture): void {
     if (cur.kind === 'move') finishMove(cur);
-    else if (cur.kind === 'key' && !cur.started) usePlayback.getState().seek(cur.time);
+    else if ((cur.kind === 'key' || cur.kind === 'marker') && !cur.started) usePlayback.getState().seek(cur.time);
   }
 
   /* ---------- seek (ruler scrub) ---------- */
@@ -392,6 +410,13 @@ export function createGestures(env: GestureEnv) {
     }
     m.zone = zone;
     env.overlays.setHot(zone);
+
+    {
+      const li = project.tracks.findIndex((t) => t.id === trackFor(m.leader));
+      const laneTop = m.layout.tops[li < 0 ? m.leader.trackIdx : li] ?? 0;
+      const at = Math.max(0, m.leader.start + delta);
+      env.overlays.setReadout(Math.round(at * zoom), Math.max(0, laneTop - 15), formatTimecode(at, project.fps));
+    }
 
     const moves: ClipMove[] = m.items.map((o) => ({
       id: o.id,
@@ -510,6 +535,37 @@ export function createGestures(env: GestureEnv) {
     st.moveKeyframe(k.id, null, k.time, time, undefined, { skipHistory: true });
     k.time = time;
     env.overlays.setSnap(hit, k.zoom);
+  }
+
+  /* ---------- markers ---------- */
+
+  function stepMarker(k: MarkerGesture): void {
+    const st = store();
+    const project = st.project;
+    if (!project) return;
+    if (!k.started) {
+      if (Math.abs(k.cx - k.startX) < DRAG_THRESHOLD) return;
+      k.started = true;
+      st.pushHistory();
+    }
+    let time = Math.max(0, laneX(k.geo, k.cx) / k.zoom + k.offset);
+    let hit: number | null = null;
+    if (st.snapping) {
+      const r = snapTime(time, k.points, SNAP_PX / k.zoom);
+      time = r.time;
+      hit = r.hit;
+    }
+    if (hit === null) time = snapToFrame(time, project.fps);
+    if (Math.abs(time - k.time) > 1e-6) {
+      st.updateMarker(k.id, { time }, { skipHistory: true });
+      k.time = time;
+    }
+    env.overlays.setSnap(hit, k.zoom);
+  }
+
+  /** ruler-local point of a pointer event: x in lane space, y from the top of the ruler */
+  function rulerPoint(geo: Geo, e: { clientX: number; clientY: number }): { x: number; y: number } {
+    return { x: laneX(geo, e.clientX), y: e.clientY - geo.top };
   }
 
   /* ---------- transition length ---------- */
@@ -657,7 +713,7 @@ export function createGestures(env: GestureEnv) {
             id,
             edge: edgeAttr,
             offset: (edgeAttr === 'start' ? clip.start : clipEnd(clip)) - laneX(geo, e.clientX) / st.zoom,
-            points: collectSnapPoints(project, [id], [usePlayback.getState().time]),
+            points: timelineSnapPoints(project, [id], [usePlayback.getState().time]),
           },
           'trim',
         );
@@ -696,7 +752,7 @@ export function createGestures(env: GestureEnv) {
           kind: 'move',
           items,
           leader,
-          points: collectSnapPoints(project, items.map((o) => o.id), [usePlayback.getState().time]),
+          points: timelineSnapPoints(project, items.map((o) => o.id), [usePlayback.getState().time]),
           deferSingle,
           lastKey: '',
           delta: 0,
@@ -734,7 +790,23 @@ export function createGestures(env: GestureEnv) {
     if (!geo) return;
     e.preventDefault();
     const st = store();
-    const points: number[] = [];
+    const rp = rulerPoint(geo, e);
+    const marker = hitMarker(project.markers ?? [], st.zoom, rp.x, rp.y);
+    if (marker) {
+      begin(
+        {
+          ...base(e, geo, computeLayout(project.tracks), e.currentTarget),
+          kind: 'marker',
+          id: marker.id,
+          time: marker.time,
+          offset: marker.time - rp.x / st.zoom,
+          points: timelineSnapPoints(project, [], [usePlayback.getState().time], marker.id),
+        },
+        'trim',
+      );
+      return;
+    }
+    const points: number[] = markerTimes(st.snapping ? project.markers : undefined);
     if (st.snapping && st.selection.length > 0) {
       const sel = new Set(st.selection);
       for (const c of project.clips) {
@@ -744,6 +816,35 @@ export function createGestures(env: GestureEnv) {
     const cur: SeekGesture = { ...base(e, geo, computeLayout(project.tracks), e.currentTarget), kind: 'seek', points };
     begin(cur, 'seek');
     seekAt(cur);
+  }
+
+  function onRulerDoubleClick(e: ReactMouseEvent<HTMLElement>): void {
+    const project = store().project;
+    const geo = measure();
+    if (!project || !geo) return;
+    const rp = rulerPoint(geo, e);
+    const marker = hitMarker(project.markers ?? [], store().zoom, rp.x, rp.y);
+    if (!marker) return;
+    e.preventDefault();
+    end();
+    env.renameMarker(marker.id, e.clientX, e.clientY);
+  }
+
+  function onRulerContextMenu(e: ReactMouseEvent<HTMLElement>): void {
+    const st = store();
+    const project = st.project;
+    const geo = measure();
+    if (!project || !geo) return;
+    e.preventDefault();
+    end();
+    const rp = rulerPoint(geo, e);
+    const marker = hitMarker(project.markers ?? [], st.zoom, rp.x, rp.y);
+    env.openMarkerMenu({
+      x: e.clientX,
+      y: e.clientY,
+      markerId: marker?.id ?? null,
+      time: Math.max(0, rp.x) / st.zoom,
+    });
   }
 
   function onContextMenu(e: ReactMouseEvent<HTMLElement>): void {
@@ -764,6 +865,8 @@ export function createGestures(env: GestureEnv) {
   return {
     onLanesPointerDown,
     onRulerPointerDown,
+    onRulerDoubleClick,
+    onRulerContextMenu,
     onContextMenu,
     dispose: end,
   };

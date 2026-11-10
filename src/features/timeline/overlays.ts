@@ -10,10 +10,14 @@ export interface OverlayRect {
   h: number;
 }
 
+export type GhostKind = 'asset' | 'text' | 'shape' | 'effect' | 'camera' | 'transition';
+
 export class Overlays {
   private snapEl: HTMLElement | null = null;
   private ghostEl: HTMLElement | null = null;
   private marqueeEl: HTMLElement | null = null;
+  private readoutEl: HTMLElement | null = null;
+  private readoutKey = '';
   private zoneTop: HTMLElement | null = null;
   private zoneBottom: HTMLElement | null = null;
   private hot: 'top' | 'bottom' | null = null;
@@ -27,6 +31,9 @@ export class Overlays {
   };
   readonly refMarquee = (el: HTMLElement | null): void => {
     this.marqueeEl = el;
+  };
+  readonly refReadout = (el: HTMLElement | null): void => {
+    this.readoutEl = el;
   };
   readonly refZoneTop = (el: HTMLElement | null): void => {
     this.zoneTop = el;
@@ -52,7 +59,7 @@ export class Overlays {
     if (el.hidden) el.hidden = false;
   }
 
-  setGhost(r: OverlayRect | null, kind?: 'asset' | 'text' | 'effect' | 'camera' | 'transition', label?: string): void {
+  setGhost(r: OverlayRect | null, kind?: GhostKind, label?: string): void {
     const el = this.ghostEl;
     if (!el) return;
     if (!r) {
@@ -66,6 +73,24 @@ export class Overlays {
     const text = label ?? '';
     const span = el.firstElementChild;
     if (span && span.textContent !== text) span.textContent = text;
+    if (el.hidden) el.hidden = false;
+  }
+
+  /** small text next to a dragged clip (its new start time), or hide it */
+  setReadout(x: number, y: number, text: string | null): void {
+    const el = this.readoutEl;
+    if (!el) return;
+    if (text === null) {
+      if (!el.hidden) el.hidden = true;
+      this.readoutKey = '';
+      return;
+    }
+    const key = `${x}|${y}|${text}`;
+    if (key !== this.readoutKey) {
+      this.readoutKey = key;
+      el.style.transform = `translate3d(${x}px,${y}px,0)`;
+      if (el.textContent !== text) el.textContent = text;
+    }
     if (el.hidden) el.hidden = false;
   }
 
@@ -94,6 +119,7 @@ export class Overlays {
     this.setSnap(null, 1);
     this.setGhost(null);
     this.setMarquee(null);
+    this.setReadout(0, 0, null);
     this.setHot(null);
   }
 }
