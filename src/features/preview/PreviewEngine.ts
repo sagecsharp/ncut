@@ -289,6 +289,12 @@ export class PreviewEngine {
   async frameBlob(): Promise<Blob | null> {
     const project = useEditor.getState().project;
     if (this.disposed || !project || typeof OffscreenCanvas === 'undefined') return null;
+    // a video that is still landing on this frame would be captured one frame behind: wait for it, but not for long
+    const waitStart = performance.now();
+    while (this.anySeeking(project, usePlayback.getState().time) && performance.now() - waitStart < HOLD_MAX_MS) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
+      if (this.disposed) return null;
+    }
     const canvas = new OffscreenCanvas(project.width, project.height);
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return null;

@@ -2,7 +2,7 @@
 import { type ClipBox, getClipBox, normalizeCrop } from '../../engine/draw';
 import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from '../../engine/scene3d/camera';
 import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
-import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
+import { clipModelMatrix, clipWorldModel, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
 import { worldClip } from './attached';
 import { isVisualClip } from '../../types';
@@ -49,12 +49,33 @@ export function keptPlaneModel(model: Mat4, crop: Crop | null | undefined, shape
   return mul(mul(model, translation((c.left - c.right) / 2, (c.top - c.bottom) / 2, 0)), scaling(1 - c.left - c.right, 1 - c.top - c.bottom, 1));
 }
 
+/** planes made by asScenePlane (a 2d clip lying on the canvas plane): they are not real 3d clips even though threeD is set */
+const flatPlanes = new WeakSet<object>();
+
+/**
+ * true for a real 3d clip that is attached to something. the renderer places it with the parent's full matrix
+ * (clipWorldModel: tilt, turn and z of the parent count), so the overlays do the same. a 2d clip, also one shown
+ * flat in the scene view, only follows its parent's x / y / rotation / scale (worldClip).
+ */
+export function usesParentFrame(clip: VisualClip): boolean {
+  return !!clip.parent && !!clip.threeD && !flatPlanes.has(clip);
+}
+
+/** the center of a real 3d clip in the world, through its parent chain (canvas px) */
+export function worldCenter3d(project: Project, raw: VisualClip, time: number): Vec3 {
+  const clip = resolveClip(raw, time);
+  const m = clipWorldModel(project, clip, time, getClipBox(project, clip), [0, 0, 0]);
+  return [m[12]!, m[13]!, m[14]!];
+}
+
 /** the projected outline of a (keyframe resolved) 3d clip through a camera rig */
 export function clipQuad(project: Project, raw: VisualClip, time: number, rig: CameraRig, out?: Quad): Quad {
   // an attached clip is drawn at its pose in the world: outline and handles sit there too
-  const clip = worldClip(project, raw, time);
+  const framed = usesParentFrame(raw);
+  const clip = framed ? resolveClip(raw, time) : worldClip(project, raw, time);
   const box = getClipBox(project, clip);
-  const model = keptPlaneModel(clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye), clip.crop, clip.shape);
+  const base = framed ? clipWorldModel(project, clip, time, box, rig.eye) : clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye);
+  const model = keptPlaneModel(base, clip.crop, clip.shape);
   const world = planeCorners(model);
   const q: Quad = out ?? { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world, cx: 0, cy: 0 };
   q.world = world;
@@ -72,7 +93,7 @@ export function clipQuad(project: Project, raw: VisualClip, time: number, rig: C
   }
   q.cx = sx / 4;
   q.cy = sy / 4;
-  const c = projectPoint(rig, box.cx, box.cy, clip.transform.z ?? 0, project.width, project.height);
+  const c = framed ? projectPoint(rig, base[12]!, base[13]!, base[14]!, project.width, project.height) : projectPoint(rig, box.cx, box.cy, clip.transform.z ?? 0, project.width, project.height);
   q.depth = c.depth;
   return q;
 }
@@ -290,7 +311,9 @@ export function rotateValue(r0: number, accumulated: number, shift: boolean): nu
 /** a clip as the scene view shows it: a 2d clip lies flat on the canvas plane (z = 0, no tilt or turn) */
 export function asScenePlane(clip: VisualClip): VisualClip {
   if (clip.threeD) return clip;
-  return { ...clip, threeD: true, lookAt: undefined, transform: { ...clip.transform, z: 0, rotX: 0, rotY: 0 } };
+  const flat: VisualClip = { ...clip, threeD: true, lookAt: undefined, transform: { ...clip.transform, z: 0, rotX: 0, rotY: 0 } };
+  flatPlanes.add(flat);
+  return flat;
 }
 
 /**
@@ -304,6 +327,7 @@ export function sceneCenter(project: Project, clip: Clip, time: number): Vec3 | 
     return [project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z];
   }
   if (!isVisualClip(clip)) return null;
+  if (usesParentFrame(clip)) return worldCenter3d(project, clip, time);
   const w = worldClip(project, asScenePlane(clip), time);
   const box = getClipBox(project, w);
   return [box.cx, box.cy, w.transform.z ?? 0];
