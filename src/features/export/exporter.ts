@@ -48,6 +48,8 @@ import { createFrameSources } from './sources';
 import { KEYFRAME_SECONDS, unpackGifFrames } from './segment';
 import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './parallel';
 import { checkPartsMedia } from './mediaCheck';
+import { avcCodecStringOf, avcLengthSize, avcLevel, pickEncoderSetup, raiseAvcLevel, raiseAvcLevelInPacket } from './encoderSetup';
+import type { EncoderSetup } from './encoderSetup';
 import type { PartsMedia } from './mediaCheck';
 import type { SegmentPool } from './parallel';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
@@ -89,6 +91,11 @@ export interface ExportOptions {
   warmup?: number;
   /** benchmarks: which kind of encoder the parts ask for (missing = the browser decides) */
   acceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  /**
+   * false = never arrange the encoders for the gpu (encoderSetup.ts), true = also with workers: 1. missing = arranged
+   * whenever it gets the gpu encoder where the plain setup would not, unless workers is 1.
+   */
+  gpuEncoder?: boolean;
 }
 
 export interface ExportProgress {
@@ -111,6 +118,8 @@ export interface ExportStats {
   codec: string;
   /** parts rendered at once (1 = the plain way on this thread) */
   workers: number;
+  /** the frame rate the encoders were told to get the gpu encoder (encoderSetup.ts). missing = the real one. */
+  encoderFps?: number;
   /** fonts, opening the sources, starting the output */
   setupMs: number;
   /** waiting for the next decoded frame of the video clips */
@@ -460,7 +469,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   const partsMedia = () => (mediaCheck ??= checkPartsMedia(project, getAssetBlob));
 
   // ---- the fast way: parts of the timeline rendered and encoded at once, joined here in order ----
-  const runParts = async (workers: number, onMain: boolean, lenient: readonly string[]): Promise<Blob> => {
+  const runParts = async (workers: number, onMain: boolean, lenient: readonly string[], setup: EncoderSetup | null): Promise<Blob> => {
     const segments = planSegments(totalFrames, fps, workers);
     // the bar moves with the frames the workers finish and, for the last tenth, with the frames in the file
     let rendered = 0;
@@ -507,6 +516,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           totalFrames,
           ...(options.acceleration ? { acceleration: options.acceleration } : {}),
           ...(lenient.length > 0 ? { lenient: [...lenient] } : {}),
+          ...(setup ? { encoder: setup } : {}),
         },
         segments,
         workers,
@@ -530,6 +540,10 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
       const frameDur = 1 / fps;
       let config: VideoDecoderConfig | null = null;
+      // what the file's track is opened with: the first part's setup, with the true h264 level where the encoders
+      // were told a lower frame rate and wrote that rate's level (encoderSetup.ts)
+      let trackConfig: VideoDecoderConfig | null = null;
+      let levelFix: { level: number; lengthSize: number } | null = null;
       for (let s = 0; s < segments.length; s++) {
         const part = await pool.result(s);
         if (signal?.aborted) throw abortError();
@@ -541,18 +555,34 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           const cfg = track ? await track.getDecoderConfig() : null;
           if (!track || !cfg) throw new Error('a rendered part cannot be read back');
           // one track has one decoder setup: every encoder must have produced the same one
-          if (!config) config = cfg;
-          else if (!sameDecoderConfig(config, cfg)) throw new Error('the parts were encoded with different settings');
+          if (!config) {
+            config = cfg;
+            trackConfig = cfg;
+            const d = cfg.description;
+            if (setup && videoCodec === 'avc' && d) {
+              const bytes = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer, d.byteOffset, d.byteLength) : new Uint8Array(d);
+              const level = avcLevel(width, height, fps, videoBitrate);
+              const raised = raiseAvcLevel(bytes, level);
+              if (raised) {
+                trackConfig = { ...cfg, description: raised, codec: avcCodecStringOf(raised) };
+                levelFix = { level, lengthSize: avcLengthSize(bytes) };
+              }
+            }
+          } else if (!sameDecoderConfig(config, cfg)) throw new Error('the parts were encoded with different settings');
           const sink = new EncodedPacketSink(track);
           let count = 0;
           for await (const packet of sink.packets()) {
             // the frame index, not a sum of durations: the file gets exactly the times one encoder would have written
-            const i = part.first + Math.round(packet.timestamp * fps);
+            const i = part.first + Math.round(packet.timestamp * part.rate);
             // the run-in frames of the part (see segment.ts warmup) stay behind
             if (i < part.from) continue;
             if (i >= part.to) throw new Error('a rendered part holds a frame outside its range');
             if (count === 0 && (i !== part.from || packet.type !== 'key')) throw new Error('a rendered part does not start with a key frame');
-            await videoSource.add(packet.clone({ timestamp: i / fps, duration: frameDur }), joined === 0 ? { decoderConfig: config } : undefined);
+            const data = levelFix && packet.type === 'key' ? raiseAvcLevelInPacket(packet.data, levelFix.lengthSize, levelFix.level) : packet.data;
+            await videoSource.add(
+              packet.clone({ timestamp: i / fps, duration: frameDur, ...(data !== packet.data ? { data } : {}) }),
+              joined === 0 ? { decoderConfig: trackConfig ?? config } : undefined,
+            );
             joined++;
             count++;
             await feedAudio(i / fps + 1.5);
@@ -591,6 +621,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       finished = true;
       stats.finalizeMs = performance.now() - finalizeAt;
       stats.workerStartMs = pool.startTimes();
+      if (setup) stats.encoderFps = setup.fps;
       finish(Math.min(workers, segments.length));
       if (signal?.aborted) throw abortError();
       const buffer = target.buffer;
@@ -616,23 +647,33 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   if (container !== 'gif') {
     const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
     const workers = options.workers ?? pickWorkers(width, height, totalFrames, fps, cores);
-    const onMain = !!options.partsOnMain;
+    let onMain = !!options.partsOnMain;
     // every frame is wanted by the caller: only this thread can hand over the canvas itself
     const watched = !!hooks.onFrame && !captureSet;
-    let able =
-      typeof OffscreenCanvas !== 'undefined' && !watched && (onMain || (typeof Worker !== 'undefined' && !needsMainThread(project)));
-    able = able && workers > 1 && planSegments(totalFrames, fps, workers).length > 1;
+    const canParts = typeof OffscreenCanvas !== 'undefined' && !watched;
+    // the gpu encoder for sizes and frame rates the plain setup would encode in software: only parts can have it
+    // (their times are rewritten at the join), so such an export is done in parts even when it is one part
+    const wantSetup = options.gpuEncoder === true || (options.gpuEncoder !== false && options.workers !== 1 && !options.acceleration);
+    const setup = canParts && wantSetup ? await pickEncoderSetup(videoCodec, width, height, fps, videoBitrate) : null;
+    if (signal?.aborted) throw abortError();
+    let inWorkers = !onMain && typeof Worker !== 'undefined' && !needsMainThread(project);
     let lenient: readonly string[] = [];
-    if (able && !onMain) {
+    let able = canParts && (setup !== null || (workers > 1 && planSegments(totalFrames, fps, workers).length > 1)) && (onMain || inWorkers || setup !== null);
+    if (able && inWorkers) {
       // a picture only an <img> can show keeps the export here; a video nothing can decode is skipped everywhere
       const media = await partsMedia();
       if (signal?.aborted) throw abortError();
-      if (!media.images) able = false;
+      if (!media.images) inWorkers = false;
       lenient = media.lenient;
+    }
+    if (able && !onMain && !inWorkers) {
+      // no workers for this project: with the gpu setup the parts are made on this thread, without it the plain way is as good
+      if (setup) onMain = true;
+      else able = false;
     }
     if (able) {
       try {
-        return await runParts(workers, onMain, lenient);
+        return await runParts(workers, onMain, lenient, setup);
       } catch (err) {
         if (signal?.aborted || isAbort(err)) throw abortError();
         // anything else: the export is done again the plain way, so the user still gets the file

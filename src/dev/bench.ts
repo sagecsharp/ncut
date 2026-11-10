@@ -407,6 +407,7 @@ async function fileCheck(project: Project, o: FileCheckOptions) {
     const s = stats as ExportStats | null;
     return {
       workers: s?.workers ?? 0,
+      encoderFps: s?.encoderFps ?? 0,
       fallback,
       bytes: blob.size,
       frames,

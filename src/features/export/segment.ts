@@ -11,6 +11,8 @@ import { renderFrame } from '../../engine/draw';
 import type { DrawSource } from '../../engine/draw';
 import { encodeGifFrame } from '../../lib/gif';
 import { createFrameSources } from './sources';
+import { scaledBitrate } from './encoderSetup';
+import type { EncoderSetup } from './encoderSetup';
 
 /** seconds between key frames (not frames: 240 fps would otherwise get one every 0.1 s) */
 export const KEYFRAME_SECONDS = 2;
@@ -43,6 +45,8 @@ export interface SegmentJob {
   capture?: number[];
   /** benchmarks: which kind of encoder to ask for (missing = the browser decides, as on one thread) */
   acceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  /** set = the encoder is told this frame rate so the gpu takes the job (encoderSetup.ts); the part's times are on that grid */
+  encoder?: EncoderSetup;
   /** asset ids of video files the main thread cannot decode either (mediaCheck.ts): skipping them here is no difference */
   lenient?: string[];
 }
@@ -67,6 +71,8 @@ export interface SegmentResult {
   first: number;
   /** a complete video file holding the frames [first, to), starting at time 0. gif: the frames' lzw data (packGifFrames). */
   buffer: ArrayBuffer;
+  /** frames per second of the times in that file: the export's own rate, or the one the encoder was told */
+  rate: number;
   stats: SegmentStats;
 }
 
@@ -176,7 +182,7 @@ async function renderGifSegment(project: Project, job: SegmentJob, env: SegmentE
     }
     if (env.signal?.aborted) throw abortError();
     stats.wallMs = performance.now() - startedAt;
-    return { id: job.id, from, to, first: from, buffer: packGifFrames(frames), stats };
+    return { id: job.id, from, to, first: from, buffer: packGifFrames(frames), rate: fps, stats };
   } finally {
     await sources.dispose();
     canvas.width = 0;
@@ -188,6 +194,9 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
   if (job.container === 'gif') return renderGifSegment(project, job, env);
   const { fps, from, to, width, height } = job;
   const first = Math.max(0, from - Math.max(0, Math.floor(job.warmup ?? 0)));
+  // what the encoder is told: the same bits for every frame, at a rate the gpu encoder takes
+  const rate = job.encoder?.fps ?? fps;
+  const bitrate = job.encoder ? scaledBitrate(job.bitrate, rate, fps) : job.bitrate;
   // the key frame rhythm of the whole export (one every KEYFRAME_SECONDS of its own time), whatever part this is
   const keyStep = (i: number) => Math.floor(i / fps / KEYFRAME_SECONDS);
   const stats: SegmentStats = { wallMs: 0, firstFrameMs: 0, openMs: 0, decodeMs: 0, renderMs: 0, encodeMs: 0, finalizeMs: 0 };
@@ -225,16 +234,18 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
     const source = new CanvasSource(canvas, {
       codec: job.codec,
-      quality: new Quality({ bitrate: job.bitrate }),
+      quality: new Quality({ bitrate }),
       keyFrameInterval: KEYFRAME_SECONDS,
+      ...(job.encoder ? { hardwareAcceleration: 'prefer-hardware' as const } : {}),
+      ...(job.encoder?.codecString ? { fullCodecString: job.encoder.codecString } : {}),
       ...(job.acceleration ? { hardwareAcceleration: job.acceleration } : {}),
     });
-    output.addVideoTrack(source, { frameRate: fps });
+    output.addVideoTrack(source, { frameRate: rate });
     await output.start();
     stats.openMs = performance.now() - t0;
 
     // every time below comes from the integer frame index, nothing is accumulated
-    const frameDur = 1 / fps;
+    const frameDur = 1 / rate;
     for (let i = first; i < to; i++) {
       if (env.signal?.aborted) throw abortError();
       await sources.step(i, async (t) => {
@@ -244,7 +255,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
         const b = performance.now();
         // run-in frames never start a group (the encoder's very first frame is a key frame by itself)
         const keyFrame = i === from || (i > from && keyStep(i) !== keyStep(i - 1));
-        await source.add((i - first) / fps, frameDur, { keyFrame });
+        await source.add((i - first) / rate, frameDur, { keyFrame });
         stats.renderMs += b - a;
         stats.encodeMs += performance.now() - b;
         if (i === first) stats.firstFrameMs = performance.now() - a;
@@ -261,7 +272,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     stats.wallMs = performance.now() - startedAt;
     const buffer = target.buffer;
     if (!buffer) throw new Error('the encoder produced no data');
-    return { id: job.id, from, to, first, buffer, stats };
+    return { id: job.id, from, to, first, buffer, rate, stats };
   } catch (err) {
     if (output && !finished) {
       try {
