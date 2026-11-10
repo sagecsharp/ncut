@@ -49,16 +49,19 @@ engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
 engine/effects/          effect registry + defs (glsl) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
-engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer
+engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer, depth of field (focus.ts)
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k)
-features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools
+features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools,
+                         favorites.ts (starred effects / transitions, kept in localStorage)
 features/fonts/          FontPicker
-features/timeline/       Timeline
+features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followApply.ts: effects put on a clip follow it
+                         through every way a clip can move (drag, trim, inspector fields, gaps, speed, freeze frame)
 features/preview/        Preview
-features/properties/     PropertiesPanel
+features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
+                         frame with the camera, floor), FocusSection (depth of field)
 features/export/         ExportDialog + the offline renderer
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
@@ -108,16 +111,27 @@ numbers at draw time (effects get a per-clip `seed`).
   (`clip.mask`), then crop / corners / placement / blend. both helpers return a canvas that is only valid
   until the next call on the same channel ('preview' or 'export'), so cache keys for textures include
   `clipLookSignature` and `maskSignature`.
-- per-clip motion blur (`clip.motionBlur`): a 2d clip is painted several times at sub-frame times and
-  averaged. only its placement is sampled, the picture stays the one of the frame.
+- per-clip motion blur (`clip.motionBlur`): the clip is painted several times at sub-frame times and
+  averaged. only its placement is sampled, the picture stays the one of the frame. a 3d clip is drawn as
+  its own 3d run once per sample into the same accumulator (the camera is not sampled: a camera move is
+  blurred by the motion blur effect layer).
+- depth of field (`CameraClip.focusStrength` and friends): the camera rig carries a focus (distance, range,
+  strength; `engine/scene3d/focus.ts`). the 3d renderer blurs each fragment by how far it is from the focus
+  distance (a disc of taps read at a matching mip level, the amount a share of the frame height so every
+  backing size looks the same) and fades the mesh edge by the same amount. off = no extra cost. the scene
+  view never shows it, flat 2d layers are never blurred.
 - look at: a 3d clip can turn toward the camera (`lookAt` 'camera' / 'cameraY') or toward another clip
   ('clip' + `lookTarget`). it is applied last, in the world.
 - fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
 - groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
 - an effect on one clip (`EffectClip.target`): the effect is skipped by the adjustment layer walk. when its
-  target is drawn, that clip is painted alone into a scratch canvas, the effects run on it, the result is
-  cut back to the clip's own outline and laid into the stack with the clip's blend mode. the two tracks can
-  be anywhere in the stack. a 3d target is drawn as a run of its own. temporal effects with a target do nothing.
+  target is drawn, that clip is painted alone into a scratch canvas, the effects run on it and the result is
+  laid into the stack with the clip's blend mode. effects that only move or mix pixels (categories blur and
+  distortion) run on the premultiplied picture, and the same pass runs once more over the clip's alpha as a
+  grey picture to get the new alpha: a blur on a text goes soft at the edges and keeps its colour. every
+  other category runs un-premultiplied and is cut back to the clip's old outline. the two tracks can be
+  anywhere in the stack. a 3d target is drawn as a run of its own. temporal effects with a target do nothing.
+  a clip drawn frozen by a transition (before its start / after its end) keeps the effects of its edge frame.
 - per-clip motion blur kinds (`clip.motionBlur.style`): 'even' averages the open shutter, 'trail' keeps the
   clip sharp and leaves a tail fading into the past, 'ghost' draws a few separate copies behind it.
 - running numbers (`TextClip.counter`): `resolveVisual` writes the number into the text right after the
@@ -128,7 +142,8 @@ numbers at draw time (effects get a per-clip `seed`).
   muted backwards and above 4x). the export ignores it.
 - `releaseRenderResources(channel)` frees everything a channel holds (scratch canvases, clip look, masks,
   the 3d renderer, effect and transition runners). the export calls it when it ends; everything is rebuilt
-  on the next use.
+  on the next use. channels: 'default' (the preview), 'export' (an OffscreenCanvas) and 'inset' (the small
+  camera picture in the scene view, marked with `setCanvasChannel`), so they never resize each other's canvases.
 
 ## store rules
 
