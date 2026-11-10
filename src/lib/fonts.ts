@@ -427,6 +427,8 @@ async function registerImported(family: string, weight: number, italic: boolean,
 }
 
 let restoring: Promise<void> | null = null;
+/** families removed this session (a restore that is still running skips them). importing one again clears it. */
+const removedFamilies = new Set<string>();
 
 /** re-register the font files the user imported earlier. runs once, lazily. */
 export function restoreImportedFonts(): Promise<void> {
@@ -438,6 +440,7 @@ export function restoreImportedFonts(): Promise<void> {
       let any = false;
       for (const f of all) {
         if (faces.has(f.key)) continue; // imported this session before the restore finished
+        if (removedFamilies.has(f.family)) continue; // removed while this loop was running: it must not come back
         try {
           await registerImported(f.family, f.weight ?? 400, !!f.italic, f.bytes);
           any = true;
@@ -479,6 +482,7 @@ export async function importFontFile(file: File): Promise<FontInfo> {
   // never shadow a bundled / system family
   if (BUNDLED_BY_FAMILY.has(family) || SYSTEM_FONTS.includes(family)) family = `${family} (imported)`;
   try {
+    removedFamilies.delete(family);
     await registerImported(family, meta.weight, meta.italic, bytes);
   } catch {
     throw new Error(`could not read ${file.name}, is it a valid font?`);
@@ -504,6 +508,7 @@ export async function removeImportedFont(family: string): Promise<void> {
     faces.delete(k);
   }
   importedFonts.delete(family);
+  removedFamilies.add(family);
   for (const k of [...ready]) if (k.startsWith(`${family}|`)) ready.delete(k);
   invalidateList();
   for (const k of keys) {
@@ -556,6 +561,7 @@ export async function addFontFiles(files: FontFile[]): Promise<number> {
         if (!f.family || BUNDLED_BY_FAMILY.has(f.family) || SYSTEM_FONTS.includes(f.family)) continue;
         const key = faceKey(f.family, f.weight, f.italic);
         if (faces.has(key)) continue;
+        removedFamilies.delete(f.family);
         await registerImported(f.family, f.weight, f.italic, f.bytes);
         added++;
         try {

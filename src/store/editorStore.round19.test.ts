@@ -136,6 +136,14 @@ describe('select like keeps groups whole', () => {
     expect(lastToast()).toBe('5 clips selected');
   });
 
+  it('a group mate that only comes along does not count as "like it"', () => {
+    open((t) => [image(t[0]!, 'v1', 0, 2, { group: 'g1' }), audio(t[2]!, 'a1', 0, 2, { group: 'g1' })]);
+    ed().select(['v1']);
+    selectLike();
+    expect([...ed().selection].sort()).toEqual(['a1', 'v1']);
+    expect(lastToast()).toBe('nothing else like it');
+  });
+
   it('says so when nothing else is like it', () => {
     open((t) => [image(t[0]!, 'v1', 0, 2), audio(t[2]!, 'a1', 0, 2)]);
     ed().select(['v1']);

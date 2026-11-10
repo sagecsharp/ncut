@@ -50,7 +50,8 @@ export function selectLike(): void {
     useUi.getState().toast('select a clip first');
     return;
   }
-  const before = new Set(st.selection);
+  // what was selected, with the group mates that come along anyway: only clips beyond that count as "like it"
+  const before = new Set(expandGroups(st.project, st.selection));
   // groups move, copy and delete as one: a picture never gets selected without its sound
   const ids = expandGroups(st.project, idsLike(st.project.clips, st.selection));
   st.select(ids, 'replace');
