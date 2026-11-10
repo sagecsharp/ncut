@@ -5,6 +5,7 @@
  */
 import type { Project, ProjectSummary } from '../types';
 import { projectDuration } from '../lib/timelineOps';
+import { pruneSummaries, sortSummaries, readSummary, removeSummary, writeSummary, writeSummaryIfMissing } from './summaries';
 
 const DB_NAME = 'ncut';
 const DB_VERSION = 1;
@@ -70,10 +71,14 @@ export function summarize(p: Project): ProjectSummary {
 }
 
 export async function saveProject(project: Project): Promise<void> {
+  // the card summary goes before the write and comes back after it committed: it can never describe an older project
+  const summary = summarize(project);
+  removeSummary(project.id);
   const db = await openDb();
   const tx = db.transaction(PROJECTS, 'readwrite');
   tx.objectStore(PROJECTS).put(project);
   await txDone(tx);
+  writeSummary(summary);
 }
 
 export async function loadProject(id: string): Promise<Project | undefined> {
@@ -81,15 +86,39 @@ export async function loadProject(id: string): Promise<Project | undefined> {
   return done<Project | undefined>(db.transaction(PROJECTS).objectStore(PROJECTS).get(id));
 }
 
-/** newest first */
+/**
+ * newest first. the cards come from the small per-project summaries (see summaries.ts); only a project without
+ * a valid summary is read whole (and gets one).
+ */
 export async function listProjects(): Promise<ProjectSummary[]> {
   const db = await openDb();
-  const all = await done<Project[]>(db.transaction(PROJECTS).objectStore(PROJECTS).getAll());
-  return all.map(summarize).sort((a, b) => b.updatedAt - a.updatedAt);
+  const ids = (await done<IDBValidKey[]>(db.transaction(PROJECTS).objectStore(PROJECTS).getAllKeys())).filter(
+    (k): k is string => typeof k === 'string',
+  );
+  const out: ProjectSummary[] = [];
+  const missing: string[] = [];
+  for (const id of ids) {
+    const s = readSummary(id);
+    if (s) out.push(s);
+    else missing.push(id);
+  }
+  if (missing.length > 0) {
+    const store = db.transaction(PROJECTS).objectStore(PROJECTS);
+    const loaded = await Promise.all(missing.map((id) => done<Project | undefined>(store.get(id))));
+    for (const p of loaded) {
+      if (!p) continue;
+      const s = summarize(p);
+      out.push(s);
+      writeSummaryIfMissing(s);
+    }
+  }
+  pruneSummaries(ids);
+  return sortSummaries(out);
 }
 
 /** deletes the project and all of its media blobs */
 export async function deleteProject(id: string): Promise<void> {
+  removeSummary(id);
   const db = await openDb();
   const tx = db.transaction([PROJECTS, MEDIA], 'readwrite');
   tx.objectStore(PROJECTS).delete(id);
@@ -102,6 +131,7 @@ export async function deleteProject(id: string): Promise<void> {
     cursor.continue();
   };
   await txDone(tx);
+  removeSummary(id);
 }
 
 export async function putMediaBlob(projectId: string, assetId: string, blob: Blob): Promise<void> {
