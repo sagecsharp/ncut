@@ -4,6 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { planCloseGaps } from './gaps';
+import { withFollowerMoves } from './followMoves';
 import { GAP_SECONDS, planInsertGap } from './gapInsert';
 import { revealScrollLeft } from './followScroll';
 import { effectsOn } from './effectTarget';
@@ -57,11 +58,13 @@ export function selectTrackClips(trackId: string): void {
 export function closeGapsOnTrack(trackId: string): void {
   const st = useEditor.getState();
   if (!st.project) return;
-  const moves = planCloseGaps(st.project.clips, trackId);
-  if (moves.length === 0) {
+  const planned = planCloseGaps(st.project.clips, trackId);
+  if (planned.length === 0) {
     useUi.getState().toast('no gaps on this track');
     return;
   }
+  // effects that are put on the moved clips go with them, in the same undo step
+  const moves = withFollowerMoves(st.project.clips, st.project.tracks, planned);
   if (!st.moveClips(moves)) useUi.getState().toast('could not close the gaps');
 }
 
@@ -73,7 +76,13 @@ export function insertGapAt(time?: number, trackId?: string): void {
   const st = useEditor.getState();
   if (!st.project) return;
   const at = time ?? usePlayback.getState().time;
-  const moves = planInsertGap(st.project.clips, st.project.tracks, at, GAP_SECONDS, trackId);
+  const planned = planInsertGap(st.project.clips, st.project.tracks, at, GAP_SECONDS, trackId);
+  if (planned.length === 0) {
+    useUi.getState().toast('no clips after this point');
+    return;
+  }
+  // an effect follows its clip: it goes with a clip that moves and stays with one that does not
+  const moves = withFollowerMoves(st.project.clips, st.project.tracks, planned, true);
   if (moves.length === 0) {
     useUi.getState().toast('no clips after this point');
     return;
