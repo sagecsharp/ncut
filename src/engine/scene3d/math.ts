@@ -24,6 +24,15 @@ export function identity(): Mat4 {
 /** a * b (b is applied to a point first) */
 export function mul(a: Mat4, b: Mat4): Mat4 {
   const o = new Float32Array(16);
+  mulInto(o, a, b);
+  return o;
+}
+
+/**
+ * mul that writes into `o` instead of allocating (for per-plane work in the render loop). `o` must not be `a` or `b`.
+ * the numbers are exactly the ones mul gives: mul is this function on a fresh array.
+ */
+export function mulInto(o: Mat4, a: Mat4, b: Mat4): Mat4 {
   for (let c = 0; c < 4; c++) {
     const b0 = b[c * 4]!;
     const b1 = b[c * 4 + 1]!;

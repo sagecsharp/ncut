@@ -6,7 +6,7 @@
 import type { SceneFog, Shape3D } from '../../types';
 import { createCanvas } from '../../lib/canvas';
 import type { Mat4, Vec3 } from './math';
-import { mul } from './math';
+import { mulInto } from './math';
 import { fogOn, writeFogUniforms } from './fog';
 import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
 import { interleave, knownShape, shapeMesh } from './meshes';
@@ -256,6 +256,8 @@ class SceneRenderer {
   private uWrapU: WebGLUniformLocation | null;
   private uStack: WebGLUniformLocation | null;
   private fogBuf = new Float32Array(6);
+  /** the model-view-projection of the plane being drawn (written per plane, read by the gl call right away) */
+  private mvpBuf = new Float32Array(16);
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
   private meshes = new Map<Shape3D, Mesh>();
@@ -528,7 +530,8 @@ class SceneRenderer {
           gl.uniform1f(this.uWrapU, uvWrapsU(shape) ? 1 : 0);
         }
       }
-      gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
+      // uniformMatrix4fv copies the numbers at the call, so one buffer serves every plane
+      gl.uniformMatrix4fv(this.uMvp, false, mulInto(this.mvpBuf, viewProj, plane.model));
       if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
       // the stack correction runs on the final texel alpha, so the solid / see-through pass test below it sees the corrected
