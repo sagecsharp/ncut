@@ -1,10 +1,14 @@
 'use strict';
 /**
  * desktop shell: one window that shows the built web app (dist/) from its own app:// origin.
- * the page gets no node access, no preload and no network: it is the same app that runs in a browser tab.
+ * the page gets no node access and no network: it is the same app that runs in a browser tab.
+ * its only way to the shell is preload.cjs: one frozen window.ncutShell with a few dumb functions (taskbar progress,
+ * keep awake, flash, show the last saved file, tell when a download is saved, receive a .ncut file that was opened
+ * with the app). every ipc handler below re-validates its input and only listens to the top frame of the app origin.
+ * the page never sends a path, url, command or html. the csp, permissions and navigation guards are unchanged.
  * commonjs on purpose (package.json is "type": "module" for vite, electron's main entry stays simple).
  */
-const { app, BrowserWindow, Menu, dialog, protocol, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const shellRules = require('./rules.cjs');
@@ -26,6 +30,146 @@ app.setAppUserModelId('com.sagecsharp.ncut');
 
 /** @type {BrowserWindow | null} */
 let win = null;
+
+// ---------- the bridge ----------
+
+/**
+ * per window: the file its last download was saved to, the power blocker, whether the page can take a file,
+ * and a project file waiting for it. keyed by webContents id, dropped with the window.
+ * @type {Map<number, { lastSave: string | null, blocker: number | null, ready: boolean, pending: { name: string, bytes: Buffer } | null }>}
+ */
+const bridge = new Map();
+
+function bridgeState(id) {
+  let st = bridge.get(id);
+  if (!st) {
+    st = { lastSave: null, blocker: null, ready: false, pending: null };
+    bridge.set(id, st);
+  }
+  return st;
+}
+
+function releaseBlocker(st) {
+  if (st.blocker === null) return;
+  try {
+    if (powerSaveBlocker.isStarted(st.blocker)) powerSaveBlocker.stop(st.blocker);
+  } catch {
+    /* already gone */
+  }
+  st.blocker = null;
+}
+
+/** the window an ipc message came from, or null when it is not the top frame of the app itself */
+function trustedWindow(event) {
+  try {
+    const frame = event.senderFrame;
+    if (!frame || frame !== event.sender.mainFrame) return null;
+    if (!shellRules.isTrustedSender(frame.url, true, devUrl)) return null;
+    const w = BrowserWindow.fromWebContents(event.sender);
+    return w && !w.isDestroyed() ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+/** a handler that never throws and ignores strangers */
+function onMessage(channel, fn) {
+  ipcMain.on(channel, (event, ...args) => {
+    try {
+      const w = trustedWindow(event);
+      if (w) fn(w, ...args);
+    } catch {
+      /* a bad message is dropped */
+    }
+  });
+}
+
+function onRequest(channel, fallback, fn) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      const w = trustedWindow(event);
+      return w ? await fn(w, ...args) : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+}
+
+function fileExists(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function setupBridge() {
+  ipcMain.on('ncut:version', (event) => {
+    event.returnValue = trustedWindow(event) ? app.getVersion() : '';
+  });
+  onMessage('ncut:progress', (w, value) => {
+    w.setProgressBar(shellRules.clampProgress(value));
+  });
+  onMessage('ncut:keep-awake', (w, on) => {
+    const st = bridgeState(w.webContents.id);
+    if (on === true) {
+      if (st.blocker === null) st.blocker = powerSaveBlocker.start('prevent-app-suspension');
+    } else {
+      releaseBlocker(st);
+    }
+  });
+  onMessage('ncut:attention', (w) => {
+    if (!w.isFocused()) w.flashFrame(true);
+  });
+  onMessage('ncut:ready', (w) => {
+    bridgeState(w.webContents.id).ready = true;
+    flushPending(w);
+  });
+  onRequest('ncut:reveal-last-save', false, (w) => {
+    const file = bridgeState(w.webContents.id).lastSave;
+    if (!file || !fileExists(file)) return false;
+    shell.showItemInFolder(file);
+    return true;
+  });
+  onRequest('ncut:last-save-name', null, (w) => {
+    const file = bridgeState(w.webContents.id).lastSave;
+    return file && fileExists(file) ? shellRules.baseName(file) : null;
+  });
+}
+
+/** the project file the app was started with, or a second start handed over: read it (size cap, regular file only) */
+async function readProjectFile(file) {
+  try {
+    const full = path.resolve(file);
+    if (!shellRules.isProjectFile(full)) return null;
+    const stat = await fs.promises.stat(full);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    if (stat.size > shellRules.MAX_OPEN_BYTES) {
+      void dialog.showMessageBox({ type: 'warning', title: 'ncut', message: 'this project file is too big to open', buttons: ['ok'] });
+      return null;
+    }
+    const bytes = await fs.promises.readFile(full);
+    return { name: path.basename(full), bytes };
+  } catch {
+    return null;
+  }
+}
+
+function flushPending(w) {
+  if (w.isDestroyed()) return;
+  const st = bridgeState(w.webContents.id);
+  if (!st.ready || !st.pending) return;
+  const file = st.pending;
+  st.pending = null;
+  w.webContents.send('ncut:open-file', file);
+}
+
+async function openProjectFile(w, file) {
+  const got = await readProjectFile(file);
+  if (!got || w.isDestroyed()) return;
+  bridgeState(w.webContents.id).pending = got;
+  flushPending(w);
+}
 
 // ---------- serving dist/ ----------
 
@@ -96,7 +240,7 @@ function existingDir(dir) {
 }
 
 /** exports, frames, captions and project files: a save dialog with the real file name, in the last used folder */
-function onDownload(event, item) {
+function onDownload(event, item, contents) {
   if (!shellRules.isAppDownload(item.getURL(), devUrl)) {
     event.preventDefault();
     return;
@@ -115,6 +259,15 @@ function onDownload(event, item) {
     if (!saved) return;
     saveDir = path.dirname(saved);
     writeState();
+    // tell the window the download came from (the page only ever learns the file name)
+    try {
+      if (contents && !contents.isDestroyed()) {
+        bridgeState(contents.id).lastSave = saved;
+        contents.send('ncut:saved', shellRules.baseName(saved));
+      }
+    } catch {
+      /* the window closed while saving */
+    }
   });
 }
 
@@ -143,6 +296,7 @@ function createWindow() {
       nodeIntegrationInWorker: false,
       nodeIntegrationInSubFrames: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
       webSecurity: true,
       webviewTag: false,
       spellcheck: false,
@@ -160,6 +314,22 @@ function createWindow() {
   }, 5000);
 
   const wc = w.webContents;
+  const wcId = wc.id;
+  const st = bridgeState(wcId);
+  // flashing stops when the window is looked at
+  w.on('focus', () => w.flashFrame(false));
+  // a reload or a crash leaves no power blocker behind and the new page has to say ready() again
+  wc.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) {
+      releaseBlocker(st);
+      st.ready = false;
+      if (!w.isDestroyed()) w.setProgressBar(-1);
+    }
+  });
+  wc.on('render-process-gone', () => {
+    releaseBlocker(st);
+    st.ready = false;
+  });
   const home = devUrl ?? shellRules.HOME;
 
   // nothing opens inside the app except the app. web links go to the real browser.
@@ -243,10 +413,13 @@ function createWindow() {
   // a page that wants to stay (beforeunload) never blocks a reload after a crash: closing is handled above
   wc.on('will-prevent-unload', (event) => event.preventDefault());
   w.on('closed', () => {
+    releaseBlocker(st);
+    bridge.delete(wcId);
     if (win === w) win = null;
   });
 
   void wc.loadURL(home);
+  return w;
 }
 
 // ---------- app ----------
@@ -254,8 +427,10 @@ function createWindow() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv, workingDirectory) => {
     if (!win || win.isDestroyed()) return;
+    const file = shellRules.projectFileFromArgs(argv, app.isPackaged);
+    if (file) void openProjectFile(win, path.resolve(typeof workingDirectory === 'string' ? workingDirectory : '.', file));
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();
     win.focus();
@@ -282,7 +457,10 @@ if (!app.requestSingleInstanceLock()) {
     });
     ses.on('will-download', onDownload);
 
-    createWindow();
+    setupBridge();
+    const first = createWindow();
+    const startFile = shellRules.projectFileFromArgs(process.argv, app.isPackaged);
+    if (startFile) void openProjectFile(first, startFile);
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

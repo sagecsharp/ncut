@@ -34,6 +34,14 @@
       "!node_modules/**/*"
     ],
     "asar": true,
+    "fileAssociations": [
+      {
+        "ext": "ncut",
+        "name": "ncut project",
+        "description": "ncut project",
+        "role": "Editor"
+      }
+    ],
     "publish": null,
     "electronLanguages": [
       "en-US"
