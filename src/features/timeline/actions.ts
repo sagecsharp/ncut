@@ -10,6 +10,7 @@ import { revealScrollLeft } from './followScroll';
 import { effectsOn } from './effectTarget';
 import { notifyView, view } from './view';
 import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
+import { expandGroups } from '../../lib/links';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
 export function groupIdsNow(ids: string[]): boolean {
@@ -49,10 +50,18 @@ export function selectLike(): void {
     useUi.getState().toast('select a clip first');
     return;
   }
-  const ids = idsLike(st.project.clips, st.selection);
+  const before = new Set(st.selection);
+  // groups move, copy and delete as one: a picture never gets selected without its sound
+  const ids = expandGroups(st.project, idsLike(st.project.clips, st.selection));
   st.select(ids, 'replace');
-  const n = useEditor.getState().selection.length;
-  useUi.getState().toast(n === 1 ? 'nothing else like it' : `${n} clips selected`);
+  const now = useEditor.getState().selection;
+  const added = now.filter((id) => !before.has(id)).length;
+  // clips on locked tracks cannot be selected
+  const locked = ids.length - now.length;
+  let msg: string;
+  if (added === 0) msg = locked > 0 ? 'the other clips like it are on locked tracks' : 'nothing else like it';
+  else msg = `${now.length} clips selected` + (locked > 0 ? `, ${locked} on locked tracks left out` : '');
+  useUi.getState().toast(msg);
 }
 
 /** select every clip that starts at or after the playhead, optionally on one track */
@@ -65,7 +74,7 @@ export function selectAfterPlayhead(trackId?: string): void {
 export function selectTrackClips(trackId: string): void {
   const st = useEditor.getState();
   if (!st.project) return;
-  st.select(idsOnTrack(st.project.clips, trackId), 'replace');
+  st.select(expandGroups(st.project, idsOnTrack(st.project.clips, trackId)), 'replace');
 }
 
 /** shift the clips of a track left so they sit end to end. one undo step. */

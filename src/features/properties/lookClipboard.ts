@@ -25,6 +25,13 @@ const TEXT_KEYS = [
   'animIn',
   'animOut',
   'animLoop',
+  'stroke2',
+  'highlight',
+  'extrude',
+  'underline',
+  'strike',
+  'hollow',
+  'backgroundPerLine',
 ] as const;
 
 export interface LookData {
@@ -39,6 +46,12 @@ export function captureLook(clip: VisualClip): LookData {
   const values: Record<string, unknown> = {};
   for (const k of COMMON_KEYS) values[k] = src[k] === undefined ? null : structuredClone(src[k]);
   if (clip.type === 'text') for (const k of TEXT_KEYS) values[k] = src[k] === undefined ? null : structuredClone(src[k]);
+  // where a cut left the lit words (offset / fullDuration) belongs to that clip, not to its look
+  const hl = values.highlight as Record<string, unknown> | null | undefined;
+  if (hl) {
+    delete hl.offset;
+    delete hl.fullDuration;
+  }
   return { from: clip.type, opacity: clip.transform.opacity, values };
 }
 

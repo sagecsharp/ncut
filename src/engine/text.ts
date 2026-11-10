@@ -789,6 +789,15 @@ export function highlightIndexFromCounts(counts: ArrayLike<number>, progress: nu
   return n - 1;
 }
 
+/** how far the karaoke run is at `local` seconds into the clip, 0..1 (see TextHighlight.offset / fullDuration) */
+export function highlightProgress(clip: { duration: number; highlight?: { offset?: number; fullDuration?: number } | null }, local: number): number {
+  const hl = clip.highlight;
+  const full = hl?.fullDuration ?? clip.duration;
+  if (!(full > 0)) return 0;
+  const p = (local + (hl?.offset ?? 0)) / full;
+  return Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : 0;
+}
+
 /** same as highlightIndexFromCounts for a list of words */
 export function highlightIndex(words: string[], progress: number): number {
   return highlightIndexFromCounts(
@@ -976,7 +985,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number, opts?: DrawTe
   }
   const count = layout ? layout.glyphs.length : 0;
   let litWord = -1;
-  if (hl && layout) litWord = highlightIndexFromCounts(wordLetterCounts(layout), clip.duration > 0 ? local! / clip.duration : 0);
+  if (hl && layout) litWord = highlightIndexFromCounts(wordLetterCounts(layout), highlightProgress(clip, local!));
   // letter states once per frame, shared by the shadow / outline / fill passes
   const states: GlyphState[] | null =
     layout && letterAnim ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;

@@ -1136,6 +1136,10 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (next.type === 'text' && clip.type === 'text' && clip.counter) {
             next.counter = { ...clip.counter, offset: (clip.counter.offset ?? 0) + delta, fullDuration: clip.counter.fullDuration ?? clip.duration };
           }
+          // lit words too (see TextHighlight.offset)
+          if (next.type === 'text' && clip.type === 'text' && clip.highlight) {
+            next.highlight = { ...clip.highlight, offset: (clip.highlight.offset ?? 0) + delta, fullDuration: clip.highlight.fullDuration ?? clip.duration };
+          }
           return replaceClip(p, clampFades(next));
         }
         let upper = Infinity;
@@ -1217,6 +1221,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (c.type === 'effect') leftDraft.fullDuration = c.fullDuration ?? c.duration;
           // same for a running number: both halves count over the old length
           if (c.type === 'text' && c.counter) leftDraft.counter = { ...c.counter, fullDuration: c.counter.fullDuration ?? c.duration };
+          // and for lit words: the run goes on over the cut
+          if (c.type === 'text' && c.highlight) leftDraft.highlight = { ...c.highlight, fullDuration: c.highlight.fullDuration ?? c.duration };
           const left = clampFades(leftDraft as unknown as Clip);
           const rightDraft = { ...c } as Record<string, unknown>;
           delete rightDraft.transition;
@@ -1238,6 +1244,9 @@ export const useEditor = create<EditorState>()((set, get) => {
           }
           if (right.type === 'text' && c.type === 'text' && c.counter) {
             right.counter = { ...c.counter, offset: (c.counter.offset ?? 0) + (time - c.start), fullDuration: c.counter.fullDuration ?? c.duration };
+          }
+          if (right.type === 'text' && c.type === 'text' && c.highlight) {
+            right.highlight = { ...c.highlight, offset: (c.highlight.offset ?? 0) + (time - c.start), fullDuration: c.highlight.fullDuration ?? c.duration };
           }
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           if (c.group) {

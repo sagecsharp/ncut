@@ -354,6 +354,13 @@ export interface TextHighlight {
   mode: 'word' | 'fill';
   /** a box behind the current word (css color). null / missing = none. */
   background?: string | null;
+  /**
+   * seconds of the run that already happened before this clip starts. set on the right half of a split and by a
+   * head trim, so the words carry on across the cut instead of starting over. missing = 0.
+   */
+  offset?: number;
+  /** the length the run is spread over. set together with `offset` (both halves of a split keep the old length). missing = the clip's length. */
+  fullDuration?: number;
 }
 
 /**
