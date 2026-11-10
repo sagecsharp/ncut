@@ -27,6 +27,14 @@ export const TEXT_ANIMS_IN: TextAnimInfo[] = [
   { id: 'flicker', name: 'flicker' },
   { id: 'words', name: 'word by word' },
   { id: 'lines', name: 'line by line' },
+  { id: 'blur', name: 'blur' },
+  { id: 'scramble', name: 'scramble' },
+  { id: 'flip', name: 'flip' },
+  { id: 'wave-in', name: 'wave in' },
+  { id: 'glitch', name: 'glitch' },
+  { id: 'expand', name: 'expand' },
+  { id: 'swing', name: 'swing' },
+  { id: 'bounce', name: 'bounce' },
 ];
 
 export const TEXT_ANIMS_OUT: TextAnimInfo[] = TEXT_ANIMS_IN;
@@ -42,6 +50,12 @@ export const TEXT_ANIMS_LOOP: TextAnimInfo[] = [
   { id: 'jelly', name: 'jelly' },
   { id: 'blink', name: 'blink' },
   { id: 'rainbow', name: 'rainbow' },
+  { id: 'glitch', name: 'glitch' },
+  { id: 'typing', name: 'typing' },
+  { id: 'neon', name: 'neon' },
+  { id: 'heartbeat', name: 'heartbeat' },
+  { id: 'spin', name: 'spin' },
+  { id: 'colors', name: 'colors' },
 ];
 
 export const DEFAULT_TEXT_ANIM_IN = 0.6;
@@ -72,6 +86,10 @@ export interface GlyphState {
   pivotY: number;
   /** block only: extra letter spacing as a fraction of the font size */
   spacing: number;
+  /** blur radius as a fraction of the font size (the draw pass uses ctx.filter, or fades when it is missing) */
+  blur?: number;
+  /** letter only: draw a random stand-in for the real character. the number is the step of the shuffle, see scrambleChar. */
+  scramble?: number;
 }
 
 /** the untouched state. returned by identity so callers can skip work with `=== REST`. */
@@ -83,14 +101,14 @@ interface EnterSpec {
   unit: Unit;
   /** share of the whole duration one unit needs. 1 = everything together. 0 = one after the other, no overlap. */
   span: number;
-  /** u: 0 = gone, 1 = at rest. t = clip-local seconds. write into st. */
-  apply(st: GlyphState, u: number, t: number): void;
+  /** u: 0 = gone, 1 = at rest. t = clip-local seconds. i = index of the unit (0 for the block). write into st. */
+  apply(st: GlyphState, u: number, t: number, i: number): void;
 }
 
 interface LoopSpec {
   unit: Unit;
-  /** phase = radians (TAU per cycle), i = unit index, cycles = cycles since the clip started */
-  apply(st: GlyphState, phase: number, i: number, cycles: number): void;
+  /** phase = radians (TAU per cycle), i = unit index of n units, cycles = cycles since the clip started */
+  apply(st: GlyphState, phase: number, i: number, cycles: number, n: number): void;
 }
 
 const easeOut = (u: number) => 1 - Math.pow(1 - u, 3);
@@ -107,6 +125,45 @@ const rand = (a: number, b: number) => {
   const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
   return x - Math.floor(x);
 };
+const frac = (x: number) => x - Math.floor(x);
+/** 0 outside [a, b], a half sine inside */
+const bump = (f: number, a: number, b: number) => (f >= a && f <= b ? Math.sin((Math.PI * (f - a)) / (b - a)) : 0);
+/** height above the ground (1 = dropped from the top) of something that falls and bounces twice. 0 at u = 1. */
+function twoBounce(u: number): number {
+  if (u < 0.5) return 1 - (u / 0.5) * (u / 0.5);
+  if (u < 0.8) {
+    const v = (u - 0.5) / 0.3;
+    return 0.22 * 4 * v * (1 - v);
+  }
+  if (u < 0.95) {
+    const v = (u - 0.8) / 0.15;
+    return 0.07 * 4 * v * (1 - v);
+  }
+  return 0;
+}
+
+const SCRAMBLE_LOWER = 'abcdefghijklmnopqrstuvwxyz';
+const SCRAMBLE_UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const SCRAMBLE_DIGITS = '0123456789';
+const SCRAMBLE_SYMBOLS = '#%&*+=?@$/<>~^';
+
+/**
+ * the stand-in drawn for a character while it is scrambling. same kind as the real one (letters stay letters,
+ * capitals stay capitals) so the line keeps its rhythm. only depends on (char, glyph index, step).
+ */
+export function scrambleChar(ch: string, index: number, step: number): string {
+  const pool =
+    ch >= 'a' && ch <= 'z'
+      ? SCRAMBLE_LOWER
+      : ch >= 'A' && ch <= 'Z'
+        ? SCRAMBLE_UPPER
+        : ch >= '0' && ch <= '9'
+          ? SCRAMBLE_DIGITS
+          : ch.toLowerCase() !== ch.toUpperCase()
+            ? SCRAMBLE_LOWER
+            : SCRAMBLE_SYMBOLS;
+  return pool[Math.floor(rand(index * 1.7 + 3, step * 0.37 + 1) * pool.length) % pool.length]!;
+}
 
 const ENTER: Record<string, EnterSpec> = {
   fade: {
@@ -226,6 +283,80 @@ const ENTER: Record<string, EnterSpec> = {
   },
 };
 
+const ENTER_MORE: Record<string, EnterSpec> = {
+  blur: {
+    unit: 'char',
+    span: 0.3,
+    apply: (st, u) => {
+      st.blur = (st.blur ?? 0) + (1 - easeOut(u)) * 0.25;
+      st.alpha *= Math.min(1, u * 3);
+    },
+  },
+  scramble: {
+    unit: 'char',
+    span: 0.5,
+    apply: (st, u) => {
+      st.scramble = 1 + Math.floor(u * 16);
+      st.alpha *= Math.min(1, 0.25 + u * 4);
+    },
+  },
+  flip: {
+    unit: 'char',
+    span: 0.4,
+    apply: (st, u) => {
+      // sy runs -1 -> 0 -> 1
+      st.sy *= Math.cos(Math.PI * (1 - easeOut(u)));
+      st.alpha *= Math.min(1, u * 4);
+    },
+  },
+  'wave-in': {
+    unit: 'char',
+    span: 0.5,
+    apply: (st, u) => {
+      st.dy += (1 - u) * Math.cos(u * Math.PI * 2.5) * 0.6;
+      st.alpha *= Math.min(1, u * 3);
+    },
+  },
+  glitch: {
+    unit: 'char',
+    span: 0.3,
+    apply: (st, u, _t, i) => {
+      // steps follow the progress (not the wall time) so an exit is the exact mirror of the entrance
+      const step = Math.floor(u * 20);
+      const amp = 1 - u;
+      st.dx += (rand(i + 1, step) - 0.5) * 0.5 * amp;
+      st.dy += (rand(i + 17, step) - 0.5) * 0.15 * amp;
+      st.alpha *= rand(i + 5, step + 91) < u ? 1 : 0.15;
+    },
+  },
+  expand: {
+    unit: 'block',
+    span: 1,
+    apply: (st, u) => {
+      st.spacing += (1 - easeOut(u)) * 1.5;
+      st.alpha *= Math.min(1, u * 2);
+    },
+  },
+  swing: {
+    unit: 'block',
+    span: 1,
+    apply: (st, u) => {
+      st.rot += Math.cos(u * Math.PI * 3.5) * (1 - u) * 0.9;
+      st.pivotY = -0.5;
+      st.alpha *= Math.min(1, u * 4);
+    },
+  },
+  bounce: {
+    unit: 'char',
+    span: 0.45,
+    apply: (st, u) => {
+      st.dy -= twoBounce(u) * 1.2;
+      st.alpha *= Math.min(1, u * 5);
+    },
+  },
+};
+Object.assign(ENTER, ENTER_MORE);
+
 const LOOP: Record<string, LoopSpec> = {
   wave: {
     unit: 'char',
@@ -295,6 +426,60 @@ const LOOP: Record<string, LoopSpec> = {
       st.hue = cycles + i * 0.04;
     },
   },
+  glitch: {
+    unit: 'char',
+    apply: (st, _ph, i, cycles) => {
+      // 12 slots per cycle, a burst is 3 slots long and starts in about three cycles of ten. periodic.
+      const slot = Math.floor(frac(cycles) * 12);
+      const burst = Math.floor(slot / 3);
+      if (rand(burst, 41) > 0.3) return;
+      st.dx += (rand(i + 1, slot) - 0.5) * 0.3;
+      st.dy += (rand(i + 17, slot) - 0.5) * 0.08;
+      st.alpha *= rand(i + 5, slot + 7) < 0.25 ? 0.35 : 1;
+    },
+  },
+  typing: {
+    unit: 'char',
+    apply: (st, _ph, i, cycles, n) => {
+      const f = frac(cycles);
+      const shown = f < 0.4 ? f / 0.4 : f < 0.6 ? 1 : 1 - (f - 0.6) / 0.4;
+      if (i >= shown * n) st.alpha *= 0;
+    },
+  },
+  neon: {
+    unit: 'block',
+    apply: (st, _ph, _i, cycles) => {
+      const slot = Math.floor(frac(cycles) * 20);
+      st.alpha *= rand(slot, 13) < 0.1 ? 0.2 : 0.9 + 0.1 * rand(slot, 5);
+    },
+  },
+  heartbeat: {
+    unit: 'block',
+    apply: (st, _ph, _i, cycles) => {
+      const f = frac(cycles);
+      const s = 1 + 0.1 * bump(f, 0, 0.18) + 0.07 * bump(f, 0.22, 0.42);
+      st.sx *= s;
+      st.sy *= s;
+    },
+  },
+  spin: {
+    unit: 'char',
+    apply: (st, _ph, i, cycles, n) => {
+      // every letter turns once per cycle, one after the other
+      const w = 0.35;
+      const start = n > 1 ? ((1 - w) * i) / (n - 1) : 0;
+      const u = Math.min(1, Math.max(0, (frac(cycles) - start) / w));
+      const e = u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u);
+      st.rot += e * Math.PI * 2;
+    },
+  },
+  colors: {
+    unit: 'char',
+    apply: (st, _ph, i, cycles) => {
+      // six colors that jump, each letter one step ahead of the one before
+      st.hue = (Math.floor(cycles * 6) + i) / 6;
+    },
+  },
 };
 
 /** the animations of a clip looked up once per frame */
@@ -335,15 +520,15 @@ export function blockState(clip: TextClip, local: number): GlyphState {
   let st: GlyphState | null = null;
   if (enter && enter.unit === 'block') {
     const p = inProgress(clip, local);
-    if (p < 1) enter.apply((st ??= fresh()), p, local);
+    if (p < 1) enter.apply((st ??= fresh()), p, local, 0);
   }
   if (exit && exit.unit === 'block') {
     const p = outProgress(clip, local);
-    if (p < 1) exit.apply((st ??= fresh()), p, local);
+    if (p < 1) exit.apply((st ??= fresh()), p, local, 0);
   }
   if (loop && loop.unit === 'block' && clip.animLoop) {
     const cycles = local / Math.max(0.05, clip.animLoop.duration);
-    loop.apply((st ??= fresh()), cycles * Math.PI * 2, 0, cycles);
+    loop.apply((st ??= fresh()), cycles * Math.PI * 2, 0, cycles, 1);
   }
   return st ?? REST;
 }
@@ -368,7 +553,7 @@ export function glyphState(
     if (p < 1) {
       const [i, n] = pick(enter.unit);
       const u = stagger(p, i, n, enter.span);
-      if (u < 1) enter.apply((st ??= fresh()), u, local);
+      if (u < 1) enter.apply((st ??= fresh()), u, local, i);
     }
   }
   if (exit && exit.unit !== 'block') {
@@ -376,13 +561,13 @@ export function glyphState(
     if (p < 1) {
       const [i, n] = pick(exit.unit);
       const u = stagger(p, i, n, exit.span);
-      if (u < 1) exit.apply((st ??= fresh()), u, local);
+      if (u < 1) exit.apply((st ??= fresh()), u, local, i);
     }
   }
   if (loop && loop.unit !== 'block' && clip.animLoop) {
     const cycles = local / Math.max(0.05, clip.animLoop.duration);
-    const [i] = pick(loop.unit);
-    loop.apply((st ??= fresh()), cycles * Math.PI * 2, i, cycles);
+    const [i, n] = pick(loop.unit);
+    loop.apply((st ??= fresh()), cycles * Math.PI * 2, i, cycles, n);
   }
   return st ?? REST;
 }
