@@ -148,6 +148,56 @@ export async function getMediaBlob(assetId: string): Promise<Blob | undefined> {
   return row?.blob;
 }
 
+/**
+ * the blobs of several assets in ONE readonly transaction (all gets issued together). a value is the blob,
+ * undefined when there is no row, or the Error when that one read failed (the others still come back).
+ * rejects only when the database cannot be opened / the transaction cannot start.
+ */
+export async function getMediaBlobs(ids: readonly string[]): Promise<Map<string, Blob | undefined | Error>> {
+  const out = new Map<string, Blob | undefined | Error>();
+  if (ids.length === 0) return out;
+  const db = await openDb();
+  const store = db.transaction(MEDIA).objectStore(MEDIA);
+  await Promise.all(
+    ids.map(
+      (id) =>
+        new Promise<void>((resolve) => {
+          const req = store.get(id) as IDBRequest<MediaRow | undefined>;
+          req.onsuccess = () => {
+            out.set(id, req.result?.blob);
+            resolve();
+          };
+          req.onerror = (ev) => {
+            ev.preventDefault(); // one failed read must not abort the reads of the other assets
+            out.set(id, req.error ?? new Error('could not read the file'));
+            resolve();
+          };
+        }),
+    ),
+  );
+  return out;
+}
+
+/** every stored file of one project by asset id, through the projectId index (one request). */
+export async function loadProjectMediaRows(projectId: string): Promise<Map<string, Blob>> {
+  const db = await openDb();
+  const rows = await done<MediaRow[]>(
+    db.transaction(MEDIA).objectStore(MEDIA).index('projectId').getAll(IDBKeyRange.only(projectId)) as IDBRequest<MediaRow[]>,
+  );
+  const out = new Map<string, Blob>();
+  for (const r of rows) if (r.blob) out.set(r.id, r.blob);
+  return out;
+}
+
+/** start opening the database now (before anything asks for it). a failure is left for the first real call to report. */
+export function warmDb(): void {
+  try {
+    openDb().catch(() => undefined);
+  } catch {
+    /* no indexeddb here */
+  }
+}
+
 export async function deleteMediaBlob(assetId: string): Promise<void> {
   const db = await openDb();
   const tx = db.transaction(MEDIA, 'readwrite');

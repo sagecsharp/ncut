@@ -12,7 +12,7 @@ import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
-import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, loadProjectMediaRows, putMediaBlob, saveProject, warmDb } from '../storage/db';
 import { whenMediaStored } from '../storage/pendingMedia';
 import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
@@ -53,14 +53,37 @@ export function openProjectById(id: string): Promise<boolean> {
 
 let opening: { id: string; promise: Promise<boolean> } | null = null;
 
+/** the project json and its stored files, read at the same time (the files by the projectId index) */
+interface Prefetch {
+  id: string;
+  at: number;
+  project: Promise<Project | undefined>;
+  rows: Promise<Map<string, Blob>>;
+}
+
+function startPrefetch(id: string): Prefetch {
+  const project = loadProject(id);
+  project.catch(() => undefined); // the rejection is reported where the result is used (doOpen)
+  // a failed bulk read is not an error: loadProjectMedia asks for those files one by one then
+  const rows = loadProjectMediaRows(id).catch(() => new Map<string, Blob>());
+  return { id, at: Date.now(), project, rows };
+}
+
+/** what module evaluation started for the project in the url (used by the first open only) */
+let prefetched: Prefetch | null = null;
+const PREFETCH_MAX_AGE_MS = 15000;
+
 async function doOpen(id: string): Promise<boolean> {
-  const project = await loadProject(id);
+  const early = prefetched;
+  prefetched = null;
+  const read = early && early.id === id && Date.now() - early.at < PREFETCH_MAX_AGE_MS ? early : startPrefetch(id);
+  const project = await read.project;
   if (!project) return false;
   await flushAutosave();
   releaseAllAssets();
   releaseAllDerived();
   resetPlayback();
-  const missing = await loadProjectMedia(project);
+  const missing = await loadProjectMedia(project, await read.rows);
   useEditor.getState().openProject(project);
   setSaveState('saved');
   setHash(`#/project/${project.id}`);
@@ -315,4 +338,16 @@ export function startAutosave(): void {
     snapPoster();
     void flushAutosave();
   });
+}
+
+// the database (and the project named by the url) start loading now, while the rest of the bundle evaluates and
+// the first render happens. doOpen takes this result instead of reading again.
+try {
+  if (typeof indexedDB !== 'undefined' && typeof location !== 'undefined') {
+    const hashId = projectIdFromHash();
+    if (hashId) prefetched = startPrefetch(hashId);
+    else warmDb();
+  }
+} catch {
+  /* the normal path reads (and reports) as before */
 }
