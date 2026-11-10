@@ -7,8 +7,8 @@ import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
-import { applyFollowerSpans } from '../timeline/followApply';
-import { followerSpans, withFollowerMoves } from '../timeline/followMoves';
+import { applyFollowerSpans, followBase, markFollowGesture } from '../timeline/followApply';
+import { withFollowerMovesFrom } from '../timeline/followMoves';
 import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
@@ -33,29 +33,25 @@ import { coverScale } from './shapeLogic';
 
 const actions = () => useEditor.getState();
 
+/** a field interaction starts: undo step + follower snapshot */
+function beginFollowEdit(): void {
+  beginEdit();
+  markFollowGesture();
+}
+
 /** change the length of a clip; effects put on it get the same new span (one undo step, like the drag) */
 function trimWithEffects(id: string, end: number): void {
   const opts = liveOpts();
-  const before = useEditor.getState().project;
+  const before = followBase(useEditor.getState().project);
   actions().trimClip(id, 'end', end, opts);
-  const after = useEditor.getState().project;
-  const clip = after?.clips.find((c) => c.id === id);
-  if (!before || !after || !clip || !isVisualClip(clip)) return;
-  for (const r of followerSpans(before.clips, before.tracks, id, { start: clip.start, duration: clip.duration })) {
-    const now = useEditor.getState().project?.clips.find((c) => c.id === r.id);
-    if (!now) continue;
-    if (Math.abs(now.start - r.start) > 1e-6) actions().trimClip(r.id, 'start', r.start, opts);
-    const moved = useEditor.getState().project?.clips.find((c) => c.id === r.id);
-    if (moved && Math.abs(moved.start + moved.duration - (r.start + r.duration)) > 1e-6) {
-      actions().trimClip(r.id, 'end', r.start + r.duration, opts);
-    }
-  }
+  applyFollowerSpans(before, id, opts);
 }
 
 /** change the speed of a clip (which changes its length); effects put on it get the same new span, one undo step */
 function setSpeedWithEffects(id: string, speed: number, live: boolean): void {
-  const before = useEditor.getState().project;
   let opts = live ? liveOpts() : undefined;
+  const cur = useEditor.getState().project;
+  const before = live ? followBase(cur) : cur;
   if (!opts) {
     actions().pushHistory();
     opts = { skipHistory: true };
@@ -103,13 +99,14 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             min={0}
             step={0.05}
             precision={2}
-            onStart={beginEdit}
+            onStart={beginFollowEdit}
             onChange={(v) => {
               // a rejected move leaves the store untouched, so the field falls back to the real value
               // effects put on this clip go with it, in the same call (one undo step)
               const st = useEditor.getState();
               const moves: ClipMove[] = [{ id, trackId, start: v }];
-              actions().moveClips(st.project ? withFollowerMoves(st.project.clips, st.project.tracks, moves) : moves, liveOpts());
+              const base = followBase(st.project);
+              actions().moveClips(st.project && base ? withFollowerMovesFrom(base.clips, st.project.clips, st.project.tracks, moves) : moves, liveOpts());
             }}
           />
           <NumberField
@@ -120,7 +117,7 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             min={MIN_CLIP_DURATION}
             step={0.05}
             precision={2}
-            onStart={beginEdit}
+            onStart={beginFollowEdit}
             onChange={(v) => trimWithEffects(id, start + v)}
           />
         </Pair>
@@ -222,7 +219,7 @@ const SpeedSection = memo(function SpeedSection({ id, speed }: { id: string; spe
           max={MAX_SPEED}
           step={0.05}
           precision={2}
-          onStart={beginEdit}
+          onStart={beginFollowEdit}
           onChange={(v) => setSpeedWithEffects(id, v, true)}
         />
       </Row>
