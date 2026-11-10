@@ -11,7 +11,7 @@ import type { Clip, Project } from '../../types';
 import { getWaveform } from '../../media/derived';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
-import { beatsInClip, detectBeats, thinBeats } from './beats';
+import { beatsInClipIndexed, detectBeats, thinBeats } from './beats';
 
 /** how many beats between markers: every beat, every 2nd, every 4th (bars) */
 export type BeatDensity = 1 | 2 | 4;
@@ -26,7 +26,7 @@ export function clipHasSound(project: Project | null | undefined, clip: Clip): b
   return !!project?.assets.find((a) => a.id === clip.assetId)?.hasAudio;
 }
 
-type ClipBeats = { ok: true; beats: number[]; bpm: number } | { ok: false; reason: string } | null;
+type ClipBeats = { ok: true; beats: number[]; indices: number[]; bpm: number } | { ok: false; reason: string } | null;
 
 /**
  * beats of a clip in timeline seconds (all of them), or the reason there are none.
@@ -49,7 +49,8 @@ async function clipBeats(clip: Clip, projectId: string): Promise<ClipBeats> {
   if (!wf) return { ok: false, reason: 'could not read the audio' };
   const r = detectBeats(wf.peaks, wf.peaksPerSecond);
   if (r.reason !== 'ok') return { ok: false, reason: r.reason === 'no steady beat' ? 'no steady beat found' : r.reason };
-  return { ok: true, beats: beatsInClip(r.beats, now), bpm: r.bpm };
+  const inside = beatsInClipIndexed(r.beats, now);
+  return { ok: true, beats: inside.map((b) => b.time), indices: inside.map((b) => b.index), bpm: r.bpm };
 }
 
 /** put a marker on the beats of a clip. one undo step. */
@@ -72,10 +73,11 @@ export async function markBeats(clipId: string, density: BeatDensity = 1): Promi
   const existing = st.project?.markers ?? [];
   const tol = 0.5 / fps;
   const wanted = thinBeats(res.beats, density);
+  const wantedIndex = thinBeats(res.indices, density);
   const fresh: { time: number; name: string }[] = [];
   wanted.forEach((time, i) => {
-    // named by the place in the full beat list, so "every beat" after "every 4th" does not repeat names
-    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(i * density + 1) });
+    // named by the beat's place in the whole sound ("beat 5" is the fifth beat of the song), even after a trim
+    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(wantedIndex[i]! + 1) });
   });
   if (fresh.length === 0) {
     useUi.getState().toast('the beats are already marked');

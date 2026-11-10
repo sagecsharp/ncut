@@ -180,6 +180,16 @@ function worldSize(p: Project, it: Target): { w: number; h: number } {
   return { w: box.width * extra, h: box.height * extra };
 }
 
+/** thickness of a 3d solid along its normal in the world (0 for a plane or a flat clip), like engine/draw.ts planeFor picks it */
+function solidDepth(it: Target, size: { w: number; h: number }): number {
+  const c = it.now;
+  const shape = c.shape ?? 'plane';
+  if (!c.threeD || shape === 'plane') return 0;
+  const extra = it.parent ? frameScale(it.parent) : 1;
+  if (c.shapeDepth !== undefined && c.shapeDepth > 0 && shape !== 'sphere') return c.shapeDepth * c.transform.scale * extra;
+  return shape === 'box' ? size.h : size.w;
+}
+
 /**
  * move the camera clip in charge at the playhead so the clip fills about 80% of the frame, seen straight on
  * from its front side (x / y / z, pan / tilt / roll). no camera clip there: one is made on a new camera track
@@ -315,7 +325,7 @@ export function dropToFloor(ids: readonly string[]): number {
     }
     const a = axesOf(it.frame);
     const size = worldSize(p, it);
-    const y = floorCenterY(p.height, size.w, size.h, a.right, a.down);
+    const y = floorCenterY(p.height, size.w, size.h, a.right, a.down, solidDepth(it, size), a.normal);
     const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix([a.center[0], y, a.center[2]], a.right, a.down, a.normal, frameScale(it.frame)));
     if (next) plans.push(planOf(it, next, { withScale: !!it.parent, make3d: false }));
     else skipped++;

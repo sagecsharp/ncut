@@ -247,18 +247,30 @@ export interface BeatClip {
   speed: number;
 }
 
-/** asset-second beats -> timeline seconds, only the beats inside the clip's visible range */
-export function beatsInClip(assetBeats: readonly number[], clip: BeatClip): number[] {
+/** a beat inside a clip: its timeline time and its index in the whole sound (0 = the first beat of the song) */
+export interface ClipBeat {
+  time: number;
+  index: number;
+}
+
+/** asset-second beats -> timeline seconds with their index in the whole sound, only the beats inside the clip's visible range */
+export function beatsInClipIndexed(assetBeats: readonly number[], clip: BeatClip): ClipBeat[] {
   const speed = clip.speed > 0 ? clip.speed : 1;
   const end = clip.start + clip.duration;
-  const out: number[] = [];
-  for (const b of assetBeats) {
+  const out: ClipBeat[] = [];
+  for (let i = 0; i < assetBeats.length; i++) {
+    const b = assetBeats[i]!;
     if (b < clip.trimStart) continue;
     const t = clip.start + (b - clip.trimStart) / speed;
     if (t > end + 1e-9) break;
-    out.push(t);
+    out.push({ time: t, index: i });
   }
   return out;
+}
+
+/** asset-second beats -> timeline seconds, only the beats inside the clip's visible range */
+export function beatsInClip(assetBeats: readonly number[], clip: BeatClip): number[] {
+  return beatsInClipIndexed(assetBeats, clip).map((b) => b.time);
 }
 
 /** keep every `step`th beat (1 = all, 2 = every other, 4 = bars), starting with the first */

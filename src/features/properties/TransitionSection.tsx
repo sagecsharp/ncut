@@ -14,6 +14,7 @@ import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { rememberTransition } from '../media/transitionApply';
 import { planSameLength } from '../media/transitionBatch';
+import { isVisualClip } from '../../types';
 import type { Clip, Transition } from '../../types';
 import { Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
@@ -48,7 +49,17 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
     if (!project || !transition) return;
     const patches = planSameLength(project, clip.trackId, id);
     if (patches.length === 0) {
-      useUi.getState().toast('nothing to do: no other transition on this track needs changing');
+      const others = project.clips.filter((c) => c.id !== id && c.trackId === clip.trackId && isVisualClip(c) && c.transition);
+      const locked = project.tracks.find((t) => t.id === clip.trackId)?.locked;
+      useUi
+        .getState()
+        .toast(
+          locked
+            ? 'this track is locked'
+            : others.length === 0
+              ? 'no other transition on this track'
+              : 'the other transitions already have this length, or their cuts are too short for it',
+        );
       return;
     }
     actions().pushHistory();

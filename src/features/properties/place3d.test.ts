@@ -162,6 +162,20 @@ describe('floorCenterY', () => {
     const ax = axesOf(frameMatrix(null, W, H, pose({ rotX: 90 }), true));
     expect(floorCenterY(H, 300, 200, ax.right, ax.down)).toBeCloseTo(H, 6);
   });
+  it('a solid standing upright does not sink: its thickness is horizontal', () => {
+    const ax = axesOf(frameMatrix(null, W, H, pose(), true));
+    expect(floorCenterY(H, 300, 200, ax.right, ax.down, 100, ax.normal)).toBeCloseTo(H - 100, 6);
+  });
+  it('a solid lying flat counts its thickness', () => {
+    const ax = axesOf(frameMatrix(null, W, H, pose({ rotX: 90 }), true));
+    expect(floorCenterY(H, 300, 200, ax.right, ax.down, 100, ax.normal)).toBeCloseTo(H - 50, 6);
+  });
+  it('a tilted solid adds the slanted part of its thickness', () => {
+    const ax = axesOf(frameMatrix(null, W, H, pose({ rotX: 45 }), true));
+    const flat = floorCenterY(H, 300, 200, ax.right, ax.down);
+    const solid = floorCenterY(H, 300, 200, ax.right, ax.down, 100, ax.normal);
+    expect(flat - solid).toBeCloseTo((100 * Math.SQRT1_2) / 2, 6);
+  });
   it('a clip spun by 90 degrees uses its real vertical reach', () => {
     const ax = axesOf(frameMatrix(null, W, H, pose({ rotation: 90 }), true));
     expect(floorCenterY(H, 300, 200, ax.right, ax.down)).toBeCloseTo(H - 150, 6);

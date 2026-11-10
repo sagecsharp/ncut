@@ -7,8 +7,9 @@ import { beginEdit, isHex, toColorInput } from './edit';
 /** remembered per section name while the app is open */
 const openState = new Map<string, boolean>();
 
-export function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  const [open, setOpen] = useState(() => openState.get(id) ?? true);
+/** `defaultOpen` (default true) is used until the user has toggled that section */
+export function Section({ id, title, defaultOpen = true, children }: { id: string; title: string; defaultOpen?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(() => openState.get(id) ?? defaultOpen);
   return (
     <section className="props-section">
       <button

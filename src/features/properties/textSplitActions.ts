@@ -1,53 +1,27 @@
-import { measureText, textFont } from '../../engine/text';
-import type { TextBox, TextGlyph } from '../../engine/text';
+import { reparentTransform } from '../../engine/parent';
+import { glyphLayout, measureText } from '../../engine/text';
+import type { TextGlyph } from '../../engine/text';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { isCameraClip, isVisualClip } from '../../types';
 import type { TextClip } from '../../types';
-import { MAX_PIECES, keepsBackground, layoutGlyphsFrom, pieceClip, splitBlocker, splitPlan } from './textSplit';
+import { hasAnimatedPose } from './parentOptions';
+import { MAX_PIECES, keepsBackground, pieceClip, splitBlocker, splitPlan } from './textSplit';
 import type { SplitMode, SplitPlan } from './textSplit';
 
 export const SPLIT_MODES: SplitMode[] = ['letters', 'words', 'lines'];
 
-type Ctx2d = { font: string; measureText(s: string): { width: number } };
-let measureCtx: Ctx2d | null = null;
-function getCtx(): Ctx2d | null {
-  if (measureCtx) return measureCtx;
-  if (typeof OffscreenCanvas !== 'undefined') measureCtx = new OffscreenCanvas(8, 8).getContext('2d');
-  if (!measureCtx && typeof document !== 'undefined') measureCtx = document.createElement('canvas').getContext('2d');
-  return measureCtx;
-}
-
-/**
- * the laid out letters of a text clip as it is drawn at rest. the drawing code fills the box's glyph cache only when
- * letters are drawn one by one, so when it is empty the same layout is rebuilt here from the line edges.
- */
-function layoutOf(clip: TextClip, box: TextBox): TextGlyph[] | null {
-  if (box.glyphCache) return box.glyphCache.glyphs;
-  let edges = box.edges;
-  if (!edges) {
-    const ctx = getCtx();
-    if (!ctx) return null;
-    ctx.font = textFont(clip);
-    edges = box.lines.map((line) => {
-      const e = [0];
-      let acc = '';
-      for (const ch of line) {
-        acc += ch;
-        e.push(ctx.measureText(acc).width);
-      }
-      return e;
-    });
-  }
-  return layoutGlyphsFrom(box, clip.align, edges);
-}
-
 /** the plan of every mode for a text clip (what the buttons show). null when the text cannot be laid out. */
 export function splitPlans(clip: TextClip): Record<SplitMode, SplitPlan> | null {
   const box = measureText(clip);
-  const glyphs = layoutOf(clip, box);
-  if (!glyphs) return null;
+  let glyphs: TextGlyph[];
+  try {
+    glyphs = glyphLayout(clip).glyphs;
+  } catch {
+    return null; // no 2d canvas to measure with
+  }
   return { letters: splitPlan(box, glyphs, 'letters'), words: splitPlan(box, glyphs, 'words'), lines: splitPlan(box, glyphs, 'lines') };
 }
 
@@ -88,6 +62,11 @@ export function splitText(id: string, mode: SplitMode): number {
   const effects = p.clips.filter((c) => c.type === 'effect' && c.target === id).length;
   const pieces = plan.pieces.map((pc) => pieceClip(clip, pc, mode, time));
 
+  // what hangs on the original: attached clips (they keep their place), look targets and camera targets
+  const kids = p.clips.filter((c) => isVisualClip(c) && c.parent === id);
+  const lookers = p.clips.filter((c) => isVisualClip(c) && c.lookTarget === id).map((c) => c.id);
+  const cameras = p.clips.filter((c) => isCameraClip(c) && c.target === id).map((c) => c.id);
+
   st.pushHistory();
   const skip = { skipHistory: true };
   st.deleteClips([id], skip);
@@ -96,6 +75,22 @@ export function splitText(id: string, mode: SplitMode): number {
   if (made.length === 0) {
     st.undo();
     return 0;
+  }
+  const first = made[0]!;
+  if (kids.length + lookers.length + cameras.length > 0) {
+    // the pieces are in the project now: work the kids' places out from the old project plus the pieces (the original
+    // still there), so each kid stays where it is on screen under the first piece
+    const now = useEditor.getState().project;
+    const added = made.map((mid) => now?.clips.find((c) => c.id === mid)).filter((c) => !!c);
+    const synth = { ...p, clips: [...p.clips, ...added] };
+    for (const kid of kids) {
+      if (!isVisualClip(kid)) continue;
+      const transform = hasAnimatedPose(kid) ? null : reparentTransform(synth, kid, first, clamp(time, kid.start, kid.start + kid.duration));
+      st.updateClip(kid.id, { parent: first }, skip);
+      if (transform) st.updateTransform(kid.id, transform, skip);
+    }
+    for (const lid of lookers) st.updateClip(lid, { lookTarget: first }, skip);
+    for (const cid of cameras) st.updateClip(cid, { target: first }, skip);
   }
   st.groupClips(made, skip);
   st.select(made, 'replace');
