@@ -2,6 +2,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { closeProject, exportProjectFile } from '../../store/session';
 import { useUi } from '../../store/ui';
+import { selectLike } from '../timeline/actions';
 import { cutAtMarkers, fitToMarkers, makeRow } from '../timeline/sequenceActions';
 import type { FitSpan } from '../timeline/sequenceActions';
 import { interaction } from '../timeline/view';
@@ -65,6 +66,7 @@ const EXTRA: readonly PaletteAction[] = [
   },
   { id: 'speed-half', title: 'preview speed 0.5x', group: 'playback', keys: [], run: () => usePlayback.getState().setSpeed(0.5) },
   { id: 'speed-one', title: 'preview speed 1x', group: 'playback', keys: [], run: () => usePlayback.getState().setSpeed(1) },
+  { id: 'select-like', title: 'select every clip like the selected one (all texts, all of this effect ...)', group: 'editing', keys: [], run: () => selectLike() },
   sequenceAction('clips-in-a-row', 'put the selected clips in a row', makeRow),
   fitAction(1, 'fit the selected clips to the markers (every beat)'),
   fitAction(2, 'fit the selected clips to the markers (every 2nd)'),

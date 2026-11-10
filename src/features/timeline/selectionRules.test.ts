@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '../../types';
-import { groupIds, idsAfter, idsOnTrack, marqueeSelection, pressedSelection } from './selectionRules';
+import { groupIds, idsAfter, idsLike, idsOnTrack, marqueeSelection, pressedSelection } from './selectionRules';
 import { planCloseGaps } from './gaps';
 
 const clip = (id: string, trackId: string, start: number, duration: number, group?: string) =>
@@ -37,6 +37,33 @@ describe('group selection', () => {
   });
   it('ids on a track', () => {
     expect(idsOnTrack(project.clips, 't1')).toEqual(['a', 'c', 'd']);
+  });
+});
+
+describe('select the same kind', () => {
+  const k = (id: string, type: string, extra: object = {}) => ({ id, type, trackId: 't', start: 0, duration: 1, ...extra }) as unknown as Clip;
+  const clips = [
+    k('t1', 'text'),
+    k('v1', 'video'),
+    k('t2', 'text'),
+    k('e1', 'effect', { effect: 'blur' }),
+    k('e2', 'effect', { effect: 'glitch' }),
+    k('e3', 'effect', { effect: 'blur' }),
+    k('s1', 'shape', { shape: 'rect' }),
+    k('s2', 'shape', { shape: 'star' }),
+  ];
+  it('all clips of the type', () => {
+    expect(idsLike(clips, ['t2'])).toEqual(['t1', 't2']);
+    expect(idsLike(clips, ['v1'])).toEqual(['v1']);
+  });
+  it('effects by effect, shapes by figure', () => {
+    expect(idsLike(clips, ['e1'])).toEqual(['e1', 'e3']);
+    expect(idsLike(clips, ['s2'])).toEqual(['s2']);
+  });
+  it('several kinds at once, nothing for nothing', () => {
+    expect(idsLike(clips, ['t1', 'e2'])).toEqual(['t1', 't2', 'e2']);
+    expect(idsLike(clips, [])).toEqual([]);
+    expect(idsLike(clips, ['gone'])).toEqual([]);
   });
 });
 

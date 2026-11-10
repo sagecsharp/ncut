@@ -9,7 +9,7 @@ import { GAP_SECONDS, planInsertGap } from './gapInsert';
 import { revealScrollLeft } from './followScroll';
 import { effectsOn } from './effectTarget';
 import { notifyView, view } from './view';
-import { idsAfter, idsOnTrack } from './selectionRules';
+import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
 export function groupIdsNow(ids: string[]): boolean {
@@ -39,6 +39,20 @@ export function freezeAtPlayhead(): void {
   void freezeFrame().then((id) => {
     if (id === null) useUi.getState().toast('no video frame at the playhead');
   });
+}
+
+/** select every clip of the same kind as the selected ones (all texts, all clips of this effect ...) */
+export function selectLike(): void {
+  const st = useEditor.getState();
+  if (!st.project) return;
+  if (st.selection.length === 0) {
+    useUi.getState().toast('select a clip first');
+    return;
+  }
+  const ids = idsLike(st.project.clips, st.selection);
+  st.select(ids, 'replace');
+  const n = useEditor.getState().selection.length;
+  useUi.getState().toast(n === 1 ? 'nothing else like it' : `${n} clips selected`);
 }
 
 /** select every clip that starts at or after the playhead, optionally on one track */

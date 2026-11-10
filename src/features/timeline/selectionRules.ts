@@ -46,6 +46,21 @@ export function idsAfter(project: Clips, time: number, trackId?: string): string
   );
 }
 
+/** what makes two clips "the same kind": the type, for effects the effect, for shapes the figure */
+function kindOf(c: Clip): string {
+  if (c.type === 'effect') return 'effect:' + c.effect;
+  if (c.type === 'shape') return 'shape:' + c.shape;
+  return c.type;
+}
+
+/** every clip of the same kind as one of `ids` (all texts, all clips of this effect ...), in project order */
+export function idsLike(clips: readonly Clip[], ids: readonly string[]): string[] {
+  const picked = new Set(ids);
+  const kinds = new Set(clips.filter((c) => picked.has(c.id)).map(kindOf));
+  if (kinds.size === 0) return [];
+  return clips.filter((c) => kinds.has(kindOf(c))).map((c) => c.id);
+}
+
 /** every clip of a track */
 export function idsOnTrack(clips: readonly Clip[], trackId: string): string[] {
   return clips.filter((c) => c.trackId === trackId).map((c) => c.id);
