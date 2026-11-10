@@ -54,7 +54,21 @@ export function repeatClip(id: string, opts: Partial<RepeatOptions>): string[] {
     });
     ids = useEditor.getState().addClips(copies, { newTrack: false, ...skip });
   }
-  if (ids.length === 0) return [];
+  if (ids.length === 0) {
+    st.rollback();
+    return [];
+  }
+  // the effects put on the original come along: every copy gets its own, moved by the same delay (like duplicate)
+  const fx = p.clips.filter((c) => c.type === 'effect' && c.target === id && !p.tracks.find((t) => t.id === c.trackId)?.locked);
+  if (fx.length > 0) {
+    const now = useEditor.getState().project;
+    const fxCopies = ids.flatMap((cid) => {
+      const made = now?.clips.find((c) => c.id === cid);
+      if (!made) return [];
+      return fx.map((e) => ({ ...structuredClone(e), target: cid, start: Math.max(0, e.start + made.start - clip.start) }));
+    });
+    useEditor.getState().addClips(fxCopies, { newTrack: false, ...skip });
+  }
   const all = [id, ...ids];
   // a clip that already belongs to a group stays with it: the copies join (the group is made again with them)
   const mates = clip.group ? p.clips.filter((c) => c.group === clip.group && c.id !== id).map((c) => c.id) : [];
