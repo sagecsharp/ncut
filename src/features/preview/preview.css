@@ -551,3 +551,77 @@
   line-height: 1.4;
   pointer-events: none;
 }
+
+/* ---------- scene view: floor grid, focus plane, readout ---------- */
+.scene-grid {
+  fill: none;
+  stroke: var(--text-faint);
+  stroke-width: 1;
+  opacity: 0.3;
+}
+.scene-grid-axis {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+.scene-focus {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.scene-focus-range {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.5;
+}
+.scene-focus-label {
+  fill: var(--accent);
+  font-family: var(--font);
+  font-size: var(--font-size-xs);
+  paint-order: stroke;
+  stroke: var(--surface-0);
+  stroke-width: 3;
+}
+.scene-focus-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  background: var(--accent);
+  border: 1.5px solid var(--on-accent);
+  outline: 1px solid var(--accent);
+  cursor: ew-resize;
+  pointer-events: auto;
+  will-change: transform;
+}
+.scene-focus-handle.is-disabled {
+  background: transparent;
+  border-color: var(--accent);
+  outline: none;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.scene-focus-handle.is-active {
+  background: var(--on-accent);
+  border-color: var(--accent);
+}
+.scene-readout {
+  fill: var(--text);
+  font-family: var(--font);
+  font-size: var(--font-size-sm);
+  paint-order: stroke;
+  stroke: var(--surface-0);
+  stroke-width: 3;
+}
+.scene-center.is-hover,
+.scene-center.is-active {
+  r: 5;
+}
+.scene-tools .icon-btn + .icon-btn:last-child {
+  margin-left: var(--space-1);
+}
