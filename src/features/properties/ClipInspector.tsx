@@ -23,6 +23,7 @@ import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
 import { ClipMotionSection } from './MotionSection';
 import { ShapeSection } from './ShapeSection';
+import { PathSection } from './PathSection';
 import { RepeatSection } from './RepeatSection';
 import { TextAnimSection, TextStyleSection } from './TextStyle';
 import { TransitionSection } from './TransitionSection';
@@ -519,6 +520,7 @@ export function ClipInspector({ id }: { id: string }) {
             defaultDepth={clip.threeD && clip.shape && clip.shape !== 'plane' && clip.shape !== 'sphere' ? defaultThickness(clip) : 0}
           />
         ) : null}
+        {isVisualClip(clip) ? <PathSection id={clip.id} /> : null}
         {isVisualClip(clip) ? <RepeatSection id={clip.id} /> : null}
         <LinksSection clip={clip} />
         {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
