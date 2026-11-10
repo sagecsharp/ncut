@@ -7,7 +7,7 @@ const b = (id: string, start: number, name = id) => ({ id, trackId: 't', start, 
 const img = (id: string, start: number, name?: string, parent?: string): Clip =>
   ({ ...b(id, start, name), type: 'image', assetId: 'a', transform: tf, parent }) as Clip;
 const text = (id: string, start: number, name: string): Clip =>
-  ({ ...b(id, start, name), type: 'text', text: 'hello', transform: tf }) as unknown as Clip;
+  ({ ...b(id, start, name), type: 'text', text: name, transform: tf }) as unknown as Clip;
 const cam = (id: string, start: number): Clip =>
   ({ ...b(id, start, 'camera'), type: 'camera', x: 0, y: 0, z: 0, pan: 0, tilt: 0, roll: 0, fov: 50 }) as Clip;
 const audio = (id: string): Clip => ({ ...b(id, 0), type: 'audio', assetId: 'a' }) as unknown as Clip;
