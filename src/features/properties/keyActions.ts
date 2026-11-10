@@ -29,39 +29,34 @@ function same(a: Keyframe[] | undefined, b: Keyframe[] | undefined): boolean {
   return true;
 }
 
+/** true when the two keyframes records differ in any key */
+function differs(a: Keyframes | undefined, b: Keyframes): boolean {
+  const old = a ?? {};
+  const props = new Set([...Object.keys(old), ...Object.keys(b)]);
+  for (const p of props) if (!same(old[p], b[p])) return true;
+  return false;
+}
+
 /**
- * write the keys of some properties as ONE undo step, using the store actions that exist:
- * clearKeyframes (drops the old keys of the property) then setKeyframe per key (time is absolute).
- * `next` holds the properties to replace. returns false when nothing changed.
+ * write the keys of some properties as ONE store call (setClipKeyframes) and so one undo step.
+ * `next` holds the properties to replace, the others keep their keys. returns false when nothing changed.
  */
 function writeKeys(clip: Clip, next: Keyframes): boolean {
-  const st = useEditor.getState();
   const props = Object.keys(next).filter((p) => !same(clip.keyframes?.[p], next[p]));
   if (props.length === 0) return false;
   const now = clamp(usePlayback.getState().time, clip.start, clip.start + clip.duration);
-  st.pushHistory();
-  const skip = { skipHistory: true };
-  for (const prop of props) {
-    st.clearKeyframes(clip.id, now, prop, skip);
-    for (const k of next[prop]!) st.setKeyframe(clip.id, prop, clip.start + k.t, k.v, k.ease, skip);
-  }
+  useEditor.getState().setClipKeyframes(clip.id, { ...clip.keyframes, ...next }, { time: now });
   return true;
 }
 
-/** replace ALL keys of the clip with `next` (properties missing from `next` lose their keys) */
+/** replace ALL keys of the clip with `next` (properties missing from `next` lose their keys and keep their value at the playhead) */
 function replaceAll(clip: Clip, next: Keyframes): boolean {
   const old = clip.keyframes ?? {};
-  const full: Keyframes = { ...next };
-  const gone = Object.keys(old).filter((p) => old[p]!.length > 0 && !(p in next));
+  const gone = Object.keys(old).some((p) => old[p]!.length > 0 && !(p in next));
+  if (!gone && !differs(clip.keyframes, next)) return false;
   const now = clamp(usePlayback.getState().time, clip.start, clip.start + clip.duration);
-  const changed = writeKeys(clip, full);
-  if (gone.length > 0) {
-    const st = useEditor.getState();
-    if (!changed) st.pushHistory();
-    for (const p of gone) st.clearKeyframes(clip.id, now, p, { skipHistory: true });
-    return true;
-  }
-  return changed;
+  useEditor.getState().setClipKeyframes(clip.id, next, { time: now });
+  return true;
 }
 
 function hasKeys(clip: Clip): boolean {
