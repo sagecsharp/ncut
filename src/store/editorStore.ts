@@ -76,6 +76,7 @@ import {
   normalizeTrackOrder,
   rangesOverlap,
 } from '../lib/timelineOps';
+import { selectableIds } from './selectableIds';
 
 const HISTORY_LIMIT = 100;
 export const MIN_ZOOM = 4;
@@ -1620,10 +1621,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     select(ids, mode = 'replace') {
       const { project, selection } = get();
       if (!project) return;
-      const valid = ids.filter((id) => {
-        const c = project.clips.find((x) => x.id === id);
-        return c && !isLocked(project, c.trackId);
-      });
+      const valid = selectableIds(project, ids);
       if (mode === 'replace') {
         set({ selection: valid });
       } else if (mode === 'add') {
