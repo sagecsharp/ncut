@@ -37,6 +37,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'the picture wraps into a tunnel that you fly through',
     posterTime: 1,
+    sync: { param: 'speed', cycles: 0.5 },
     params: [
       { key: 'repeats', label: 'repeats', min: 1, max: 6, step: 1, default: 2, unit: 'x' },
       { key: 'depth', label: 'depth', min: 0.2, max: 3, step: 0.1, default: 1, unit: 'x' },
@@ -89,6 +90,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'repeats the whole picture in a grid, optionally mirrored',
     posterTime: 0.5,
+    sync: { param: 'scroll', cycles: 0.5 },
     params: [
       { key: 'columns', label: 'columns', min: 1, max: 12, step: 1, default: 2, unit: 'x' },
       { key: 'rows', label: 'rows', min: 1, max: 12, step: 1, default: 2, unit: 'x' },

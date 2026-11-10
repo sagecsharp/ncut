@@ -122,6 +122,7 @@ vec4 effect(vec2 uv) {
     category: 'stylize',
     description: 'torn horizontal bands, smear, rgb split, crushed contrast',
     posterTime: 0.3,
+    sync: { param: 'rate', cycles: 1 },
     params: [
       { key: 'intensity', label: 'intensity', min: 0, max: 100, step: 1, default: 70, unit: '%' },
       { key: 'bands', label: 'bands', min: 2, max: 40, step: 1, default: 12, unit: 'x' },
@@ -229,6 +230,7 @@ vec4 effect(vec2 uv) {
     category: 'stylize',
     description: 'signal lost: colored noise dashes, optional shrink to a tube',
     posterTime: 0.5,
+    sync: { param: 'rate', cycles: 1 },
     params: [
       { key: 'mix', label: 'mix', min: 0, max: 100, step: 1, default: 100, unit: '%' },
       { key: 'grain', label: 'grain', min: 1, max: 20, step: 0.5, default: 3, unit: 'px' },

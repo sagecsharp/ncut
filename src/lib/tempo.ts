@@ -133,3 +133,154 @@ export function tapBpm(times: readonly number[]): number | null {
   // a tapped tempo is never exact: whole numbers read better and are what songs are made at
   return parseBpm(Math.round(bpm));
 }
+
+/* ---------- effects that follow the tempo ---------- */
+
+/** the tempo link of an effect clip (EffectClip.beat), see parseEffectBeat */
+export interface EffectBeat {
+  source: string | null;
+  every: number;
+  pulse: number;
+  lock: boolean;
+}
+
+/** shortest and longest cycle of an effect, in beats */
+export const BEAT_EVERY_MIN = 1 / 16;
+export const BEAT_EVERY_MAX = 64;
+
+/**
+ * a stored or typed tempo link of an effect clip, cleaned: `every` clamped into range, `pulse` into 0..1, `lock`
+ * a boolean, `source` a clip id or null. anything that is not an object with a number for `every` is "no link".
+ */
+export function parseEffectBeat(raw: unknown): EffectBeat | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.every !== 'number' || !Number.isFinite(r.every)) return null;
+  const pulse = typeof r.pulse === 'number' && Number.isFinite(r.pulse) ? Math.min(1, Math.max(0, r.pulse)) : 0;
+  return {
+    source: typeof r.source === 'string' && r.source !== '' ? r.source : null,
+    every: Math.min(BEAT_EVERY_MAX, Math.max(BEAT_EVERY_MIN, r.every)),
+    pulse,
+    lock: r.lock === true,
+  };
+}
+
+/** two cleaned links say the same thing (a missing one and null are the same) */
+export function sameEffectBeat(a: EffectBeat | null | undefined, b: EffectBeat | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.source === b.source && a.every === b.every && a.pulse === b.pulse && a.lock === b.lock;
+}
+
+/** how close to a whole cycle (as a share of the cycle) counts as being on the line. far below a frame, far above float noise */
+const LINE_SNAP = 1e-6;
+/**
+ * a frame that is on a cycle line gets its time pushed this far (share of a cycle) past it. the shader sees the time
+ * as a float32 and reads `u_time * rate` (rate = 1 / cycle): k cycles can come out as k - 1e-7 and fract() / floor()
+ * would then show the end of the last cycle on the very frame the hit belongs to.
+ */
+export const LINE_NUDGE = 1e-4;
+
+/** the cycle of a grid: `every` beats, in seconds */
+export function cycleLength(grid: BeatGrid, every: number): number {
+  return grid.step * every;
+}
+
+/** t as a number of cycles from the grid origin, a hair off a whole number snapped onto it */
+function cyclesAt(grid: BeatGrid, cycle: number, t: number): number {
+  const c = (t - grid.origin) / cycle;
+  const r = Math.round(c);
+  return Math.abs(c - r) < LINE_SNAP ? r : c;
+}
+
+/** where a time is in the cycles of a grid */
+export interface CyclePhase {
+  /** which cycle line that is: 0 = the grid origin, negative before it */
+  index: number;
+  /** the cycle line at or before the time: grid.origin + n * cycle (n may be negative) */
+  line: number;
+  /** position inside the cycle, 0 on the line up to just under 1 */
+  phase: number;
+  /** the time as cycles from the grid origin (snapped onto a whole number when it is on a line) */
+  cycles: number;
+}
+
+/** the cycle line at or before t and the position of t between that line and the next. a time on a line is phase 0 */
+export function cyclePhase(grid: BeatGrid, every: number, t: number): CyclePhase {
+  const cycle = cycleLength(grid, every);
+  const cycles = cyclesAt(grid, cycle, t);
+  const n = Math.floor(cycles);
+  return { index: n, line: grid.origin + n * cycle, phase: cycles - n, cycles };
+}
+
+/**
+ * how strong an effect with a pulse is at a position in its cycle: 1 on the line, falling to 1 - pulse at the end. the fall is
+ * quick and smooth, like a hit that rings out: 1 - pulse * (1 - (1 - ph)^2.5) (a quarter of the way in it is already 55 % down).
+ */
+export function pulseEnvelope(pulse: number, phase: number): number {
+  const ph = Math.min(1, Math.max(0, phase));
+  return 1 - pulse * (1 - Math.pow(1 - ph, 2.5));
+}
+
+/** what is needed to tell whether a clip carries sound. a video clip with an audio track counts */
+export interface SoundProject {
+  clips: readonly TempoPoolClip[];
+  assets: readonly { id: string; hasAudio?: boolean }[];
+}
+/** the part of any clip the ranking reads. fields a clip type does not have are simply missing */
+interface TempoPoolClip {
+  id: string;
+  type: string;
+  start: number;
+  duration: number;
+  name?: string;
+  assetId?: string;
+  trimStart?: number;
+  speed?: number;
+  bpm?: number | null;
+  beatOffset?: number | null;
+}
+
+/** a clip with sound and a tempo, as a candidate to follow */
+export interface TempoSourceClip {
+  clip: TempoPoolClip;
+  grid: BeatGrid;
+  /** seconds it plays together with the span it is ranked for */
+  overlap: number;
+  /** what is heard on the timeline: the tempo times the clip's speed (timelineBpm) */
+  heard: number;
+}
+
+/**
+ * every clip with sound and a bpm, ranked for a span of the timeline: the clip `selfId` first (if given and in the list), then
+ * the longest overlap with the span first, then by start. pure. this is the order "the sound under it" is picked in.
+ */
+export function rankTempoClips(project: SoundProject, span: { start: number; duration: number }, selfId?: string): TempoSourceClip[] {
+  const end = span.start + span.duration;
+  const found: Array<TempoSourceClip & { rank: number }> = [];
+  for (const c of project.clips) {
+    if (c.type !== 'audio' && c.type !== 'video') continue;
+    const timed: TempoClip = { start: c.start, trimStart: c.trimStart ?? 0, speed: c.speed ?? 1, bpm: c.bpm, beatOffset: c.beatOffset };
+    const grid = clipGrid(timed);
+    if (!grid) continue;
+    if (c.type === 'video' && !project.assets.find((a) => a.id === c.assetId)?.hasAudio) continue;
+    const overlap = Math.max(0, Math.min(end, c.start + c.duration) - Math.max(span.start, c.start));
+    found.push({ clip: c, grid, overlap, heard: timelineBpm(timed) ?? 0, rank: selfId !== undefined && c.id === selfId ? Infinity : overlap });
+  }
+  found.sort((a, b) => b.rank - a.rank || a.clip.start - b.clip.start);
+  return found.map(({ clip, grid, overlap, heard }) => ({ clip, grid, overlap, heard }));
+}
+
+/**
+ * the grid an effect clip follows: the clip named by `beat.source` while it still has a tempo, else the sound under the effect
+ * (the most overlap). null when the effect has no link or no clip has a tempo: it then runs as if the link was off.
+ */
+export function effectBeatGrid(
+  project: SoundProject,
+  effect: { start: number; duration: number; beat?: { source?: string | null } | null },
+): BeatGrid | null {
+  if (!effect.beat) return null;
+  const ranked = rankTempoClips(project, effect);
+  const wanted = effect.beat.source;
+  const named = wanted ? ranked.find((r) => r.clip.id === wanted) : undefined;
+  return (named ?? ranked[0])?.grid ?? null;
+}

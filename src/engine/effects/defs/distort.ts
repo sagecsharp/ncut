@@ -54,6 +54,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'pincushion squeeze, corners pulled out. negative = fisheye bulge',
     posterTime: 1,
+    sync: { param: 'speed', cycles: 0.25 },
     params: [
       { key: 'strength', label: 'strength', min: -100, max: 100, step: 1, default: 55, unit: '%' },
       { key: 'breathe', label: 'breathe', min: 0, max: 100, step: 1, default: 30, unit: '%' },
@@ -75,6 +76,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'water rings with rainbow edges from a wandering center',
     posterTime: 1,
+    sync: { param: 'speed', cycles: 1 },
     params: [
       { key: 'amplitude', label: 'amplitude', min: 0, max: 100, step: 1, default: 40, unit: '%' },
       { key: 'rings', label: 'rings', min: 2, max: 30, step: 1, default: 9, unit: 'x' },
@@ -139,6 +141,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'twirl around the center, strongest in the middle',
     posterTime: 1,
+    sync: { param: 'speed', cycles: 0.5 },
     params: [
       { key: 'angle', label: 'angle', min: -360, max: 360, step: 1, default: 120, unit: 'deg' },
       { key: 'radius', label: 'radius', min: 10, max: 150, step: 1, default: 60, unit: '%' },
@@ -164,6 +167,7 @@ vec4 effect(vec2 uv) {
     category: 'distort',
     description: 'mirrors the picture into slowly turning wedges',
     posterTime: 1,
+    sync: { param: 'rotate', cycles: 0.25 },
     params: [
       { key: 'segments', label: 'segments', min: 2, max: 16, step: 1, default: 6, unit: 'x' },
       { key: 'rotate', label: 'rotate', min: -3, max: 3, step: 0.1, default: 0.3, unit: 'hz' },

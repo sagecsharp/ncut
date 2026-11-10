@@ -65,7 +65,7 @@ import {
 } from '../lib/anim';
 import { uid } from '../lib/id';
 import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
-import { BPM_MAX, BPM_MIN, parseBeatOffset, parseBpm } from '../lib/tempo';
+import { BPM_MAX, BPM_MIN, type EffectBeat, parseBeatOffset, parseBpm, parseEffectBeat, sameEffectBeat } from '../lib/tempo';
 import { clamp } from '../lib/time';
 import {
   clipEnd,
@@ -149,7 +149,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner', 'drawStart', 'drawEnd'],
   camera: ['target', 'focusStrength', 'focusDistance', 'focusRange', 'focusOnTarget'],
-  effect: ['timeOffset', 'target', 'fullDuration'],
+  effect: ['timeOffset', 'target', 'fullDuration', 'beat'],
 };
 
 export interface ClipMove {
@@ -1027,6 +1027,17 @@ export const useEditor = create<EditorState>()((set, get) => {
           // what is stored is no change
           if (key === 'bpm' && value != null) value = typeof value === 'number' && Number.isFinite(value) ? parseBpm(clamp(value, BPM_MIN, BPM_MAX)) : null;
           if (key === 'beatOffset' && value != null) value = parseBeatOffset(value);
+          // an effect's tempo link is cleaned to its shape (bad input = no link) and compared by what it says, not by identity
+          if (key === 'beat') {
+            value = parseEffectBeat(value);
+            if (sameEffectBeat(next[key] as EffectBeat | null | undefined, value as EffectBeat | null)) continue;
+            // no link = no field (the saved project stays as it was before the feature)
+            if (value === null) {
+              delete next[key];
+              changed = true;
+              continue;
+            }
+          }
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
           // attaching a clip to itself or to one of its own children would make a loop
