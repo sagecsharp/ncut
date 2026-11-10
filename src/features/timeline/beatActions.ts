@@ -1,12 +1,13 @@
 /**
- * "mark the beats" on a clip with sound: detect the beats from the cached waveform and put a
- * timeline marker on each one. one undo step. the markers carry the beat count as their name.
+ * "mark the beats" on a clip with sound: the beats of its tempo when one is set (lib/tempo.ts), else detected
+ * from the cached waveform, and a timeline marker on each one. one undo step. the markers carry the beat count as their name.
  *
  * clearing: Marker has no field to tag its origin (types.ts is not ours), so the ids this module
  * made are kept in a module map (lost on reload), and as a fallback a fresh detection is matched
  * against numbered markers inside the clip. limit: a hand made marker named with a number that
  * sits on a beat of this clip is removed too.
  */
+import { clipGrid, gridLines, parseBeatOffset, parseBpm } from '../../lib/tempo';
 import type { Clip, Project } from '../../types';
 import { getWaveform } from '../../media/derived';
 import { useEditor } from '../../store/editorStore';
@@ -26,7 +27,8 @@ export function clipHasSound(project: Project | null | undefined, clip: Clip): b
   return !!project?.assets.find((a) => a.id === clip.assetId)?.hasAudio;
 }
 
-type ClipBeats = { ok: true; beats: number[]; indices: number[]; bpm: number } | { ok: false; reason: string } | null;
+/** `indices`: which beat each one is (every 2nd / 4th is picked on these). `base`: the index of the first beat of the sound, for the names */
+type ClipBeats = { ok: true; beats: number[]; indices: number[]; bpm: number; base?: number } | { ok: false; reason: string } | null;
 
 /**
  * beats of a clip in timeline seconds (all of them), or the reason there are none.
@@ -34,6 +36,14 @@ type ClipBeats = { ok: true; beats: number[]; indices: number[]; bpm: number } |
  */
 async function clipBeats(clip: Clip, projectId: string): Promise<ClipBeats> {
   if (clip.type !== 'audio' && clip.type !== 'video') return null;
+  // a tempo set on the clip is the truth: no listening, its grid. bars (every 4th) count from the beat at the
+  // offset, the names count from the first beat of the sound
+  const grid = clipGrid(clip);
+  if (grid) {
+    const lines = gridLines(grid, clip.start, clip.start + clip.duration, 100000);
+    const base = Math.ceil((-parseBeatOffset(clip.beatOffset) * parseBpm(clip.bpm)!) / 60 - 1e-9);
+    return { ok: true, beats: lines.map((l) => l.time), indices: lines.map((l) => l.index), bpm: 60 / grid.step, base };
+  }
   const listening = setTimeout(() => useUi.getState().toast('listening...'), 400);
   let wf;
   try {
@@ -84,7 +94,7 @@ export async function markBeats(clipId: string, density: BeatDensity = 1): Promi
   const fresh: { time: number; name: string }[] = [];
   wanted.forEach((time, i) => {
     // named by the beat's place in the whole sound ("beat 5" is the fifth beat of the song), even after a trim
-    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(wantedIndex[i]! + 1) });
+    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(wantedIndex[i]! - (res.base ?? 0) + 1) });
   });
   if (fresh.length === 0) {
     useUi.getState().toast('the beats are already marked');

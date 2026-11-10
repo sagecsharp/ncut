@@ -110,7 +110,9 @@ describe('detectBeats', () => {
     const r = detectBeats(peaks, PPS);
     const ms = performance.now() - t0;
     expect(r.reason).toBe('ok');
-    expect(ms).toBeLessThan(100);
+    // about 50 ms alone. the limit is there to catch a pass that grows with the square of the length, and is
+    // wide enough for a machine that runs every other test file at the same time
+    expect(ms).toBeLessThan(300);
   });
 });
 
@@ -172,5 +174,48 @@ describe('onset snapping', () => {
     const env = new Float32Array(100);
     for (let i = 0; i < 100; i++) env[i] = 0.1;
     expect(snapToOnsets(env, [20, 60], 40, 50)).toEqual([20, 60]);
+  });
+});
+
+describe('detectBeats: where the grid sits', () => {
+  it('offset is a beat of the sound, inside the first period', () => {
+    for (const [bpm, start] of [[120, 0], [120, 0.2], [90, 0.4], [150, 0.13]] as const) {
+      const { peaks } = clicks(bpm, 40, { offset: start, noise: 0.05 });
+      const r = detectBeats(peaks, PPS);
+      expect(r.reason).toBe('ok');
+      const period = 60 / r.bpm;
+      expect(r.offset).toBeGreaterThanOrEqual(0);
+      expect(r.offset).toBeLessThan(period + 1e-9);
+      // the true clicks sit at start + k * 60 / bpm: the offset is one of them (within a peak or two)
+      const d = (((r.offset - start) % (60 / bpm)) + 60 / bpm) % (60 / bpm);
+      expect(Math.min(d, 60 / bpm - d)).toBeLessThan(0.045);
+    }
+  });
+
+  it('no beat, no offset', () => {
+    expect(detectBeats(new Float32Array(2000), PPS).offset).toBe(0);
+  });
+});
+
+describe('detectBeats: long sounds', () => {
+  it('a whole song stays on its beat to the end', () => {
+    let worst = 0;
+    for (const seconds of [240, 360]) {
+      for (const bpm of [83, 104, 110, 116, 129, 133, 144, 158]) {
+        for (const start of [0.1, 0.17]) {
+          const { peaks, times } = clicks(bpm, seconds, { offset: start, jitter: 0.003 });
+          const r = detectBeats(peaks, PPS);
+          expect(r.reason).toBe('ok');
+          // the tempo it reports, as a grid from its offset: how far from the last clicks
+          const period = 60 / r.bpm;
+          for (const t of times.slice(-8)) {
+            const d = (((t - r.offset) % period) + period) % period;
+            worst = Math.max(worst, Math.min(d, period - d));
+          }
+        }
+      }
+    }
+    // within a peak or two (20 ms each). before the finer first pass some of these were 200 to 600 ms off
+    expect(worst).toBeLessThan(0.045);
   });
 });

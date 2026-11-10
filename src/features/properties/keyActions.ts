@@ -1,9 +1,12 @@
 import { animProps, evalKeys, valueAt } from '../../lib/anim';
+import { shiftGrid } from '../../lib/tempo';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import type { Clip, Keyframe, Keyframes } from '../../types';
+import { beatSources } from '../timeline/tempoActions';
+import { type BeatKeysError, fitKeysToBeats, loopKeysOnBeats, sameKeys, snapKeysToGrid } from './beatKeys';
 import { captureKeys, getKeyClip, placeKeys, setKeyClip } from './keyClipboard';
 import { fitKeys, repeatKeys, repeatTooBig, reverseKeys, wiggleKeys, wiggleOnto } from './keyTools';
 
@@ -59,7 +62,7 @@ function replaceAll(clip: Clip, next: Keyframes): boolean {
   return true;
 }
 
-function hasKeys(clip: Clip): boolean {
+export function hasKeys(clip: Clip): boolean {
   return !!clip.keyframes && Object.values(clip.keyframes).some((k) => k.length > 0);
 }
 
@@ -192,4 +195,75 @@ export function pasteKeysAction(id: string): void {
   }
   const written = Object.keys(placed).reduce((s, prop) => s + placed[prop]!.length, 0);
   toast(`${written} key${written === 1 ? '' : 's'} pasted`);
+}
+
+/* ---------- on the beat ---------- */
+
+const BEAT_ERRORS: Record<BeatKeysError, string> = {
+  'no keys': 'no keyframes to change',
+  'one moment': 'that needs keyframes at two different times',
+  'no beat': 'no beat falls inside this clip',
+  'too many': 'too many keyframes: loop over more beats',
+};
+
+/** the beat grid of `sourceId` in the clip's own time, null (with a toast) when that clip has no tempo any more */
+function localGrid(clip: Clip, sourceId: string) {
+  const p = useEditor.getState().project;
+  const source = p ? beatSources(p, clip).find((s) => s.id === sourceId) : undefined;
+  if (!source) {
+    toast('set a bpm on a clip with sound first', 'info');
+    return null;
+  }
+  return shiftGrid(source.grid, clip.start);
+}
+
+const beatWord = (n: number) => (n === 0.5 ? 'half a beat' : n === 1 ? 'beat' : `${n} beats`);
+
+/** every keyframe of the clip moves to the nearest beat line (perBeat 1 = beats, 2 = half beats, 4 = quarter beats) */
+export function snapKeysToBeatAction(id: string, sourceId: string, perBeat: number): void {
+  const clip = editable(id);
+  if (!clip) return;
+  if (!hasKeys(clip)) {
+    toast('no keyframes to change', 'info');
+    return;
+  }
+  const grid = localGrid(clip, sourceId);
+  if (!grid) return;
+  const r = snapKeysToGrid(clip.keyframes!, grid, perBeat, clip.duration);
+  if (r.moved === 0 || !replaceAll(clip, r.keys)) {
+    toast('the keyframes are on the beat already', 'info');
+    return;
+  }
+  toast(`${r.moved} ${r.moved === 1 ? 'keyframe' : 'keyframes'} moved onto the beat`);
+}
+
+/** the whole animation starts on a beat and lasts exactly `beats` beats */
+export function fitKeysToBeatAction(id: string, sourceId: string, beats: number): void {
+  const clip = editable(id);
+  if (!clip) return;
+  const grid = localGrid(clip, sourceId);
+  if (!grid) return;
+  const r = fitKeysToBeats(clip.keyframes ?? {}, grid, beats, clip.duration);
+  if (typeof r === 'string') {
+    toast(BEAT_ERRORS[r], 'info');
+    return;
+  }
+  if (replaceAll(clip, r.keys)) toast(`keyframes fit to ${beatWord(beats)}`);
+  else toast('nothing changed', 'info');
+}
+
+/** the animation starts on a beat and its first `beats` beats repeat until the clip ends */
+export function loopKeysOnBeatAction(id: string, sourceId: string, beats: number, pingPong: boolean): void {
+  const clip = editable(id);
+  if (!clip) return;
+  const grid = localGrid(clip, sourceId);
+  if (!grid) return;
+  const r = loopKeysOnBeats(clip.keyframes ?? {}, grid, beats, clip.duration, pingPong);
+  if (typeof r === 'string') {
+    toast(BEAT_ERRORS[r], 'info');
+    return;
+  }
+  // pressed again on its own result: nothing to write (the times only differ in their last bits)
+  if (!sameKeys(clip.keyframes ?? {}, r.keys) && replaceAll(clip, r.keys)) toast(`looping every ${beatWord(beats)}${pingPong ? ', ping pong' : ''}: ${r.rounds} ${r.rounds === 1 ? 'round' : 'rounds'}`);
+  else toast('it loops like that already', 'info');
 }

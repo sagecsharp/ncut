@@ -16,6 +16,8 @@ import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
 import { FocusSection } from './FocusSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
+import { BeatSyncSection, TempoSection } from './BeatSections';
+import { hasKeys } from './keyActions';
 import { LookSection } from './LookSection';
 import { ColorSection } from './ColorSection';
 import { MaskSection } from './MaskSection';
@@ -485,6 +487,7 @@ export function ClipInspector({ id }: { id: string }) {
           mediaKind={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null}
         />
         <AnimationSection id={clip.id} keyframes={clip.keyframes} start={clip.start} duration={clip.duration} />
+        <BeatSyncSection id={clip.id} has={hasKeys(clip)} />
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
         {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
         {clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
@@ -531,6 +534,7 @@ export function ClipInspector({ id }: { id: string }) {
         {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
+        {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
         {clip.type === 'video' || clip.type === 'audio' ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
         <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
           hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}

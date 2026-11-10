@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import type { AudioClip, MediaAsset, VideoClip } from '../../types';
+import { clipGrid, gridLines } from '../../lib/tempo';
 import { getFilmstrip, getWaveform } from '../../media/derived';
 import type { WaveformData } from '../../media/derived';
 import { clipNearView } from './clipWindow';
@@ -153,6 +154,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       ctx.clearRect(a, 0, cssW, cssH);
       drawFilm(ctx, p, a, b, cssH);
       drawWave(ctx, p, a, b, cssH);
+      drawBeats(ctx, p, a, b, cssH);
       drawn = { a, b };
     };
 
@@ -207,7 +209,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
 
   useEffect(() => {
     api.current?.invalidate();
-  }, [film, wave, zoom, innerH, clip.duration, clip.trimStart, clip.speed, asset.id]);
+  }, [film, wave, zoom, innerH, clip.duration, clip.trimStart, clip.speed, clip.bpm, clip.beatOffset, asset.id]);
 
   // moving a clip changes only where it sits relative to the viewport, not its pixels
   useEffect(() => {
@@ -239,6 +241,30 @@ function drawFilm(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: num
       // a closed bitmap must never break the timeline
     }
   }
+}
+
+/** closest two beat ticks may be (px). below that only every 2nd, 4th ... beat is drawn */
+const MIN_TICK_PX = 6;
+
+/** the beats of a clip with a tempo: a tick on each one, a longer one every 4th (counted from the beat at the offset) */
+function drawBeats(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: number, h: number): void {
+  if (!p.asset.hasAudio) return;
+  // clip-local: x = 0 is the clip's start
+  const grid = clipGrid({ ...p.clip, start: 0 });
+  if (!grid) return;
+  let every = 1;
+  while (grid.step * every * p.zoom < MIN_TICK_PX && every < 4096) every *= 2;
+  const lines = gridLines({ origin: grid.origin, step: grid.step * every }, a / p.zoom, b / p.zoom, 4000);
+  if (lines.length === 0) return;
+  const bar = Math.max(1, 4 / every);
+  ctx.fillStyle = cssVar('--clip-label');
+  for (const l of lines) {
+    const strong = every >= 4 || ((l.index % bar) + bar) % bar === 0;
+    ctx.globalAlpha = strong ? 0.9 : 0.5;
+    const len = strong ? Math.min(h, 9) : Math.min(h, 5);
+    ctx.fillRect(Math.round(l.time * p.zoom), h - len, 1, len);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawWave(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: number, h: number): void {

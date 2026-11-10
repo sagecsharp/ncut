@@ -65,6 +65,7 @@ import {
 } from '../lib/anim';
 import { uid } from '../lib/id';
 import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
+import { BPM_MAX, BPM_MIN, parseBeatOffset, parseBpm } from '../lib/tempo';
 import { clamp } from '../lib/time';
 import {
   clipEnd,
@@ -119,7 +120,8 @@ const SPATIAL_KEYS = [
   'lookTarget',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
-  video: SPATIAL_KEYS,
+  video: [...SPATIAL_KEYS, 'bpm', 'beatOffset'],
+  audio: ['bpm', 'beatOffset'],
   image: SPATIAL_KEYS,
   text: [
     ...SPATIAL_KEYS,
@@ -1016,10 +1018,15 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (!clip || isLocked(p, clip.trackId)) return null;
         const next: Record<string, unknown> = { ...clip };
         let changed = false;
-        for (const [key, value] of Object.entries(patch)) {
-          if (value === undefined) continue;
+        for (const [key, raw] of Object.entries(patch)) {
+          if (raw === undefined) continue;
           // field does not exist on this clip type
           if (!(key in clip) && !OPTIONAL_CLIP_KEYS[clip.type]?.includes(key)) continue;
+          let value: unknown = raw;
+          // a tempo is a number in range or nothing at all. cleaned before the compare: a value that cleans to
+          // what is stored is no change
+          if (key === 'bpm' && value != null) value = typeof value === 'number' && Number.isFinite(value) ? parseBpm(clamp(value, BPM_MIN, BPM_MAX)) : null;
+          if (key === 'beatOffset' && value != null) value = parseBeatOffset(value);
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
           // attaching a clip to itself or to one of its own children would make a loop
@@ -1052,7 +1059,11 @@ export const useEditor = create<EditorState>()((set, get) => {
         const want = clip.duration * speed;
         const trimStart = Math.max(0, Math.min(clip.trimStart, length - want));
         const duration = Math.max(MIN_CLIP_DURATION, Math.min(clip.duration, (length - trimStart) / speed));
-        return replaceClip(p, clampFades({ ...clip, assetId, name, trimStart, duration }));
+        // another sound has another tempo
+        const swapped = { ...clip, assetId, name, trimStart, duration };
+        delete swapped.bpm;
+        delete swapped.beatOffset;
+        return replaceClip(p, clampFades(swapped));
       }, opts);
     },
     updateTransform(id, patch, opts) {

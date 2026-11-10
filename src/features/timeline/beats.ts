@@ -24,10 +24,12 @@ export interface BeatResult {
   bpm: number;
   /** 0..1, how much stronger the picked tempo is than the average tempo */
   confidence: number;
+  /** asset seconds of the first line of the steady grid (0 .. one beat): the beats before they were pulled onto the hits */
+  offset: number;
   reason: BeatReason;
 }
 
-const none = (reason: BeatReason, bpm = 0, confidence = 0): BeatResult => ({ beats: [], bpm, confidence, reason });
+const none = (reason: BeatReason, bpm = 0, confidence = 0): BeatResult => ({ beats: [], bpm, confidence, offset: 0, reason });
 
 /** onset envelope: positive change of the lightly smoothed peaks, then smoothed again */
 export function onsetEnvelope(peaks: ArrayLike<number>): Float32Array {
@@ -50,12 +52,15 @@ function tempoWeight(bpm: number): number {
   return Math.exp(-0.5 * d * d);
 }
 
-/** folded onset energy for a period (in buckets): returns the best smoothed bin score and its position */
-function fold(env: Float32Array, period: number, bins: Float32Array): { score: number; phase: number } {
+/**
+ * folded onset energy for a period (in buckets): returns the best smoothed bin score and its position.
+ * `from` .. `to` folds only that stretch of the sound.
+ */
+function fold(env: Float32Array, period: number, bins: Float32Array, from = 0, to = env.length): { score: number; phase: number } {
   const b = bins.length;
   bins.fill(0);
   const k = b / period;
-  for (let i = 0; i < env.length; i++) {
+  for (let i = from; i < to; i++) {
     const v = env[i]!;
     if (v === 0) continue;
     let pos = (i * k) % b;
@@ -79,6 +84,19 @@ function fold(env: Float32Array, period: number, bins: Float32Array): { score: n
   const off = tot > 0 ? (r - l) / tot : 0;
   const pos = bestAt + 0.5 + off;
   return { score: best, phase: (pos / b) * period };
+}
+
+/** how well a period fits when the sound is folded in pieces of `chunk` buckets, each on its own (their scores added) */
+function foldPieces(env: Float32Array, period: number, bins: Float32Array, chunk: number): number {
+  const n = env.length;
+  let sum = 0;
+  for (let a = 0; a < n; ) {
+    // a short rest joins the piece before it
+    const b = n - (a + chunk) < chunk / 2 ? n : a + chunk;
+    sum += fold(env, period, bins, a, b).score;
+    a = b;
+  }
+  return sum;
 }
 
 /** how far (seconds) a beat may move to reach a hit */
@@ -193,27 +211,43 @@ export function detectBeats(peaks: ArrayLike<number>, peaksPerSecond: number): B
   const den = y0 - 2 * y1 + y2;
   let period = bestLag + (den < 0 ? (0.5 * (y0 - y2)) / den : 0);
 
-  // refine the period by folding: three passes, each narrower
+  // refine the period by folding, in passes that each look closer.
+  // a period that is a little off drifts by n * (the error) over n buckets. folded whole, a long sound only
+  // tells very close tries apart: with the coarse steps of the first pass the right one and its neighbours
+  // all smear the same, and a neighbour could win (a 4 minute song came out 0.3 bpm off, 0.2 s late by its
+  // end). so the sound is folded in pieces first: short ones that forgive a coarse step, then 8 times longer
+  // ones with steps 8 times finer, until a piece is the whole sound. a short sound (15 s) is whole at once.
   const bins = new Float32Array(Math.max(8, Math.ceil(bestLag * 2.5)));
-  let phase = fold(env, period, bins).phase;
-  let span = 0.04;
-  for (let pass = 0; pass < 3; pass++) {
+  const STEPS = 21;
+  const look = (span: number, chunk: number): void => {
     let bestP = period;
     let bestS = -1;
-    const steps = 21;
-    for (let s = 0; s < steps; s++) {
-      const p = period * (1 + span * ((s / (steps - 1)) * 2 - 1));
-      const f = fold(env, p, bins);
-      if (f.score > bestS) {
-        bestS = f.score;
+    for (let s = 0; s < STEPS; s++) {
+      const p = period * (1 + span * ((s / (STEPS - 1)) * 2 - 1));
+      const score = chunk >= n ? fold(env, p, bins).score : foldPieces(env, p, bins, chunk);
+      if (score > bestS) {
+        bestS = score;
         bestP = p;
-        phase = f.phase;
       }
     }
     period = bestP;
-    span /= 10;
+  };
+  let span = 0.04;
+  // one step (span / 10) drifts 3 buckets over a piece of this length
+  let chunk = 750;
+  for (;;) {
+    look(span, chunk);
+    if (chunk >= n) break;
+    span /= 8;
+    chunk *= 8;
   }
-  phase = fold(env, period, bins).phase;
+  // then closer on the whole sound, ten times each pass, until one step moves the last beat by less than a
+  // quarter of a bucket (two passes at most: a short sound takes both, a long one is there after one)
+  for (let pass = 0; pass < 2 && (span / 10) * n > 0.25; pass++) {
+    span /= 10;
+    look(span, n);
+  }
+  const phase = fold(env, period, bins).phase;
 
   // beats on the grid, from the first real onset to the end of the last one
   let first = n;
@@ -236,7 +270,8 @@ export function detectBeats(peaks: ArrayLike<number>, peaksPerSecond: number): B
   const beats = snapToOnsets(env, grid, period, peaksPerSecond).map((t) => t / peaksPerSecond);
   const bpm = (60 * peaksPerSecond) / period;
   if (beats.length < 2) return none('no steady beat', bpm, confidence);
-  return { beats, bpm, confidence, reason: 'ok' };
+  const offset = (((phase % period) + period) % period) / peaksPerSecond;
+  return { beats, bpm, confidence, offset, reason: 'ok' };
 }
 
 /** the part of a clip that maps asset time to timeline time */

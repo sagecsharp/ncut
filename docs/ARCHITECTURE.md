@@ -17,6 +17,8 @@ lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, 
 lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
+lib/tempo.ts             the tempo of a clip's sound (bpm + where a beat falls) as a beat grid on the timeline that
+                         follows the clip's start, trim and speed. tap tempo. pure
 lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
 lib/links.ts             ids that point at other clips: parent (attach), look target, camera target, the clip an effect
                          sits on, groups. cycle checks, relinking copies and split halves
@@ -69,7 +71,9 @@ features/media/          MediaPanel (media, text, shapes, effects, transitions, 
 features/fonts/          FontPicker
 features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followApply.ts: effects put on a clip follow it
                          through every way a clip can move (drag, trim, inspector fields, gaps, speed, freeze frame).
-                         beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks).
+                         beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks,
+                         or from its tempo when one is set). tempoActions.ts (detect the bpm of a clip, which clips can
+                         lend their beat to the keyframes of another). ClipCanvas draws the beat ticks.
                          sequence.ts + sequenceActions.ts (clips in a row, fitted to the markers, cut at the markers)
 features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizmo.ts (handles, axis lock),
                          sceneControls.ts (blender or unity controls: what a press, a key and a numpad key mean,
@@ -81,6 +85,8 @@ features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + p
                          (split screen: the canvas cut into cells, every selected clip fitted into one),
                          repeat.ts + repeatActions.ts (a row of copies, each a step further), keyTools.ts +
                          keyActions.ts + keyClipboard.ts (reverse / fit / repeat / wiggle / copy a whole animation),
+                         beatKeys.ts + BeatSections.tsx (the tempo section, and keyframes on the beat: snap, fit,
+                         loop, ping pong. the loop is baked into ordinary keys, the engine knows nothing about it),
                          textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line),
                          cascade.ts + cascadeActions.ts (a selection staggered in time, fly in / out keys),
                          pathMoves.ts + pathActions.ts (motion paths written as position keys)

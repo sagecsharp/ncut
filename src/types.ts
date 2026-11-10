@@ -287,6 +287,9 @@ export interface VideoClip extends ClipBase, Spatial {
   /** 0..2 linear gain */
   volume: number;
   muted: boolean;
+  /** tempo of its sound, like an audio clip (see AudioClip) */
+  bpm?: number | null;
+  beatOffset?: number | null;
 }
 
 export interface ImageClip extends ClipBase, Spatial {
@@ -301,6 +304,10 @@ export interface AudioClip extends ClipBase {
   speed: number;
   volume: number;
   muted: boolean;
+  /** tempo of the sound in beats per minute at normal speed, detected or typed. missing or null = not known. see lib/tempo.ts */
+  bpm?: number | null;
+  /** source seconds where a beat falls: the beat grid runs both ways from there. missing = 0 */
+  beatOffset?: number | null;
 }
 
 export type TextAlign = 'left' | 'center' | 'right';
