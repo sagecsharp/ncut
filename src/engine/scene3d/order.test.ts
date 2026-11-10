@@ -72,3 +72,30 @@ describe('paintOrder', () => {
     expect(paintOrder([plane(0, 0, 0)], r.viewProj, r.eye)).toEqual([0]);
   });
 });
+
+describe('paintOrder with the new solids', () => {
+  const r = rig({ pan: 20 });
+  it('treats cone, pyramid and torus like the other solids', () => {
+    // a solid is never judged by one plane: it is flat = false, so its 8 box corners count
+    for (const shape of ['box', 'cone', 'pyramid', 'torus'] as const) {
+      const wall = plane(0, 0, 400, 3000, 600, 0);
+      const far = { ...plane(600, 0, 900, 200, 200, 0), shape };
+      expect(paintOrder([wall, far], r.viewProj, r.eye), shape).toEqual([1, 0]);
+      const near = { ...plane(0, 0, -300, 200, 200, 0), shape };
+      expect(paintOrder([wall, near], r.viewProj, r.eye), shape).toEqual([0, 1]);
+    }
+  });
+  it('an unknown shape id orders like a plane', () => {
+    const s = rig();
+    const a = plane(0, 0, 0, 1920, 1080);
+    const unknown = { ...plane(700, 300, 0), shape: 'hexagon' as never };
+    // same plane as the lower layer: layer order wins, which only a flat item gets
+    expect(paintOrder([a, unknown], s.viewProj, s.eye)).toEqual([0, 1]);
+    expect(paintOrder([unknown, a], s.viewProj, s.eye)).toEqual([0, 1]);
+  });
+  it('returns every index once with all shapes mixed', () => {
+    const shapes = ['plane', 'box', 'sphere', 'cylinder', 'cone', 'pyramid', 'torus'] as const;
+    const items = shapes.map((shape, i) => ({ ...plane(i * 100 - 300, 0, i * 50 - 150, 200, 200, i * 10), shape }));
+    expect([...paintOrder(items, r.viewProj, r.eye)].sort()).toEqual(items.map((_, i) => i).sort());
+  });
+});

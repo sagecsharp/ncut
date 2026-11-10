@@ -8,8 +8,11 @@ const SIZE = { width: 1920, height: 1080 };
 const make = (o: Partial<TextClip> = {}): TextClip =>
   createTextClip('t', 2, { duration: 6, transform: { ...DEFAULT_TRANSFORM, x: 10, y: 20, scale: 1.5, rotation: 3, opacity: 0.8 }, ...o });
 const anim = (id: string, duration = 1): ClipAnim => ({ id, duration });
-const IN_IDS = CLIP_MOTIONS_IN.map((m) => m.id);
-const LOOP_IDS = CLIP_MOTIONS_LOOP.map((m) => m.id);
+// the 2d ones: the 3d-only motions are covered in their own block at the end
+const IN_IDS = CLIP_MOTIONS_IN.filter((m) => !m.threeD).map((m) => m.id);
+const LOOP_IDS = CLIP_MOTIONS_LOOP.filter((m) => !m.threeD).map((m) => m.id);
+const IN_3D = CLIP_MOTIONS_IN.filter((m) => m.threeD).map((m) => m.id);
+const LOOP_3D = CLIP_MOTIONS_LOOP.filter((m) => m.threeD).map((m) => m.id);
 
 describe('applyClipMotion', () => {
   it('returns the same object when there is no motion or none is active', () => {
@@ -147,5 +150,109 @@ describe('applyClipMotion', () => {
         expect(o).toBeLessThanOrEqual(1);
       }
     }
+  });
+});
+
+describe('3d clip motions', () => {
+  const make3 = (o: Partial<TextClip> = {}) => make({ threeD: true, ...o });
+  const tf = (c: TextClip, t: number) => applyClipMotion(c, t, SIZE).transform;
+  const turnDiff = (a: number, b: number) => {
+    const d = (((b - a) % 360) + 360) % 360;
+    return Math.min(d, 360 - d);
+  };
+  it('are listed and flagged', () => {
+    expect(IN_3D).toEqual(['fly-in', 'flip-in-y', 'flip-in-x', 'swing-in']);
+    expect(LOOP_3D).toEqual(['turntable', 'tumble', 'sway-3d', 'hover']);
+  });
+  it('a 2d clip ignores them', () => {
+    for (const id of IN_3D) {
+      const c = make({ motionIn: anim(id), motionOut: anim(id) });
+      expect(applyClipMotion(c, 2.25, SIZE), id).toBe(c);
+      expect(applyClipMotion(c, 7.75, SIZE), id).toBe(c);
+    }
+    for (const id of LOOP_3D) {
+      const c = make({ motionLoop: anim(id, 2) });
+      expect(applyClipMotion(c, 3.1, SIZE), id).toBe(c);
+    }
+  });
+  it('entrances end at the identity pose', () => {
+    for (const id of IN_3D) {
+      const c = make3({ motionIn: anim(id) });
+      expect(applyClipMotion(c, 3, SIZE), id).toBe(c);
+      expect(applyClipMotion(c, 4, SIZE), id).toBe(c);
+      const t = tf(c, 2.999);
+      expect(Math.abs(t.z ?? 0), id).toBeLessThan(1);
+      expect(Math.abs(t.rotX ?? 0), id).toBeLessThan(1);
+      expect(Math.abs(t.rotY ?? 0), id).toBeLessThan(1);
+    }
+  });
+  it('entrance start poses', () => {
+    expect(tf(make3({ motionIn: anim('fly-in') }), 2).z).toBeCloseTo(2000, 9);
+    expect(tf(make3({ motionIn: anim('fly-in') }), 2).opacity).toBe(0);
+    expect(tf(make3({ motionIn: anim('flip-in-y') }), 2).rotY).toBeCloseTo(90, 9);
+    expect(tf(make3({ motionIn: anim('flip-in-x') }), 2).rotX).toBeCloseTo(-90, 9);
+    expect(tf(make3({ motionIn: anim('swing-in') }), 2).rotY).toBeCloseTo(-120, 9);
+  });
+  it('swing-in overshoots a little', () => {
+    let max = -Infinity;
+    for (let t = 2; t <= 3; t += 0.01) max = Math.max(max, tf(make3({ motionIn: anim('swing-in') }), t).rotY ?? 0);
+    expect(max).toBeGreaterThan(0);
+    expect(max).toBeLessThan(25);
+  });
+  it('adds on top of the clip transform', () => {
+    const base = { ...DEFAULT_TRANSFORM, x: 10, y: 20, scale: 1.5, rotation: 3, opacity: 0.8, z: 100, rotX: 5, rotY: 7 };
+    expect(tf(make3({ transform: base, motionIn: anim('fly-in') }), 2).z).toBeCloseTo(2100, 9);
+    const d = tf(make3({ transform: base, motionLoop: anim('tumble', 4) }), 3);
+    expect(d.rotX).toBeCloseTo(5 + 90, 9);
+    expect(d.rotY).toBeCloseTo(7 + 180, 9);
+  });
+  it('the exit is the entrance backwards', () => {
+    for (const id of IN_3D) {
+      const c = make3({ motionIn: anim(id), motionOut: anim(id) });
+      expect(tf(c, 8 - 0.3), id).toEqual(tf(c, 2 + 0.3));
+    }
+  });
+  it('loops are seamless at the period and deterministic', () => {
+    for (const id of LOOP_3D) {
+      const c = make3({ motionLoop: anim(id, 1.5) });
+      for (const ph of [0, 0.2, 0.61]) {
+        const a = tf(c, 2 + ph * 1.5);
+        const b = tf(c, 2 + ph * 1.5 + 3);
+        expect(b.z ?? 0, id).toBeCloseTo(a.z ?? 0, 6);
+        expect(b.y, id).toBeCloseTo(a.y, 6);
+        expect(turnDiff(a.rotX ?? 0, b.rotX ?? 0), `${id} rotX`).toBeLessThan(1e-6);
+        expect(turnDiff(a.rotY ?? 0, b.rotY ?? 0), `${id} rotY`).toBeLessThan(1e-6);
+        expect(tf(c, 2 + ph * 1.5)).toEqual(a);
+      }
+      // the end of a cycle meets its start
+      const end = tf(c, 2 + 1.5 - 1e-9);
+      const start = tf(c, 2);
+      expect(turnDiff(start.rotX ?? 0, end.rotX ?? 0), `${id} rotX wrap`).toBeLessThan(1e-3);
+      expect(turnDiff(start.rotY ?? 0, end.rotY ?? 0), `${id} rotY wrap`).toBeLessThan(1e-3);
+      expect(end.z ?? 0, id).toBeCloseTo(start.z ?? 0, 3);
+    }
+  });
+  it('loop amplitudes', () => {
+    const at = (id: string, ph: number) => tf(make3({ motionLoop: anim(id, 4) }), 2 + ph * 4);
+    expect(at('turntable', 0.5).rotY).toBeCloseTo(180, 9);
+    expect(at('turntable', 0.25).rotX).toBeUndefined();
+    expect(at('sway-3d', 0.25).rotY).toBeCloseTo(25, 9);
+    expect(at('sway-3d', 0.75).rotY).toBeCloseTo(-25, 9);
+    expect(at('hover', 0.25).z).toBeCloseTo(120, 9);
+    expect(at('hover', 0.75).z).toBeCloseTo(-120, 9);
+    expect(Math.abs(at('hover', 0.125).y - 20)).toBeLessThan(0.011 * SIZE.height);
+    for (const id of LOOP_3D) expect(at(id, 0.55), id).not.toEqual(make3().transform);
+  });
+  it('every entrance changes something mid-way', () => {
+    for (const id of IN_3D) {
+      const c = make3({ motionIn: anim(id) });
+      expect(tf(c, 2.25), id).not.toEqual(c.transform);
+    }
+  });
+  it('never mutates the input', () => {
+    const c = make3({ motionIn: anim('swing-in'), motionOut: anim('fly-in'), motionLoop: anim('hover', 1) });
+    const snap = JSON.stringify(c);
+    for (const t of [0, 2, 2.3, 4, 7.8, 9]) applyClipMotion(c, t, SIZE);
+    expect(JSON.stringify(c)).toBe(snap);
   });
 });
