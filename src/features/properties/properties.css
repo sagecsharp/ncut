@@ -157,3 +157,47 @@
   font-size: var(--font-size-sm);
   line-height: 1.4;
 }
+
+/* ---------- keyframe rows ---------- */
+.props-anim {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.props-label-wide {
+  flex-basis: 104px;
+}
+.props-grow {
+  flex: 1;
+  min-width: 0;
+}
+.props-diamond {
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.props-diamond:hover {
+  color: var(--text);
+}
+.props-diamond.is-animated {
+  color: var(--text-dim);
+}
+.props-diamond.is-key {
+  color: var(--text);
+}
+.props-anim-extra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 80px;
+}
+.props-anim-extra-wide {
+  padding-left: 112px;
+}
+.props-ease {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-h-sm);
+}
+.props-switch {
+  min-width: 44px;
+}

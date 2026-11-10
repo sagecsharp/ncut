@@ -1,14 +1,20 @@
 import { memo } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
-import { containSize } from '../../engine/draw';
-import { FONT_FAMILIES } from '../../lib/factory';
+import { containSize, getClipBox } from '../../engine/draw';
+import { hasKeyframes } from '../../lib/anim';
+import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
-import type { Clip, TextAlign, Transform } from '../../types';
-import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip } from '../../types';
+import type { Clip, TextAlign, VisualClip } from '../../types';
+import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
+import { AnimField } from './AnimField';
 import { EffectSection } from './EffectSection';
-import { ColorField, Pair, Row, Section, SliderRow } from './controls';
+import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
+import { TextAnimSection, TextStyleSection } from './TextStyle';
+import { TransitionSection } from './TransitionSection';
+import { setValuesNow } from './animEdit';
+import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
 
 const actions = () => useEditor.getState();
@@ -84,13 +90,11 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
 
 interface TransformSectionProps {
   id: string;
-  transform: Transform;
   mediaW: number;
   mediaH: number;
 }
 
-const TransformSection = memo(function TransformSection({ id, transform: t, mediaW, mediaH }: TransformSectionProps) {
-  const set = (patch: Partial<Transform>) => actions().updateTransform(id, patch, liveOpts());
+const TransformSection = memo(function TransformSection({ id, mediaW, mediaH }: TransformSectionProps) {
   const hasMedia = mediaW > 0 && mediaH > 0;
 
   const fill = () => {
@@ -98,60 +102,24 @@ const TransformSection = memo(function TransformSection({ id, transform: t, medi
     if (!p) return;
     const fit = containSize(mediaW, mediaH, p.width, p.height);
     const cover = Math.max(p.width / fit.width, p.height / fit.height);
-    actions().updateTransform(id, { x: 0, y: 0, scale: cover });
+    setValuesNow(id, { x: 0, y: 0, scale: cover });
   };
 
   return (
     <Section id="transform" title="transform">
-      <Row label="position" title="offset from the canvas center in pixels">
-        <Pair>
-          <NumberField label="x" suffix="px" title="x offset (px)" value={t.x} step={1} precision={0} onStart={beginEdit} onChange={(v) => set({ x: v })} />
-          <NumberField label="y" suffix="px" title="y offset (px)" value={t.y} step={1} precision={0} onStart={beginEdit} onChange={(v) => set({ y: v })} />
-        </Pair>
-      </Row>
-      <Row label="scale" title="scale and rotation">
-        <Pair>
-          <NumberField
-            label="s"
-            suffix="%"
-            title="scale (%)"
-            value={t.scale * 100}
-            min={1}
-            max={1000}
-            precision={0}
-            onStart={beginEdit}
-            onChange={(v) => set({ scale: v / 100 })}
-          />
-          <NumberField
-            label="r"
-            suffix="deg"
-            title="rotation (degrees)"
-            value={t.rotation}
-            min={-360}
-            max={360}
-            precision={1}
-            onStart={beginEdit}
-            onChange={(v) => set({ rotation: v })}
-          />
-        </Pair>
-      </Row>
-      <SliderRow
-        label="opacity"
-        title="opacity (%)"
-        value={t.opacity * 100}
-        min={0}
-        max={100}
-        suffix="%"
-        onChange={(v) => set({ opacity: v / 100 })}
-      />
+      <AnimField id={id} prop="x" label="pos x" title="x offset from the canvas center (px)" suffix="px" step={1} precision={0} />
+      <AnimField id={id} prop="y" label="pos y" title="y offset from the canvas center (px)" suffix="px" step={1} precision={0} />
+      <AnimField id={id} prop="scale" label="scale" title="scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+      <AnimField id={id} prop="rotation" label="rotation" title="rotation (degrees)" suffix="deg" min={-3600} max={3600} step={1} precision={1} />
+      <AnimField id={id} prop="opacity" label="opacity" title="opacity (%)" scale={100} suffix="%" min={0} max={100} step={1} precision={0} slider />
       <div className="props-buttons">
-        <button type="button" className="btn btn-sm" title="center on the canvas" onClick={() => actions().updateTransform(id, { x: 0, y: 0 })}>
+        <button type="button" className="btn btn-sm" title="center on the canvas" onClick={() => setValuesNow(id, { x: 0, y: 0 })}>
           <Crosshair size={14} />
           center
         </button>
         {hasMedia ? (
           <>
-            <button type="button" className="btn btn-sm" title="fit inside the canvas (scale 100%)" onClick={() => actions().updateTransform(id, { x: 0, y: 0, scale: 1 })}>
+            <button type="button" className="btn btn-sm" title="fit inside the canvas (scale 100%)" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1 })}>
               <Minimize size={14} />
               fit
             </button>
@@ -161,7 +129,12 @@ const TransformSection = memo(function TransformSection({ id, transform: t, medi
             </button>
           </>
         ) : null}
-        <button type="button" className="btn btn-sm" title="reset the transform" onClick={() => actions().updateTransform(id, { ...DEFAULT_TRANSFORM })}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          title="reset the transform"
+          onClick={() => setValuesNow(id, { x: 0, y: 0, scale: DEFAULT_TRANSFORM.scale, rotation: 0, opacity: 1 })}
+        >
           <RotateCcw size={14} />
           reset
         </button>
@@ -172,18 +145,10 @@ const TransformSection = memo(function TransformSection({ id, transform: t, medi
 
 /* ---------- audio ---------- */
 
-const AudioSection = memo(function AudioSection({ id, volume, muted }: { id: string; volume: number; muted: boolean }) {
+const AudioSection = memo(function AudioSection({ id, muted }: { id: string; muted: boolean }) {
   return (
     <Section id="audio" title="audio">
-      <SliderRow
-        label="volume"
-        title="volume (%)"
-        value={volume * 100}
-        min={0}
-        max={200}
-        suffix="%"
-        onChange={(v) => actions().updateClip(id, { volume: v / 100 }, liveOpts())}
-      />
+      <AnimField id={id} prop="volume" label="volume" title="volume (%)" scale={100} suffix="%" min={0} max={200} step={1} precision={0} slider />
       <Row label="mute" title="silence this clip">
         <input
           type="checkbox"
@@ -306,7 +271,6 @@ const ALIGNS: { value: TextAlign; title: string; icon: typeof AlignLeft }[] = [
 ];
 
 const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, bold, italic, align, color, background }: TextSectionProps) {
-  const fonts = FONT_FAMILIES.includes(fontFamily) ? FONT_FAMILIES : [fontFamily, ...FONT_FAMILIES];
   return (
     <Section id="text" title="text">
       <textarea
@@ -318,18 +282,7 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
         onChange={(e) => actions().updateClip(id, { text: e.target.value }, liveOpts())}
       />
       <Row label="font" title="font family">
-        <select
-          className="select"
-          title="font family"
-          value={fontFamily}
-          onChange={(e) => actions().updateClip(id, { fontFamily: e.target.value })}
-        >
-          {fonts.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
+        <FontPicker value={fontFamily} onChange={(f) => actions().updateClip(id, { fontFamily: f })} />
       </Row>
       <Row label="size" title="font size in canvas pixels">
         <NumberField
@@ -400,6 +353,14 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
 
 /* ---------- root ---------- */
 
+/** shape thickness used while none is set: the clip's own height, like the renderer */
+function defaultThickness(clip: VisualClip): number {
+  const p = useEditor.getState().project;
+  if (!p) return 100;
+  const h = getClipBox(p, clip).height / Math.max(0.01, clip.transform.scale);
+  return Math.max(1, Math.round(h));
+}
+
 function typeLabel(clip: Clip): string {
   return clip.type;
 }
@@ -443,9 +404,9 @@ export function ClipInspector({ id }: { id: string }) {
           srcOut={timed ? clip.trimStart + clip.duration * clip.speed : null}
           fps={fps}
         />
-        {clip.type === 'effect' ? (
-          <EffectSection id={clip.id} name={clip.name} effect={clip.effect} amount={clip.amount} params={clip.params} />
-        ) : null}
+        {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
+        {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} /> : null}
+        {clip.type === 'camera' ? <CameraSection id={clip.id} /> : null}
         {clip.type === 'text' ? (
           <TextSection
             id={clip.id}
@@ -459,12 +420,23 @@ export function ClipInspector({ id }: { id: string }) {
             background={clip.background}
           />
         ) : null}
+        {clip.type === 'text' ? <TextStyleSection clip={clip} /> : null}
+        {clip.type === 'text' ? <TextAnimSection clip={clip} /> : null}
         {clip.type !== 'audio' && clip.type !== 'effect' && clip.type !== 'camera' ? (
-          <TransformSection id={clip.id} transform={clip.transform} mediaW={asset?.width ?? 0} mediaH={asset?.height ?? 0} />
+          <TransformSection id={clip.id} mediaW={asset?.width ?? 0} mediaH={asset?.height ?? 0} />
         ) : null}
-        {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? (
-          <AudioSection id={clip.id} volume={clip.volume} muted={clip.muted} />
+        {isVisualClip(clip) ? (
+          <ThreeDSection
+            id={clip.id}
+            threeD={!!clip.threeD}
+            lookAt={clip.lookAt ?? 'none'}
+            shape={clip.shape ?? 'plane'}
+            shapeDepth={clip.shapeDepth}
+            defaultDepth={clip.threeD && (clip.shape === 'box' || clip.shape === 'cylinder') ? defaultThickness(clip) : 0}
+          />
         ) : null}
+        {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
+        {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
         {clip.type === 'video' || clip.type === 'audio' ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
         <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
           hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
