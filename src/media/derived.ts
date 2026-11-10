@@ -2,7 +2,7 @@
  * things derived from media files, computed lazily and cached in memory per asset id:
  * poster thumbnails, filmstrips for timeline clips, audio waveforms.
  *
- * all heavy work goes through one serial queue, so only one job runs at a time, and each job
+ * all heavy work goes through one small priority queue (see derivedQueue.ts), so only one job runs at a time, and each job
  * yields to the main thread regularly so drags and playback stay smooth.
  */
 import { ALL_FORMATS, AudioSampleSink, BlobSource, CanvasSink, Input } from 'mediabunny';
@@ -10,6 +10,8 @@ import type { MediaAsset } from '../types';
 import { useEditor } from '../store/editorStore';
 import { getAssetBlob, getAssetUrl } from './registry';
 import { seekFrame } from './seekFrame';
+import { createScheduler } from './derivedQueue';
+import type { JobKind } from './derivedQueue';
 
 export interface WaveformData {
   /** how many peaks describe one second of audio */
@@ -25,18 +27,14 @@ const SEEK_TIMEOUT_MS = 6000;
 const SLICE_MS = 10;
 const WAVEFORM_FALLBACK_MAX_BYTES = 200 * 1024 * 1024;
 
-/* ---------- serial queue ---------- */
+/* ---------- job queue ---------- */
 
-let tail: Promise<void> = Promise.resolve();
+// one job at a time (decoders are heavy). thumbnails go before filmstrips before waveforms, newest request first.
+// same-asset de-duplication is done by the caches below (they are cleared together with the cancel tokens).
+const scheduler = createScheduler({ concurrency: 1, yieldFn: () => nextTask() });
 
-/** run `job` after every previously queued job finished. failures never poison the queue. */
-function enqueue<T>(job: () => Promise<T>): Promise<T> {
-  const run = tail.then(() => nextTask()).then(job);
-  tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+function enqueue<T>(kind: JobKind, job: () => Promise<T>): Promise<T> {
+  return scheduler.submit(kind, job);
 }
 
 /** let the browser handle input / paint before the next piece of heavy work */
@@ -235,7 +233,7 @@ export function getThumbnail(assetId: string): Promise<string | null> {
   const asset = getAsset(assetId);
   if (!asset || asset.kind === 'audio') return Promise.resolve(null);
   const token = tokenFor(assetId);
-  const p = enqueue(async () => {
+  const p = enqueue('thumb', async () => {
     if (token.cancelled) return null;
     const blob = getAssetBlob(assetId);
     if (!blob) return null;
@@ -400,7 +398,7 @@ export function getFilmstrip(
   const total = Math.min(MAX_FILMSTRIP_FRAMES, Math.max(want, entry?.count ?? 0));
   const times = frameTimes(asset.duration, total);
   const fresh: FilmstripEntry = { count: total, height: Math.max(hCss, entry?.height ?? 0), promise: null as never, done: null };
-  fresh.promise = enqueue(async (): Promise<Filmstrip | null | typeof SUPERSEDED> => {
+  fresh.promise = enqueue('film', async (): Promise<Filmstrip | null | typeof SUPERSEDED> => {
     if (token.cancelled) return null;
     // a bigger strip was requested while this one waited: skip the pass
     if (filmstrips.get(assetId) !== fresh) return SUPERSEDED;
@@ -516,7 +514,7 @@ export function getWaveform(assetId: string): Promise<WaveformData | null> {
   if (!asset || !asset.hasAudio || asset.kind === 'image') return Promise.resolve(null);
   const token = tokenFor(assetId);
   let retry = false;
-  const p = enqueue(async () => {
+  const p = enqueue('wave', async () => {
     if (token.cancelled) {
       retry = true;
       return null;
