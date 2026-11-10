@@ -7,6 +7,8 @@ import { PACK2_COLOR_EFFECTS } from './defs/pack2-color';
 import { PACK2_DISTORT_EFFECTS } from './defs/pack2-distort';
 import { PACK2_MOTION_EFFECTS } from './defs/pack2-motion';
 import { PACK2_STYLIZE_EFFECTS } from './defs/pack2-stylize';
+import { PACK3_BLUR_EFFECTS } from './defs/pack3-blur';
+import { PACK3_OVERLAY_EFFECTS } from './defs/pack3-overlay';
 import { STYLIZE_EFFECTS } from './defs/stylize';
 import type { EffectCategory, EffectDef } from './types';
 
@@ -16,12 +18,14 @@ export const EFFECTS: EffectDef[] = [
   ...PACK2_MOTION_EFFECTS,
   ...BLUR_EFFECTS,
   ...PACK2_BLUR_EFFECTS,
+  ...PACK3_BLUR_EFFECTS,
   ...COLOR_EFFECTS,
   ...PACK2_COLOR_EFFECTS,
   ...DISTORT_EFFECTS,
   ...PACK2_DISTORT_EFFECTS,
   ...STYLIZE_EFFECTS,
   ...PACK2_STYLIZE_EFFECTS,
+  ...PACK3_OVERLAY_EFFECTS,
 ];
 
 const byId = new Map(EFFECTS.map((e) => [e.id, e]));
