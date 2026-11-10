@@ -100,12 +100,16 @@ export function Preview() {
     if (!payload) return;
     const store = useEditor.getState();
     const start = usePlayback.getState().time;
+    // a transition belongs on a clip in the timeline, not on the picture
+    if (payload.kind === 'transition') return;
     const id =
       payload.kind === 'asset'
         ? store.insertAsset(payload.assetId, { start })
         : payload.kind === 'effect'
           ? store.addEffect(payload.effect, { start })
-          : store.addText({ start, preset: payload.preset });
+          : payload.kind === 'camera'
+            ? store.addCamera({ start })
+            : store.addText({ start, preset: payload.preset });
     if (id) store.select([id], 'replace');
   };
 
