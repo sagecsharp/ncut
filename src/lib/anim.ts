@@ -9,6 +9,7 @@
  *   visual clips (video, image, text): x y scale rotation opacity z rotX rotY
  *   video / audio clips:               volume
  *   effect clips:                      amount, and p.<key> for every effect param
+ *   shape clips:                       the visual ones + drawStart drawEnd (draw on, 0..1)
  *   camera clips:                      x y z pan tilt roll fov focusDistance focusStrength
  */
 import type { Clip, Easing, Keyframe, Keyframes } from '../types';
@@ -181,6 +182,14 @@ const CAMERA_PROPS: AnimPropInfo[] = [
   { prop: 'focusStrength', label: 'blur', min: 0, max: 1 },
 ];
 
+/** draw on (types.ts ShapeClip.drawStart / drawEnd): shares of the outline's length */
+const SHAPE_PROPS: AnimPropInfo[] = [
+  ...VISUAL_PROPS,
+  { prop: 'drawStart', label: 'draw from', min: 0, max: 1 },
+  { prop: 'drawEnd', label: 'draw to', min: 0, max: 1 },
+];
+const DRAW_KEYS = new Set(['drawStart', 'drawEnd']);
+
 const TRANSFORM_KEYS = new Set(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
 const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focusDistance', 'focusStrength']);
 
@@ -191,8 +200,9 @@ export function animProps(clip: Clip): AnimPropInfo[] {
       return [...VISUAL_PROPS, VOLUME_PROP];
     case 'image':
     case 'text':
-    case 'shape':
       return VISUAL_PROPS;
+    case 'shape':
+      return SHAPE_PROPS;
     case 'audio':
       return [VOLUME_PROP];
     case 'effect':
@@ -211,6 +221,7 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
     case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? 0;
       if (prop === 'volume' && clip.type === 'video') return clip.volume;
+      if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return prop === 'drawStart' ? (clip.drawStart ?? 0) : (clip.drawEnd ?? 1);
       return undefined;
     case 'audio':
       return prop === 'volume' ? clip.volume : undefined;
@@ -236,6 +247,7 @@ export function withBaseValue<T extends Clip>(clip: T, prop: string, v: number):
     case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return { ...clip, transform: { ...clip.transform, [prop]: v } };
       if (prop === 'volume' && clip.type === 'video') return { ...clip, volume: v };
+      if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return { ...clip, [prop]: v };
       return clip;
     case 'audio':
       return prop === 'volume' ? { ...clip, volume: v } : clip;

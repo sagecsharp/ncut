@@ -1,6 +1,9 @@
+import { Eraser, PenLine } from 'lucide-react';
 import { memo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
+import { useEditor } from '../../store/editorStore';
 import type { ShapeClip, ShapeKind } from '../../types';
+import { AnimField } from './AnimField';
 import { ColorField, Row, SelectRow, Section, Switch } from './controls';
 import { beginEdit, patchClip } from './edit';
 import {
@@ -12,6 +15,21 @@ import {
   defaultSecondColor,
   hasPoints,
 } from './shapeLogic';
+
+/** how long the one click draw on / wipe off animations take (s), shorter when the clip is */
+const DRAW_SECONDS = 1;
+
+/** draw on: drawEnd 0 -> 1 from the clip start. wipe off: drawStart 0 -> 1 ending at the clip end. one undo step. */
+function animateDraw(clip: ShapeClip, prop: 'drawEnd' | 'drawStart'): void {
+  const st = useEditor.getState();
+  const span = Math.min(DRAW_SECONDS, clip.duration);
+  if (!(span > 0)) return;
+  const from = prop === 'drawEnd' ? clip.start : clip.start + clip.duration - span;
+  const to = from + span;
+  st.pushHistory();
+  st.setKeyframe(clip.id, prop, from, 0, 'ease', { skipHistory: true });
+  st.setKeyframe(clip.id, prop, to, 1, 'ease', { skipHistory: true });
+}
 
 export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeClip }) {
   const id = clip.id;
@@ -149,6 +167,63 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
           />
         </Row>
       ) : null}
+
+      {stroke || clip.kind === 'line' || clip.kind === 'arrow' ? (
+        <>
+          <AnimField
+            wide
+            slider
+            id={id}
+            prop="drawStart"
+            label="draw from"
+            title="where the drawn part of the outline starts (% of its length)"
+            scale={100}
+            suffix="%"
+            min={0}
+            max={100}
+            step={1}
+            precision={0}
+          />
+          <AnimField
+            wide
+            slider
+            id={id}
+            prop="drawEnd"
+            label="draw to"
+            title="where the drawn part of the outline ends (% of its length)"
+            scale={100}
+            suffix="%"
+            min={0}
+            max={100}
+            step={1}
+            precision={0}
+          />
+          <div className="props-buttons">
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="the outline draws itself on over the first second of the clip"
+              onClick={() => animateDraw(clip, 'drawEnd')}
+            >
+              <PenLine size={14} />
+              animate: draw on
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="the outline wipes itself off over the last second of the clip"
+              onClick={() => animateDraw(clip, 'drawStart')}
+            >
+              <Eraser size={14} />
+              wipe off
+            </button>
+          </div>
+        </>
+      ) : (
+        <Row label="draw on" title="draw the outline of the figure over time">
+          <span className="props-hint">add an outline to draw it on</span>
+        </Row>
+      )}
     </Section>
   );
 });

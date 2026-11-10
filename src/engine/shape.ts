@@ -1,5 +1,7 @@
 /** drawing of shape clips (types.ts ShapeClip). pure canvas 2d, shared by the flat and the 3d path. */
 import type { ShapeClip } from '../types';
+import { drawRange, flatten, fromPoints, trimPolyline } from './shapeTrim';
+import type { PathRecorder, Polyline } from './shapeTrim';
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -131,13 +133,31 @@ export function shapeSpill(clip: ShapeClip): number {
   return clip.stroke && clip.stroke.width > 0 ? clip.stroke.width / 2 + 1 : 0;
 }
 
+const OUTLINE_CACHE_MAX = 32;
+const outlineCache = new Map<string, Polyline>();
+/** reused by every trimmed stroke, so a frame allocates nothing */
+const trimScratch: number[] = [];
+
 /**
- * draw a shape centered on the origin. w / h = the size of its box in the current units, `unit` =
- * how many of those units one canvas pixel at scale 1 is (the clip's scale), used for the outline.
+ * the outline of a shape as a polyline (the same path shapePath traces), for draw on. 'line' and 'arrow'
+ * have no outline of their own: theirs is the center line from the start to the tip, w long.
+ * cached per shape, callers must not change the arrays.
  */
-export function drawShape(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit = 1): void {
-  if (!(w > 0) || !(h > 0)) return;
-  shapePath(ctx, clip, w, h, clip.radius ?? 0);
+export function shapeOutline(clip: ShapeClip, w: number, h: number, radius = 0): Polyline {
+  if (clip.kind === 'line' || clip.kind === 'arrow') return fromPoints([-w / 2, 0, w / 2, 0]);
+  const key = `${clip.kind}|${w}|${h}|${radius}|${clip.points ?? ''}|${clip.inner ?? ''}`;
+  const hit = outlineCache.get(key);
+  if (hit) return hit;
+  const poly = flatten((rec: PathRecorder) => shapePath(rec as unknown as Ctx, clip, w, h, radius));
+  if (outlineCache.size >= OUTLINE_CACHE_MAX) {
+    const first = outlineCache.keys().next().value;
+    if (first !== undefined) outlineCache.delete(first);
+  }
+  outlineCache.set(key, poly);
+  return poly;
+}
+
+function fillAndStroke(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit: number): void {
   if (clip.filled !== false) {
     ctx.fillStyle = fillStyle(ctx, clip, w, h);
     ctx.fill();
@@ -148,6 +168,73 @@ export function drawShape(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit 
     ctx.strokeStyle = clip.stroke.color;
     ctx.stroke();
   }
+}
+
+/** draw on (ShapeClip.drawStart / drawEnd) for a range that is not "everything" */
+function drawTrimmed(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit: number, s: number, e: number): void {
+  if (clip.kind === 'line') {
+    // the bar grows from its left end
+    if (!(s < e)) return;
+    ctx.beginPath();
+    ctx.rect(-w / 2 + s * w, -h / 2, (e - s) * w, h);
+    fillAndStroke(ctx, clip, w, h, unit);
+    return;
+  }
+  if (clip.kind === 'arrow') {
+    // the shaft grows, the head sits at the drawn end (smaller while there is no room for all of it)
+    if (!(s < e)) return;
+    const head = Math.min(w * 0.4, h);
+    const x0 = -w / 2 + s * w;
+    const tip = -w / 2 + e * w;
+    const hl = Math.min(head, tip - x0);
+    const hh = head > 0 ? (h / 2) * (hl / head) : 0;
+    const sh = Math.min(h * 0.22, hh);
+    ctx.beginPath();
+    ctx.moveTo(x0, -sh);
+    ctx.lineTo(tip - hl, -sh);
+    ctx.lineTo(tip - hl, -hh);
+    ctx.lineTo(tip, 0);
+    ctx.lineTo(tip - hl, hh);
+    ctx.lineTo(tip - hl, sh);
+    ctx.lineTo(x0, sh);
+    ctx.closePath();
+    fillAndStroke(ctx, clip, w, h, unit);
+    return;
+  }
+  // the fill is whole, the outline is cut
+  if (clip.filled !== false) {
+    shapePath(ctx, clip, w, h, clip.radius ?? 0);
+    ctx.fillStyle = fillStyle(ctx, clip, w, h);
+    ctx.fill();
+  }
+  if (!clip.stroke || !(clip.stroke.width > 0)) return;
+  const pts = trimPolyline(shapeOutline(clip, w, h, clip.radius ?? 0), s, e, trimScratch);
+  if (pts.length < 4) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0]!, pts[1]!);
+  for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i]!, pts[i + 1]!);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = clip.stroke.width * unit;
+  ctx.strokeStyle = clip.stroke.color;
+  ctx.stroke();
+  ctx.lineCap = 'butt';
+}
+
+/**
+ * draw a shape centered on the origin. w / h = the size of its box in the current units, `unit` =
+ * how many of those units one canvas pixel at scale 1 is (the clip's scale), used for the outline.
+ * drawStart / drawEnd (draw on) cut the outline; when they say "everything" nothing extra happens.
+ */
+export function drawShape(ctx: Ctx, clip: ShapeClip, w: number, h: number, unit = 1): void {
+  if (!(w > 0) || !(h > 0)) return;
+  const range = clip.drawStart === undefined && clip.drawEnd === undefined ? null : drawRange(clip.drawStart, clip.drawEnd);
+  if (range) {
+    drawTrimmed(ctx, clip, w, h, unit, range[0], range[1]);
+    return;
+  }
+  shapePath(ctx, clip, w, h, clip.radius ?? 0);
+  fillAndStroke(ctx, clip, w, h, unit);
 }
 
 /** everything that changes how a shape looks, for texture caches */
@@ -165,5 +252,7 @@ export function shapeSignature(clip: ShapeClip): string {
     clip.points ?? '',
     clip.inner ?? '',
     clip.radius ?? 0,
+    clip.drawStart ?? 0,
+    clip.drawEnd ?? 1,
   ].join('|');
 }

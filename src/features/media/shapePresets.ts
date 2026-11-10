@@ -18,6 +18,18 @@ export const BG_SOLID = '#202020';
 
 const OUTLINE = { color: '#ffffff', width: 12 };
 
+/** draw on: the outline grows from nothing to whole over the first second of the clip (keys are clip-local) */
+function drawOn(): Pick<ShapeClip, 'keyframes'> {
+  return {
+    keyframes: {
+      drawEnd: [
+        { t: 0, v: 0, ease: 'ease' },
+        { t: 1, v: 1, ease: 'ease' },
+      ],
+    },
+  };
+}
+
 function named(label: string, fields: Partial<ShapeClip>): Partial<ShapeClip> {
   return { name: label, ...fields };
 }
@@ -110,6 +122,24 @@ export const SHAPE_PRESETS: readonly ShapePreset[] = [
     label: 'outline',
     hint: 'square with only a border',
     build: () => named('outline', { kind: 'rect', width: 400, height: 400, filled: false, stroke: { ...OUTLINE } }),
+  },
+  {
+    id: 'drawn-circle',
+    label: 'drawn circle',
+    hint: 'a circle that draws itself on',
+    build: () => named('drawn circle', { kind: 'ellipse', width: 400, height: 400, filled: false, stroke: { ...OUTLINE }, ...drawOn() }),
+  },
+  {
+    id: 'drawn-underline',
+    label: 'drawn underline',
+    hint: 'a line that draws on from left to right',
+    build: () => named('drawn underline', { kind: 'line', width: 600, height: 12, ...drawOn() }),
+  },
+  {
+    id: 'drawn-arrow',
+    label: 'drawn arrow',
+    hint: 'an arrow that draws on, head last',
+    build: () => named('drawn arrow', { kind: 'arrow', width: 600, height: 260, ...drawOn() }),
   },
   solid('cone', 'cone', '3d, round base and a point', 'cone'),
   solid('pyramid', 'pyramid', '3d, square base and a point', 'pyramid'),
