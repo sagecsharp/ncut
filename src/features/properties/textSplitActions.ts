@@ -8,7 +8,7 @@ import { useUi } from '../../store/ui';
 import { isCameraClip, isVisualClip } from '../../types';
 import type { TextClip } from '../../types';
 import { hasAnimatedPose } from './parentOptions';
-import { MAX_PIECES, keepsBackground, pieceClip, splitBlocker, splitPlan } from './textSplit';
+import { MAX_PIECES, keepsBackground, modeBlocker, pieceClip, splitBlocker, splitNotes, splitPlan } from './textSplit';
 import type { SplitMode, SplitPlan } from './textSplit';
 
 export const SPLIT_MODES: SplitMode[] = ['letters', 'words', 'lines'];
@@ -44,8 +44,11 @@ export function splitText(id: string, mode: SplitMode): number {
   const p = st.project;
   const clip = p?.clips.find((c) => c.id === id);
   if (!p || !clip || clip.type !== 'text') return 0;
-  if (p.tracks.find((t) => t.id === clip.trackId)?.locked) return 0;
-  const blocked = splitBlocker(clip);
+  if (p.tracks.find((t) => t.id === clip.trackId)?.locked) {
+    ui.toast('this track is locked');
+    return 0;
+  }
+  const blocked = splitBlocker(clip) ?? modeBlocker(clip, mode);
   if (blocked) {
     ui.toast(blocked);
     return 0;
@@ -59,8 +62,9 @@ export function splitText(id: string, mode: SplitMode): number {
   }
   // offsets are worked out with the clip's scale / spin at the playhead (held inside the clip)
   const time = clamp(usePlayback.getState().time, clip.start, clip.start + clip.duration);
-  const effects = p.clips.filter((c) => c.type === 'effect' && c.target === id).length;
+  const effectIds = p.clips.filter((c) => c.type === 'effect' && c.target === id).map((c) => c.id);
   const pieces = plan.pieces.map((pc) => pieceClip(clip, pc, mode, time));
+  const mates = clip.group ? p.clips.filter((c) => c.group === clip.group && c.id !== id).map((c) => c.id) : [];
 
   // what hangs on the original: attached clips (they keep their place), look targets and camera targets
   const kids = p.clips.filter((c) => isVisualClip(c) && c.parent === id);
@@ -70,12 +74,17 @@ export function splitText(id: string, mode: SplitMode): number {
   st.pushHistory();
   const skip = { skipHistory: true };
   st.deleteClips([id], skip);
-  // the original is gone, so its track is free again: the first piece takes it, the others find room on other tracks
+  // the original is gone, so its track is free again: the first piece takes it. the others get tracks of their own
+  // right above it, so the text stays on its layer (under the overlays and adjustment layers that were above it)
+  const homeIndex = p.tracks.findIndex((t) => t.id === clip.trackId);
+  for (let i = 1; i < pieces.length; i++) pieces[i]!.trackId = st.addTrack('video', { index: Math.max(0, homeIndex), skipHistory: true });
   const made = st.addClips(pieces, { newTrack: false, skipHistory: true });
   if (made.length === 0) {
-    st.undo();
+    st.rollback();
     return 0;
   }
+  const after = useEditor.getState().project;
+  const effects = effectIds.filter((eid) => !after?.clips.some((c) => c.id === eid)).length;
   const first = made[0]!;
   if (kids.length + lookers.length + cameras.length > 0) {
     // the pieces are in the project now: work the kids' places out from the old project plus the pieces (the original
@@ -92,11 +101,13 @@ export function splitText(id: string, mode: SplitMode): number {
     for (const lid of lookers) st.updateClip(lid, { lookTarget: first }, skip);
     for (const cid of cameras) st.updateClip(cid, { target: first }, skip);
   }
-  st.groupClips(made, skip);
+  // a text that belonged to a group stays with it: the pieces join (the group is made again with them)
+  st.groupClips([...made, ...mates], skip);
   st.select(made, 'replace');
   let msg = plural(made.length, mode);
   if (clip.background && !keepsBackground(mode)) msg += ', background removed';
   if (effects > 0) msg += `, ${effects === 1 ? 'its effect was' : `${effects} effects were`} removed`;
+  for (const note of splitNotes(clip)) msg += ', ' + note;
   ui.toast(msg);
   return made.length;
 }

@@ -3,6 +3,7 @@
  * pure: the glyph layout comes in (so tests need no canvas), the pieces and their transforms come out.
  */
 import { curveLayout } from '../../engine/text';
+import { textAnimUnits } from '../../engine/textAnim';
 import type { TextBox, TextGlyph } from '../../engine/text';
 import { evalKeys } from '../../lib/anim';
 import type { Keyframes, TextClip, Transform } from '../../types';
@@ -30,6 +31,44 @@ export interface SplitPlan {
 
 const isSpace = (g: TextGlyph) => g.ch.trim() === '';
 
+/** marks that belong to the letter before them: accents, joiners, variation selectors, skin tones, tag characters */
+const JOINS_BACK = /^[\p{M}\u200d\ufe0e\ufe0f\u{1f3fb}-\u{1f3ff}\u{e0020}-\u{e007f}]$/u;
+const FLAG_HALF = /^[\u{1f1e6}-\u{1f1ff}]$/u;
+
+/**
+ * the glyphs of a line as what a reader calls letters: an accent stays on its letter, an emoji made of several
+ * code points (joined people, flags, skin tones) stays one piece. the layout itself is per code point.
+ */
+export function letterClusters(glyphs: readonly TextGlyph[]): TextGlyph[][] {
+  const out: TextGlyph[][] = [];
+  let flagOpen = false;
+  for (const g of glyphs) {
+    const last = out[out.length - 1];
+    const prev = last?.[last.length - 1];
+    const sameLine = !!prev && prev.line === g.line;
+    const joins = sameLine && (JOINS_BACK.test(g.ch) || prev.ch === '\u200d' || (flagOpen && FLAG_HALF.test(g.ch)));
+    if (joins && last) {
+      last.push(g);
+      flagOpen = false;
+    } else {
+      out.push([g]);
+      flagOpen = FLAG_HALF.test(g.ch);
+    }
+  }
+  return out;
+}
+
+/** one letter piece out of a cluster of glyphs */
+function clusterPiece(cluster: readonly TextGlyph[], curved: boolean): SplitPiece {
+  const first = cluster[0]!;
+  if (cluster.length === 1) return { text: first.ch, cx: first.x, cy: first.y, rot: (first.rot * 180) / Math.PI };
+  const text = cluster.map((g) => g.ch).join('');
+  // on a curve the cluster sits where its base letter sits; on a line it spans all its glyphs
+  if (curved) return { text, cx: first.x, cy: first.y, rot: (first.rot * 180) / Math.PI };
+  const last = cluster[cluster.length - 1]!;
+  return { text, cx: (first.x - first.w / 2 + last.x + last.w / 2) / 2, cy: first.y, rot: 0 };
+}
+
 /** one piece out of consecutive glyphs of one word / line */
 function groupPiece(glyphs: readonly TextGlyph[], curved: boolean): SplitPiece | null {
   let a = 0;
@@ -56,9 +95,9 @@ export function splitPlan(box: Pick<TextBox, 'curve'>, glyphs: readonly TextGlyp
   const curved = box.curve !== 0;
   const pieces: SplitPiece[] = [];
   if (mode === 'letters') {
-    for (const g of glyphs) {
-      if (isSpace(g)) continue;
-      pieces.push({ text: g.ch, cx: g.x, cy: g.y, rot: (g.rot * 180) / Math.PI });
+    for (const cluster of letterClusters(glyphs)) {
+      if (isSpace(cluster[0]!)) continue;
+      pieces.push(clusterPiece(cluster, curved));
     }
   } else {
     const groups = new Map<number, TextGlyph[]>();
@@ -212,10 +251,42 @@ export function pieceTransform(base: PieceBase, piece: Pick<SplitPiece, 'cx' | '
 /* ---------- the piece clip ---------- */
 
 /** why a text cannot be split at all, or null */
-export function splitBlocker(clip: Pick<TextClip, 'counter' | 'highlight'>): string | null {
+export function splitBlocker(
+  clip: Pick<TextClip, 'counter' | 'highlight' | 'threeD' | 'lookAt' | 'mask' | 'crop' | 'animIn' | 'animOut' | 'animLoop'>,
+): string | null {
   if (clip.counter) return 'a running number cannot be split';
   if (clip.highlight) return 'karaoke text cannot be split, turn it off first';
+  // every piece would turn on its own spot and the word falls apart
+  if (clip.threeD && clip.lookAt && clip.lookAt !== 'none') return 'this text looks at something: turn off look at first';
+  // a mask / crop is measured on the whole box, on every piece it would cut something else
+  if (clip.mask) return 'this text has a mask: remove it first';
+  if (clip.crop && (clip.crop.left > 0 || clip.crop.right > 0 || clip.crop.top > 0 || clip.crop.bottom > 0)) return 'this text is cropped: reset the crop first';
+  // an animation that runs letter by letter would start on every piece at once
+  const units = textAnimUnits(clip as TextClip);
+  if ([units.enter, units.exit, units.loop].some((u) => u && u.unit !== 'block')) return 'the text animation runs letter by letter and would not survive: remove it first';
   return null;
+}
+
+const RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/;
+
+/** why this one mode cannot run on the text, or null. right to left text is laid out by the browser per line. */
+export function modeBlocker(clip: Pick<TextClip, 'text'>, mode: SplitMode): string | null {
+  if (mode !== 'lines' && RTL.test(clip.text)) return 'right to left text can only be split into lines';
+  return null;
+}
+
+/** what a split cannot carry over exactly, as words for the toast. empty when the pieces are a true copy. */
+export function splitNotes(clip: TextClip): string[] {
+  const notes: string[] = [];
+  const keyed = (prop: string) => (clip.keyframes?.[prop]?.length ?? 0) > 0;
+  const moving = ['scale', 'rotation', ...(clip.threeD ? ['rotX', 'rotY'] : [])].filter(keyed);
+  if (moving.length > 0) notes.push('the size / turn is animated: the pieces match at the playhead only');
+  const looks: string[] = [];
+  if (clip.gradient) looks.push('gradient');
+  if (clip.motionIn || clip.motionOut || clip.motionLoop) looks.push('motion');
+  if ((clip.radius ?? 0) > 0) looks.push('corners');
+  if (looks.length > 0) notes.push(`${looks.join(' / ')} now run${looks.length === 1 ? 's' : ''} on every piece`);
+  return notes;
 }
 
 /** letters get no background (a box per letter is noise); words and lines keep theirs */
