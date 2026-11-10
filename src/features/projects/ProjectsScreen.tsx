@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Copy, Palette, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Copy, Download, FolderOpen, Palette, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { ProjectSummary } from '../../types';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
@@ -10,11 +10,14 @@ import {
   createAndOpenProject,
   deleteStoredProject,
   duplicateProject,
+  exportProjectFile,
+  importProjectFile,
   openProjectById,
   renameStoredProject,
 } from '../../store/session';
 import { useUi } from '../../store/ui';
 import { listProjects } from '../../storage/db';
+import { PROJECT_FILE_EXT } from '../../storage/projectFile';
 import './projects.css';
 
 type SortMode = 'recent' | 'name';
@@ -63,6 +66,7 @@ interface CardProps {
   onCommitRename(id: string, name: string): void;
   onCancelRename(): void;
   onDuplicate(id: string): void;
+  onExportFile(id: string): void;
   onDelete(id: string): void;
 }
 
@@ -76,6 +80,7 @@ const ProjectCard = memo(function ProjectCard({
   onCommitRename,
   onCancelRename,
   onDuplicate,
+  onExportFile,
   onDelete,
 }: CardProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -180,6 +185,15 @@ const ProjectCard = memo(function ProjectCard({
               onKeyDown={(e) => e.stopPropagation()}
             >
               <Copy size={14} />
+            </button>
+            <button
+              className="icon-btn icon-btn-sm"
+              title="save as a file (project + media) for backup or another computer"
+              aria-label="save as a file"
+              onClick={act(() => onExportFile(id))}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Download size={14} />
             </button>
             <button
               className="icon-btn icon-btn-sm"
@@ -322,6 +336,51 @@ export function ProjectsScreen() {
     [refresh],
   );
 
+  const onExportFile = useCallback(async (id: string) => {
+    try {
+      const out = await exportProjectFile(id);
+      if (!out) {
+        useUi.getState().toast('project not found', 'error');
+        return;
+      }
+      const url = URL.createObjectURL(out.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = out.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      useUi.getState().toast('saved ' + out.fileName, 'success');
+    } catch (e) {
+      fail(e, 'could not save the project file');
+    }
+  }, []);
+
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const onImportFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      setImporting(true);
+      let added = 0;
+      for (const file of Array.from(files)) {
+        try {
+          await importProjectFile(file);
+          added++;
+        } catch (e) {
+          fail(e, 'could not open ' + file.name);
+        }
+      }
+      if (fileInput.current) fileInput.current.value = '';
+      if (!mounted.current) return;
+      setImporting(false);
+      if (added > 0) useUi.getState().toast(added === 1 ? 'project added' : added + ' projects added', 'success');
+      await refresh();
+    },
+    [refresh],
+  );
+
   const onAskDelete = useCallback((id: string) => setDeleteId(id), []);
 
   const confirmDelete = async () => {
@@ -374,6 +433,23 @@ export function ProjectsScreen() {
         <p className="projects-tagline">local-only video editor. no accounts, no watermark.</p>
         <button className="icon-btn" onClick={() => setAppearanceOpen(true)} title="appearance: theme and tint" aria-label="appearance">
           <Palette size={16} />
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          accept={PROJECT_FILE_EXT}
+          multiple
+          hidden
+          onChange={(e) => void onImportFiles(e.target.files)}
+        />
+        <button
+          className="btn"
+          onClick={() => fileInput.current?.click()}
+          disabled={importing}
+          title="open a project file (.ncut) saved from ncut"
+        >
+          <FolderOpen size={16} />
+          {importing ? 'opening...' : 'open file'}
         </button>
         <button className="btn btn-primary" onClick={openNew} title="new project (n)">
           <Plus size={16} />
@@ -446,6 +522,7 @@ export function ProjectsScreen() {
                     onCommitRename={onCommitRename}
                     onCancelRename={onCancelRename}
                     onDuplicate={onDuplicate}
+                    onExportFile={onExportFile}
                     onDelete={onAskDelete}
                   />
                 ))}

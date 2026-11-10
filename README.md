@@ -12,7 +12,7 @@ a flat, monochrome video editor that runs entirely in your browser.
 - shapes, blend modes, crop, rounded corners and ready-made clip motions
 - fades, per-clip volume, speed and opacity
 - export to mp4 or webm with webcodecs at up to 240 fps, no upload, no watermark. what you see in the preview is what gets exported
-- everything stays on your machine: projects and media live in indexeddb
+- everything stays on your machine: projects and media live in indexeddb. save a project as one `.ncut` file (project + media) to back it up or move it to another computer
 - monochrome, high contrast, flat ui in kode mono. follows your system: black at night, white by day. optional color tint in settings. no glow.
 - a small fps counter in the corner so you can see how the editor is performing
 

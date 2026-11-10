@@ -9,6 +9,7 @@ import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
 import { deleteProject as dbDeleteProject, getMediaBlob, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
 import { useEditor } from './editorStore';
 import { resetPlayback } from './playback';
 import { useUi } from './ui';
@@ -85,6 +86,46 @@ export async function duplicateProject(id: string): Promise<string | null> {
     const newId = uid('ast');
     idMap.set(asset.id, newId);
     const blob = await getMediaBlob(asset.id);
+    if (blob) await putMediaBlob(copy.id, newId, blob);
+    asset.id = newId;
+  }
+  for (const clip of copy.clips) {
+    if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
+  }
+  await saveProject(copy);
+  return copy.id;
+}
+
+/** a stored project as one .ncut file (project + media), or null when the project does not exist */
+export async function exportProjectFile(id: string): Promise<{ blob: Blob; fileName: string } | null> {
+  // the open project may have edits that are not on disk yet
+  if (useEditor.getState().project?.id === id) await flushAutosave();
+  const project = await loadProject(id);
+  if (!project) return null;
+  const media = new Map<string, Blob>();
+  for (const asset of project.assets) {
+    const blob = await getMediaBlob(asset.id);
+    if (blob) media.set(asset.id, blob);
+  }
+  return { blob: packProject(project, media), fileName: projectFileName(project.name) };
+}
+
+/**
+ * add the project inside a .ncut file to this browser as a NEW project (fresh ids, so importing the
+ * same file twice gives two projects). returns the new project id. throws with a plain message when
+ * the file is not a project.
+ */
+export async function importProjectFile(file: Blob): Promise<string> {
+  const { project: source, media } = await unpackProject(file);
+  const now = Date.now();
+  const copy: Project = structuredClone(source);
+  copy.id = uid('prj');
+  copy.updatedAt = now;
+  const idMap = new Map<string, string>();
+  for (const asset of copy.assets) {
+    const newId = uid('ast');
+    idMap.set(asset.id, newId);
+    const blob = media.get(asset.id);
     if (blob) await putMediaBlob(copy.id, newId, blob);
     asset.id = newId;
   }
