@@ -10,6 +10,8 @@ import type { EffectDef } from '../../engine/effects/types';
 import { effectMatchesQuery, groupEffects } from './effectGroups';
 import { FavoriteStar } from './FavoriteStar';
 import { pickFavorites, useFavorites } from './favorites';
+import { createStillCache } from './stillCache';
+import { observeNear } from './nearViewport';
 import { effectsSupported, renderEffects } from '../../engine/effects/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -24,12 +26,10 @@ const CHANNEL = 'thumb';
 /* ---------- shared thumbnail engine (module level, no react state) ---------- */
 
 let sourceCanvas: HTMLCanvasElement | null = null;
-/** bumped when the tab unmounts so late async results are dropped */
-let generation = 0;
-/** true while the tab is unmounted / being torn down: nothing is rendered or stored */
+/** true while the tab is unmounted / being torn down: nothing is painted */
 let disposed = false;
-const stills = new Map<string, ImageBitmap>();
-const savingStill = new Set<string>();
+/** the finished stills: kept while the tab is switched away, released after a while or when the project closes */
+const stills = createStillCache<ImageBitmap>();
 /** cards waiting for their first still, in order. one is rendered per animation frame. */
 const queue = new Map<HTMLCanvasElement, EffectDef>();
 let pumpRaf = 0;
@@ -70,16 +70,11 @@ function paintStill(def: EffectDef, canvas: HTMLCanvasElement): void {
     return;
   }
   drawFrame(def, canvas, def.posterTime ?? 1);
-  if (savingStill.has(def.id)) return;
-  savingStill.add(def.id);
-  const gen = generation;
+  const ticket = stills.begin(def.id);
+  if (ticket === null) return;
   void createImageBitmap(canvas)
-    .then((bmp) => {
-      savingStill.delete(def.id);
-      if (disposed || gen !== generation || stills.has(def.id)) bmp.close();
-      else stills.set(def.id, bmp);
-    })
-    .catch(() => savingStill.delete(def.id));
+    .then((bmp) => stills.finish(def.id, ticket, bmp))
+    .catch(() => stills.fail(def.id));
 }
 
 function pump(): void {
@@ -105,18 +100,16 @@ function cancelStill(canvas: HTMLCanvasElement): void {
   queue.delete(canvas);
 }
 
-function releaseThumbs(): void {
-  // stop() repaints its card: block that first so nothing is rendered or stored while the caches are cleared
+function closeTab(): void {
+  // stop() repaints its card: block that first so nothing is painted while the tab is torn down
   disposed = true;
-  generation++;
   if (pumpRaf) cancelAnimationFrame(pumpRaf);
   pumpRaf = 0;
   queue.clear();
   stopActive?.();
-  for (const b of stills.values()) b.close();
-  stills.clear();
-  savingStill.clear();
   sourceCanvas = null;
+  // the stills stay for the next visit. a closing project takes them with it, otherwise they go after a while
+  stills.close(useEditor.getState().project === null);
 }
 
 /* ---------- card ---------- */
@@ -135,8 +128,13 @@ const EffectCard = memo(function EffectCard({ def }: { def: EffectDef }) {
   useEffect(() => {
     const canvas = refs.canvas;
     if (!canvas) return;
-    requestStill(def, canvas);
+    // only a card near the visible part of the list renders its still (the rest wait until they are scrolled close)
+    const unobserve = observeNear(refs.card, (near) => {
+      if (near) requestStill(def, canvas);
+      else cancelStill(canvas);
+    });
     return () => {
+      unobserve();
       cancelStill(canvas);
       refs.stop?.();
     };
@@ -271,7 +269,8 @@ export function EffectsTab() {
 
   useEffect(() => {
     disposed = false;
-    return releaseThumbs;
+    stills.open();
+    return closeTab;
   }, []);
 
   const q = query.trim().toLowerCase();
