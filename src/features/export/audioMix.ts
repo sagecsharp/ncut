@@ -1,8 +1,10 @@
 /**
  * offline audio mix of a project. no react.
- * decodes each asset once, schedules every audible clip on an OfflineAudioContext with a gain
+ * decodes only the used range of each clip (streaming), schedules every audible clip on an OfflineAudioContext with a gain
  * envelope (volume + fades) and renders the whole timeline to one stereo buffer.
  */
+import { ALL_FORMATS, AudioBufferSink, BlobSource, Input } from 'mediabunny';
+import type { InputAudioTrack } from 'mediabunny';
 import type { Clip, Project } from '../../types';
 import { isTimedClip } from '../../types';
 import { fadeFactor } from '../../lib/timelineOps';
@@ -48,7 +50,50 @@ function gainPoints(clip: TimedAudible): Array<[number, number]> {
     .map((local) => [local, clip.volume * fadeFactor(clip, clip.start + local)] as [number, number]);
 }
 
-export async function renderAudioMix(project: Project, duration: number, signal?: AbortSignal): Promise<AudioMixResult> {
+const FALLBACK_MAX_BYTES = 200 * 1024 * 1024;
+
+function abortError(): DOMException {
+  return new DOMException('export cancelled', 'AbortError');
+}
+
+/** decode only the source range a clip uses (streaming, via mediabunny). null when the track cannot be decoded. */
+async function decodeClipRange(
+  ctx: OfflineAudioContext,
+  track: InputAudioTrack,
+  from: number,
+  to: number,
+  signal?: AbortSignal,
+): Promise<AudioBuffer | null> {
+  const rate = track.sampleRate;
+  const channels = Math.max(1, Math.min(track.numberOfChannels, 8));
+  const length = Math.max(1, Math.ceil((to - from) * rate) + 1);
+  const out = ctx.createBuffer(channels, length, rate);
+  const sink = new AudioBufferSink(track);
+  for await (const wrapped of sink.buffers(from, to)) {
+    if (signal?.aborted) throw abortError();
+    const buf = wrapped.buffer;
+    let offset = Math.round((wrapped.timestamp - from) * rate);
+    let skip = 0;
+    if (offset < 0) {
+      skip = -offset;
+      offset = 0;
+    }
+    const n = Math.min(buf.length - skip, length - offset);
+    if (n <= 0) continue;
+    for (let ch = 0; ch < channels; ch++) {
+      const data = buf.getChannelData(Math.min(ch, buf.numberOfChannels - 1));
+      out.copyToChannel(data.subarray(skip, skip + n), ch, offset);
+    }
+  }
+  return out;
+}
+
+export async function renderAudioMix(
+  project: Project,
+  duration: number,
+  signal?: AbortSignal,
+  onProgress?: (fraction: number) => void,
+): Promise<AudioMixResult> {
   const warnings: string[] = [];
   const clips = getAudibleClips(project);
   if (clips.length === 0 || duration <= 0) return { buffer: null, warnings };
@@ -56,49 +101,105 @@ export async function renderAudioMix(project: Project, duration: number, signal?
   const length = Math.max(1, Math.ceil(duration * MIX_SAMPLE_RATE));
   const ctx = new OfflineAudioContext(MIX_CHANNELS, length, MIX_SAMPLE_RATE);
 
-  // decode once per asset
-  const decoded = new Map<string, AudioBuffer | null>();
-  for (const clip of clips) {
-    if (decoded.has(clip.assetId)) continue;
-    if (signal?.aborted) throw new DOMException('export cancelled', 'AbortError');
-    const blob = getAssetBlob(clip.assetId);
-    const asset = project.assets.find((a) => a.id === clip.assetId);
-    let buf: AudioBuffer | null = null;
-    try {
-      if (!blob) throw new Error('missing file');
-      const data = await blob.arrayBuffer(); // fresh copy, decodeAudioData detaches it
-      buf = await ctx.decodeAudioData(data);
-    } catch {
-      warnings.push(`could not decode audio of "${asset?.name ?? clip.name}", it is silent in the export`);
-    }
-    decoded.set(clip.assetId, buf);
-  }
+  const inputs = new Map<string, Input>();
+  const tracks = new Map<string, InputAudioTrack | null>();
+  const fallback = new Map<string, AudioBuffer | null>();
+  const warned = new Set<string>();
+  const warn = (assetId: string, fallbackName: string) => {
+    if (warned.has(assetId)) return;
+    warned.add(assetId);
+    const asset = project.assets.find((a) => a.id === assetId);
+    warnings.push(`could not decode audio of "${asset?.name ?? fallbackName}", it is silent in the export`);
+  };
 
-  let scheduled = 0;
-  for (const clip of clips) {
-    const buf = decoded.get(clip.assetId);
-    if (!buf) continue;
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.playbackRate.value = clip.speed;
-    const gain = ctx.createGain();
-    const pts = gainPoints(clip);
-    const first = pts[0]!;
-    gain.gain.setValueAtTime(first[1], clip.start + first[0]);
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i]!;
-      gain.gain.linearRampToValueAtTime(p[1], clip.start + p[0]);
-    }
-    src.connect(gain);
-    gain.connect(ctx.destination);
-    src.start(clip.start, Math.max(0, clip.trimStart), clip.duration * clip.speed);
-    scheduled++;
-  }
-  if (scheduled === 0) return { buffer: null, warnings };
+  try {
+    let scheduled = 0;
+    for (let ci = 0; ci < clips.length; ci++) {
+      const clip = clips[ci]!;
+      if (signal?.aborted) throw abortError();
+      const blob = getAssetBlob(clip.assetId);
+      if (!blob) {
+        warn(clip.assetId, clip.name);
+        continue;
+      }
+      const from = Math.max(0, clip.trimStart);
+      const span = clip.duration * clip.speed;
 
-  if (signal?.aborted) throw new DOMException('export cancelled', 'AbortError');
-  const buffer = await ctx.startRendering();
-  return { buffer, warnings };
+      // streaming path: decode just the used range
+      if (!tracks.has(clip.assetId)) {
+        let track: InputAudioTrack | null = null;
+        try {
+          const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
+          inputs.set(clip.assetId, input);
+          const t = await input.getPrimaryAudioTrack();
+          if (t && (await t.canDecode())) track = t;
+        } catch {
+          track = null;
+        }
+        tracks.set(clip.assetId, track);
+      }
+      const track = tracks.get(clip.assetId) ?? null;
+      let buf: AudioBuffer | null = null;
+      let offset = 0;
+      if (track) {
+        try {
+          buf = await decodeClipRange(ctx, track, from, from + span, signal);
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') throw e;
+          buf = null;
+        }
+      } else {
+        // whole-file fallback, only for files that are not huge
+        if (!fallback.has(clip.assetId)) {
+          let whole: AudioBuffer | null = null;
+          try {
+            if (blob.size > FALLBACK_MAX_BYTES) throw new Error('too large');
+            whole = await ctx.decodeAudioData(await blob.arrayBuffer());
+          } catch {
+            whole = null;
+          }
+          fallback.set(clip.assetId, whole);
+        }
+        buf = fallback.get(clip.assetId) ?? null;
+        offset = from;
+      }
+      if (!buf) {
+        warn(clip.assetId, clip.name);
+        continue;
+      }
+
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      // pitch follows speed here (resampling), same as no time-stretch
+      src.playbackRate.value = clip.speed;
+      const gain = ctx.createGain();
+      const pts = gainPoints(clip);
+      const first = pts[0]!;
+      gain.gain.setValueAtTime(first[1], clip.start + first[0]);
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i]!;
+        gain.gain.linearRampToValueAtTime(p[1], clip.start + p[0]);
+      }
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(clip.start, offset, span);
+      scheduled++;
+      onProgress?.((ci + 1) / clips.length);
+    }
+    if (scheduled === 0) return { buffer: null, warnings };
+
+    if (signal?.aborted) throw abortError();
+    const buffer = await ctx.startRendering();
+    return { buffer, warnings };
+  } finally {
+    for (const input of inputs.values()) {
+      try {
+        input.dispose();
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 /** copy a time slice of a buffer into a new buffer (so it can be encoded in pieces) */

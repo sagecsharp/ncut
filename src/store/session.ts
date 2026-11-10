@@ -6,6 +6,7 @@ import type { Project } from '../types';
 import type { CanvasPreset } from '../lib/factory';
 import { createProject } from '../lib/factory';
 import { uid } from '../lib/id';
+import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
 import { deleteProject as dbDeleteProject, getMediaBlob, loadProject, putMediaBlob, saveProject } from '../storage/db';
 import { useEditor } from './editorStore';
@@ -24,11 +25,24 @@ function setHash(hash: string): void {
 }
 
 /** load a project + its media from indexeddb and open it in the editor. false when not found. */
-export async function openProjectById(id: string): Promise<boolean> {
+export function openProjectById(id: string): Promise<boolean> {
+  // popstate + hashchange both fire for one history step: share the open that is already running
+  if (opening && opening.id === id) return opening.promise;
+  const promise = doOpen(id).finally(() => {
+    if (opening?.promise === promise) opening = null;
+  });
+  opening = { id, promise };
+  return promise;
+}
+
+let opening: { id: string; promise: Promise<boolean> } | null = null;
+
+async function doOpen(id: string): Promise<boolean> {
   const project = await loadProject(id);
   if (!project) return false;
   await flushAutosave();
   releaseAllAssets();
+  releaseAllDerived();
   resetPlayback();
   const missing = await loadProjectMedia(project);
   useEditor.getState().openProject(project);
@@ -52,6 +66,7 @@ export async function closeProject(): Promise<void> {
   resetPlayback();
   useEditor.getState().closeProject();
   releaseAllAssets();
+  releaseAllDerived();
   setHash('');
 }
 

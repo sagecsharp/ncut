@@ -26,7 +26,7 @@ import type { ImageClip, Project, VideoClip } from '../../types';
 import { renderFrame, visibleClipsAt } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { projectDuration } from '../../lib/timelineOps';
-import { getAssetBlob } from '../../media/registry';
+import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, renderAudioMix, sliceAudioBuffer } from './audioMix';
 
 export type ExportContainer = 'mp4' | 'webm';
@@ -137,16 +137,18 @@ interface VideoFeed {
 }
 
 /** source timestamps (seconds in the asset) for every output frame where the clip is visible */
-function clipTimestamps(clip: VideoClip, fps: number, totalFrames: number, assetDuration: number): Float64Array {
+function clipTimestamps(clip: VideoClip, fps: number, totalFrames: number, assetDuration: number, firstTimestamp = 0): Float64Array {
   const end = clip.start + clip.duration;
   const from = Math.max(0, Math.floor(clip.start * fps) - 1);
   const to = Math.min(totalFrames - 1, Math.ceil(end * fps) + 1);
   const maxT = assetDuration > 0 ? Math.max(0, assetDuration - 0.001) : Infinity;
+  // frames before the track's first packet do not exist, show the first picture instead
+  const minT = Math.min(maxT, Math.max(0, firstTimestamp));
   const out: number[] = [];
   for (let i = from; i <= to; i++) {
     const t = i / fps;
     if (t >= clip.start - EPS && t < end - EPS) {
-      out.push(Math.min(maxT, Math.max(0, clip.trimStart + (t - clip.start) * clip.speed)));
+      out.push(Math.min(maxT, Math.max(minT, 0, clip.trimStart + (t - clip.start) * clip.speed)));
     }
   }
   return Float64Array.from(out);
@@ -186,7 +188,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   if (options.includeAudio) {
     report('audio', 0, 0);
     await yieldToUi();
-    const res = await renderAudioMix(project, duration, signal);
+    const res = await renderAudioMix(project, duration, signal, (f) => report('audio', f * 0.05, 0));
     for (const w of res.warnings) onWarning?.(w);
     mix = res.buffer;
     if (mix) {
@@ -207,14 +209,13 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   // ---- resources to dispose ----
   const inputs = new Map<string, Input>();
   const feeds = new Map<string, VideoFeed>();
-  const bitmaps = new Map<string, ImageBitmap>();
+  const images = new Map<string, DrawSource>();
   let output: Output | null = null;
   let finished = false;
 
   const resolver: SourceResolver = (clip: VideoClip | ImageClip) => {
     if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
-    const bmp = bitmaps.get(clip.assetId);
-    return bmp ? { image: bmp, width: bmp.width, height: bmp.height } : null;
+    return images.get(clip.assetId) ?? null;
   };
 
   const dispose = async () => {
@@ -236,8 +237,10 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       }
     }
     inputs.clear();
-    for (const bmp of bitmaps.values()) bmp.close();
-    bitmaps.clear();
+    for (const src of images.values()) {
+      if (typeof ImageBitmap !== 'undefined' && src.image instanceof ImageBitmap) src.image.close();
+    }
+    images.clear();
   };
 
   try {
@@ -254,11 +257,22 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         continue;
       }
       if (clip.type === 'image') {
-        if (bitmaps.has(clip.assetId)) continue;
+        if (images.has(clip.assetId)) continue;
         try {
-          bitmaps.set(clip.assetId, await createImageBitmap(blob));
+          const bmp = await createImageBitmap(blob);
+          images.set(clip.assetId, { image: bmp, width: bmp.width, height: bmp.height });
         } catch {
-          onWarning?.(`could not read image "${asset.name}", the clip is skipped`);
+          // svg and friends: createImageBitmap rejects them, an <img> can draw them (same as the preview)
+          try {
+            const url = getAssetUrl(clip.assetId);
+            if (!url) throw new Error('no url');
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            images.set(clip.assetId, { image: img, width: img.naturalWidth || 1, height: img.naturalHeight || 1 });
+          } catch {
+            onWarning?.(`could not read image "${asset.name}", the clip is skipped`);
+          }
         }
         continue;
       }
@@ -270,8 +284,11 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         }
         const track = await input.getPrimaryVideoTrack();
         if (!track) throw new Error('no video track');
-        const sink = new CanvasSink(track, { poolSize: 3 });
-        const stamps = clipTimestamps(clip, fps, totalFrames, asset.duration);
+        if (!(await track.canDecode())) throw new Error('cannot decode');
+        const first = await track.getFirstTimestamp();
+        // one pooled canvas is enough: each frame is drawn right after it is pulled
+        const sink = new CanvasSink(track, { poolSize: 1 });
+        const stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first);
         if (stamps.length === 0) continue;
         feeds.set(clip.id, { gen: sink.canvasesAtTimestamps(stamps), current: null, done: false });
       } catch {
@@ -324,17 +341,45 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         if (clip.type !== 'video') continue;
         const feed = feeds.get(clip.id);
         if (!feed || feed.done) continue;
-        const next = await feed.gen.next();
-        if (next.done) {
+        try {
+          const next = await feed.gen.next();
+          if (next.done) {
+            feed.done = true;
+          } else if (next.value) {
+            const c = next.value.canvas;
+            feed.current = { image: c, width: c.width, height: c.height };
+          }
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          // the decoder gave up: hold the last frame and keep exporting the rest
           feed.done = true;
-        } else if (next.value) {
-          const c = next.value.canvas;
-          feed.current = { image: c, width: c.width, height: c.height };
+          onWarning?.(`video "${clip.name}" stopped decoding, its last frame is held`);
         }
       }
 
       renderFrame(ctx, project, t, resolver);
       await videoSource.add(t, frameDur);
+
+      // free the decoder + canvas of video clips that just played their last frame
+      const nextT = (i + 1) / fps;
+      for (const clip of visible) {
+        if (clip.type !== 'video' || clip.start + clip.duration - EPS > nextT) continue;
+        const feed = feeds.get(clip.id);
+        if (!feed) continue;
+        feed.done = true;
+        try {
+          await feed.gen.return(undefined);
+        } catch {
+          // ignore
+        }
+        const img = feed.current?.image;
+        if (typeof HTMLCanvasElement !== 'undefined' && img instanceof HTMLCanvasElement) {
+          img.width = 0;
+          img.height = 0;
+        }
+        feed.current = null;
+        feeds.delete(clip.id);
+      }
       await feedAudio(t + 1.5);
 
       report('video', 0.05 + 0.9 * ((i + 1) / totalFrames), i + 1);
@@ -347,6 +392,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     await yieldToUi();
     await output.finalize();
     finished = true;
+    if (signal?.aborted) throw abortError();
     const buffer = target.buffer;
     if (!buffer) throw new Error('the encoder produced no data');
     report('finalizing', 1, totalFrames);
