@@ -73,7 +73,9 @@ features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + p
                          (split screen: the canvas cut into cells, every selected clip fitted into one),
                          repeat.ts + repeatActions.ts (a row of copies, each a step further), keyTools.ts +
                          keyActions.ts + keyClipboard.ts (reverse / fit / repeat / wiggle / copy a whole animation),
-                         textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line)
+                         textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line),
+                         cascade.ts + cascadeActions.ts (a selection staggered in time, fly in / out keys),
+                         pathMoves.ts + pathActions.ts (motion paths written as position keys)
 features/export/         ExportDialog + the offline renderer
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
