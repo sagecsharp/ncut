@@ -1,21 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { Film, Image as ImageIcon, Music, Plus, Search, Trash2, Upload } from 'lucide-react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Music, Plus, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { Dialog } from '../../components/ui/Dialog';
 import { ACCEPTED_TYPES, deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { getThumbnail } from '../../media/derived';
 import { beginDrag, endDrag, isFileDrag } from '../../lib/dnd';
-import { DEFAULT_TRANSFORM } from '../../types';
-import type { MediaAsset, MediaKind, TextClip } from '../../types';
-import { DEFAULT_TEXT_ANIM_IN, DEFAULT_TEXT_ANIM_LOOP, DEFAULT_TEXT_ANIM_OUT } from '../../engine/textAnim';
+import type { MediaAsset, MediaKind } from '../../types';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { EffectsTab } from './EffectsTab';
 import { TransitionsTab } from './TransitionsTab';
+import { ShapesTab } from './ShapesTab';
+import { TEXT_PRESETS } from './textPresets';
+import type { TextPreset } from './textPresets';
 import './media.css';
 
-type Tab = 'media' | 'text' | 'effects' | 'transitions';
+type Tab = 'media' | 'text' | 'shapes' | 'effects' | 'transitions';
 type Filter = 'all' | MediaKind;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -318,7 +320,12 @@ function MediaTab() {
         {!hasAssets ? (
           <div className="empty">
             <Upload size={20} />
-            <span>drop files here or click import</span>
+            <span>drop video, audio or image files here</span>
+            <span className="media-empty-sub">or pick them from your computer. files stay in this browser.</span>
+            <button className="btn" title="import video, audio or image files" onClick={onPick}>
+              <Upload size={14} />
+              import files
+            </button>
           </div>
         ) : visible.length === 0 ? (
           <div className="empty">no matching assets</div>
@@ -360,266 +367,6 @@ function MediaTab() {
 }
 
 /* ---------- text tab ---------- */
-
-interface TextPreset {
-  id: string;
-  label: string;
-  hint: string;
-  sample: string;
-  /** previews are scaled down copies of the real style */
-  previewSize: number;
-  weight: 400 | 700;
-  boxed: boolean;
-  align: 'left' | 'center';
-  /** extra look of the preview sample */
-  look?: { family?: string; upper?: boolean; spacing?: number; stroke?: boolean; shadow?: boolean; pill?: boolean };
-  build(width: number, height: number): Partial<TextClip>;
-}
-
-const TEXT_PRESETS: TextPreset[] = [
-  {
-    id: 'title',
-    label: 'title',
-    hint: '120px bold',
-    sample: 'title',
-    previewSize: 26,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    build: () => ({ name: 'title', text: 'title', fontSize: 120, fontWeight: 700, align: 'center' }),
-  },
-  {
-    id: 'subtitle',
-    label: 'subtitle',
-    hint: '64px regular',
-    sample: 'subtitle',
-    previewSize: 18,
-    weight: 400,
-    boxed: false,
-    align: 'center',
-    build: () => ({ name: 'subtitle', text: 'subtitle', fontSize: 64, fontWeight: 400, align: 'center' }),
-  },
-  {
-    id: 'caption',
-    label: 'caption',
-    hint: '48px with box',
-    sample: 'caption',
-    previewSize: 14,
-    weight: 700,
-    boxed: true,
-    align: 'center',
-    build: (_w, h) => ({
-      name: 'caption',
-      text: 'caption',
-      fontSize: 48,
-      fontWeight: 700,
-      align: 'center',
-      background: '#000000b3',
-      transform: { ...DEFAULT_TRANSFORM, y: Math.round(h * 0.35) },
-    }),
-  },
-  {
-    id: 'lower-third',
-    label: 'lower third',
-    hint: '56px left aligned',
-    sample: 'lower third',
-    previewSize: 16,
-    weight: 700,
-    boxed: true,
-    align: 'left',
-    build: (w, h) => ({
-      name: 'lower third',
-      text: 'lower third',
-      fontSize: 56,
-      fontWeight: 700,
-      align: 'left',
-      background: '#000000b3',
-      transform: { ...DEFAULT_TRANSFORM, x: -Math.round(w * 0.28), y: Math.round(h * 0.33) },
-    }),
-  },
-  {
-    id: 'outline',
-    label: 'outline',
-    hint: 'stroked letters',
-    sample: 'outline',
-    previewSize: 24,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    look: { stroke: true },
-    build: () => ({
-      name: 'outline',
-      text: 'outline',
-      fontSize: 130,
-      fontWeight: 700,
-      align: 'center',
-      color: '#ffffff',
-      stroke: { color: '#000000', width: 0.08 },
-    }),
-  },
-  {
-    id: 'shadow',
-    label: 'shadow',
-    hint: 'soft drop shadow',
-    sample: 'shadow',
-    previewSize: 24,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    look: { shadow: true },
-    build: () => ({
-      name: 'shadow',
-      text: 'shadow',
-      fontSize: 120,
-      fontWeight: 700,
-      align: 'center',
-      shadow: { color: '#000000', opacity: 0.7, blur: 0.08, distance: 0.06, angle: 60 },
-    }),
-  },
-  {
-    id: 'spaced-caps',
-    label: 'spaced caps',
-    hint: 'wide capitals',
-    sample: 'spaced caps',
-    previewSize: 15,
-    weight: 400,
-    boxed: false,
-    align: 'center',
-    look: { upper: true, spacing: 0.3 },
-    build: () => ({
-      name: 'spaced caps',
-      text: 'spaced caps',
-      fontFamily: 'Montserrat',
-      fontSize: 64,
-      fontWeight: 400,
-      align: 'center',
-      uppercase: true,
-      letterSpacing: 0.3,
-    }),
-  },
-  {
-    id: 'bold-impact',
-    label: 'bold impact',
-    hint: 'big condensed caps',
-    sample: 'impact',
-    previewSize: 26,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    look: { family: 'Anton, sans-serif', upper: true },
-    build: () => ({
-      name: 'bold impact',
-      text: 'impact',
-      fontFamily: 'Anton',
-      fontSize: 180,
-      fontWeight: 400,
-      align: 'center',
-      uppercase: true,
-      stroke: { color: '#000000', width: 0.04 },
-    }),
-  },
-  {
-    id: 'pill',
-    label: 'pill tag',
-    hint: 'rounded box',
-    sample: 'pill tag',
-    previewSize: 14,
-    weight: 700,
-    boxed: true,
-    align: 'center',
-    look: { pill: true },
-    build: (_w, h) => ({
-      name: 'pill tag',
-      text: 'pill tag',
-      fontFamily: 'Montserrat',
-      fontSize: 44,
-      fontWeight: 700,
-      align: 'center',
-      color: '#000000',
-      background: '#ffffff',
-      backgroundRadius: 1,
-      backgroundPadding: 0.4,
-      transform: { ...DEFAULT_TRANSFORM, y: Math.round(h * 0.3) },
-    }),
-  },
-  {
-    id: 'typewriter',
-    label: 'typewriter',
-    hint: 'types in letter by letter',
-    sample: 'typewriter',
-    previewSize: 16,
-    weight: 400,
-    boxed: false,
-    align: 'center',
-    look: { family: "'JetBrains Mono', monospace" },
-    build: () => ({
-      name: 'typewriter',
-      text: 'typewriter',
-      fontFamily: 'JetBrains Mono',
-      fontSize: 80,
-      fontWeight: 400,
-      align: 'center',
-      animIn: { id: 'typewriter', duration: 1.2 },
-    }),
-  },
-  {
-    id: 'pop-in',
-    label: 'pop in',
-    hint: 'pops in, fades out',
-    sample: 'pop in',
-    previewSize: 22,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    build: () => ({
-      name: 'pop in',
-      text: 'pop in',
-      fontSize: 120,
-      fontWeight: 700,
-      align: 'center',
-      animIn: { id: 'pop', duration: DEFAULT_TEXT_ANIM_IN },
-      animOut: { id: 'fade', duration: DEFAULT_TEXT_ANIM_OUT },
-    }),
-  },
-  {
-    id: 'wave',
-    label: 'wave',
-    hint: 'letters ripple up and down',
-    sample: 'wave',
-    previewSize: 24,
-    weight: 700,
-    boxed: false,
-    align: 'center',
-    build: () => ({
-      name: 'wave',
-      text: 'wave',
-      fontSize: 120,
-      fontWeight: 700,
-      align: 'center',
-      animLoop: { id: 'wave', duration: DEFAULT_TEXT_ANIM_LOOP },
-    }),
-  },
-  {
-    id: 'handwritten',
-    label: 'handwritten',
-    hint: 'script, rises in',
-    sample: 'handwritten',
-    previewSize: 20,
-    weight: 400,
-    boxed: false,
-    align: 'center',
-    look: { family: 'Pacifico, cursive' },
-    build: () => ({
-      name: 'handwritten',
-      text: 'handwritten',
-      fontFamily: 'Pacifico',
-      fontSize: 110,
-      fontWeight: 400,
-      align: 'center',
-      animIn: { id: 'rise', duration: DEFAULT_TEXT_ANIM_IN },
-    }),
-  },
-];
 
 function canvasSize(): { w: number; h: number } {
   const p = useEditor.getState().project;
@@ -678,52 +425,40 @@ function TextTab() {
 
 /* ---------- panel ---------- */
 
+const TABS: { id: Tab; label: string; tip: string; icon: LucideIcon }[] = [
+  { id: 'media', label: 'media', tip: 'imported files', icon: Film },
+  { id: 'text', label: 'text', tip: 'text presets', icon: Type },
+  { id: 'shapes', label: 'shapes', tip: 'shapes and backgrounds', icon: Shapes },
+  { id: 'effects', label: 'effects', tip: 'effects for the timeline', icon: Sparkles },
+  { id: 'transitions', label: 'transitions', tip: 'transitions between clips', icon: ArrowLeftRight },
+];
+
 export function MediaPanel() {
   const [tab, setTab] = useState<Tab>('media');
   return (
     <div className="panel media-panel">
       <div className="tabs" role="tablist">
-        <button
-          className={`tab${tab === 'media' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={tab === 'media'}
-          title="imported files"
-          onClick={() => setTab('media')}
-        >
-          media
-        </button>
-        <button
-          className={`tab${tab === 'text' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={tab === 'text'}
-          title="text presets"
-          onClick={() => setTab('text')}
-        >
-          text
-        </button>
-        <button
-          className={`tab${tab === 'effects' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={tab === 'effects'}
-          title="effects for the timeline"
-          onClick={() => setTab('effects')}
-        >
-          effects
-        </button>
-        <button
-          className={`tab${tab === 'transitions' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={tab === 'transitions'}
-          title="transitions between clips"
-          onClick={() => setTab('transitions')}
-        >
-          transitions
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={`tab${tab === t.id ? ' is-active' : ''}`}
+            role="tab"
+            aria-selected={tab === t.id}
+            aria-label={t.label}
+            title={t.tip}
+            onClick={() => setTab(t.id)}
+          >
+            <t.icon className="media-tab-icon" size={14} />
+            <span className="media-tab-label">{t.label}</span>
+          </button>
+        ))}
       </div>
       {tab === 'media' ? (
         <MediaTab />
       ) : tab === 'text' ? (
         <TextTab />
+      ) : tab === 'shapes' ? (
+        <ShapesTab />
       ) : tab === 'effects' ? (
         <EffectsTab />
       ) : (

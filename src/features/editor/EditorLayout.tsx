@@ -12,9 +12,8 @@ import { ProjectSettingsDialog } from '../shell/ProjectSettingsDialog';
 import { ShortcutsDialog } from '../shell/ShortcutsDialog';
 import { useShortcuts } from '../shell/useShortcuts';
 import { Timeline } from '../timeline/Timeline';
+import { LAYOUT_RESET_EVENT, LAYOUT_STORAGE_KEY as STORAGE_KEY } from './layoutReset';
 import './editor.css';
-
-const STORAGE_KEY = 'ncut.layout';
 
 interface Sizes {
   left: number;
@@ -22,13 +21,16 @@ interface Sizes {
   bottom: number;
 }
 
+/** the five media tabs need about 280px */
+export const MIN_LEFT = 280;
+
 const DEFAULTS: Sizes = { left: 300, right: 300, bottom: 320 };
 
 /** single source of the panel limits. also used on load and when the window shrinks */
 function clampSizes(s: Sizes): Sizes {
   const fin = (v: number, d: number) => (Number.isFinite(v) ? v : d);
   return {
-    left: clamp(fin(s.left, DEFAULTS.left), 240, Math.max(240, window.innerWidth * 0.4)),
+    left: clamp(fin(s.left, DEFAULTS.left), MIN_LEFT, Math.max(MIN_LEFT, window.innerWidth * 0.4)),
     right: clamp(fin(s.right, DEFAULTS.right), 280, Math.max(280, window.innerWidth * 0.4)),
     bottom: clamp(fin(s.bottom, DEFAULTS.bottom), 140, Math.max(140, window.innerHeight - 220)),
   };
@@ -79,6 +81,13 @@ export function EditorLayout() {
       });
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // settings > reset layout: the saved sizes are already cleared, go back to the defaults
+  useEffect(() => {
+    const onReset = () => setSizes(clampSizes(DEFAULTS));
+    window.addEventListener(LAYOUT_RESET_EVENT, onReset);
+    return () => window.removeEventListener(LAYOUT_RESET_EVENT, onReset);
   }, []);
 
   const onDown = useCallback(
