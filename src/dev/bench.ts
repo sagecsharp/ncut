@@ -7,7 +7,7 @@
  * - `golden`  stores frames in indexeddb ('ncut-bench') and compares later builds against them, so a
  *             speedup can prove that it did not change a single pixel
  */
-import { ALL_FORMATS, BlobSource, CanvasSink, EncodedPacketSink, Input } from 'mediabunny';
+import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, EncodedPacketSink, EncodedVideoPacketSource, Input, Mp4OutputFormat, Output, VideoSampleSink } from 'mediabunny';
 import type { Clip, MediaAsset, Project, VideoClip } from '../types';
 import { CANVAS_PRESETS, createCameraClip, createClipFromAsset, createEffectClip, createProject, createShapeClip, createTextClip, createTrack } from '../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../lib/templates';
@@ -18,6 +18,8 @@ import { beginExport, endExport } from '../engine/exportState';
 import { exportProject, outputSize } from '../features/export/exporter';
 import type { ExportOptions, ExportStats } from '../features/export/exporter';
 import { importFiles } from '../media/importer';
+import { getFilmstrip, getThumbnail, getWaveform, releaseDerived } from '../media/derived';
+import { pendingMediaCount, whenMediaStored } from '../storage/pendingMedia';
 import { useEditor } from '../store/editorStore';
 import * as session from '../store/session';
 
@@ -620,4 +622,9 @@ export const bench = {
   lastBlob: () => lastBlob,
   fileCheck,
   golden,
+  /** thumbnails, filmstrips and waveforms as the editor asks for them, and the copy of imported files into storage */
+  derived: { getFilmstrip, getThumbnail, getWaveform, releaseDerived },
+  stored: { pendingMediaCount, whenMediaStored },
+  /** the media library itself, for timing experiments from a script */
+  mb: { ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, EncodedPacketSink, EncodedVideoPacketSource, Input, Mp4OutputFormat, Output, VideoSampleSink },
 };

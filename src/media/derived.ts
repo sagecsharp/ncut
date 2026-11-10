@@ -5,11 +5,15 @@
  * all heavy work goes through one small priority queue (see derivedQueue.ts), so only one job runs at a time, and each job
  * yields to the main thread regularly so drags and playback stay smooth.
  */
-import { ALL_FORMATS, AudioSampleSink, BlobSource, CanvasSink, Input } from 'mediabunny';
+import { ALL_FORMATS, AudioSampleSink, BlobSource, CanvasSink, EncodedPacketSink, Input, VideoSampleSink } from 'mediabunny';
+import type { InputVideoTrack } from 'mediabunny';
 import type { MediaAsset } from '../types';
 import { useEditor } from '../store/editorStore';
 import { getAssetBlob, getAssetUrl } from './registry';
 import { seekFrame } from './seekFrame';
+import { pickPosterTime, pickSlotTime } from './stripPlan';
+import { createShrinker, shrunkSize } from './shrink';
+import { dataUrlToBlob } from './dataUrl';
 import { createScheduler } from './derivedQueue';
 import { thumbCacheKey, waveCacheKey } from './derivedCachePlan';
 import { getCachedBlob, getCachedPeaks, putCachedBlob, putCachedPeaks } from './derivedStore';
@@ -94,7 +98,26 @@ const waveforms = new Map<string, Promise<WaveformData | null>>();
 
 type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
 
+/** pictures up to this many pixels are encoded on the spot (a poster is 320 wide) */
+const ENCODE_NOW_MAX_PIXELS = 640 * 640;
+
 function canvasToBlob(canvas: AnyCanvas, type: string, quality: number): Promise<Blob | null> {
+  // toBlob / convertToBlob wait for an idle moment of the page, up to a second (dataUrl.ts). a small picture is
+  // encoded right here instead.
+  if (typeof document !== 'undefined' && canvas.width * canvas.height <= ENCODE_NOW_MAX_PIXELS) {
+    try {
+      let el: HTMLCanvasElement;
+      if (canvas instanceof HTMLCanvasElement) el = canvas;
+      else {
+        el = makeCanvas(canvas.width, canvas.height);
+        el.getContext('2d')?.drawImage(canvas, 0, 0);
+      }
+      const blob = dataUrlToBlob(el.toDataURL(type, quality));
+      if (blob && blob.type === type) return Promise.resolve(blob);
+    } catch {
+      /* the slow way below */
+    }
+  }
   if ('convertToBlob' in canvas) return canvas.convertToBlob({ type, quality }).catch(() => null);
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), type, quality));
 }
@@ -195,17 +218,72 @@ async function thumbFromImage(blob: Blob): Promise<Blob | null> {
   return canvasToBlob(c, 'image/jpeg', THUMB_QUALITY);
 }
 
-async function thumbFromVideoMediabunny(blob: Blob, duration: number): Promise<Blob | null> {
+/**
+ * the frames of a video at these times (in order) as small canvases. `fast`: decoded frames are shrunk by the
+ * gpu (shrink.ts), about 3 ms each instead of 50 for 4k. it throws where that cannot work, then the caller asks
+ * again without it and gets mediabunny's own canvas drawing. a canvas is only good until the next one comes.
+ */
+async function* smallFrames(
+  track: InputVideoTrack,
+  stamps: number[],
+  want: { width?: number; height?: number },
+  fast: boolean,
+): AsyncGenerator<AnyCanvas | null, void, undefined> {
+  if (!fast) {
+    const sink = new CanvasSink(track, { ...want, poolSize: 2 });
+    for await (const wrapped of sink.canvasesAtTimestamps(stamps)) yield wrapped ? wrapped.canvas : null;
+    return;
+  }
+  const rotation = await track.getRotation();
+  const size = shrunkSize(await track.getSquarePixelWidth(), await track.getSquarePixelHeight(), rotation, want);
+  const shrinker = createShrinker(size.width, size.height, rotation, await track.getFlip());
+  if (!shrinker) throw new Error('no gpu shrinker');
+  try {
+    const sink = new VideoSampleSink(track);
+    for await (const sample of sink.samplesAtTimestamps(stamps)) {
+      if (!sample) {
+        yield null;
+        continue;
+      }
+      let canvas: AnyCanvas | null = null;
+      let frame: VideoFrame | null = null;
+      try {
+        frame = sample.toVideoFrame();
+        canvas = shrinker.draw(frame);
+      } finally {
+        frame?.close();
+        sample.close();
+      }
+      if (!canvas) throw new Error('the gpu shrinker failed');
+      yield canvas;
+    }
+  } finally {
+    shrinker.dispose();
+  }
+}
+
+async function thumbFromVideoMediabunny(blob: Blob, duration: number, fast: boolean): Promise<Blob | null> {
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track || !(await track.canDecode())) return null;
-    const sink = new CanvasSink(track, { width: THUMB_WIDTH });
     const d = duration > 0 ? duration : await input.computeDuration();
     const first = await track.getFirstTimestamp();
-    const wrapped = await sink.getCanvas(Math.max(first, d * 0.1));
-    if (!wrapped) return null;
-    return canvasToBlob(wrapped.canvas, 'image/jpeg', THUMB_QUALITY);
+    const wanted = Math.max(first, d * 0.1);
+    // the key frame before that moment is one decode instead of half a key frame distance of them (stripPlan.ts)
+    let at = wanted;
+    try {
+      const key = await new EncodedPacketSink(track).getKeyPacket(wanted, { metadataOnly: true });
+      at = pickPosterTime(wanted, first, key ? key.timestamp : null);
+    } catch {
+      at = wanted;
+    }
+    for await (const canvas of smallFrames(track, [at], { width: THUMB_WIDTH }, fast)) {
+      if (!canvas) return null;
+      const out = await canvasToBlob(canvas, 'image/jpeg', THUMB_QUALITY);
+      return out;
+    }
+    return null;
   } finally {
     input.dispose();
   }
@@ -245,10 +323,13 @@ export function getThumbnail(assetId: string): Promise<string | null> {
     try {
       if (asset.kind === 'image') out = await thumbFromImage(blob);
       else {
-        try {
-          out = await thumbFromVideoMediabunny(blob, asset.duration);
-        } catch {
-          out = null;
+        for (const fast of [true, false]) {
+          try {
+            out = await thumbFromVideoMediabunny(blob, asset.duration, fast);
+          } catch {
+            out = null;
+          }
+          if (out || token.cancelled) break;
         }
         if (!out) out = await thumbFromVideoElement(assetId, asset.duration);
       }
@@ -267,7 +348,7 @@ export function getThumbnail(assetId: string): Promise<string | null> {
   });
   // assets never change after import, so a thumbnail stored by an earlier session is the same picture
   const p = (async (): Promise<string | null> => {
-    const hit = await getCachedBlob(cacheKey);
+    const hit = await getCachedBlob(cacheKey, asset.createdAt);
     if (!hit) return compute();
     if (token.cancelled) return null;
     const url = URL.createObjectURL(hit);
@@ -290,31 +371,67 @@ function frameTimes(duration: number, count: number): number[] {
   return times;
 }
 
+/**
+ * the time to decode for every slot of a strip: the key frame inside the slot where there is one (one decode
+ * instead of a run from the key frame before), else the middle as asked. see stripPlan.ts. the answers only
+ * read the file's index. never throws: a file that cannot say where its key frames are keeps the middles.
+ */
+async function slotTimes(track: InputVideoTrack, stamps: number[], half: number, token: Token): Promise<number[]> {
+  const out = stamps.slice();
+  if (!(half > 0)) return out;
+  try {
+    const packets = new EncodedPacketSink(track);
+    let sliceStart = now();
+    for (let i = 0; i < stamps.length; i++) {
+      if (token.cancelled) return out;
+      const center = stamps[i]!;
+      const before = await packets.getKeyPacket(center, { metadataOnly: true });
+      const after = before ? await packets.getNextKeyPacket(before, { metadataOnly: true }) : null;
+      const t = pickSlotTime(center, half, before ? before.timestamp : null, after ? after.timestamp : null);
+      // times stay in order, whatever the file says
+      out[i] = i > 0 && t < out[i - 1]! ? center : t;
+      if (now() - sliceStart > SLICE_MS) {
+        await nextTask();
+        sliceStart = now();
+      }
+    }
+    return out;
+  } catch {
+    return stamps.slice();
+  }
+}
+
 async function filmstripMediabunny(
   blob: Blob,
   times: number[],
+  half: number,
   pixelHeight: number,
   token: Token,
-): Promise<ImageBitmap[] | null> {
+  fast: boolean,
+): Promise<Filmstrip | null> {
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
   const frames: ImageBitmap[] = [];
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track || !(await track.canDecode())) return null;
-    const sink = new CanvasSink(track, { height: pixelHeight, poolSize: 2 });
     const first = await track.getFirstTimestamp();
-    const stamps = times.map((t) => Math.max(first, t));
+    const stamps = await slotTimes(
+      track,
+      times.map((t) => Math.max(first, t)),
+      half,
+      token,
+    );
     let last: ImageBitmap | null = null;
     let sliceStart = now();
     let i = 0;
-    for await (const wrapped of sink.canvasesAtTimestamps(stamps)) {
+    for await (const canvas of smallFrames(track, stamps, { height: pixelHeight }, fast)) {
       if (token.cancelled) {
         for (const f of frames) f.close();
         return null;
       }
       let bmp: ImageBitmap;
-      if (wrapped) {
-        bmp = await createImageBitmap(wrapped.canvas);
+      if (canvas) {
+        bmp = await createImageBitmap(canvas);
         last = bmp;
       } else if (last) {
         bmp = await createImageBitmap(last);
@@ -335,9 +452,9 @@ async function filmstripMediabunny(
       if (frames.length === 0) return null;
       const pad: ImageBitmap[] = [];
       for (let k = 0; k < lead; k++) pad.push(await createImageBitmap(frames[0]!));
-      return [...pad, ...frames];
+      return { times: stamps, frames: [...pad, ...frames] };
     }
-    return frames;
+    return { times: stamps, frames };
   } catch {
     for (const f of frames) f.close();
     return null;
@@ -418,14 +535,17 @@ export function getFilmstrip(
     if (filmstrips.get(assetId) !== fresh) return SUPERSEDED;
     const blob = getAssetBlob(assetId);
     if (!blob) return null;
-    let frames = await filmstripMediabunny(blob, times, pixelHeight, token);
-    if (!frames && !token.cancelled) frames = await filmstripElement(assetId, times, pixelHeight, token);
-    if (!frames) return null;
+    let result = await filmstripMediabunny(blob, times, asset.duration / total / 2, pixelHeight, token, true);
+    if (!result && !token.cancelled) result = await filmstripMediabunny(blob, times, asset.duration / total / 2, pixelHeight, token, false);
+    if (!result && !token.cancelled) {
+      const frames = await filmstripElement(assetId, times, pixelHeight, token);
+      if (frames) result = { times, frames };
+    }
+    if (!result) return null;
     if (token.cancelled) {
-      for (const f of frames) f.close();
+      for (const f of result.frames) f.close();
       return null;
     }
-    const result = { times, frames };
     fresh.done = result;
     return result;
   }).then((r) => (r === SUPERSEDED ? (filmstrips.get(assetId)?.promise ?? null) : r));
@@ -555,7 +675,7 @@ export function getWaveform(assetId: string): Promise<WaveformData | null> {
   });
   // assets never change after import, so peaks stored by an earlier session are the same numbers
   const p = (async (): Promise<WaveformData | null> => {
-    const hit = await getCachedPeaks(cacheKey);
+    const hit = await getCachedPeaks(cacheKey, asset.createdAt);
     if (!hit) return compute();
     if (token.cancelled) {
       retry = true;

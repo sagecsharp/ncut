@@ -5,7 +5,7 @@
  * every failure (no indexeddb, quota, private mode, timeout) just means "not cached" and callers compute
  * the value like before.
  */
-import { MAX_AGE_MS, MAX_TOTAL_BYTES, needsTouch, planCleanup } from './derivedCachePlan';
+import { MAX_AGE_MS, MAX_TOTAL_BYTES, mayBeCached, needsTouch, planCleanup } from './derivedCachePlan';
 import type { CacheEntryInfo } from './derivedCachePlan';
 
 const DB_NAME = 'ncut-derived';
@@ -21,6 +21,11 @@ interface Row {
   bytes: number;
   usedAt: number;
 }
+
+/** when this page started (epoch ms): assets made later cannot be in the cache of an earlier session */
+const SESSION_START = typeof performance !== 'undefined' && performance.timeOrigin > 0 ? performance.timeOrigin : Date.now();
+/** the keys this session stored */
+const written = new Set<string>();
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 let cleanupScheduled = false;
@@ -125,13 +130,15 @@ function withTimeout<T>(p: Promise<T | null>): Promise<T | null> {
   });
 }
 
-/** the encoded thumbnail stored under `key`, or null */
-export function getCachedBlob(key: string): Promise<Blob | null> {
+/** the encoded thumbnail stored under `key`, or null. `createdAt`: when the asset was imported (see mayBeCached) */
+export function getCachedBlob(key: string, createdAt?: number): Promise<Blob | null> {
+  if (!mayBeCached(createdAt, SESSION_START, written.has(key))) return Promise.resolve(null);
   return withTimeout(readRow(key).then((r) => (r && r.blob instanceof Blob && r.blob.size > 0 ? r.blob : null)));
 }
 
 /** the waveform peaks stored under `key`, or null (structured clone: a fresh array each time) */
-export function getCachedPeaks(key: string): Promise<Float32Array | null> {
+export function getCachedPeaks(key: string, createdAt?: number): Promise<Float32Array | null> {
+  if (!mayBeCached(createdAt, SESSION_START, written.has(key))) return Promise.resolve(null);
   return withTimeout(
     readRow(key).then((r) => (r && r.peaks instanceof Float32Array && r.peaks.length > 0 ? r.peaks : null)),
   );
@@ -140,6 +147,7 @@ export function getCachedPeaks(key: string): Promise<Float32Array | null> {
 /** fire and forget */
 export function putCachedBlob(key: string, blob: Blob): void {
   if (blob.size <= 0) return;
+  written.add(key);
   void writeRow({ key, blob, bytes: blob.size, usedAt: Date.now() });
 }
 
@@ -147,6 +155,7 @@ export function putCachedBlob(key: string, blob: Blob): void {
 export function putCachedPeaks(key: string, peaks: Float32Array): void {
   if (peaks.length <= 0) return;
   const copy = peaks.slice();
+  written.add(key);
   void writeRow({ key, peaks: copy, bytes: copy.byteLength, usedAt: Date.now() });
 }
 

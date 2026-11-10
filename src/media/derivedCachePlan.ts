@@ -49,6 +49,20 @@ export function planCleanup(
   return drop;
 }
 
+/**
+ * can the cache hold something for an asset? an asset imported after this page started has a new id, so no
+ * earlier session stored anything for it: only what this session wrote itself can be there. asking anyway is
+ * not free: indexeddb works through one queue per site, and right after an import that queue is busy copying the
+ * file into storage (a second for 400 mb), so the poster of a big new file showed up that much later.
+ * without a creation time the answer is yes (ask).
+ */
+export function mayBeCached(createdAt: number | undefined, sessionStart: number, wroteThisSession: boolean): boolean {
+  if (wroteThisSession) return true;
+  if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return true;
+  if (!Number.isFinite(sessionStart)) return true;
+  return createdAt < sessionStart;
+}
+
 export function needsTouch(usedAt: number, now: number): boolean {
   return !Number.isFinite(usedAt) || now - usedAt > TOUCH_AFTER_MS;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { needsTouch, planCleanup, thumbCacheKey, waveCacheKey } from './derivedCachePlan';
+import { mayBeCached, needsTouch, planCleanup, thumbCacheKey, waveCacheKey } from './derivedCachePlan';
 
 const DAY = 24 * 60 * 60 * 1000;
 const MB = 1024 * 1024;
@@ -49,5 +49,25 @@ describe('needsTouch', () => {
   it('only after half a day', () => {
     expect(needsTouch(1000, 1000 + 60_000)).toBe(false);
     expect(needsTouch(1000, 1000 + DAY)).toBe(true);
+  });
+});
+
+describe('mayBeCached', () => {
+  const start = 1_800_000_000_000;
+  it('asks for an asset from before this session', () => {
+    expect(mayBeCached(start - 1, start, false)).toBe(true);
+    expect(mayBeCached(start - 86_400_000, start, false)).toBe(true);
+  });
+  it('does not ask for an asset imported in this session', () => {
+    expect(mayBeCached(start, start, false)).toBe(false);
+    expect(mayBeCached(start + 5000, start, false)).toBe(false);
+  });
+  it('asks for what this session stored itself', () => {
+    expect(mayBeCached(start + 5000, start, true)).toBe(true);
+  });
+  it('asks when it cannot tell', () => {
+    expect(mayBeCached(undefined, start, false)).toBe(true);
+    expect(mayBeCached(Number.NaN, start, false)).toBe(true);
+    expect(mayBeCached(start + 1, Number.NaN, false)).toBe(true);
   });
 });
