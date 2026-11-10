@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Download, Keyboard, Redo2, Settings, Undo2 } from 'lucide-react';
+import { ArrowLeft, Download, Keyboard, Redo2, Search, Settings, Undo2 } from 'lucide-react';
 import { useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { closeProject, useSaveState } from '../../store/session';
 import type { SaveStatus } from '../../store/session';
 import { useUi } from '../../store/ui';
+import { CommandPalette } from './CommandPalette';
+import { openPalette } from './paletteStore';
 import './shell.css';
 
 const SAVE_LABEL: Record<SaveStatus, string> = {
@@ -121,6 +123,9 @@ export function Header() {
           <Redo2 size={16} />
         </button>
         <span className="shell-sep" />
+        <button className="icon-btn" onClick={openPalette} title="search actions (ctrl+k)" aria-label="search actions">
+          <Search size={16} />
+        </button>
         <button className="icon-btn" onClick={openShortcuts} title="keyboard shortcuts (?)" aria-label="keyboard shortcuts">
           <Keyboard size={16} />
         </button>
@@ -137,6 +142,7 @@ export function Header() {
           export
         </button>
       </div>
+      <CommandPalette />
     </header>
   );
 }

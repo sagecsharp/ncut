@@ -71,11 +71,29 @@ describe('shortcut table', () => {
     }
     expect(SHORTCUTS.find((s) => s.id === 'play-pause')?.mutates).toBeFalsy();
   });
-  it('j steps back a second, k pauses, l plays', () => {
-    expect(findShortcut(key('j'))?.id).toBe('back-second');
+  it('j shuttles back, k pauses, l shuttles forward', () => {
+    expect(findShortcut(key('j'))?.id).toBe('shuttle-back');
     expect(findShortcut(key('k'))?.id).toBe('pause');
-    expect(findShortcut(key('l'))?.id).toBe('play');
+    expect(findShortcut(key('l'))?.id).toBe('shuttle-forward');
     expect(findShortcut(key('j', { ctrlKey: true }))).toBeUndefined();
+    expect(SHORTCUTS.find((s) => s.id === 'shuttle-forward')?.description).toBe('play forward, again = faster');
+    expect(SHORTCUTS.find((s) => s.id === 'shuttle-back')?.description).toBe('play backwards, again = faster');
+  });
+  it('ctrl+k (and cmd+k) opens the palette and nothing else answers it', () => {
+    expect(findShortcut(key('k', { ctrlKey: true }))?.id).toBe('palette');
+    expect(findShortcut(key('K', { metaKey: true }))?.id).toBe('palette');
+    expect(SHORTCUTS.filter((s) => s.match(key('k', { ctrlKey: true }))).length).toBe(1);
+  });
+  it('no two runnable rows share a key combo in the same scope', () => {
+    const seen = new Map<string, string>();
+    for (const s of SHORTCUTS) {
+      if (s.info) continue;
+      for (const combo of s.keys) {
+        const k = combo.join('+');
+        expect(seen.get(k), k).toBeUndefined();
+        seen.set(k, s.id);
+      }
+    }
   });
   it('trim and ripple delete keep their keys, w e r only live in the scene view rows', () => {
     expect(findShortcut(key('[', { code: 'BracketLeft' }))?.id).toBe('trim-start');

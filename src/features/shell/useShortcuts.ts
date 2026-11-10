@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { interaction } from '../timeline/view';
+import { usePalette } from './paletteStore';
 import { findShortcut } from './shortcuts';
 
 const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'file', 'submit', 'reset']);
@@ -53,7 +54,7 @@ function pressRole(el: HTMLElement): string {
 }
 
 /** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
-const modalOpen = () => useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
+const modalOpen = () => usePalette.getState().open || useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
 /** registers the global keyboard shortcuts of the editor. call once from EditorLayout. */
 export function useShortcuts(): void {
   useEffect(() => {
