@@ -23,6 +23,7 @@ import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
 import { renderFrame, visibleClipsAt } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
+import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, renderAudioMix, sliceAudioBuffer } from './audioMix';
@@ -221,6 +222,10 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     lastReport = now;
     onProgress?.({ phase, progress: Math.min(1, Math.max(0, progress)), frame, totalFrames });
   };
+
+  // text must be drawn in its real font from the first frame (never rejects)
+  await ensureProjectFonts(project).catch(() => {});
+  if (signal?.aborted) throw abortError();
 
   // ---- audio mix (phase 1) ----
   let mix: AudioBuffer | null = null;

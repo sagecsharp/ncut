@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { Search, TriangleAlert } from 'lucide-react';
+import { Camera, Search, TriangleAlert } from 'lucide-react';
 import { usePlayback } from '../../store/playback';
 import { useEditor } from '../../store/editorStore';
 import { beginDrag, endDrag } from '../../lib/dnd';
@@ -217,6 +217,43 @@ const EffectCard = memo(function EffectCard({ def }: { def: EffectDef }) {
   );
 });
 
+/* ---------- 3d group ---------- */
+
+function addCameraAtPlayhead(): void {
+  // addCamera selects the new clip itself
+  useEditor.getState().addCamera({ start: usePlayback.getState().time });
+}
+
+const CAMERA_TIP = 'a camera clip moves the view for every 3d clip under it';
+
+function CameraCard() {
+  return (
+    <div
+      className="media-fx-card"
+      role="button"
+      tabIndex={0}
+      draggable
+      aria-label="camera"
+      title={`${CAMERA_TIP} - click to add at the playhead, or drag it onto the timeline`}
+      onClick={addCameraAtPlayhead}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          addCameraAtPlayhead();
+        }
+      }}
+      onDragStart={(e) => beginDrag(e, { kind: 'camera' })}
+      onDragEnd={endDrag}
+    >
+      <div className="media-fx-thumb media-fx-thumb-icon">
+        <Camera size={28} />
+      </div>
+      <div className="media-fx-name">camera</div>
+    </div>
+  );
+}
+
 /* ---------- tab ---------- */
 
 export function EffectsTab() {
@@ -265,6 +302,14 @@ export function EffectsTab() {
         </div>
       </div>
       <div className="media-scroll">
+        {!q || 'camera'.includes(q) || '3d'.includes(q) ? (
+          <section className="media-fx-group">
+            <h3 className="media-fx-heading">3d</h3>
+            <div className="media-grid">
+              <CameraCard />
+            </div>
+          </section>
+        ) : null}
         {groups.length === 0 ? (
           <div className="empty">no matching effects</div>
         ) : (

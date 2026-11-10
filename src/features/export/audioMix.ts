@@ -8,6 +8,7 @@ import type { InputAudioTrack } from 'mediabunny';
 import type { Clip, Project } from '../../types';
 import { isTimedClip } from '../../types';
 import { fadeFactor } from '../../lib/timelineOps';
+import { isAnimated, keyTimes, valueAt } from '../../lib/anim';
 import { getAssetBlob } from '../../media/registry';
 
 export const MIX_SAMPLE_RATE = 48000;
@@ -25,7 +26,8 @@ type TimedAudible = Extract<Clip, { type: 'video' | 'audio' }>;
 export function getAudibleClips(project: Project): TimedAudible[] {
   const out: TimedAudible[] = [];
   for (const clip of project.clips) {
-    if (!isTimedClip(clip) || clip.muted || clip.volume <= 0 || clip.duration <= 0) continue;
+    if (!isTimedClip(clip) || clip.muted || clip.duration <= 0) continue;
+    if (clip.volume <= 0 && !isAnimated(clip, 'volume')) continue;
     const track = project.tracks.find((t) => t.id === clip.trackId);
     if (!track || track.muted) continue;
     const asset = project.assets.find((a) => a.id === clip.assetId);
@@ -36,6 +38,11 @@ export function getAudibleClips(project: Project): TimedAudible[] {
   return out;
 }
 
+/** spacing of the gain samples (clip time) when the volume is animated */
+const GAIN_STEP = 0.01;
+/** a hold key jumps: sample this close on both sides of a key so the step stays sharp */
+const KEY_SNAP = 0.0005;
+
 /** gain breakpoints (local clip time -> gain) following volume and the fades */
 function gainPoints(clip: TimedAudible): Array<[number, number]> {
   const d = clip.duration;
@@ -45,9 +52,24 @@ function gainPoints(clip: TimedAudible): Array<[number, number]> {
   if (clip.fadeIn > 0 && clip.fadeOut > 0 && clip.fadeIn + clip.fadeOut > d) {
     times.add((d * clip.fadeIn) / (clip.fadeIn + clip.fadeOut));
   }
+  const animated = isAnimated(clip, 'volume');
+  if (animated) {
+    // exact key times, just around them (steps / bounces), and a regular grid in between
+    for (const k of keyTimes(clip.keyframes, 'volume')) {
+      if (k <= 0 || k >= d) continue;
+      times.add(k);
+      times.add(Math.max(0, k - KEY_SNAP));
+      times.add(Math.min(d, k + KEY_SNAP));
+    }
+    const n = Math.ceil(d / GAIN_STEP);
+    for (let i = 1; i < n; i++) times.add((d * i) / n);
+  }
   return [...times]
     .sort((a, b) => a - b)
-    .map((local) => [local, clip.volume * fadeFactor(clip, clip.start + local)] as [number, number]);
+    .map((local) => {
+      const vol = animated ? Math.max(0, valueAt(clip, 'volume', clip.start + local) ?? clip.volume) : clip.volume;
+      return [local, vol * fadeFactor(clip, clip.start + local)] as [number, number];
+    });
 }
 
 const FALLBACK_MAX_BYTES = 200 * 1024 * 1024;

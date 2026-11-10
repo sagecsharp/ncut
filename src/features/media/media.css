@@ -282,3 +282,18 @@
   white-space: nowrap;
   font-size: var(--font-size-sm);
 }
+
+.media-fx-thumb-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+.media-text-sample.is-pill {
+  padding: 2px 10px;
+  border-radius: 999px;
+}
+.media-text-sample.is-stroke {
+  -webkit-text-stroke: 1px var(--text-faint);
+  color: transparent;
+}
