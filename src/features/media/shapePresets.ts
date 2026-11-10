@@ -1,5 +1,6 @@
 /** shape cards of the shapes tab. pure data: no react, no canvas. */
-import type { ShapeClip } from '../../types';
+import { DEFAULT_TRANSFORM } from '../../types';
+import type { Shape3D, ShapeClip } from '../../types';
 
 export interface ShapePreset {
   id: string;
@@ -18,6 +19,19 @@ const OUTLINE = { color: '#ffffff', width: 12 };
 
 function named(label: string, fields: Partial<ShapeClip>): Partial<ShapeClip> {
   return { name: label, ...fields };
+}
+
+/** a little tilt so a solid reads as a solid instead of a flat figure (degrees) */
+const SOLID_TILT = { rotX: 14, rotY: 28 };
+
+/** a ready-made 3d solid: a flat colored figure wrapped on the given 3d shape */
+function solid(id: string, label: string, hint: string, shape: Shape3D): ShapePreset {
+  return {
+    id,
+    label,
+    hint,
+    build: () => named(label, { kind: 'rect', width: 400, height: 400, threeD: true, shape, transform: { ...DEFAULT_TRANSFORM, ...SOLID_TILT } }),
+  };
 }
 
 export const SHAPE_PRESETS: readonly ShapePreset[] = [
@@ -87,6 +101,9 @@ export const SHAPE_PRESETS: readonly ShapePreset[] = [
     hint: 'square with only a border',
     build: () => named('outline', { kind: 'rect', width: 400, height: 400, filled: false, stroke: { ...OUTLINE } }),
   },
+  solid('cone', 'cone', '3d, round base and a point', 'cone'),
+  solid('pyramid', 'pyramid', '3d, square base and a point', 'pyramid'),
+  solid('ring', 'ring', '3d, a donut', 'torus'),
   {
     id: 'background',
     label: 'background',
@@ -133,4 +150,45 @@ export function fitPreview(w: number, h: number, boxW: number, boxH: number, min
 /** background cards use the real frame ratio (the project size when the card is used, not at load) */
 export function isFullFrame(preset: Partial<ShapeClip>, canvasW: number, canvasH: number): boolean {
   return preset.kind === 'rect' && preset.width === Math.round(canvasW) && preset.height === Math.round(canvasH);
+}
+
+/** the 3d shape a card makes, or null for a flat figure */
+export function solidOf(preset: ShapePreset): Shape3D | null {
+  const b = preset.build(1920, 1080);
+  return b.threeD && b.shape && b.shape !== 'plane' ? b.shape : null;
+}
+
+/** one piece of a flat silhouette in a box from -0.5 to 0.5 on both axes (y down) */
+export type SolidPart =
+  | { kind: 'poly'; pts: [number, number][] }
+  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; hole?: boolean };
+
+/** a simple flat silhouette of a 3d shape, for the card thumbnail. filled with one color; holes cut out. */
+export function solidSilhouette(shape: Shape3D): SolidPart[] {
+  switch (shape) {
+    case 'cone':
+      return [
+        { kind: 'poly', pts: [[0, -0.5], [0.5, 0.36], [-0.5, 0.36]] },
+        { kind: 'ellipse', cx: 0, cy: 0.36, rx: 0.5, ry: 0.14 },
+      ];
+    case 'pyramid':
+      return [{ kind: 'poly', pts: [[0, -0.5], [0.5, 0.3], [0.05, 0.5], [-0.5, 0.3]] }];
+    case 'torus':
+      return [
+        { kind: 'ellipse', cx: 0, cy: 0, rx: 0.5, ry: 0.36 },
+        { kind: 'ellipse', cx: 0, cy: 0, rx: 0.2, ry: 0.12, hole: true },
+      ];
+    case 'box':
+      return [{ kind: 'poly', pts: [[-0.4, -0.4], [0.2, -0.4], [0.5, -0.2], [0.5, 0.4], [-0.1, 0.4], [-0.4, 0.2]] }];
+    case 'sphere':
+      return [{ kind: 'ellipse', cx: 0, cy: 0, rx: 0.5, ry: 0.5 }];
+    case 'cylinder':
+      return [
+        { kind: 'poly', pts: [[-0.4, -0.35], [0.4, -0.35], [0.4, 0.35], [-0.4, 0.35]] },
+        { kind: 'ellipse', cx: 0, cy: -0.35, rx: 0.4, ry: 0.13 },
+        { kind: 'ellipse', cx: 0, cy: 0.35, rx: 0.4, ry: 0.13 },
+      ];
+    default:
+      return [{ kind: 'poly', pts: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] }];
+  }
 }

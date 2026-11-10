@@ -73,3 +73,27 @@ export function splitTextClip(clip: TextClip, maxChars = 42): TextClip[] {
   }
   return pieces.length >= 2 ? pieces : [];
 }
+
+/** a guessed reading pace for a pasted transcript */
+export const CAPTION_CHARS_PER_SECOND = 15;
+/** a line of the transcript never gets less time than this (seconds) */
+export const MIN_LINE_SECONDS = 1;
+
+/**
+ * a pasted transcript as timed cues from `start` on. every non-empty line starts a new caption; a long line is cut
+ * into caption sized pieces (splitIntoCues). each line lasts length / charsPerSecond (at least MIN_LINE_SECONDS),
+ * back to back, so the pace is about charsPerSecond everywhere. [] for an empty transcript.
+ */
+export function transcriptToCues(text: string, start: number, charsPerSecond = CAPTION_CHARS_PER_SECOND, maxChars = 42): Cue[] {
+  const cps = charsPerSecond > 0 ? charsPerSecond : CAPTION_CHARS_PER_SECOND;
+  const out: Cue[] = [];
+  let t = Math.max(0, start);
+  for (const raw of String(text ?? '').split(/\r\n?|\n/)) {
+    const line = raw.replace(/\s+/g, ' ').trim();
+    if (!line) continue;
+    const duration = Math.max(MIN_LINE_SECONDS, line.length / cps);
+    out.push(...splitIntoCues(line, t, duration, maxChars));
+    t += duration;
+  }
+  return out;
+}

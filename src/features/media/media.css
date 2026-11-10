@@ -474,3 +474,20 @@
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* layers: row buttons, inline rename */
+.layers-act {
+  flex-shrink: 0;
+}
+.layers-row:not(:hover):not(:focus-within) .layers-act:not(.layers-eye) {
+  display: none;
+}
+.layers-rename {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-sort {
+  flex: 0 0 auto;
+  width: 84px;
+}

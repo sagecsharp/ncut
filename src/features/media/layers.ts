@@ -23,6 +23,15 @@ export interface LayerNode {
   hasChildren: boolean;
   /** name of the clip this one is attached to, when that clip is not its parent in this list */
   attachedTo: string | null;
+  trackId: string;
+  /** the first row of its track in this list: the row that carries the track's eye button */
+  firstOfTrack: boolean;
+  /** the clip has a mask (Spatial.mask) */
+  masked: boolean;
+  /** name of the clip it faces (lookAt 'clip' with a valid target), else null */
+  looksAt: string | null;
+  /** the name can be edited here. text clips show their text as the name, so they cannot. */
+  canRename: boolean;
 }
 
 /** how close to a clip's end still counts as inside, avoids float edges */
@@ -35,6 +44,13 @@ function clipName(clip: Clip): string {
   }
   if (clip.type === 'shape') return clip.name || clip.kind;
   return clip.name || clip.type;
+}
+
+/** name of the clip a clip faces, or null (lookAt is not 'clip', no target, unknown or not a picture) */
+export function lookTargetName(project: Pick<Project, 'clips'>, clip: Clip): string | null {
+  if (!isVisualClip(clip) || clip.lookAt !== 'clip' || !clip.lookTarget || clip.lookTarget === clip.id) return null;
+  const target = project.clips.find((c) => c.id === clip.lookTarget);
+  return target && isVisualClip(target) ? clipName(target) : null;
 }
 
 /** clips that can show in the outline: everything that draws something (not audio) */
@@ -92,6 +108,11 @@ export function buildLayerTree(project: Project, time: number, mode: LayersMode)
         group: cur.clip.group ?? null,
         hasChildren: kids.length > 0,
         attachedTo: cur.attachedTo,
+        trackId: cur.clip.trackId,
+        firstOfTrack: false,
+        masked: isVisualClip(cur.clip) && !!cur.clip.mask,
+        looksAt: lookTargetName(project, cur.clip),
+        canRename: cur.clip.type !== 'text',
       });
       for (let i = kids.length - 1; i >= 0; i--) stack.push({ clip: kids[i]!, depth: cur.depth + 1, attachedTo: null });
     }
@@ -99,6 +120,11 @@ export function buildLayerTree(project: Project, time: number, mode: LayersMode)
   for (const r of roots) visit(r, 0, rootAttach.get(r.id) ?? null);
   // clips left over sit in a loop of the data: show them at the root so nothing disappears
   for (const c of list) if (!seen.has(c.id)) visit(c, 0, null);
+  const tracksSeen = new Set<string>();
+  for (const n of out) {
+    n.firstOfTrack = !tracksSeen.has(n.trackId);
+    tracksSeen.add(n.trackId);
+  }
   return out;
 }
 

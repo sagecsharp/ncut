@@ -1,10 +1,11 @@
-import { useMemo, useRef } from 'react';
-import { Captions, FileDown, Scissors } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { Captions, FileDown, Scissors, TextCursorInput } from 'lucide-react';
 import { parseSubtitles, toSrt } from '../../../lib/subtitles';
 import type { Cue } from '../../../lib/subtitles';
 import { useEditor } from '../../../store/editorStore';
+import { usePlayback } from '../../../store/playback';
 import { useUi } from '../../../store/ui';
-import { clipsToCues, cuesToClips, splitTextClip } from './cues';
+import { clipsToCues, cuesToClips, splitTextClip, transcriptToCues } from './cues';
 import './captions.css';
 
 const editor = () => useEditor.getState();
@@ -31,6 +32,13 @@ export function CaptionTools() {
   const fileRef = useRef<HTMLInputElement>(null);
   const clips = useEditor((s) => s.project?.clips);
   const selection = useEditor((s) => s.selection);
+  const [pasting, setPasting] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const preview = useMemo(() => {
+    if (!pasting) return null;
+    const cues = transcriptToCues(transcript, 0);
+    return cues.length === 0 ? null : { count: cues.length, seconds: cues[cues.length - 1]!.end };
+  }, [pasting, transcript]);
 
   const textCount = useMemo(() => (clips ?? []).reduce((n, c) => n + (c.type === 'text' ? 1 : 0), 0), [clips]);
   const selectedText = useMemo(() => {
@@ -56,6 +64,17 @@ export function CaptionTools() {
     }
     const ids = editor().addClips(made, { trackName: 'captions' });
     useUi.getState().toast(ids.length === 1 ? 'added 1 caption' : `added ${ids.length} captions`);
+  };
+
+  const fromText = () => {
+    const { project } = editor();
+    if (!project) return;
+    const made = cuesToClips(transcriptToCues(transcript, usePlayback.getState().time), project.width, project.height);
+    if (made.length === 0) return;
+    const ids = editor().addClips(made, { trackName: 'captions' });
+    useUi.getState().toast(ids.length === 1 ? 'added 1 caption' : `added ${ids.length} captions`);
+    setTranscript('');
+    setPasting(false);
   };
 
   const split = () => {
@@ -127,6 +146,44 @@ export function CaptionTools() {
         <FileDown size={14} />
         <span>export</span>
       </button>
+      <button
+        type="button"
+        className={`btn btn-sm${pasting ? ' is-active' : ''}`}
+        title="paste a transcript and turn it into captions from the playhead"
+        aria-label="captions from text"
+        aria-expanded={pasting}
+        onClick={() => setPasting((v) => !v)}
+      >
+        <TextCursorInput size={14} />
+        <span>from text</span>
+      </button>
+      {pasting ? (
+        <div className="caption-paste">
+          <textarea
+            className="input caption-paste-text"
+            rows={4}
+            autoFocus
+            placeholder="paste your transcript. each line becomes a caption."
+            title="transcript"
+            aria-label="transcript"
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Escape') setPasting(false);
+            }}
+          />
+          <div className="caption-paste-row">
+            <span className="caption-paste-hint">{preview ? `${preview.count} captions, about ${Math.round(preview.seconds)}s` : 'timed at about 15 letters a second'}</span>
+            <button type="button" className="btn btn-sm" title="close without adding" onClick={() => setPasting(false)}>
+              cancel
+            </button>
+            <button type="button" className="btn btn-sm btn-primary" title="add the captions from the playhead on" disabled={!preview} onClick={fromText}>
+              add
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

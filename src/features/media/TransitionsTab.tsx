@@ -267,7 +267,7 @@ export function TransitionsTab() {
       </div>
       <div className="media-scroll">
         {groups.length === 0 ? (
-          <div className="empty">no matching transitions</div>
+          <div className="empty">nothing matches</div>
         ) : (
           groups.map((g) => (
             <section key={g.id} className="media-fx-group">
