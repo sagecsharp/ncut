@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
 import { hasKeyframes } from '../../lib/anim';
@@ -264,6 +264,9 @@ interface TextSectionProps {
   fontSize: number;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
+  strike: boolean;
+  hollow: boolean;
   align: TextAlign;
   color: string;
   background: string | null;
@@ -275,7 +278,7 @@ const ALIGNS: { value: TextAlign; title: string; icon: typeof AlignLeft }[] = [
   { value: 'right', title: 'align right', icon: AlignRight },
 ];
 
-const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, bold, italic, align, color, background }: TextSectionProps) {
+const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, bold, italic, underline, strike, hollow, align, color, background }: TextSectionProps) {
   return (
     <Section id="text" title="text">
       <textarea
@@ -302,7 +305,7 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
           onChange={(v) => actions().updateClip(id, { fontSize: v }, liveOpts())}
         />
       </Row>
-      <Row label="style" title="bold, italic and alignment">
+      <Row label="style" title="bold, italic, underline, strike, hollow and alignment">
         <div className="props-seg">
           <button
             type="button"
@@ -321,6 +324,36 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
             onClick={() => actions().updateClip(id, { italic: !italic })}
           >
             <Italic size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${underline ? ' is-active' : ''}`}
+            title="underline"
+            aria-label="underline"
+            aria-pressed={underline}
+            onClick={() => actions().updateClip(id, { underline: !underline })}
+          >
+            <Underline size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${strike ? ' is-active' : ''}`}
+            title="strike through"
+            aria-label="strike through"
+            aria-pressed={strike}
+            onClick={() => actions().updateClip(id, { strike: !strike })}
+          >
+            <Strikethrough size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${hollow ? ' is-active' : ''}`}
+            title="hollow letters: only the outline shows"
+            aria-label="hollow letters"
+            aria-pressed={hollow}
+            onClick={() => actions().updateClip(id, { hollow: !hollow })}
+          >
+            <SquareDashed size={14} />
           </button>
           <span className="props-seg-gap" />
           {ALIGNS.map(({ value, title, icon: Icon }) => (
@@ -423,6 +456,9 @@ export function ClipInspector({ id }: { id: string }) {
             fontSize={clip.fontSize}
             bold={clip.fontWeight >= 700}
             italic={clip.italic}
+            underline={!!clip.underline}
+            strike={!!clip.strike}
+            hollow={!!clip.hollow}
             align={clip.align}
             color={clip.color}
             background={clip.background}
