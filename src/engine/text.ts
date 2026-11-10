@@ -349,6 +349,7 @@ export function textSpill(clip: TextClip, animated: boolean): number {
   if (clip.stroke) s += clip.stroke.width;
   if (clip.shadow) s += clip.shadow.distance + clip.shadow.blur * 2;
   if (animated) s += 1.5;
+  if (clip.highlight?.background) s += 0.15; // the box behind the lit word reaches a little past the letters
   return s;
 }
 
@@ -378,6 +379,7 @@ export function textSignature(clip: TextClip): string {
     JSON.stringify(clip.gradient ?? 0),
     clip.curve,
     clip.wrapWidth,
+    clip.highlight ? JSON.stringify(clip.highlight) : '',
   ].join('|');
   sigCache.set(clip, { v, sig });
   return sig;
@@ -393,6 +395,56 @@ export function glyphAnimActive(clip: TextClip, local: number, units: ReturnType
   if (units.loop && units.loop.unit !== 'block' && clip.animLoop) return true;
   return false;
 }
+
+/* ---------- karaoke (pure) ---------- */
+
+/**
+ * which word is current at `progress` (0..1 over the clip's length). every word holds the stage for a slice of the
+ * clip proportional to its number of letters. -1 when there are no words.
+ */
+export function highlightIndexFromCounts(counts: ArrayLike<number>, progress: number): number {
+  const n = counts.length;
+  if (n === 0) return -1;
+  let total = 0;
+  for (let i = 0; i < n; i++) total += Math.max(1, counts[i]!);
+  const p = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0;
+  const at = p * total;
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    acc += Math.max(1, counts[i]!);
+    if (at < acc) return i;
+  }
+  return n - 1;
+}
+
+/** same as highlightIndexFromCounts for a list of words */
+export function highlightIndex(words: string[], progress: number): number {
+  return highlightIndexFromCounts(
+    words.map((w) => Array.from(w).length),
+    progress,
+  );
+}
+
+/** is the word lit? `current` = the current word (-1 = none) */
+export function wordLit(mode: 'word' | 'fill', word: number, current: number): boolean {
+  if (current < 0) return false;
+  return mode === 'fill' ? word <= current : word === current;
+}
+
+/** letters per word of a laid out text (spaces do not count) */
+function wordLetterCounts(layout: { glyphs: TextGlyph[]; words: number }): number[] {
+  const hit = wordCountCache.get(layout.glyphs);
+  if (hit) return hit;
+  const counts = new Array<number>(layout.words).fill(0);
+  for (const g of layout.glyphs) if (g.ch.trim() !== '') counts[g.word] = (counts[g.word] ?? 0) + 1;
+  wordCountCache.set(layout.glyphs, counts);
+  return counts;
+}
+const wordCountCache = new WeakMap<TextGlyph[], number[]>();
+
+/** padding and corner radius of the box behind the lit word, as fractions of the font size */
+const HL_PAD = 0.12;
+const HL_RADIUS = 0.2;
 
 /* ---------- letter layout ---------- */
 
@@ -508,13 +560,17 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   // letters are only drawn one by one when something needs it: spacing, a curve, a letter animation. a block animation
   // (pulse, wobble ...) moves the whole text, which stays on the cheap one fill per line path.
   const letterAnim = animated && glyphAnimActive(clip, local!, units!);
-  const perGlyph = letterAnim || extra !== 0 || m.spacing !== 0 || m.curve !== 0;
+  // karaoke needs the letters one by one too, but only while there is a time to light words at
+  const hl = local !== undefined && clip.highlight ? clip.highlight : null;
+  const perGlyph = letterAnim || extra !== 0 || m.spacing !== 0 || m.curve !== 0 || hl !== null;
   let layout: { glyphs: TextGlyph[]; words: number } | null = null;
   if (perGlyph) {
     if (extra !== 0) layout = layoutGlyphs(ctx, clip, m, extra);
     else layout = m.glyphCache ??= layoutGlyphs(ctx, clip, m, 0);
   }
   const count = layout ? layout.glyphs.length : 0;
+  let litWord = -1;
+  if (hl && layout) litWord = highlightIndexFromCounts(wordLetterCounts(layout), clip.duration > 0 ? local! / clip.duration : 0);
   // letter states once per frame, shared by the shadow / outline / fill passes
   const states: GlyphState[] | null =
     layout && letterAnim ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;
@@ -535,10 +591,13 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
    * moved = the letter has its own transform (the context is not the block's any more).
    * blurred letters use ctx.filter when `filter` is set, a fade otherwise.
    */
-  const each = (paint: (text: string, x: number, y: number, st: GlyphState | null, moved: boolean) => void, filter: boolean): void => {
+  const each = (
+    paint: (text: string, x: number, y: number, st: GlyphState | null, moved: boolean, glyph: TextGlyph | null) => void,
+    filter: boolean,
+  ): void => {
     if (!layout) {
       ctx.textAlign = clip.align;
-      for (let i = 0; i < m.lines.length; i++) paint(m.lines[i]!, lineX, top + m.lineHeight * (i + 0.5), null, false);
+      for (let i = 0; i < m.lines.length; i++) paint(m.lines[i]!, lineX, top + m.lineHeight * (i + 0.5), null, false, null);
       return;
     }
     ctx.textAlign = 'center';
@@ -548,13 +607,13 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
       const st = states ? states[i]! : null;
       if (!st || st === REST) {
         if (!g.rot) {
-          paint(g.ch, g.x, g.y, null, false);
+          paint(g.ch, g.x, g.y, null, false, g);
           continue;
         }
         ctx.save();
         ctx.translate(g.x, g.y);
         ctx.rotate(g.rot);
-        paint(g.ch, 0, 0, null, true);
+        paint(g.ch, 0, 0, null, true, g);
         ctx.restore();
         continue;
       }
@@ -570,13 +629,32 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
         if (filter && canFilter) ctx.filter = `blur(${(st.blur * fs * dev).toFixed(2)}px)`;
         else ctx.globalAlpha *= 1 - 0.7 * Math.min(1, st.blur * 4);
       }
-      paint(st.scramble !== undefined ? scrambleChar(g.ch, g.index, st.scramble) : g.ch, 0, 0, st, true);
+      paint(st.scramble !== undefined ? scrambleChar(g.ch, g.index, st.scramble) : g.ch, 0, 0, st, true, g);
       ctx.restore();
     }
   };
 
   const stroke = clip.stroke && clip.stroke.width > 0 ? clip.stroke : null;
   const strokeW = stroke ? stroke.width * fs * 2 : 0; // half of the line is hidden under the fill
+
+  if (hl && hl.background && layout && litWord >= 0 && m.curve === 0) {
+    // the box behind the current word sits under every letter pass (shadow, outline, fill)
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let yc = 0;
+    for (const g of layout.glyphs) {
+      if (g.word !== litWord || g.ch.trim() === '') continue;
+      x0 = Math.min(x0, g.x - g.w / 2);
+      x1 = Math.max(x1, g.x + g.w / 2);
+      yc = g.y;
+    }
+    if (x1 > x0) {
+      const pad = HL_PAD * fs;
+      ctx.fillStyle = hl.background;
+      roundedRect(ctx, x0 - pad, yc - fs / 2 - pad, x1 - x0 + pad * 2, fs + pad * 2, HL_RADIUS * fs);
+      ctx.fill();
+    }
+  }
 
   const shadow = clip.shadow && clip.shadow.opacity > 0 ? clip.shadow : null;
   if (shadow) {
@@ -611,8 +689,13 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const blockGrad = gradient ? blockGradient(ctx, gradient, innerW, innerH) : null;
   const base: string | CanvasGradient = blockGrad ?? clip.color;
   ctx.fillStyle = base;
-  each((text, x, y, st, moved) => {
-    if (st && st.hue !== undefined) {
+  each((text, x, y, st, moved, glyph) => {
+    if (hl && glyph && wordLit(hl.mode, glyph.word, litWord)) {
+      // a lit word takes the karaoke color whatever the fill or a color animation says
+      ctx.fillStyle = hl.color;
+      ctx.fillText(text, x, y);
+      ctx.fillStyle = base;
+    } else if (st && st.hue !== undefined) {
       // the color animations replace the gradient while they run
       ctx.fillStyle = hueColor(st.hue);
       ctx.fillText(text, x, y);

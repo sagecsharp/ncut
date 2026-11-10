@@ -1,7 +1,22 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextClip } from '../lib/factory';
-import { curveLayout, drawText, fontRetryDelay, glyphAnimActive, gradientLine, measureText, remapPoint, textSignature, wrapLine, wrapText } from './text';
-import { textAnimUnits } from './textAnim';
+import {
+  curveLayout,
+  drawText,
+  fontRetryDelay,
+  glyphAnimActive,
+  gradientLine,
+  highlightIndex,
+  highlightIndexFromCounts,
+  measureText,
+  remapPoint,
+  textSignature,
+  textSpill,
+  wordLit,
+  wrapLine,
+  wrapText,
+} from './text';
+import { textAnimActive, textAnimUnits } from './textAnim';
 import { ensureFont } from '../lib/fonts';
 
 vi.mock('../lib/fonts', () => ({ ensureFont: vi.fn(async () => true), fontsVersion: () => 0 }));
@@ -397,5 +412,109 @@ describe('font retry', () => {
     await vi.advanceTimersByTimeAsync(120000);
     measureText(clip); // it loaded: no more asking
     expect(ask).toHaveBeenCalledTimes(2);
+  });
+});
+
+/* ---------- karaoke ---------- */
+
+describe('highlightIndex', () => {
+  it('gives every word a slice proportional to its letters', () => {
+    const words = ['aa', 'bbbbbb', 'cc']; // 2 + 6 + 2 = 10
+    expect(highlightIndex(words, 0)).toBe(0);
+    expect(highlightIndex(words, 0.19)).toBe(0);
+    expect(highlightIndex(words, 0.2)).toBe(1);
+    expect(highlightIndex(words, 0.79)).toBe(1);
+    expect(highlightIndex(words, 0.8)).toBe(2);
+    expect(highlightIndex(words, 0.999)).toBe(2);
+  });
+  it('clamps the progress and survives odd input', () => {
+    const words = ['a', 'b'];
+    expect(highlightIndex(words, -3)).toBe(0);
+    expect(highlightIndex(words, 1)).toBe(1);
+    expect(highlightIndex(words, 7)).toBe(1);
+    expect(highlightIndex(words, NaN)).toBe(0);
+    expect(highlightIndex([], 0.5)).toBe(-1);
+    expect(highlightIndexFromCounts([0, 0], 0.6)).toBe(1); // empty words still get a slice
+  });
+  it('wordLit: one word, or everything up to the current one', () => {
+    expect(wordLit('word', 1, 1)).toBe(true);
+    expect(wordLit('word', 0, 1)).toBe(false);
+    expect(wordLit('fill', 0, 1)).toBe(true);
+    expect(wordLit('fill', 2, 1)).toBe(false);
+    expect(wordLit('fill', 0, -1)).toBe(false);
+  });
+});
+
+/** a context that records the fill color of every fillText and the rounded boxes */
+function recordCtx() {
+  const fills: { text: string; color: unknown }[] = [];
+  const boxes: number[][] = [];
+  const state: Record<string, unknown> = {
+    fillStyle: '#fff',
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    measureText: (s: string) => ({ width: Array.from(s).length * 10 }),
+    fillText: (text: string) => fills.push({ text, color: state.fillStyle }),
+    roundRect: (...a: number[]) => boxes.push(a),
+    rect: (...a: number[]) => boxes.push(a),
+  };
+  const ctx = new Proxy(state, {
+    get: (t, k: string) => (k in t ? t[k] : () => undefined),
+    set: (t, k: string, v) => {
+      t[k] = v;
+      return true;
+    },
+    has: (t, k: string) => k in t,
+  });
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, boxes };
+}
+
+describe('karaoke drawing', () => {
+  const mk = (extra: Partial<Parameters<typeof createTextClip>[2]> = {}) =>
+    createTextClip('t', 0, { text: 'aa bbbbbb cc', fontFamily: 'Karaoke A', duration: 10, color: '#ffffff', highlight: { color: '#ff0', mode: 'word' }, ...extra });
+
+  it('word mode colors only the current word', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk(), 5); // 0.5 -> second word
+    const lit = r.fills.filter((f) => f.color === '#ff0').map((f) => f.text);
+    expect(lit.join('')).toBe('bbbbbb');
+    expect(r.fills.filter((f) => f.color === '#ffffff').map((f) => f.text).join('')).toBe('aacc');
+  });
+  it('fill mode keeps the earlier words lit', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ highlight: { color: '#ff0', mode: 'fill' } }), 5);
+    expect(r.fills.filter((f) => f.color === '#ff0').map((f) => f.text).join('')).toBe('aabbbbbb');
+  });
+  it('lights nothing and stays on the cheap path without a time', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk());
+    expect(r.fills.every((f) => f.color === '#ffffff')).toBe(true);
+    expect(r.fills.map((f) => f.text)).toEqual(['aa bbbbbb cc']); // one fill per line
+  });
+  it('draws a rounded box behind the current word, but not on curved text', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ highlight: { color: '#ff0', mode: 'word', background: '#f00' } }), 0);
+    expect(r.boxes.length).toBe(1);
+    const [, , w, h, radius] = r.boxes[0]!;
+    expect(w).toBeCloseTo(20 + 2 * 0.12 * 96, 6);
+    expect(h).toBeCloseTo(96 * (1 + 0.24), 6);
+    expect(radius).toBeCloseTo(0.2 * 96, 6);
+    const c = recordCtx();
+    drawText(c.ctx, mk({ curve: 90, highlight: { color: '#ff0', mode: 'word', background: '#f00' } }), 0);
+    expect(c.boxes.length).toBe(0);
+    expect(c.fills.some((f) => f.color === '#ff0')).toBe(true);
+  });
+  it('works together with a letter animation', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ animLoop: { id: 'wobble', duration: 1 } }), 9.9);
+    expect(r.fills.filter((f) => f.color === '#ff0').map((f) => f.text).join('')).toBe('cc');
+  });
+  it('is part of the signature, counts as animated and leaves room for the box', () => {
+    const plain = mk({ highlight: null });
+    const lit = mk();
+    expect(textSignature(plain)).not.toBe(textSignature(lit));
+    expect(textSignature(lit)).not.toBe(textSignature(mk({ highlight: { color: '#0f0', mode: 'word' } })));
+    expect(textAnimActive(lit, 3)).toBe(true);
+    expect(textAnimActive(plain, 3)).toBe(false);
+    expect(textSpill(mk({ highlight: { color: '#ff0', mode: 'word', background: '#f00' } }), false)).toBeGreaterThan(textSpill(lit, false));
   });
 });

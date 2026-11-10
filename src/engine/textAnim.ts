@@ -64,6 +64,8 @@ export const DEFAULT_TEXT_ANIM_LOOP = 1.5;
 
 /** true when the clip's look changes over time because of a text animation at this clip-local time */
 export function textAnimActive(clip: TextClip, local: number): boolean {
+  // karaoke: the lit word changes with time, so the picture has to be redrawn (and cached 3d text textures too)
+  if (clip.highlight) return true;
   if (clip.animLoop) return true;
   if (clip.animIn && local < clip.animIn.duration) return true;
   if (clip.animOut && local > clip.duration - clip.animOut.duration) return true;

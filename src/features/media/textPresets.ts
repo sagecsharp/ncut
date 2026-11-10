@@ -396,9 +396,82 @@ export const TEXT_PRESETS: TextPreset[] = [
       animLoop: { id: 'neon', duration: DEFAULT_TEXT_ANIM_LOOP },
     }),
   },
+  /* ---- captions: bottom of the picture, wrapped, sized by the project ---- */
+  {
+    id: 'caption-line',
+    label: 'caption line',
+    hint: 'white with a dark outline, bottom',
+    sample: 'caption line',
+    previewSize: 14,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    look: { stroke: true },
+    build: (w, h) => captionLook('caption line', 'a line of caption text', w, h, { box: false }),
+  },
+  {
+    id: 'caption-box',
+    label: 'caption box',
+    hint: 'white on a dark box, bottom',
+    sample: 'caption box',
+    previewSize: 14,
+    weight: 700,
+    boxed: true,
+    align: 'center',
+    build: (w, h) => captionLook('caption box', 'a line of caption text', w, h, { box: true }),
+  },
+  {
+    id: 'karaoke',
+    label: 'karaoke',
+    hint: 'words light up one by one',
+    sample: 'karaoke',
+    previewSize: 16,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    look: { stroke: true },
+    build: (w, h) => ({
+      ...captionLook('karaoke', 'the words light up one after another', w, h, { box: false }),
+      highlight: { color: KARAOKE_COLOR, mode: 'fill' as const },
+    }),
+  },
+  {
+    id: 'karaoke-box',
+    label: 'karaoke box',
+    hint: 'a box jumps from word to word',
+    sample: 'karaoke box',
+    previewSize: 16,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    look: { stroke: true },
+    build: (w, h) => ({
+      ...captionLook('karaoke box', 'a box jumps from word to word', w, h, { box: false }),
+      highlight: { color: '#000000', mode: 'word' as const, background: KARAOKE_COLOR },
+    }),
+  },
 ];
 
 /** wrap width of the paragraph card: 60% of the project width */
 export function paragraphWidth(canvasW: number): number {
   return Math.max(100, Math.round(canvasW * 0.6));
+}
+
+/** the accent of lit words: reads on any video */
+export const KARAOKE_COLOR = '#ffe14d';
+
+/** the shared look of the caption cards: bottom center, wrapped to 82% of the width, 4.5% of the height tall */
+function captionLook(name: string, text: string, w: number, h: number, o: { box: boolean }): Partial<TextClip> {
+  return {
+    name,
+    text,
+    fontSize: Math.max(12, Math.round(h * 0.045)),
+    fontWeight: 700,
+    align: 'center',
+    wrapWidth: Math.round(w * 0.82),
+    color: '#ffffff',
+    background: o.box ? '#000000b3' : null,
+    stroke: o.box ? null : { color: '#000000', width: 0.1 },
+    transform: { ...DEFAULT_TRANSFORM, y: Math.round(h * 0.38) },
+  };
 }

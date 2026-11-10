@@ -10,8 +10,8 @@ import {
 } from '../../engine/textAnim';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
-import type { TextAnim, TextClip, TextGradient, TextShadow, TextStroke } from '../../types';
-import { ColorField, Row, Section, Switch } from './controls';
+import type { TextAnim, TextClip, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
+import { ColorField, Row, Section, SelectRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
 import { defaultSecondColor } from './shapeLogic';
@@ -19,6 +19,8 @@ import { defaultSecondColor } from './shapeLogic';
 const actions = () => useEditor.getState();
 
 const DEFAULT_STROKE: TextStroke = { color: '#000000', width: 0.08 };
+const DEFAULT_HIGHLIGHT: TextHighlight = { color: '#ffe14d', mode: 'fill' };
+const DEFAULT_HIGHLIGHT_BOX = '#000000';
 const DEFAULT_SHADOW: TextShadow = { color: '#000000', opacity: 0.6, blur: 0.1, distance: 0.08, angle: 45 };
 
 /** a percent field for a fraction stored in the clip */
@@ -56,12 +58,15 @@ function Pct({
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
-  const { stroke, shadow, gradient } = clip;
+  const { stroke, shadow, gradient, highlight } = clip;
   const setGradient = (patch: Partial<TextGradient>) => {
     if (gradient) actions().updateClip(id, { gradient: { ...gradient, ...patch } }, liveOpts());
   };
   const setStroke = (patch: Partial<TextStroke>) => {
     if (stroke) actions().updateClip(id, { stroke: { ...stroke, ...patch } }, liveOpts());
+  };
+  const setHighlight = (patch: Partial<TextHighlight>) => {
+    if (highlight) actions().updateClip(id, { highlight: { ...highlight, ...patch } }, liveOpts());
   };
   const setShadow = (patch: Partial<TextShadow>) => {
     if (shadow) actions().updateClip(id, { shadow: { ...shadow, ...patch } }, liveOpts());
@@ -194,6 +199,39 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
           onChange={(v) => actions().updateClip(id, { wrapWidth: v === 0 ? null : v } as ClipPatch, liveOpts())}
         />
       </Row>
+
+      <Row label="karaoke" title="light up the words one after another over the length of the clip">
+        <Switch
+          checked={!!highlight}
+          title="karaoke on or off"
+          onChange={(v) => actions().updateClip(id, { highlight: v ? { ...DEFAULT_HIGHLIGHT } : null })}
+        />
+        {highlight ? <ColorField title="color of the lit words" value={highlight.color} onChange={(c) => setHighlight({ color: c })} /> : null}
+      </Row>
+      {highlight ? (
+        <>
+          <SelectRow
+            label="lit"
+            title="one word at a time, or every word up to the current one"
+            value={highlight.mode}
+            options={[
+              ['word', 'one word'],
+              ['fill', 'fill up'],
+            ]}
+            onChange={(v) => setHighlight({ mode: v === 'word' ? 'word' : 'fill' })}
+          />
+          <Row label="box" title="a box behind the word that is lit">
+            <Switch
+              checked={!!highlight.background}
+              title="box behind the lit word on or off"
+              onChange={(v) => setHighlight({ background: v ? DEFAULT_HIGHLIGHT_BOX : null })}
+            />
+            {highlight.background ? (
+              <ColorField title="color of the box behind the lit word" value={highlight.background} onChange={(c) => setHighlight({ background: c })} />
+            ) : null}
+          </Row>
+        </>
+      ) : null}
 
       {clip.background !== null ? (
         <>

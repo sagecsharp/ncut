@@ -1,0 +1,15 @@
+.caption-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.caption-tools .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.caption-tools .btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -38,4 +38,22 @@ describe('text presets', () => {
     expect(neon.animLoop?.id).toBe('neon');
     expect(neon.stroke).toBeTruthy();
   });
+  it('has caption cards at the bottom, wrapped, sized by the project', () => {
+    for (const id of ['caption-line', 'caption-box', 'karaoke', 'karaoke-box']) {
+      const b = byId(id).build(1920, 1080);
+      expect(b.transform?.y).toBe(Math.round(1080 * 0.38));
+      expect(b.wrapWidth).toBe(Math.round(1920 * 0.82));
+      expect(b.fontSize).toBe(Math.round(1080 * 0.045));
+    }
+    expect(byId('caption-line').build(1920, 1080).stroke).toBeTruthy();
+    expect(byId('caption-box').build(1920, 1080).background).toBeTruthy();
+  });
+  it('has karaoke cards with a highlight', () => {
+    expect(byId('karaoke').build(1920, 1080).highlight?.mode).toBe('fill');
+    expect(byId('karaoke').build(1920, 1080).highlight?.background).toBeUndefined();
+    const boxed = byId('karaoke-box').build(1920, 1080).highlight;
+    expect(boxed?.mode).toBe('word');
+    expect(boxed?.background).toBeTruthy();
+    expect(byId('caption-line').build(1, 1).highlight).toBeUndefined();
+  });
 });
