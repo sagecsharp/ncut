@@ -1,3 +1,4 @@
+import { hasKeyedPose } from '../../engine/parent';
 import { canBeParent, wouldCycle } from '../../lib/links';
 import type { Clip, Project } from '../../types';
 import { isVisualClip } from '../../types';
@@ -84,7 +85,5 @@ function labelOptions(cands: Clip[], from: Clip[]): ParentOption[] {
 
 /** true when an animated x / y / scale / rotation exists (those keys are left alone when attaching) */
 export function hasAnimatedPose(clip: Clip): boolean {
-  const kf = clip.keyframes;
-  if (!kf) return false;
-  return ['x', 'y', 'scale', 'rotation'].some((p) => (kf[p]?.length ?? 0) > 0);
+  return hasKeyedPose(clip);
 }

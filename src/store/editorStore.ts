@@ -47,7 +47,7 @@ import {
   createTrack,
 } from '../lib/factory';
 import { getEffect } from '../engine/effects/registry';
-import { reparentTransform } from '../engine/parent';
+import { hasKeyedPose, reparentTransform } from '../engine/parent';
 import {
   KEY_EPS,
   animProps,
@@ -499,18 +499,13 @@ function pruneSelection(project: Project | null, selection: string[]): string[] 
   return next.length === selection.length ? selection : next;
 }
 
-/** x / y / scale / rotation have keys: a pose that is animated is not rewritten (same rule as attachActions) */
-function hasKeyedPose(clip: Clip): boolean {
-  const kf = clip.keyframes;
-  if (!kf) return false;
-  return ['x', 'y', 'scale', 'rotation'].some((p) => (kf[p]?.length ?? 0) > 0);
-}
-
 /**
  * the clips that are left when `gone` is removed. every surviving visual child of a removed clip keeps its
  * place on screen: it gets the world pose (reparentTransform for parent = null) computed while the parent still
  * exists, at the first moment the child is visible (clamped into the parent's range and the child's own).
  * a child with a keyed pose keeps its keys and is only detached. all other links to removed clips are cleared.
+ * a child on a locked track is placed too: the lock guards against edits, and this is what keeps the picture
+ * as it was (leaving it alone would make it jump).
  */
 export function removeClipsKeepingPose(p: Project, gone: ReadonlySet<string>): Clip[] {
   const keep = p.clips.filter((c) => !gone.has(c.id));

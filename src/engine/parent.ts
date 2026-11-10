@@ -354,10 +354,30 @@ function eulerOf(r: ArrayLike<number>): { rotX: number; rotY: number; rotation: 
 }
 
 /**
+ * true when the clip's pose is animated with keys: x / y / scale / rotation, and for a 3d clip also z / rotX / rotY.
+ * such a pose is never rewritten as a static transform (the keys would win and mean something else afterwards).
+ */
+export function hasKeyedPose(clip: Clip): boolean {
+  const kf = clip.keyframes;
+  if (!kf) return false;
+  const props = isVisualClip(clip) && clip.threeD ? ['x', 'y', 'scale', 'rotation', 'z', 'rotX', 'rotY'] : ['x', 'y', 'scale', 'rotation'];
+  return props.some((p) => (kf[p]?.length ?? 0) > 0);
+}
+
+/**
  * the static transform the clip needs under a new parent (or none) so it stays where it is in the
  * world at `time`. used when attaching / detaching with "keep position".
+ * the clip's own motions (in / out / loop) are left out: they are played on top of the static transform at
+ * render time, so the pose that is kept is the one underneath them (a clip that slides in keeps its end place,
+ * not the spot off canvas where the slide starts). motions of the parents count, they really move the clip.
  */
 export function reparentTransform(project: Project, clip: VisualClip, parentId: string | null, time: number): Transform {
+  if (clip.motionIn || clip.motionOut || clip.motionLoop) {
+    const bare = { ...clip, motionIn: null, motionOut: null, motionLoop: null } as VisualClip;
+    const id = clip.id;
+    project = { ...project, clips: project.clips.map((c) => (c.id === id ? bare : c)) };
+    clip = bare;
+  }
   let np: Clip | null = null;
   if (parentId) {
     np = project.clips.find((c) => c.id === parentId) ?? null;
