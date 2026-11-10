@@ -728,6 +728,27 @@ export const TEXT_PRESETS: TextPreset[] = [
       underline: true,
     }),
   },
+  {
+    id: 'block-3d',
+    label: 'block in 3d',
+    hint: 'thick letters turned in 3d space: the side is real',
+    sample: 'block 3d',
+    previewSize: 22,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'block in 3d',
+      text: 'block',
+      fontSize: 200,
+      fontWeight: 700,
+      align: 'center',
+      color: '#ffe14d',
+      threeD: true,
+      extrude: { depth: 0.3, angle: 45, color: '#a8551c' },
+      transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: -14, rotY: -30 },
+    }),
+  },
 ];
 
 /** wrap width of the paragraph card: 60% of the project width */
