@@ -321,4 +321,9 @@ describe('animatesPicture', () => {
     expect(animatesPicture(text({ keyframes: { fontSize: [k(0, 50)] } }))).toBe(true);
     expect(animatesPicture(shape({ keyframes: { width: [k(0, 50)] } }))).toBe(true);
   });
+
+  it('keys of something that is switched off do not count (no mask: the picture is the plain one)', () => {
+    expect(animatesPicture(video({ keyframes: { 'mask.x': [k(0, 0), k(1, 0.5)] } }))).toBe(false);
+    expect(animatesPicture(video({ mask: null, keyframes: { 'mask.width': [k(0, 0)] } }))).toBe(false);
+  });
 });

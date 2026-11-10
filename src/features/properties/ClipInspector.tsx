@@ -3,7 +3,9 @@ import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, 
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
 import { FontPicker } from '../fonts/FontPicker';
+import { resolveClip } from '../../lib/anim';
 import { formatTimecode } from '../../lib/time';
+import { usePlayback } from '../../store/playback';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { applyFollowerSpans, followBase, markFollowGesture } from '../timeline/followApply';
@@ -24,6 +26,7 @@ import { ColorSection } from './ColorSection';
 import { MaskSection } from './MaskSection';
 import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
+import { hasLinks } from '../../lib/links';
 import { ClipMotionSection } from './MotionSection';
 import { ShapeSection } from './ShapeSection';
 import { PathSection } from './PathSection';
@@ -142,6 +145,12 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
   );
 });
 
+/** a clip with its keyed values at the playhead written in (the same object when it has no keys) */
+function clipNow<T extends Clip>(clip: T): T {
+  const t = Math.min(clip.start + clip.duration, Math.max(clip.start, usePlayback.getState().time));
+  return resolveClip(clip, t) as T;
+}
+
 /* ---------- transform ---------- */
 
 const TransformSection = memo(function TransformSection({ id }: { id: string }) {
@@ -151,8 +160,10 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
     const p = actions().project;
     const clip = p?.clips.find((c) => c.id === id);
     if (!p || !clip || !isVisualClip(clip)) return;
-    const box = getClipBox(p, clip);
-    setValuesNow(id, { x: 0, y: 0, scale: coverScale(clip.transform.scale, box.width, box.height, p.width, p.height) });
+    // the clip as it is right now: a keyed size or text size changes its box
+    const now = clipNow(clip);
+    const box = getClipBox(p, now);
+    setValuesNow(id, { x: 0, y: 0, scale: coverScale(now.transform.scale, box.width, box.height, p.width, p.height) });
   };
 
   return (
@@ -424,9 +435,10 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
 /* ---------- root ---------- */
 
 /** shape thickness used while none is set, like the renderer: a box is as deep as it is tall, the others as deep as they are wide */
-function defaultThickness(clip: VisualClip): number {
+function defaultThickness(stored: VisualClip): number {
   const p = useEditor.getState().project;
   if (!p) return 100;
+  const clip = clipNow(stored);
   const box = getClipBox(p, clip);
   const side = clip.shape === 'box' ? box.height : box.width;
   return Math.max(1, Math.round(side / Math.max(0.01, clip.transform.scale)));
@@ -441,6 +453,8 @@ export function ClipInspector({ id }: { id: string }) {
   const fps = useEditor((s) => s.project?.fps ?? 30);
   const asset = useAsset(clip && 'assetId' in clip ? clip.assetId : undefined);
   const [wanted, setWanted] = useState<InspectorTab>(rememberedTab);
+  // an effect, camera or sound clip only has an "attach" section while it is linked to something
+  const linked = useEditor((s) => !!clip && !!s.project && hasLinks(s.project, clip));
   const body = useRef<HTMLDivElement>(null);
   if (!clip) {
     return (
@@ -458,7 +472,7 @@ export function ClipInspector({ id }: { id: string }) {
   const timed = isTimedClip(clip);
   const hasAudio = clip.type === 'audio' || (clip.type === 'video' && (asset?.hasAudio ?? true));
   // which sections this clip has, which tabs that makes, and which sections show on the chosen tab
-  const have = sectionsOf(clip.type, hasAudio);
+  const have = sectionsOf(clip.type, hasAudio, linked);
   const tabs = tabsFor(have);
   const tab = resolveTab(wanted, tabs);
   const show = (id: SectionId) => have.includes(id) && onTab(tab, id);

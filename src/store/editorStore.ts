@@ -475,6 +475,11 @@ function hasOverlapOnTracks(project: Project, trackIds: Iterable<string>): boole
   return false;
 }
 
+/** the crop edge across from each crop edge */
+const CROP_ACROSS: Record<string, string> = { 'crop.left': 'crop.right', 'crop.right': 'crop.left', 'crop.top': 'crop.bottom', 'crop.bottom': 'crop.top' };
+/** the most two opposite crop edges cut together (the renderer squeezes a bigger pair, the numbers would lie) */
+const MAX_CROP_SUM = 0.99;
+
 /** clamp a value to an animatable property's range. null when the clip has no such property. */
 function clampProp(clip: Clip, prop: string, value: number): number | null {
   if (prop.startsWith('p.')) {
@@ -484,7 +489,14 @@ function clampProp(clip: Clip, prop: string, value: number): number | null {
   }
   const info = animProps(clip).find((a) => a.prop === prop);
   if (!info) return null;
-  const v = clamp(value, info.min ?? -Infinity, info.max ?? Infinity);
+  let v = clamp(value, info.min ?? -Infinity, info.max ?? Infinity);
+  const across = CROP_ACROSS[prop];
+  if (across) {
+    // two opposite edges never cut more than 99% together: what the other edge takes at its most is not free
+    let taken = baseValue(clip, across) ?? 0;
+    for (const k of clip.keyframes?.[across] ?? []) taken = Math.max(taken, k.v);
+    v = Math.min(v, Math.max(0, MAX_CROP_SUM - taken));
+  }
   return info.int ? Math.round(v) : v;
 }
 

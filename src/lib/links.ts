@@ -97,6 +97,16 @@ export function wouldCycleAny(index: ReadonlyMap<string, Clip>, ids: ReadonlySet
   return parentChainIn(index, candidate).some((c) => ids.has(c.id));
 }
 
+/**
+ * true when the inspector has something to say about a clip's links: every visual clip (it can be attached), a
+ * camera that carries clips, and any clip that sits in a group
+ */
+export function hasLinks(project: Clips, clip: Clip): boolean {
+  if (isVisualClip(clip)) return true;
+  if (clip.group && project.clips.some((c) => c.id !== clip.id && c.group === clip.group)) return true;
+  return clip.type === 'camera' && project.clips.some((c) => c.id !== clip.id && parentId(c) === clip.id);
+}
+
 /** the clips attached directly to a clip */
 export function childrenOf(project: Clips, id: string): Clip[] {
   return project.clips.filter((c) => c.id !== id && parentId(c) === id);

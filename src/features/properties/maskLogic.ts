@@ -25,6 +25,9 @@ export const MASK_RANGES: Record<MaskKey, { min: number; max: number }> = {
   radius: { min: 0, max: 100 },
 };
 
+/** the keyframe names of the mask numbers (removing the mask removes their keys too) */
+export const MASK_PROPS: readonly string[] = (Object.keys(MASK_RANGES) as MaskKey[]).map((k) => 'mask.' + k);
+
 /** which size / corner controls a shape uses (split and band ignore some, see types.ts Mask) */
 export function maskFields(shape: MaskShape): { width: boolean; height: boolean; radius: boolean } {
   switch (shape) {

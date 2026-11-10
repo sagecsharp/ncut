@@ -29,7 +29,8 @@ export function planGroupTrim(
   const steps: TrimStep[] = [];
   for (const c of open) {
     if (followers.has(c.id)) continue;
-    steps.push({ id: c.id, time: (edge === 'start' ? c.start : clipEnd(c)) + delta });
+    // edge + (b - a) can come out as 2.5999999999999996: keep the times clean to a millionth of a second
+    steps.push({ id: c.id, time: c.id === grabbed ? (edge === 'start' ? c.start : clipEnd(c)) + delta : Math.round(((edge === 'start' ? c.start : clipEnd(c)) + delta) * 1e6) / 1e6 });
   }
   // the grabbed clip leads (it is the one under the pointer)
   steps.sort((a, b) => (a.id === grabbed ? -1 : b.id === grabbed ? 1 : 0));

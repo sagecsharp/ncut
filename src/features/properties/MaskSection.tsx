@@ -4,8 +4,9 @@ import type { LucideIcon } from 'lucide-react';
 import type { MaskShape, VisualClip } from '../../types';
 import { AnimField } from './AnimField';
 import { Row, Section, Switch } from './controls';
+import { resetWithKeys } from './animEdit';
 import { patchClip } from './edit';
-import { MASK_RANGES, MASK_SHAPE_LABELS, maskFields, newMask, setMaskShape } from './maskLogic';
+import { MASK_PROPS, MASK_RANGES, MASK_SHAPE_LABELS, maskFields, newMask, setMaskShape } from './maskLogic';
 import type { MaskKey } from './maskLogic';
 
 const SHAPE_ICONS: Record<MaskShape, LucideIcon> = {
@@ -90,7 +91,7 @@ export const MaskSection = memo(function MaskSection({ clip }: { clip: VisualCli
             <Switch checked={mask.invert} title="show the outside instead" onChange={(on) => patchClip(id, { mask: { ...mask, invert: on } })} />
           </Row>
           <div className="props-buttons">
-            <button type="button" className="btn btn-sm" title="remove the mask" onClick={() => patchClip(id, { mask: null })}>
+            <button type="button" className="btn btn-sm" title="remove the mask" onClick={() => resetWithKeys(id, MASK_PROPS, { mask: null })}>
               <Trash2 size={14} />
               remove mask
             </button>

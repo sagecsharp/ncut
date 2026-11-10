@@ -25,6 +25,8 @@ export const EffectBeatSection = memo(function EffectBeatSection({ id, effect, b
 
   const follow = followValue(beat, sources.map((s) => s[0]));
   const set = (next: ReturnType<typeof followPatch>, live = false) => patchClip(id, { beat: next }, live);
+  // motion blur, echo, frame blend and strobe blend whole frames, a pulse has nothing to scale there
+  if (def?.temporal) return null;
 
   return (
     <Section id="effect-beat" title="follow the tempo">

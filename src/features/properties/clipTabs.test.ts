@@ -54,6 +54,15 @@ describe('inspector tabs', () => {
     expect(tabsFor(sectionsOf('camera', false))).toEqual(['basic', 'look', 'animate', 'all']);
   });
 
+  it('a clip that is not a picture has no look tab unless it is linked to something', () => {
+    expect(tabsFor(sectionsOf('effect', false, false))).toEqual(['basic', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('camera', false, false))).toEqual(['basic', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('audio', true, false))).toEqual(['basic', 'animate', 'sound', 'all']);
+    expect(tabsFor(sectionsOf('effect', false, true))).toEqual(['basic', 'look', 'animate', 'all']);
+    // a picture can always be attached
+    expect(sectionsOf('image', false, false)).toContain('attach');
+  });
+
   it('puts the main sections where they belong', () => {
     expect(sectionsOf('effect', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'effect', 'effect-beat', 'fades']);
     expect(sectionsOf('camera', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'camera', 'focus', 'fades']);

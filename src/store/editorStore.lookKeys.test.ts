@@ -208,3 +208,26 @@ describe('cleanKeyframes with look properties', () => {
     expect(out['crop.left']).toBeUndefined();
   });
 });
+
+describe('crop: two opposite edges never cut more than 99% together', () => {
+  it('caps the second edge by what the first one takes', () => {
+    const [id] = open((t) => [mkVideo(t)]);
+    ed().setClipValue(id!, 'crop.left', 3, 0.95);
+    ed().setClipValue(id!, 'crop.right', 3, 0.95);
+    expect(baseValue(clipOf(id!), 'crop.left')).toBeCloseTo(0.95, 9);
+    expect(baseValue(clipOf(id!), 'crop.right')).toBeCloseTo(0.04, 9);
+    // the other pair is free
+    ed().setClipValue(id!, 'crop.top', 3, 0.5);
+    expect(baseValue(clipOf(id!), 'crop.top')).toBeCloseTo(0.5, 9);
+    ed().setClipValue(id!, 'crop.bottom', 3, 0.9);
+    expect(baseValue(clipOf(id!), 'crop.bottom')).toBeCloseTo(0.49, 9);
+  });
+
+  it('counts the biggest key of the other edge, and caps keys too', () => {
+    const [id] = open((t) => [mkVideo(t, { keyframes: { 'crop.left': [k(0, 0.1), k(2, 0.7)] } })]);
+    ed().setKeyframe(id!, 'crop.right', 3, 0.8);
+    const keys = clipOf(id!).keyframes!['crop.right']!;
+    expect(keys).toHaveLength(1);
+    expect(keys[0]!.v).toBeCloseTo(0.29, 9);
+  });
+});

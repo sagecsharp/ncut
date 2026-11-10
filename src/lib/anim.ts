@@ -495,7 +495,9 @@ export function animatesPicture(clip: Clip): boolean {
   if (!kf) return false;
   for (const prop in kf) {
     if (kf[prop]!.length === 0) continue;
-    if (lookDef(clip, prop)?.pic) return true;
+    const x = lookDef(clip, prop);
+    // keys of something that is switched off (no mask, no outline) do nothing until it is back
+    if (x?.pic && lookWritable(clip, x)) return true;
   }
   return false;
 }

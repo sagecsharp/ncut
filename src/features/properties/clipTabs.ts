@@ -73,8 +73,11 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
   tempo: 'sound',
 };
 
-/** the sections a clip has, in the order of the "all" tab. one place for the rule, the inspector uses it too. */
-export function sectionsOf(type: ClipType, hasAudio: boolean): SectionId[] {
+/**
+ * the sections a clip has, in the order of the "all" tab. one place for the rule, the inspector uses it too.
+ * linked: the clip has something in "attach" (a visual clip always has, see hasLinks in lib/links).
+ */
+export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true): SectionId[] {
   const visual = type === 'video' || type === 'image' || type === 'text' || type === 'shape';
   const sound = hasAudio && (type === 'video' || type === 'audio');
   return SECTION_ORDER.filter((id) => {
@@ -93,6 +96,8 @@ export function sectionsOf(type: ClipType, hasAudio: boolean): SectionId[] {
         return type === 'shape';
       case 'transform':
         return type !== 'audio' && type !== 'effect' && type !== 'camera';
+      case 'attach':
+        return visual || linked;
       case 'threed':
       case 'path':
       case 'repeat':
