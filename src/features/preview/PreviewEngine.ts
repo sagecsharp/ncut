@@ -24,6 +24,9 @@ import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './pr
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
 import { ParkingLot } from './mediaPark';
+import { frameInfo } from './frameStatic';
+import { SKIP_UNCHANGED_FRAMES, canSkipRepaint } from './repaintSkip';
+import type { FrameRecord } from './repaintSkip';
 import { backingSize, usePreviewQuality } from './quality';
 import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 
@@ -109,6 +112,12 @@ export class PreviewEngine {
   private readonly parked = new ParkingLot<ParkedMedia>();
   /** sync() already swept the pool for stale entries this pass (so a new clip can take their elements) */
   private swept = false;
+  /** video frames presented by any pooled element so far (counted in the requestVideoFrameCallback handler) */
+  private framesPresented = 0;
+  /** what the last painted frame was made of, kept only while playing (see canSkipTick); null = paint on the next tick */
+  private lastFrame: FrameRecord | null = null;
+  /** something changed that the canvas might show but did not ask for a draw itself: the next tick paints */
+  private mustDraw = false;
   private readonly unsubs: Array<() => void> = [];
   private audioCtx: AudioContext | null = null;
   private audioFailed = false;
@@ -145,20 +154,26 @@ export class PreviewEngine {
           return;
         }
         // shuttle key / speed menu while playing: every active element follows at once
-        if (s.rate !== prev.rate && s.playing) this.sync();
+        if (s.rate !== prev.rate && s.playing) {
+          this.mustDraw = true;
+          this.sync();
+        }
         if (s.volume !== prev.volume || s.muted !== prev.muted) this.applyGains();
         if (s.time !== prev.time) {
           this.sync();
           // draw right inside the clock's own frame while playing so the picture never lags a frame.
           // the clock ticks every animation frame, so this is also what animates an effect over a still
           // image or text (hasEffectsAt is true, nothing else on screen changes); every tick must paint
-          if (s.playing) this.draw();
-          else this.invalidate();
+          if (s.playing) {
+            if (!this.canSkipTick(s.time)) this.draw();
+          } else this.invalidate();
         }
       }),
     );
     this.unsubs.push(
       useEditor.subscribe((s, prev) => {
+        // any change of the store (not only the project) is painted by the next tick, as before
+        this.mustDraw = true;
         if (s.project === prev.project) return;
         if (s.project && prev.project && (s.project.width !== prev.project.width || s.project.height !== prev.project.height)) {
           this.applyBackingSize();
@@ -186,6 +201,7 @@ export class PreviewEngine {
     // scene view: mode switch and the free camera redraw the canvas
     this.unsubs.push(
       useUi.subscribe((s, prev) => {
+        this.mustDraw = true;
         if (s.previewMode === prev.previewMode) return;
         this.invalidate();
       }),
@@ -337,6 +353,8 @@ export class PreviewEngine {
   private draw(): boolean {
     if (this.disposed) return false;
     this.dirty = false;
+    this.mustDraw = false;
+    this.lastFrame = null;
     const project = useEditor.getState().project;
     const { time, playing } = usePlayback.getState();
     const { ctx, canvas } = this;
@@ -366,7 +384,55 @@ export class PreviewEngine {
     }
     this.hasDrawn = true;
     if (!playing) this.flushWants();
+    else if (SKIP_UNCHANGED_FRAMES && useUi.getState().previewMode !== 'scene') this.lastFrame = this.frameRecord(project, time);
     return true;
+  }
+
+  /** what a frame at this time is made of, with the engine's own counters (see repaintSkip) */
+  private frameRecord(project: Project, time: number): FrameRecord & { videos: VideoClip[] } {
+    const info = frameInfo(project, time);
+    return {
+      project,
+      key: info.key,
+      allStatic: info.allStatic,
+      time,
+      frames: this.framesPresented,
+      width: this.canvas.width,
+      height: this.canvas.height,
+      videos: info.videos,
+    };
+  }
+
+  /**
+   * a running clock ticked: can this tick leave the canvas as it is? only when nothing can look different from the
+   * last painted frame: no draw was asked for, no video presented a new frame, the same clips are on screen, and all of
+   * them are static (frameStatic.ts). anything else paints, exactly as before.
+   */
+  private canSkipTick(time: number): boolean {
+    const last = this.lastFrame;
+    if (!SKIP_UNCHANGED_FRAMES || !last || !last.allStatic || this.disposed) return false;
+    // cheap exits first: a pending draw request, a store change, a new video frame
+    if (this.dirty || this.mustDraw || this.holdTimer || this.framesPresented !== last.frames) return false;
+    const project = useEditor.getState().project;
+    if (!project || project !== last.project || this.canvas.width <= 0) return false;
+    const sceneView = useUi.getState().previewMode === 'scene';
+    if (sceneView) return false;
+    const now = this.frameRecord(project, time);
+    let videosReady = true;
+    for (const v of now.videos) {
+      const entry = this.pool.get(v.id);
+      if (!entry || entry.failed || entry.kind !== 'video') {
+        videosReady = false;
+        break;
+      }
+      const el = entry.el as RvfcElement;
+      // without requestVideoFrameCallback there is no way to know a new frame arrived: always paint
+      if (el.seeking || el.readyState < 2 || typeof el.requestVideoFrameCallback !== 'function') {
+        videosReady = false;
+        break;
+      }
+    }
+    return canSkipRepaint(last, now, { enabled: SKIP_UNCHANGED_FRAMES, playing: true, sceneView, pending: false, videosReady });
   }
 
   private armHoldTimer(ms: number): void {
@@ -888,6 +954,7 @@ export class PreviewEngine {
     if (isVideo && typeof v.requestVideoFrameCallback === 'function') {
       const onFrame = () => {
         if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        this.framesPresented++;
         if (!usePlayback.getState().playing) this.invalidate();
         entry.rvfc = v.requestVideoFrameCallback!(onFrame);
       };
