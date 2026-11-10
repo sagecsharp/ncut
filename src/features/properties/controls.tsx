@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Pipette } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { beginEdit, isHex, toColorInput } from './edit';
 
@@ -98,9 +98,31 @@ interface ColorFieldProps {
   onChange: (v: string) => void;
 }
 
-/** color swatch + hex text */
+/** the browser eyedropper (chromium). declared here because the dom lib has no type for it. */
+interface EyeDropperLike {
+  open(): Promise<{ sRGBHex: string }>;
+}
+type EyeDropperCtor = new () => EyeDropperLike;
+
+function eyeDropper(): EyeDropperCtor | null {
+  if (typeof window === 'undefined' || !('EyeDropper' in window)) return null;
+  return (window as unknown as { EyeDropper: EyeDropperCtor }).EyeDropper;
+}
+
+/** color swatch + hex text (+ a pipette where the browser can pick colors from the screen) */
 export function ColorField({ value, title, disabled, onChange }: ColorFieldProps) {
   const [draft, setDraft] = useState<string | null>(null);
+  const Dropper = eyeDropper();
+  const pick = () => {
+    if (!Dropper) return;
+    beginEdit();
+    new Dropper()
+      .open()
+      .then((r) => onChange(r.sRGBHex.toLowerCase() + (value.length === 9 && isHex(value) ? value.slice(7) : '')))
+      .catch(() => {
+        /* the user aborted */
+      });
+  };
   return (
     <div className="props-color">
       <input
@@ -137,6 +159,11 @@ export function ColorField({ value, title, disabled, onChange }: ColorFieldProps
           }
         }}
       />
+      {Dropper ? (
+        <button type="button" className="icon-btn" title={`pick ${title} from the screen`} aria-label={`pick ${title} from the screen`} disabled={disabled} onClick={pick}>
+          <Pipette size={14} />
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Keyframes, LookAt, Shape3D } from '../../types';
+import { SHAPES_3D } from '../../types';
 import { AnimField } from './AnimField';
 import { setValuesNow } from './animEdit';
 import { Row, SelectRow, Section, Switch } from './controls';
@@ -13,6 +14,8 @@ import { targetOptions } from './targets';
 import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { beginEdit, liveOpts, patchClip } from './edit';
+import { ParentSelect } from './AttachSection';
+import { lookTargetOptions } from './parentOptions';
 
 const actions = () => useEditor.getState();
 
@@ -64,25 +67,56 @@ const LOOK_AT: [LookAt, string][] = [
   ['none', 'off'],
   ['camera', 'face camera'],
   ['cameraY', 'face camera, stay upright'],
+  ['clip', 'a clip'],
 ];
-const SHAPES: [Shape3D, string][] = [
-  ['plane', 'plane'],
-  ['box', 'box'],
-  ['sphere', 'sphere'],
-  ['cylinder', 'cylinder'],
-];
+const SHAPE_NAMES: Record<Shape3D, string> = {
+  plane: 'plane',
+  box: 'box',
+  sphere: 'sphere',
+  cylinder: 'cylinder',
+  cone: 'cone',
+  pyramid: 'pyramid',
+  torus: 'ring',
+};
+const SHAPES: [Shape3D, string][] = SHAPES_3D.map((s) => [s, SHAPE_NAMES[s]]);
+
+/** "which clip": the clip a 3d clip faces (lookAt 'clip'). the name beside it selects that clip. */
+const LookTargetRow = memo(function LookTargetRow({ id, target }: { id: string; target: string | null }) {
+  const clips = useEditor((s) => s.project?.clips);
+  const options = useMemo(() => (clips ? lookTargetOptions({ clips }, id) : []), [clips, id]);
+  const picked = target ? options.find((o) => o.id === target) : undefined;
+  return (
+    <>
+      <ParentSelect
+        label="which clip"
+        title="the clip this one keeps facing"
+        value={target ?? ''}
+        options={options}
+        onPick={(tid) => patchClip(id, { lookTarget: tid })}
+      />
+      {picked ? (
+        <div className="props-stat">
+          <button type="button" className="btn btn-sm" title="select the clip this one faces" onClick={() => actions().select([picked.id])}>
+            {picked.label}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+});
 
 interface ThreeDProps {
   id: string;
   threeD: boolean;
   lookAt: LookAt;
+  lookTarget: string | null;
   shape: Shape3D;
   shapeDepth: number | undefined;
   /** thickness used while shapeDepth is missing */
   defaultDepth: number;
 }
 
-export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, shape, shapeDepth, defaultDepth }: ThreeDProps) {
+export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, lookTarget, shape, shapeDepth, defaultDepth }: ThreeDProps) {
   return (
     <Section id="threed" title="3d">
       <Row label="3d" title="place this clip in 3d space" wide>
@@ -95,12 +129,13 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, s
           <AnimField wide id={id} prop="rotY" label="turn" title="turn: face left or right (degrees)" suffix="deg" step={1} precision={1} />
           <SelectRow
             wide
-            label="look at camera"
-            title="make this clip face the camera"
+            label="look at"
+            title="make this clip face the camera or another clip"
             value={lookAt}
             options={LOOK_AT}
-            onChange={(v) => actions().updateClip(id, { lookAt: v as LookAt })}
+            onChange={(v) => patchClip(id, v === 'clip' ? { lookAt: v } : { lookAt: v, lookTarget: null })}
           />
+          {lookAt === 'clip' ? <LookTargetRow id={id} target={lookTarget} /> : null}
           <SelectRow
             wide
             label="shape"

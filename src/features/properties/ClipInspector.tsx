@@ -6,13 +6,15 @@ import { hasKeyframes } from '../../lib/anim';
 import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
-import type { Clip, TextAlign, VisualClip } from '../../types';
+import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
 import { EffectSection } from './EffectSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
 import { LookSection } from './LookSection';
 import { ColorSection } from './ColorSection';
+import { MaskSection } from './MaskSection';
+import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
 import { ClipMotionSection } from './MotionSection';
 import { ShapeSection } from './ShapeSection';
@@ -37,9 +39,12 @@ interface ClipSectionProps {
   srcIn: number | null;
   srcOut: number | null;
   fps: number;
+  /** video / image / audio clips: the media they use, for "swap media" */
+  mediaId: string | null;
+  mediaKind: MediaKind | null;
 }
 
-const ClipSection = memo(function ClipSection({ id, trackId, name, start, duration, srcIn, srcOut, fps }: ClipSectionProps) {
+const ClipSection = memo(function ClipSection({ id, trackId, name, start, duration, srcIn, srcOut, fps, mediaId, mediaKind }: ClipSectionProps) {
   return (
     <Section id="clip" title="clip">
       <Row label="name" title="clip name">
@@ -88,6 +93,7 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
           </span>
         </div>
       ) : null}
+      {mediaId && mediaKind ? <SwapMedia id={id} assetId={mediaId} kind={mediaKind} /> : null}
     </Section>
   );
 });
@@ -398,6 +404,8 @@ export function ClipInspector({ id }: { id: string }) {
           srcIn={timed ? clip.trimStart : null}
           srcOut={timed ? clip.trimStart + clip.duration * clip.speed : null}
           fps={fps}
+          mediaId={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.assetId : null}
+          mediaKind={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null}
         />
         {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} /> : null}
@@ -426,6 +434,7 @@ export function ClipInspector({ id }: { id: string }) {
             id={clip.id}
             threeD={!!clip.threeD}
             lookAt={clip.lookAt ?? 'none'}
+            lookTarget={clip.lookTarget ?? null}
             shape={clip.shape ?? 'plane'}
             shapeDepth={clip.shapeDepth}
             defaultDepth={clip.threeD && (clip.shape === 'box' || clip.shape === 'cylinder') ? defaultThickness(clip) : 0}
@@ -434,6 +443,7 @@ export function ClipInspector({ id }: { id: string }) {
         <LinksSection clip={clip} />
         {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
         {isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
+        {isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
         {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}

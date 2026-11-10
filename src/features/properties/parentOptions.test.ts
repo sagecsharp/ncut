@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '../../types';
-import { hasAnimatedPose, parentOptions } from './parentOptions';
+import { hasAnimatedPose, lookTargetOptions, parentOptions } from './parentOptions';
 
 const tf = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
 const b = (id: string, start: number, name = id) => ({ id, trackId: 't', start, duration: 2, name, fadeIn: 0, fadeOut: 0 });
@@ -49,5 +49,23 @@ describe('hasAnimatedPose', () => {
     expect(hasAnimatedPose({ ...img('a', 0), keyframes: { x: [k] } })).toBe(true);
     expect(hasAnimatedPose({ ...img('a', 0), keyframes: { opacity: [k] } })).toBe(false);
     expect(hasAnimatedPose(img('a', 0))).toBe(false);
+  });
+});
+
+describe('lookTargetOptions', () => {
+  it('lists visual clips and cameras except itself, even children', () => {
+    const clips = [img('a', 0), img('b', 0, 'b', 'a'), cam('cam', 5), audio('au')];
+    const ids = lookTargetOptions({ clips }, 'a').map((o) => o.id);
+    expect(ids.sort()).toEqual(['b', 'cam']);
+  });
+  it('puts overlapping clips first and labels like parentOptions', () => {
+    const clips = [img('a', 0), img('far', 10, 'x'), img('near', 1, 'x')];
+    const o = lookTargetOptions({ clips }, 'a');
+    expect(o.map((x) => x.id)).toEqual(['near', 'far']);
+    expect(o.map((x) => x.label)).toEqual(['x (image) 2', 'x (image) 1']);
+  });
+  it('is empty for an unknown or non visual clip', () => {
+    expect(lookTargetOptions({ clips: [img('a', 0)] }, 'nope')).toEqual([]);
+    expect(lookTargetOptions({ clips: [cam('c', 0), img('a', 0)] }, 'c')).toEqual([]);
   });
 });

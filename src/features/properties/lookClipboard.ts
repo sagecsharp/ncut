@@ -4,7 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 
 /** fields every visual clip shares (copied as is; a missing one becomes null = removed on paste) */
-const COMMON_KEYS = ['blend', 'crop', 'radius', 'motionIn', 'motionOut', 'motionLoop', 'transition', 'adjust', 'chromaKey', 'motionBlur'] as const;
+const COMMON_KEYS = ['blend', 'crop', 'radius', 'motionIn', 'motionOut', 'motionLoop', 'transition', 'adjust', 'chromaKey', 'motionBlur', 'mask'] as const;
 /** only copied from a text clip to a text clip */
 const TEXT_KEYS = [
   'color',

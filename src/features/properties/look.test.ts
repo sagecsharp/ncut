@@ -112,4 +112,20 @@ describe('look clipboard', () => {
     expect('crop' in patch).toBe(false);
     expect('radius' in patch).toBe(false);
   });
+  it('carries the mask but not the look target', () => {
+    const masked: VisualClip = {
+      ...image,
+      lookTarget: 'x',
+      mask: { shape: 'star', x: 0.1, y: 0, width: 0.5, height: 0.5, rotation: 10, feather: 0.1, invert: true },
+    };
+    const look = captureLook(masked);
+    expect(look.values.mask).toEqual(masked.mask);
+    expect(look.values.mask).not.toBe(masked.mask);
+    expect('lookTarget' in look.values).toBe(false);
+    expect(lookPatch(look, 'text').mask).toEqual(masked.mask);
+    expect(lookPatch(look, 'video').mask).toEqual(masked.mask);
+  });
+  it('clears the mask when the source had none', () => {
+    expect(lookPatch(captureLook(image), 'image').mask).toBeNull();
+  });
 });
