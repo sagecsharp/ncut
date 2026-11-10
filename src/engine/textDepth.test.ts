@@ -48,14 +48,22 @@ describe('sideCount / sideOffsets', () => {
 
 describe('sideAlpha', () => {
   it('stays opaque at full alpha and goes to nothing at 0', () => {
-    expect(sideAlpha(1, 10)).toBe(1);
-    expect(sideAlpha(0, 10)).toBe(0);
+    expect(sideAlpha(1)).toBe(1);
+    expect(sideAlpha(0)).toBe(0);
+    expect(sideAlpha(Number.NaN)).toBe(0);
   });
-  it('a faded stack composites to alpha squared, not to nearly solid', () => {
-    const n = 20;
-    const a = sideAlpha(0.5, n);
-    expect(a).toBeLessThan(0.5);
-    expect(1 - Math.pow(1 - a, n)).toBeCloseTo(0.25, 6);
+  it('is the clip opacity itself: the renderer corrects the stack, the side composites to the opacity (not its square)', () => {
+    expect(sideAlpha(0.5)).toBe(0.5);
+    expect(sideAlpha(2)).toBe(1);
+    expect(sideAlpha(-1)).toBe(0);
+  });
+});
+
+describe('depthPixels with broken numbers', () => {
+  it('is 0, never NaN', () => {
+    expect(depthPixels(t({ fontSize: Number.NaN }))).toBe(0);
+    expect(depthPixels(t({ extrude: { ...ex, depth: Number.NaN } }))).toBe(0);
+    expect(depthPixels(t({ transform: { x: 0, y: 0, scale: Number.POSITIVE_INFINITY, rotation: 0, opacity: 1 } }))).toBe(0);
   });
 });
 

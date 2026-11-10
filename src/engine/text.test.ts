@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createTextClip } from '../lib/factory';
 import {
   counterDigitFlags,
+  finite,
   needsWholeLine,
   curveLayout,
   EXTRUDE_MAX_STEPS,
@@ -963,5 +964,42 @@ describe('drawText options for 3d depth text', () => {
     const clip = createTextClip('t', 0, { text: 'hi', fontFamily: 'Depth T', extrude: ex });
     expect(textSpill(clip, false, true)).toBeCloseTo(textSpill(clip, false) - 0.5, 9);
     expect(textSpill(clip, false)).toBeGreaterThan(textSpill({ ...clip, extrude: null }, false));
+  });
+});
+
+describe('text with broken numbers', () => {
+  const mk = (over: Record<string, unknown> = {}) => createTextClip('t', 0, { text: 'ab', fontSize: 40, ...over } as never);
+  it('finite() counts anything that is not a finite number as 0', () => {
+    expect(finite(3)).toBe(3);
+    expect(finite(Number.NaN)).toBe(0);
+    expect(finite(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(finite(undefined)).toBe(0);
+    expect(finite('4')).toBe(0);
+  });
+  it('textSpill ignores missing or broken fields of a shadow and strokes', () => {
+    const base = textSpill(mk(), false);
+    expect(textSpill(mk({ shadow: { color: '#000', opacity: 1 } }), false)).toBe(base);
+    expect(textSpill(mk({ shadow: { color: '#000', opacity: 1, distance: Number.NaN, blur: 0.1 } }), false)).toBeCloseTo(base + 0.2, 9);
+    expect(textSpill(mk({ stroke: { color: '#000', width: Number.NaN } }), false)).toBe(base);
+    expect(textSpill(mk({ stroke: { color: '#000', width: Number.POSITIVE_INFINITY } }), false)).toBe(base);
+    expect(Number.isFinite(textSpill(mk({ stroke2: { color: '#000', width: Number.NaN } }), false))).toBe(true);
+  });
+  it('the box of a text with a broken size or spacing is finite', () => {
+    for (const over of [{ fontSize: Number.NaN }, { letterSpacing: Number.NaN }, { lineHeight: Number.NaN }, { backgroundPadding: Number.POSITIVE_INFINITY }]) {
+      const m = measureText(mk(over));
+      expect(Number.isFinite(m.width)).toBe(true);
+      expect(Number.isFinite(m.height)).toBe(true);
+      expect(m.width).toBeGreaterThanOrEqual(1);
+    }
+  });
+  it('the signature without the extrude does not change with the extrude', () => {
+    const ex = { depth: 0.5, angle: 45, color: '#ff0000' };
+    const a = mk({ extrude: ex });
+    expect(textSignature(mk({ extrude: { ...ex, color: '#00ff00' } }), true)).toBe(textSignature(a, true));
+    expect(textSignature(mk({ extrude: { ...ex, depth: 0.9, angle: 10 } }), true)).toBe(textSignature(a, true));
+    expect(textSignature(mk({ extrude: { ...ex, color: '#00ff00' } }))).not.toBe(textSignature(a));
+    expect(textSignature(mk({ text: 'other', extrude: ex }), true)).not.toBe(textSignature(a, true));
+    // asking for both on the same clip keeps them apart
+    expect(textSignature(a, true)).not.toBe(textSignature(a));
   });
 });

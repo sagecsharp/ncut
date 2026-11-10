@@ -4,7 +4,7 @@
  * pure helpers only: how many planes, where they sit, how they fade, the cache key of the silhouette.
  */
 import type { VisualClip } from '../types';
-import { stackAlpha } from './text';
+import { finite } from './text';
 
 /** about one plane per this many project pixels of depth */
 export const SIDE_PX = 2;
@@ -19,7 +19,7 @@ export function hasTextDepth(clip: VisualClip): boolean {
 /** how far the side reaches back, in project pixels: depth x font size x the clip's scale (depth is capped at 1 like the texture room) */
 export function depthPixels(clip: VisualClip): number {
   if (clip.type !== 'text' || !clip.extrude) return 0;
-  return Math.max(0, Math.min(1, clip.extrude.depth)) * clip.fontSize * clip.transform.scale;
+  return finite(Math.max(0, Math.min(1, finite(clip.extrude.depth))) * finite(clip.fontSize) * finite(clip.transform.scale));
 }
 
 /** number of side planes for a depth in pixels: one per SIDE_PX, at least SIDE_MIN, at most SIDE_MAX (0 for no depth) */
@@ -40,14 +40,15 @@ export function sideOffsets(depthPx: number): number[] {
 }
 
 /**
- * the alpha of each side plane. fully opaque stays 1. a faded stack cannot be faded as one group by the renderer, so
- * the whole side is made to composite to alpha squared (1 - (1 - a')^n = alpha^2) and the face keeps `alpha`: the
- * stack never goes brighter than a plain overlap of n planes would, and still goes to nothing at 0.
+ * the plane alpha of the side planes: the clip's opacity, clamped. the stack is not corrected here: the renderer
+ * (Plane3D.stack) turns every texel into the per-plane alpha that makes the n planes composite to texel alpha x this
+ * opacity, so the side composites to the clip's opacity (not its square) and keeps the soft edges of the picture.
+ * the face composites over it at the same opacity, so where letters are fully opaque a faded clip shows the side
+ * colour through the face a little (a group fade is not possible per plane).
  */
-export function sideAlpha(alpha: number, n: number): number {
-  if (alpha >= 0.999) return 1;
+export function sideAlpha(alpha: number): number {
   if (!(alpha > 0)) return 0;
-  return stackAlpha(alpha * alpha, n);
+  return alpha >= 1 ? 1 : alpha;
 }
 
 /** cache key of the silhouette texture: the text signature (it holds the side colour and depth) + 'side' */

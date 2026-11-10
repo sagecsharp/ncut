@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { createTextClip } from '../lib/factory';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, setCanvasChannel, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, TEXTURE_MAX, resetClipErrors, textureSize, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, setCanvasChannel, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 import { SCENE_RETRY_MS, releaseSceneRenderer, renderScene, sceneRendererCount, startBlocked } from './scene3d/renderer';
 import { effectRunnerCount, releaseEffectRunner } from './effects/runner';
@@ -972,11 +972,86 @@ describe('planeFor: 3d depth text', () => {
     expect(dx).toBeGreaterThan(39);
   });
 
-  it('a faded stack fades its sides less than a plain overlap would', () => {
+  it('the sides carry the clip opacity and the stack size: the renderer makes them composite to texel alpha x opacity', () => {
     const { face, sides } = build(text({ extrude: ex }), 0.5);
     expect(face.alpha).toBe(0.5);
-    expect(sides[0]!.alpha).toBeLessThan(0.5);
-    expect(sides[0]!.alpha).toBeGreaterThan(0);
+    expect(face.stack).toBeUndefined();
+    for (const p of sides) {
+      expect(p.alpha).toBe(0.5);
+      expect(p.stack).toBe(sides.length);
+    }
+    const solid = build(text({ extrude: ex }), 1);
+    expect(solid.sides[0]!.alpha).toBe(1);
+    expect(solid.sides[0]!.stack).toBe(solid.sides.length);
+  });
+
+  it('dragging the extrude colour or depth does not redraw the face', () => {
+    // the planes of a clip are reused, so read what is needed before the next build
+    const a = build(text({ id: 'drag', extrude: ex }));
+    const aFace = { key: a.face.cacheKey, image: a.face.image };
+    const aSide = a.sides[0]!.cacheKey;
+    const aCount = a.sides.length;
+    const b = build(text({ id: 'drag', extrude: { ...ex, color: '#00ff00', angle: 10 } }));
+    expect(b.face.cacheKey).toBe(aFace.key);
+    expect(b.face.image).toBe(aFace.image);
+    // the silhouette carries the colour
+    expect(b.sides[0]!.cacheKey).not.toBe(aSide);
+    const c = build(text({ id: 'drag', extrude: { ...ex, color: '#00ff00', depth: 1 } }));
+    expect(c.face.cacheKey).toBe(aFace.key);
+    expect(c.sides.length).toBeGreaterThan(aCount);
+  });
+
+  it('a chroma key keeps the flat extrude in the picture instead of side planes', () => {
+    const { sides } = build(text({ extrude: ex, chromaKey: { color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 } }));
+    expect(sides.length).toBe(0);
+  });
+
+  it('a mask keeps the side planes (the silhouette goes through it too)', () => {
+    const { sides } = build(text({ extrude: ex, mask: { shape: 'ellipse', x: 0, y: 0, width: 0.5, height: 0.5, rotation: 0, feather: 0, invert: false } }));
+    expect(sides.length).toBe(10);
+    expect(new Set(sides.map((p) => p.image)).size).toBe(1);
+  });
+
+  it('drops the planes when the clip is drawn unstacked and when the render resources are released', () => {
+    const c = text({ id: 'gone', extrude: ex });
+    const a = build(c).sides[0];
+    expect(build(c).sides[0]).toBe(a);
+    // flat for a moment: the entry is deleted, a later stack is built again
+    build({ ...c, extrude: null });
+    expect(build(c).sides[0]).not.toBe(a);
+    const b = build(c).sides[0];
+    expect(build(c).sides[0]).toBe(b);
+    releaseRenderResources('preview');
+    expect(build(c).sides[0]).not.toBe(b);
+  });
+
+  it('the default thickness of a solid is measured on the unpadded box (a stroke or animation does not change it)', () => {
+    const thick = (c: ReturnType<typeof text>) => {
+      const m = planeFor(project([c], tracks), { clip: c, source: null, alpha: 1, time: 1 }, rig)!.model;
+      return Math.hypot(m[8]!, m[9]!, m[10]!);
+    };
+    const plain = thick(text({ shape: 'box' }));
+    expect(plain).toBeGreaterThan(1);
+    expect(thick(text({ shape: 'box', stroke: { color: '#000', width: 0.3 } }))).toBeCloseTo(plain, 6);
+    expect(thick(text({ shape: 'box', animIn: { id: 'fade', duration: 1 } }))).toBeCloseTo(plain, 6);
+    // every other solid is as deep as wide
+    const w = (c: ReturnType<typeof text>) => {
+      const m = planeFor(project([c], tracks), { clip: c, source: null, alpha: 1, time: 1 }, rig)!.model;
+      return Math.hypot(m[8]!, m[9]!, m[10]!);
+    };
+    expect(w(text({ shape: 'cylinder', stroke: { color: '#000', width: 0.3 } }))).toBeCloseTo(w(text({ shape: 'cylinder' })), 6);
+  });
+
+  it('a text with a broken shadow or stroke still gets a finite plane', () => {
+    const c = text({ extrude: ex, shadow: { color: '#000', opacity: 1 }, stroke: { color: '#000', width: Number.NaN } });
+    const { face, sides } = build(c);
+    expect(Array.from(face.model).every(Number.isFinite)).toBe(true);
+    expect(sides.length).toBeGreaterThan(0);
+    const big = text({ stroke: { color: '#000', width: 1e9 } });
+    expect(() => build(big)).not.toThrow();
+    const img = build(big).face.image as unknown as { width: number; height: number };
+    expect(img.width).toBeLessThanOrEqual(TEXTURE_MAX);
+    expect(img.height).toBeLessThanOrEqual(TEXTURE_MAX);
   });
 
   it('keeps the planes while nothing changes and rebuilds them when the pose does', () => {
@@ -1001,5 +1076,80 @@ describe('planeFor: 3d depth text', () => {
   it('planeFor without a sides list returns the face only', () => {
     const c = text({ extrude: ex });
     expect(planeFor(project([c], tracks), { clip: c, source: null, alpha: 1, time: 1 }, rig)).not.toBeNull();
+  });
+});
+
+describe('textureSize', () => {
+  it('is whole pixels between 2 and the maximum, and never NaN', () => {
+    expect(textureSize(100.2, 50, 1)).toEqual({ w: 101, h: 50 });
+    expect(textureSize(0, 0, 1)).toEqual({ w: 2, h: 2 });
+    expect(textureSize(Number.NaN, Number.POSITIVE_INFINITY, 1)).toEqual({ w: 2, h: 2 });
+    expect(textureSize(1e9, 10, 4)).toEqual({ w: TEXTURE_MAX, h: 40 });
+    expect(textureSize(10, 10, Number.NaN)).toEqual({ w: 2, h: 2 });
+  });
+  it('textureQuality survives a broken scale or size', () => {
+    expect(textureQuality(Number.NaN, 100, 100)).toBe(1);
+    expect(textureQuality(0.5, Number.NaN, Number.NaN)).toBe(1);
+  });
+});
+
+describe('one bad clip does not stop the frame', () => {
+  const tracks = [track('top', 'video'), track('mid', 'video'), track('bot', 'video')];
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetClipErrors();
+  });
+
+  it('paints the clips around a clip whose picture throws, and warns once per clip', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bad = image('mid', 0, 5);
+    const a = image('bot', 0, 5);
+    const b = image('top', 0, 5);
+    const p = project([a, bad, b], tracks);
+    const resolve: SourceResolver = (c) => {
+      if (c.id === bad.id) throw new Error('boom');
+      return mkSource(c.id);
+    };
+    const ctx = new FakeCtx();
+    expect(() => renderFrame(asCtx(ctx), p, 1, resolve)).not.toThrow();
+    expect(ctx.ops('drawImage').map(tagOf)).toEqual([a.id, b.id]);
+    renderFrame(asCtx(new FakeCtx()), p, 2, resolve);
+    renderFrame(asCtx(new FakeCtx()), p, 3, resolve);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain(bad.id);
+  });
+
+  it('leaves the canvas state as it found it', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const bad = image('mid', 0, 5, { transform: { ...DEFAULT_TRANSFORM, opacity: 0.5 } });
+    const ok = image('top', 0, 5);
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([bad, ok], tracks), 1, (c) => {
+      if (c.id === bad.id) {
+        ctx.save();
+        ctx.globalAlpha = 0.1;
+        ctx.globalCompositeOperation = 'lighter';
+        throw new Error('boom');
+      }
+      return mkSource(c.id);
+    });
+    // the clip after it was drawn at its own alpha with the normal composite op
+    const last = ctx.ops('drawImage').pop()!;
+    expect(last.alpha).toBe(1);
+    expect(last.comp).toBe('source-over');
+    expect(ctx.globalAlpha).toBe(1);
+    expect(ctx.globalCompositeOperation).toBe('source-over');
+  });
+
+  it('a throwing 3d clip is dropped from its scene, the others stay', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // a 3d video whose source object throws when read
+    const bad = video('mid', 0, 5, { threeD: true });
+    const p = project([bad], tracks);
+    const src = { image: {} as unknown as CanvasImageSource, get width(): number { throw new Error('boom'); }, height: 10 } as DrawSource;
+    // a context that belongs to a canvas, so the 3d run really builds its planes
+    const ctx = Object.assign(new FakeCtx(), { canvas: { width: 1920, height: 1080 } });
+    expect(() => renderFrame(asCtx(ctx), p, 1, () => src)).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
