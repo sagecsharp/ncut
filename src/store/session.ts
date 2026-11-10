@@ -13,6 +13,7 @@ import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
 import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, loadProjectMediaRows, putMediaBlob, saveProject, warmDb } from '../storage/db';
+import { whenIdle } from '../storage/idle';
 import { whenMediaStored } from '../storage/pendingMedia';
 import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
@@ -21,6 +22,8 @@ import { resetPlayback } from './playback';
 import { useUi } from './ui';
 
 const AUTOSAVE_MS = 600;
+/** the debounced write waits for an idle moment, at most this long */
+const AUTOSAVE_IDLE_MS = 1000;
 
 export type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error';
 
@@ -255,6 +258,8 @@ export async function deleteStoredProject(id: string): Promise<void> {
 /* ---------- autosave ---------- */
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** cancels the write that waits for an idle moment (the project stays in `dirty` until it runs) */
+let cancelIdle: (() => void) | null = null;
 let dirty: Project | null = null;
 let saving: Promise<void> = Promise.resolve();
 let pendingSaves = 0;
@@ -290,6 +295,10 @@ export async function flushAutosave(): Promise<void> {
     clearTimeout(timer);
     timer = null;
   }
+  if (cancelIdle) {
+    cancelIdle();
+    cancelIdle = null;
+  }
   if (dirty) {
     const p = dirty;
     dirty = null;
@@ -312,13 +321,22 @@ export function startAutosave(): void {
     dirty = state.project;
     if (pendingSaves === 0) setSaveState('unsaved');
     if (timer) clearTimeout(timer);
+    // a new edit restarts the wait, also when the write was already waiting for an idle moment
+    if (cancelIdle) {
+      cancelIdle();
+      cancelIdle = null;
+    }
     timer = setTimeout(() => {
       timer = null;
-      if (dirty) {
-        const p = dirty;
-        dirty = null;
-        void persist(p);
-      }
+      // the copy of the whole project happens in an idle moment, not right when the user stops
+      cancelIdle = whenIdle(() => {
+        cancelIdle = null;
+        if (dirty) {
+          const p = dirty;
+          dirty = null;
+          void persist(p);
+        }
+      }, AUTOSAVE_IDLE_MS);
     }, AUTOSAVE_MS);
   });
   window.addEventListener('beforeunload', (e) => {
