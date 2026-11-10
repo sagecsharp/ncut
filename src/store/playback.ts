@@ -104,6 +104,13 @@ export const usePlayback = create<PlaybackState>()((set, get) => ({
   },
 }));
 
+// the raf clock does not run in a background tab but the media elements would keep playing: stop instead
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) usePlayback.getState().pause();
+  });
+}
+
 /** stop + rewind. called when a project is opened or closed. */
 export function resetPlayback(): void {
   cancelAnimationFrame(raf);

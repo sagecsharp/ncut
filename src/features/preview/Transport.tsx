@@ -96,7 +96,10 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
         className="icon-btn"
         title={shownVolume === 0 ? 'unmute' : 'mute'}
         aria-label="toggle mute"
-        onClick={() => pb().setMuted(!muted)}
+        onClick={() => {
+          if (muted && pb().volume === 0) pb().setVolume(1);
+          pb().setMuted(!muted);
+        }}
       >
         <VolumeIcon size={16} />
       </button>
@@ -111,8 +114,11 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
         aria-label="master volume"
         onChange={(e) => {
           const v = Number(e.target.value);
-          pb().setVolume(v);
-          pb().setMuted(v === 0);
+          // never store 0: keep the last audible volume so the mute button can bring it back
+          if (v > 0) {
+            pb().setVolume(v);
+            pb().setMuted(false);
+          } else pb().setMuted(true);
         }}
       />
       <button
