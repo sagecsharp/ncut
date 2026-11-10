@@ -34,6 +34,13 @@ type RvfcElement = HTMLVideoElement & {
   cancelVideoFrameCallback?: (handle: number) => void;
 };
 
+function setPreservesPitch(el: HTMLMediaElement, value: boolean): void {
+  const e = el as HTMLMediaElement & { webkitPreservesPitch?: boolean; mozPreservesPitch?: boolean };
+  e.preservesPitch = value;
+  if ('webkitPreservesPitch' in e) e.webkitPreservesPitch = value;
+  if ('mozPreservesPitch' in e) e.mozPreservesPitch = value;
+}
+
 interface MediaEntry {
   clipId: string;
   assetId: string;
@@ -103,7 +110,9 @@ export class PreviewEngine {
         if (s.volume !== prev.volume || s.muted !== prev.muted) this.applyGains();
         if (s.time !== prev.time) {
           this.sync();
-          // draw right inside the clock's own frame while playing so the picture never lags a frame
+          // draw right inside the clock's own frame while playing so the picture never lags a frame.
+          // the clock ticks every animation frame, so this is also what animates an effect over a still
+          // image or text (hasEffectsAt is true, nothing else on screen changes); every tick must paint
           if (s.playing) this.draw();
           else this.invalidate();
         }
@@ -576,7 +585,8 @@ export class PreviewEngine {
     const el: HTMLVideoElement | HTMLAudioElement = isVideo ? document.createElement('video') : document.createElement('audio');
     el.preload = 'auto';
     el.muted = false;
-    el.preservesPitch = true;
+    // pitch follows speed, same as the export which resamples (no time stretch)
+    setPreservesPitch(el, false);
     if (el instanceof HTMLVideoElement) el.playsInline = true;
     el.src = url;
 

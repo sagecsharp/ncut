@@ -13,15 +13,13 @@ import {
   Input,
   Mp4OutputFormat,
   Output,
-  QUALITY_HIGH,
-  QUALITY_LOW,
   QUALITY_MEDIUM,
+  Quality,
   WebMOutputFormat,
-  canEncodeAudio,
+  canEncodeVideo,
   getFirstEncodableAudioCodec,
-  getFirstEncodableVideoCodec,
 } from 'mediabunny';
-import type { AudioCodec, Quality, VideoCodec, WrappedCanvas } from 'mediabunny';
+import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
 import { renderFrame, visibleClipsAt } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
@@ -55,20 +53,78 @@ export interface ExportHooks {
   signal?: AbortSignal;
 }
 
-const VIDEO_CODECS: Record<ExportContainer, VideoCodec[]> = {
+/** tried in this order, the first one the browser can encode at the chosen size + fps + bitrate wins */
+export const VIDEO_CODECS: Record<ExportContainer, VideoCodec[]> = {
   mp4: ['avc', 'hevc', 'av1', 'vp9'],
-  webm: ['vp9', 'vp8', 'av1'],
+  webm: ['vp9', 'av1', 'vp8'],
 };
 const AUDIO_CODECS: Record<ExportContainer, AudioCodec[]> = {
   mp4: ['aac', 'opus'],
   webm: ['opus'],
 };
 
-const QUALITY_MAP: Record<ExportQuality, Quality> = {
-  low: QUALITY_LOW,
-  medium: QUALITY_MEDIUM,
-  high: QUALITY_HIGH,
+export const CODEC_LABEL: Record<string, string> = {
+  avc: 'h.264',
+  hevc: 'h.265',
+  av1: 'av1',
+  vp9: 'vp9',
+  vp8: 'vp8',
 };
+
+/** bits per pixel per frame at 30 fps */
+const BITS_PER_PIXEL: Record<ExportQuality, number> = { low: 0.04, medium: 0.08, high: 0.16 };
+/** how much smaller a codec gets for the same look (vs h.264) */
+const CODEC_EFFICIENCY: Record<string, number> = { avc: 1, hevc: 0.75, vp9: 0.8, av1: 0.65, vp8: 1.2 };
+const MIN_BITRATE = 500_000;
+const MAX_BITRATE = 240_000_000;
+/** seconds between key frames (not frames: 240 fps would otherwise get one every 0.1 s) */
+const KEYFRAME_SECONDS = 2;
+/** progress callbacks are at most this often */
+const PROGRESS_MS = 100;
+
+/**
+ * target video bitrate in bits per second. the quality table is per pixel at 30 fps and grows
+ * sub-linearly with the frame rate (x (fps / 30) ^ 0.7), so 240 fps is not starved and not 8x the size.
+ */
+export function videoBitrate(width: number, height: number, fps: number, quality: ExportQuality, codec: string): number {
+  const base = width * height * 30 * BITS_PER_PIXEL[quality] * (CODEC_EFFICIENCY[codec] ?? 1);
+  const scaled = base * Math.pow(Math.max(1, fps) / 30, 0.7);
+  return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, scaled)));
+}
+
+export interface ExportPlan {
+  codec: VideoCodec;
+  bitrate: number;
+}
+
+export interface PlanRequest {
+  container: ExportContainer;
+  width: number;
+  height: number;
+  fps: number;
+  quality: ExportQuality;
+}
+
+/** first codec of the container the browser says it can encode for this exact size, fps and bitrate. null = none. */
+export async function planExport(req: PlanRequest, signal?: AbortSignal): Promise<ExportPlan | null> {
+  if (typeof VideoEncoder === 'undefined') return null;
+  for (const codec of VIDEO_CODECS[req.container]) {
+    if (signal?.aborted) throw abortError();
+    const bitrate = videoBitrate(req.width, req.height, req.fps, req.quality, codec);
+    try {
+      const ok = await canEncodeVideo(codec, {
+        width: req.width,
+        height: req.height,
+        frameRate: req.fps,
+        quality: new Quality({ bitrate }),
+      });
+      if (ok) return { codec, bitrate };
+    } catch {
+      // a codec that throws while probing is treated as unsupported, the next one is tried
+    }
+  }
+  return null;
+}
 
 const EPS = 1e-6;
 
@@ -81,7 +137,9 @@ export function outputSize(project: Pick<Project, 'width' | 'height'>, scale: nu
 }
 
 export function frameCount(project: Pick<Project, 'clips'>, fps: number): number {
-  return Math.max(1, Math.ceil(projectDuration(project) * fps - 1e-6));
+  const n = projectDuration(project) * fps;
+  // float error in duration * fps stays far below 1e-6 even for hours at 240 fps
+  return Math.max(1, Math.ceil(n - 1e-6));
 }
 
 export function fileExtension(container: ExportContainer): string {
@@ -90,27 +148,6 @@ export function fileExtension(container: ExportContainer): string {
 
 function abortError(): DOMException {
   return new DOMException('export cancelled', 'AbortError');
-}
-
-/** which containers have an encodable video codec on this browser */
-export async function probeFormats(project: Pick<Project, 'width' | 'height' | 'fps'>): Promise<Record<ExportContainer, boolean>> {
-  const result: Record<ExportContainer, boolean> = { mp4: false, webm: false };
-  if (typeof VideoEncoder === 'undefined') return result;
-  const size = outputSize(project, 1);
-  for (const container of ['mp4', 'webm'] as const) {
-    try {
-      const codec = await getFirstEncodableVideoCodec(VIDEO_CODECS[container], {
-        width: size.width,
-        height: size.height,
-        quality: QUALITY_MEDIUM,
-        frameRate: project.fps,
-      });
-      result[container] = codec !== null;
-    } catch {
-      result[container] = false;
-    }
-  }
-  return result;
 }
 
 let lastYield = 0;
@@ -166,21 +203,24 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   const fps = options.fps > 0 ? options.fps : project.fps;
   const { width, height } = outputSize(project, options.scale);
   const totalFrames = frameCount(project, fps);
-  const quality = QUALITY_MAP[options.quality];
   const container = options.container;
 
-  const videoCodec = await getFirstEncodableVideoCodec(VIDEO_CODECS[container], {
-    width,
-    height,
-    quality,
-    frameRate: fps,
-  });
-  if (!videoCodec) {
-    throw new Error(`this browser cannot encode ${container} video at ${width}x${height}, try the other format or a smaller size`);
+  const plan = await planExport({ container, width, height, fps, quality: options.quality }, signal);
+  if (!plan) {
+    throw new Error(
+      `this browser cannot encode ${container} at ${width}x${height} and ${fps} fps, try a lower frame rate, a smaller resolution or the other format`,
+    );
   }
+  const videoCodec = plan.codec;
+  const videoQuality = new Quality({ bitrate: plan.bitrate });
 
-  const report = (phase: ExportProgress['phase'], progress: number, frame: number) =>
+  let lastReport = 0;
+  const report = (phase: ExportProgress['phase'], progress: number, frame: number, force = true) => {
+    const now = performance.now();
+    if (!force && now - lastReport < PROGRESS_MS) return;
+    lastReport = now;
     onProgress?.({ phase, progress: Math.min(1, Math.max(0, progress)), frame, totalFrames });
+  };
 
   // ---- audio mix (phase 1) ----
   let mix: AudioBuffer | null = null;
@@ -307,7 +347,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     if (!ctx) throw new Error('2d canvas is not available');
     ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
 
-    const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality, keyFrameInterval: 2 });
+    const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
     output.addVideoTrack(videoSource, { frameRate: fps });
     let audioSource: AudioBufferSource | null = null;
     if (mix && audioCodec) {
@@ -330,6 +370,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     };
 
     lastYield = performance.now();
+    // every time below comes from the integer frame index (i / fps), nothing is accumulated
     const frameDur = 1 / fps;
     for (let i = 0; i < totalFrames; i++) {
       if (signal?.aborted) throw abortError();
@@ -382,7 +423,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       }
       await feedAudio(t + 1.5);
 
-      report('video', 0.05 + 0.9 * ((i + 1) / totalFrames), i + 1);
+      report('video', 0.05 + 0.9 * ((i + 1) / totalFrames), i + 1, false);
       if (performance.now() - lastYield > 14) await yieldToUi();
     }
     await feedAudio(duration + 1);
