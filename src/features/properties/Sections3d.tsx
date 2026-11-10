@@ -1,5 +1,5 @@
-import { memo, useMemo } from 'react';
-import { ArrowDownToLine, Camera, Eraser, Maximize, RectangleHorizontal, RectangleVertical, RotateCcw } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import { ArrowDownToLine, ArrowLeftRight, Camera, ClipboardPaste, Copy, Eraser, FlipHorizontal2, Maximize, MoveHorizontal, RectangleHorizontal, RectangleVertical, Repeat, RotateCcw, Waves } from 'lucide-react';
 import { hasKeyframes, valueAt } from '../../lib/anim';
 import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
@@ -16,11 +16,13 @@ import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { beginEdit, liveOpts, patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
 import { lookTargetOptions } from './parentOptions';
+import { copyKeysAction, fitKeysAction, pasteKeysAction, repeatKeysAction, reverseKeysAction, wiggleAction, wiggleDefault, wiggleProps } from './keyActions';
+import { useKeyClipboard } from './keyClipboard';
 import { dropToFloor, frameWithCamera, layFlat, putInFrontOfCamera, standUp } from './placeActions';
 
 const actions = () => useEditor.getState();
 
-/* ---------- animation summary ---------- */
+/* ---------- animation summary + key tools ---------- */
 
 export const AnimationSection = memo(function AnimationSection({
   id,
@@ -29,7 +31,7 @@ export const AnimationSection = memo(function AnimationSection({
   duration,
 }: {
   id: string;
-  keyframes: Keyframes;
+  keyframes?: Keyframes;
   start: number;
   duration: number;
 }) {
@@ -42,15 +44,25 @@ export const AnimationSection = memo(function AnimationSection({
       props += 1;
     }
   }
+  const has = keys > 0;
+  const copied = useKeyClipboard();
+  const clip = useEditor((s) => s.project?.clips.find((c) => c.id === id));
+  const choices = useMemo(() => (clip ? wiggleProps(clip) : []), [clip?.type, clip && 'threeD' in clip ? clip.threeD : false]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [prop, setProp] = useState('');
+  const [amount, setAmount] = useState<number | null>(null);
+  const [perSecond, setPerSecond] = useState(4);
+  const chosen = choices.find((c) => c.prop === prop) ?? choices[0];
+  const amt = amount ?? (clip && chosen ? wiggleDefault(clip, chosen.prop) : 1);
   return (
     <Section id="animation" title="animation">
       <div className="props-stat">
         <span className="props-hint" title="keyframes on this clip">
-          {keys} {keys === 1 ? 'keyframe' : 'keyframes'} on {props} {props === 1 ? 'value' : 'values'}
+          {has ? `${keys} ${keys === 1 ? 'keyframe' : 'keyframes'} on ${props} ${props === 1 ? 'value' : 'values'}` : 'no keyframes yet'}
         </span>
         <button
           type="button"
           className="btn btn-sm"
+          disabled={!has}
           title="remove every keyframe. values stay as they are at the playhead."
           onClick={() => actions().clearKeyframes(id, clamp(usePlayback.getState().time, start, start + duration))}
         >
@@ -58,6 +70,64 @@ export const AnimationSection = memo(function AnimationSection({
           clear all
         </button>
       </div>
+      <div className="props-buttons">
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="reverse: play the animation backwards" aria-label="reverse keyframes" onClick={() => reverseKeysAction(id)}>
+          <FlipHorizontal2 size={14} />
+        </button>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="fit to clip: stretch the keyframes over the whole clip" aria-label="fit keyframes to the clip" onClick={() => fitKeysAction(id)}>
+          <MoveHorizontal size={14} />
+        </button>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="repeat x2: play the animation twice in the same time" aria-label="repeat keyframes twice" onClick={() => repeatKeysAction(id, false)}>
+          <Repeat size={14} />
+        </button>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="ping pong: play it forward, then backward, in the same time" aria-label="repeat keyframes as ping pong" onClick={() => repeatKeysAction(id, true)}>
+          <ArrowLeftRight size={14} />
+        </button>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="copy keys" aria-label="copy keyframes" onClick={() => copyKeysAction(id)}>
+          <Copy size={14} />
+        </button>
+        <button
+          type="button"
+          className="icon-btn icon-btn-sm"
+          disabled={!copied}
+          title={copied ? 'paste keys: the first key lands on the playhead' : 'copy keys first'}
+          aria-label="paste keyframes"
+          onClick={() => pasteKeysAction(id)}
+        >
+          <ClipboardPaste size={14} />
+        </button>
+      </div>
+      {chosen ? (
+        <>
+          <SelectRow
+            label="wiggle"
+            title="the value to shake"
+            value={chosen.prop}
+            options={choices.map((c) => [c.prop, c.label])}
+            onChange={(v) => {
+              setProp(v);
+              setAmount(null);
+            }}
+          />
+          <Row label="amount" title="how far it strays from the value at the playhead">
+            <NumberField value={amt} min={0} step={1} precision={2} title="amount" onChange={setAmount} />
+          </Row>
+          <Row label="per second" title="keys per second: higher is faster and jumpier">
+            <NumberField value={perSecond} min={1} max={12} step={1} title="keys per second" onChange={setPerSecond} />
+          </Row>
+          <div className="props-buttons">
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="shake this value over the whole clip. replaces its keyframes."
+              onClick={() => wiggleAction(id, chosen.prop, amt, perSecond)}
+            >
+              <Waves size={14} />
+              add wiggle
+            </button>
+          </div>
+        </>
+      ) : null}
     </Section>
   );
 });

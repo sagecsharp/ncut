@@ -2,7 +2,6 @@ import { memo, useMemo } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
-import { hasKeyframes } from '../../lib/anim';
 import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
@@ -482,7 +481,7 @@ export function ClipInspector({ id }: { id: string }) {
           mediaId={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.assetId : null}
           mediaKind={clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null}
         />
-        {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
+        <AnimationSection id={clip.id} keyframes={clip.keyframes} start={clip.start} duration={clip.duration} />
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
         {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
         {clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
