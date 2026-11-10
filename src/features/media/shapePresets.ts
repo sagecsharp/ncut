@@ -1,6 +1,7 @@
 /** shape cards of the shapes tab. pure data: no react, no canvas. */
 import { DEFAULT_TRANSFORM } from '../../types';
 import type { Shape3D, ShapeClip } from '../../types';
+import { isOutlineShape, outlineFor } from '../../engine/scene3d/outline2d';
 
 export interface ShapePreset {
   id: string;
@@ -25,12 +26,21 @@ function named(label: string, fields: Partial<ShapeClip>): Partial<ShapeClip> {
 const SOLID_TILT = { rotX: 14, rotY: 28 };
 
 /** a ready-made 3d solid: a flat colored figure wrapped on the given 3d shape */
-function solid(id: string, label: string, hint: string, shape: Shape3D): ShapePreset {
+function solid(id: string, label: string, hint: string, shape: Shape3D, size?: { w: number; h: number; depth: number }): ShapePreset {
   return {
     id,
     label,
     hint,
-    build: () => named(label, { kind: 'rect', width: 400, height: 400, threeD: true, shape, transform: { ...DEFAULT_TRANSFORM, ...SOLID_TILT } }),
+    build: () =>
+      named(label, {
+        kind: 'rect',
+        width: size?.w ?? 400,
+        height: size?.h ?? 400,
+        ...(size ? { shapeDepth: size.depth } : {}),
+        threeD: true,
+        shape,
+        transform: { ...DEFAULT_TRANSFORM, ...SOLID_TILT },
+      }),
   };
 }
 
@@ -104,6 +114,12 @@ export const SHAPE_PRESETS: readonly ShapePreset[] = [
   solid('cone', 'cone', '3d, round base and a point', 'cone'),
   solid('pyramid', 'pyramid', '3d, square base and a point', 'pyramid'),
   solid('ring', 'ring', '3d, a donut', 'torus'),
+  // sizes follow the natural ratio of each outline, so the figure is not stretched
+  solid('capsule', 'capsule', '3d, a tube with round ends', 'capsule', { w: 240, h: 480, depth: 240 }),
+  solid('prism', 'prism', '3d, a triangle pushed back', 'prism', { w: 400, h: 346, depth: 140 }),
+  solid('hexagon-3d', '3d hexagon', '3d, six sides pushed back', 'hexagon', { w: 347, h: 400, depth: 140 }),
+  solid('star-3d', '3d star', '3d, a five point star pushed back', 'star', { w: 400, h: 380, depth: 120 }),
+  solid('heart-3d', '3d heart', '3d, a heart pushed back', 'heart', { w: 400, h: 360, depth: 140 }),
   {
     id: 'background',
     label: 'background',
@@ -182,6 +198,12 @@ export function solidSilhouette(shape: Shape3D): SolidPart[] {
       return [{ kind: 'poly', pts: [[-0.4, -0.4], [0.2, -0.4], [0.5, -0.2], [0.5, 0.4], [-0.1, 0.4], [-0.4, 0.2]] }];
     case 'sphere':
       return [{ kind: 'ellipse', cx: 0, cy: 0, rx: 0.5, ry: 0.5 }];
+    case 'capsule':
+      return [
+        { kind: 'poly', pts: [[-0.27, -0.24], [0.27, -0.24], [0.27, 0.24], [-0.27, 0.24]] },
+        { kind: 'ellipse', cx: 0, cy: -0.24, rx: 0.27, ry: 0.26 },
+        { kind: 'ellipse', cx: 0, cy: 0.24, rx: 0.27, ry: 0.26 },
+      ];
     case 'cylinder':
       return [
         { kind: 'poly', pts: [[-0.4, -0.35], [0.4, -0.35], [0.4, 0.35], [-0.4, 0.35]] },
@@ -189,6 +211,16 @@ export function solidSilhouette(shape: Shape3D): SolidPart[] {
         { kind: 'ellipse', cx: 0, cy: 0.35, rx: 0.4, ry: 0.13 },
       ];
     default:
+      if (isOutlineShape(shape)) {
+        // the outline twice, the back copy up and to the right: one fill reads as a thick figure
+        const o = outlineFor(shape);
+        const copy = (dx: number, dy: number): SolidPart => {
+          const pts: [number, number][] = [];
+          for (let i = 0; i < o.points.length; i += 2) pts.push([o.points[i]! * 0.8 + dx, o.points[i + 1]! * 0.8 + dy]);
+          return { kind: 'poly', pts };
+        };
+        return [copy(0.1, -0.1), copy(-0.1, 0.1)];
+      }
       return [{ kind: 'poly', pts: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] }];
   }
 }

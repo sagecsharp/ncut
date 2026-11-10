@@ -7,6 +7,8 @@
  */
 import { SHAPES_3D } from '../../types';
 import type { Shape3D } from '../../types';
+import { isOutlineShape, outlineFor } from './outline2d';
+import type { OutlineKind } from './outline2d';
 
 export interface MeshArrays {
   /** x, y, z per vertex */
@@ -204,6 +206,71 @@ function torus(seg: number): MeshArrays {
   return b.done();
 }
 
+/** share of the total height of one half-sphere end of the capsule (it is round on a clip twice as tall as wide) */
+export const CAPSULE_CAP = 0.25;
+
+/**
+ * a tube along y with half-sphere ends. u runs around it (0.5 faces the viewer) like on the cylinder, v runs
+ * from the top pole to the bottom pole: the ends take the first and last CAPSULE_CAP of v, so the picture
+ * continues over the caps.
+ */
+function capsule(seg: number): MeshArrays {
+  const rings = Math.max(2, Math.round(seg / 4));
+  const b = new Builder();
+  const rows: [number, number, number][] = []; // radius, y, v
+  for (let k = 0; k <= rings; k++) {
+    const phi = (Math.PI / 2) * (k / rings);
+    rows.push([0.5 * Math.sin(phi), -0.5 + CAPSULE_CAP * (1 - Math.cos(phi)), (CAPSULE_CAP * k) / rings]);
+  }
+  for (let k = 0; k <= rings; k++) {
+    const phi = Math.PI / 2 + (Math.PI / 2) * (k / rings);
+    rows.push([0.5 * Math.sin(phi), 0.5 - CAPSULE_CAP * (1 + Math.cos(phi)), 1 - CAPSULE_CAP + (CAPSULE_CAP * k) / rings]);
+  }
+  for (const [r, y, v] of rows) {
+    for (let i = 0; i <= seg; i++) {
+      const u = i / seg;
+      const a = TAU * (u - 0.5);
+      b.vert(r * Math.sin(a), y, -r * Math.cos(a), u, v);
+    }
+  }
+  for (let j = 0; j < rows.length - 1; j++) {
+    for (let i = 0; i < seg; i++) {
+      const p = j * (seg + 1) + i;
+      b.idx.push(p, p + 1, p + seg + 2, p, p + seg + 2, p + seg + 1);
+    }
+  }
+  return b.done();
+}
+
+/**
+ * an outline (see outline2d) pushed back along z: the front face at z = -0.5 shows the picture cut out by
+ * the outline (uv = the outline's bounding box), the back face at z = +0.5 shows it mirrored left to right,
+ * like the box back. the side wall goes all around and samples the picture where the outline is, on both
+ * rings, so the picture's own colour at the edge is stretched across the thickness (no seam, no extra uv).
+ * front triangles have positive area in x, y like the box front; the back is wound the other way.
+ */
+function extruded(kind: OutlineKind, seg: number): MeshArrays {
+  const o = outlineFor(kind, seg);
+  const n = o.points.length / 2;
+  const b = new Builder();
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, 1 - o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
+  for (let t = 0; t < o.triangles.length; t += 3) {
+    const a = o.triangles[t]!;
+    const bb = o.triangles[t + 1]!;
+    const c = o.triangles[t + 2]!;
+    b.tri(a, bb, c);
+    b.tri(2 * n + a, 2 * n + c, 2 * n + bb);
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    // same handedness as the box faces (their normals point away from the viewer's side), culling is off anyway
+    b.quad(i, n + i, n + j, j);
+  }
+  return b.done();
+}
+
 /** a shape id the renderer knows, else 'plane' (old projects, future ids) */
 export function knownShape(shape: string | undefined): Shape3D {
   return shape !== undefined && (SHAPES_3D as string[]).includes(shape) ? (shape as Shape3D) : 'plane';
@@ -218,10 +285,11 @@ const cache = new Map<string, MeshArrays>();
 export function shapeMesh(shape: string | undefined, segments = DEFAULT_SEGMENTS): MeshArrays {
   const s = knownShape(shape);
   const seg = Math.max(3, Math.min(180, Math.round(segments)));
-  const key = `${s}:${s === 'plane' || s === 'box' || s === 'pyramid' ? 0 : seg}`;
+  const fixed = s === 'plane' || s === 'box' || s === 'pyramid' || s === 'prism' || s === 'hexagon' || s === 'star';
+  const key = `${s}:${fixed ? 0 : seg}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const mesh =
+  const mesh = isOutlineShape(s) ? extruded(s, seg) : s === 'capsule' ? capsule(seg) :
     s === 'box' ? box() : s === 'sphere' ? sphere(seg) : s === 'cylinder' ? cylinder(seg) : s === 'cone' ? cone(seg) : s === 'pyramid' ? pyramid() : s === 'torus' ? torus(seg) : plane();
   cache.set(key, mesh);
   return mesh;
