@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { blocksPaint, isScrubbing, onSeekedAction } from './previewSync';
+import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './previewSync';
 
 describe('isScrubbing', () => {
   it('only a running clock on a video that cannot play at that rate', () => {
@@ -46,5 +46,14 @@ describe('onSeekedAction', () => {
   it('normal playback keeps its old behaviour', () => {
     expect(onSeekedAction({ playing: true, scrubbing: false, want: 3, current: 1 })).toEqual({ draw: false, seek: true, invalidate: false });
     expect(onSeekedAction({ playing: true, scrubbing: false, want: 1, current: 1 })).toEqual({ draw: false, seek: false, invalidate: true });
+  });
+});
+
+describe('staleScrubTarget', () => {
+  it('the deferred seek target is stale once a scrub ends', () => {
+    expect(staleScrubTarget(true, false)).toBe(true);
+    expect(staleScrubTarget(true, true)).toBe(false);
+    expect(staleScrubTarget(false, false)).toBe(false);
+    expect(staleScrubTarget(false, true)).toBe(false);
   });
 });

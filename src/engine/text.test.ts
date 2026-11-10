@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createTextClip } from '../lib/factory';
 import {
   counterDigitFlags,
+  needsWholeLine,
   curveLayout,
   EXTRUDE_MAX_STEPS,
   fixedDigitEdges,
@@ -836,6 +837,25 @@ describe('steady digits', () => {
     createTextClip('t', 0, { text, fontFamily: 'Steady A', fontSize: 100, duration: 10, counter, ...extra });
   const at = (clip: ReturnType<typeof mk>, t: number) => resolveCounter(clip, t);
   const ranges = (c: unknown) => (c as { digitRanges?: number[][] }).digitRanges;
+
+  it('needsWholeLine finds what cannot be drawn one code point at a time', () => {
+    expect(needsWholeLine('12:30 plain')).toBe(false);
+    expect(needsWholeLine('\u0627\u0644\u0639\u0631\u0628\u064A\u0629 12')).toBe(true);
+    expect(needsWholeLine('\u05E9\u05DC\u05D5\u05DD 5')).toBe(true);
+    expect(needsWholeLine('e\u0301 5')).toBe(true);
+    expect(needsWholeLine('\u{1F468}\u200D\u{1F469} 5')).toBe(true);
+    expect(needsWholeLine('\u2764\uFE0F 5')).toBe(true);
+    expect(needsWholeLine('\u{1F44D}\u{1F3FD} 5')).toBe(true);
+    expect(needsWholeLine('\u{1F1E9}\u{1F1EA} 5')).toBe(true);
+  });
+
+  it('steady digits are skipped (no flags) when a line has a script that needs the whole line', () => {
+    expect(counterDigitFlags(['\u0627\u0644 12'], [[3, 5]], 5)).toBeNull();
+    expect(counterDigitFlags(['e\u0301 12'], [[3, 5]], 5)).toBeNull();
+    // one such line is enough: the digit layout is per code point for the whole text
+    expect(counterDigitFlags(['12', '\u0627\u0644'], [[0, 2]], 5)).toBeNull();
+    expect(counterDigitFlags(['ab 12'], [[3, 5]], 5)).not.toBeNull();
+  });
 
   it('flags only the digits of the number', () => {
     expect(counterDigitFlags(['ab 12:3'], [[3, 7]], 7)).toEqual([[false, false, false, true, true, false, true]]);

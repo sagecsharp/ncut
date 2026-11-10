@@ -279,10 +279,35 @@ function frameOf(project: Project, c: VisualClip | CameraClip, t: number, depth:
  * a 2d parent lies in the canvas plane (z 0, no tilt / turn). a camera parent gives the camera's
  * motion away from the home camera, so the child keeps its place on screen.
  */
-export function parentModelMatrix(project: Project, clip: VisualClip, time: number): Mat4 | null {
+export function parentModelMatrix(project: Project, clip: VisualClip, time: number, cameraTime: number = time): Mat4 | null {
   const p = clip.parent ? parentOf(project, clip) : null;
   if (!p) return null;
-  return Float32Array.from(frameOf(project, p as VisualClip | CameraClip, clampTime(p, time), 1));
+  const pc = p as VisualClip | CameraClip;
+  if (cameraTime === time || !hasCameraInChain(project, pc, 1)) return Float32Array.from(frameOf(project, pc, clampTime(p, time), 1));
+  return Float32Array.from(frameMixed(project, pc, clampTime(p, time), cameraTime, 1));
+}
+
+/** true when the clip or one of its parents is a camera clip */
+function hasCameraInChain(project: Project, c: VisualClip | CameraClip, depth: number): boolean {
+  if (isCameraClip(c)) return true;
+  if (depth >= MAX_PARENT_DEPTH) return false;
+  const p = parentOf(project, c);
+  return !!p && (isVisualClip(p) || isCameraClip(p)) && hasCameraInChain(project, p, depth + 1);
+}
+
+/**
+ * like frameOf, but a camera in the chain is read at `camT` while clips are read at `t` (motion blur samples the
+ * clips, the camera of the frame does not move). not cached: only used by blurred 3d clips with a camera in the chain.
+ */
+function frameMixed(project: Project, c: VisualClip | CameraClip, t: number, camT: number, depth: number): M {
+  if (isCameraClip(c)) return frameOf(project, c, clampTime(c, camT), depth);
+  let base: M | null = null;
+  if (depth < MAX_PARENT_DEPTH) {
+    const p = parentOf(project, c);
+    if (p && (isVisualClip(p) || isCameraClip(p))) base = frameMixed(project, p, clampTime(p, t), camT, depth + 1);
+  }
+  const own = ownPose(project, c, t);
+  return mulD(base ?? trD(project.width / 2, project.height / 2, 0), localMatrix(own.transform, !!own.threeD));
 }
 
 /**
@@ -293,12 +318,12 @@ export function parentModelMatrix(project: Project, clip: VisualClip, time: numb
  * positions never depend on any clip's own look turn, so two clips looking at each other need no recursion
  * (a child of a clip that looks somewhere counts from that parent's un-turned frame).
  */
-export function clipLookPoint(project: Project, clip: VisualClip, time: number): Vec3 | null {
+export function clipLookPoint(project: Project, clip: VisualClip, time: number, cameraTime: number = time): Vec3 | null {
   if (clip.lookAt !== 'clip' || !clip.lookTarget || clip.lookTarget === clip.id) return null;
   const t = project.clips.find((c) => c.id === clip.lookTarget);
   if (!t || !(isVisualClip(t) || isCameraClip(t))) return null;
   const tt = clampTime(t, time);
-  if (isCameraClip(t)) return cameraRig(cameraFromClip(t, tt, project), project.width, project.height).eye;
+  if (isCameraClip(t)) return cameraRig(cameraFromClip(t, clampTime(t, cameraTime), project), project.width, project.height).eye;
   const f = frameOf(project, t, tt, 0);
   return [f[12]!, f[13]!, f[14]!];
 }

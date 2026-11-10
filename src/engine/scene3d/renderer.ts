@@ -37,6 +37,12 @@ export interface Plane3D {
    */
   radius?: number;
   size?: [number, number];
+  /**
+   * the layer (clip) this plane belongs to. coplanar layers are nudged toward the viewer by their layer number; the
+   * planes of one stack (a 3d text's sides) share a layer, so they are not nudged against each other (they have real
+   * depth between them). missing = the plane's place in the list.
+   */
+  layer?: number;
 }
 
 export interface Lines3D {
@@ -88,6 +94,8 @@ uniform float u_focusOn;
 uniform vec4 u_focus;
 uniform float u_frameH;
 uniform float u_edge;
+// 1 = the picture wraps round the mesh in u (sphere, cylinder, cone, capsule, torus): taps wrap at the seam instead of clamping
+uniform float u_wrapU;
 out vec4 outColor;
 // a vogel disc of taps (radius r in screen pixels), each read at the mip level that matches the tap spacing
 vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
@@ -96,12 +104,19 @@ vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
   vec2 gy = dy * s;
   vec2 lo = u_uv.xy;
   vec2 hi = u_uv.xy + u_uv.zw;
+  vec2 size = max(u_uv.zw, vec2(1e-6));
   vec4 sum = textureGrad(u_tex, tc, gx, gy);
   for (int i = 0; i < 12; i++) {
     float a = float(i) * 2.399963;
     float rad = r * sqrt((float(i) + 0.5) / 12.0);
     vec2 o = vec2(cos(a), sin(a)) * rad;
-    sum += textureGrad(u_tex, clamp(tc + dx * o.x + dy * o.y, lo, hi), gx, gy);
+    vec2 p = tc + dx * o.x + dy * o.y;
+    if (u_wrapU > 0.5) {
+      // wrap u inside the window of the picture that the mesh shows
+      p.x = lo.x + fract((p.x - lo.x) / size.x) * size.x;
+      p.y = clamp(p.y, lo.y, hi.y);
+    } else p = clamp(p, lo, hi);
+    sum += textureGrad(u_tex, p, gx, gy);
   }
   return sum / 13.0;
 }
@@ -165,6 +180,26 @@ void main() {
 
 const CACHE_LIMIT = 48;
 
+/** shapes whose picture wraps round the mesh in u (the seam sits at u = 0 / 1): see meshes.ts */
+const WRAPS_U = new Set<Shape3D>(['sphere', 'cylinder', 'cone', 'capsule', 'torus']);
+export function uvWrapsU(shape: Shape3D): boolean {
+  return WRAPS_U.has(shape);
+}
+
+/**
+ * can any part of a plane (the unit square, z = 0, under `model`) be out of focus? the depth along the view direction
+ * is linear over the plane, so its real extent is the center depth +- (|a| + |b|) from the two edge vectors (the four
+ * corners through viewProj). false = both ends sit inside the sharp range: the blur and its mip chain are skipped.
+ * solids keep the bounding sphere test (meshNeedsBlur).
+ */
+export function planeNeedsBlur(model: ArrayLike<number>, viewProj: ArrayLike<number>, f: FocusRig | null): boolean {
+  if (!f) return false;
+  const w = (x: number, y: number, z: number) => viewProj[3]! * x + viewProj[7]! * y + viewProj[11]! * z;
+  const dc = w(model[12]!, model[13]!, model[14]!) + viewProj[15]!;
+  const ext = 0.5 * (Math.abs(w(model[0]!, model[1]!, model[2]!)) + Math.abs(w(model[4]!, model[5]!, model[6]!)));
+  return dc - ext < f.distance - f.range || dc + ext > f.distance + f.range;
+}
+
 interface Mesh {
   vao: WebGLVertexArrayObject | null;
   count: number;
@@ -191,6 +226,7 @@ class SceneRenderer {
   private uFocus: WebGLUniformLocation | null;
   private uFrameH: WebGLUniformLocation | null;
   private uEdge: WebGLUniformLocation | null;
+  private uWrapU: WebGLUniformLocation | null;
   private fogBuf = new Float32Array(6);
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
@@ -225,6 +261,7 @@ class SceneRenderer {
     this.uFocus = gl.getUniformLocation(this.planeProg, 'u_focus');
     this.uFrameH = gl.getUniformLocation(this.planeProg, 'u_frameH');
     this.uEdge = gl.getUniformLocation(this.planeProg, 'u_edge');
+    this.uWrapU = gl.getUniformLocation(this.planeProg, 'u_wrapU');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -431,20 +468,37 @@ class SceneRenderer {
       gl.uniform1f(this.uFrameH, h);
     } else gl.uniform1f(this.uFocusOn, 0);
     let slot = 0;
+    // the last key-less picture that was uploaded, and whether it got mips: the next plane with the same image object
+    // (the planes of a stack share their picture) binds that texture again instead of uploading it once more
+    let lastImage: TexImageSource | null = null;
+    let lastMips = false;
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
     // nudge each one toward the viewer by a few depth steps per layer
     gl.enable(gl.POLYGON_OFFSET_FILL);
     for (const index of order) {
       const plane = planes[index]!;
       if (!(plane.alpha > 0.001)) continue;
-      gl.polygonOffset(0, -4 * index);
-      const blurred = focus !== null && meshNeedsBlur(plane.model, viewProj, focus);
-      if (!this.bindPlaneTexture(plane, slot, blurred)) continue;
+      gl.polygonOffset(0, -4 * (plane.layer ?? index));
+      const shape = knownShape(plane.shape);
+      const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
+      if (plane.cacheKey === undefined && slot > 0 && plane.image === lastImage && blurred === lastMips && this.scratch[slot - 1]) {
+        gl.bindTexture(gl.TEXTURE_2D, this.scratch[slot - 1]!);
+      } else {
+        lastImage = null;
+        if (!this.bindPlaneTexture(plane, slot, blurred)) continue;
+        if (plane.cacheKey === undefined) {
+          lastImage = plane.image;
+          lastMips = blurred;
+          slot++;
+        }
+      }
       if (focus) {
         gl.uniform1f(this.uFocusOn, blurred ? 1 : 0);
-        if (blurred) gl.uniform1f(this.uEdge, knownShape(plane.shape) === 'plane' ? 1 : 0);
+        if (blurred) {
+          gl.uniform1f(this.uEdge, shape === 'plane' ? 1 : 0);
+          gl.uniform1f(this.uWrapU, uvWrapsU(shape) ? 1 : 0);
+        }
       }
-      if (plane.cacheKey === undefined) slot++;
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
       if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
       gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
@@ -456,7 +510,7 @@ class SceneRenderer {
         gl.uniform1f(this.uRadius, plane.radius);
         gl.uniform2f(this.uSize, size[0], size[1]);
       } else gl.uniform1f(this.uRadius, 0);
-      const mesh = this.mesh(knownShape(plane.shape));
+      const mesh = this.mesh(shape);
       gl.bindVertexArray(mesh.vao);
       // a plane that is faded as a whole has no solid pixels
       if (plane.alpha >= 0.98) {

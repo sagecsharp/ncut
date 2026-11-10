@@ -20,7 +20,7 @@ import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playback';
-import { blocksPaint, isScrubbing, onSeekedAction } from './previewSync';
+import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './previewSync';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
 import { backingSize, usePreviewQuality } from './quality';
@@ -286,6 +286,8 @@ export class PreviewEngine {
       void this.audioCtx.close().catch(() => undefined);
       this.audioCtx = null;
     }
+    // give back the preview channel's gl contexts and scratch canvases (a remount rebuilds them on first use)
+    releaseRenderResources('preview');
   }
 
   /* ---------- drawing ---------- */
@@ -707,6 +709,8 @@ export class PreviewEngine {
         return;
       }
     }
+    // left a scrub into another rate the element can play: the deferred target is stale
+    if (staleScrubTarget(wasScrub, entry.scrub)) entry.want = null;
     if (el.playbackRate !== pr) el.playbackRate = pr;
     if (el.paused) {
       // play() on an ended element restarts it from 0: only play when it is not parked at the end
