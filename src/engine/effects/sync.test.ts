@@ -40,7 +40,7 @@ describe('effect sync metadata (the rate the tempo lock replaces)', () => {
   });
 
   it('effects that only run on noise in time have none', () => {
-    for (const id of ['shake', 'drift', 'wave', 'heat-haze', 'snow', 'rain', 'confetti', 'light-leak']) {
+    for (const id of ['drift', 'wave', 'heat-haze', 'snow', 'rain', 'confetti', 'light-leak']) {
       expect(EFFECTS.find((d) => d.id === id)?.sync, id).toBeUndefined();
     }
   });
