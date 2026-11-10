@@ -9,7 +9,7 @@
  *   visual clips (video, image, text): x y scale rotation opacity z rotX rotY
  *   video / audio clips:               volume
  *   effect clips:                      amount, and p.<key> for every effect param
- *   camera clips:                      x y z pan tilt roll fov
+ *   camera clips:                      x y z pan tilt roll fov focusDistance focusStrength
  */
 import type { Clip, Easing, Keyframe, Keyframes } from '../types';
 
@@ -177,10 +177,12 @@ const CAMERA_PROPS: AnimPropInfo[] = [
   { prop: 'tilt', label: 'tilt', unit: 'deg' },
   { prop: 'roll', label: 'roll', unit: 'deg' },
   { prop: 'fov', label: 'field of view', min: 5, max: 150, unit: 'deg' },
+  { prop: 'focusDistance', label: 'focus distance', min: 1, unit: 'px' },
+  { prop: 'focusStrength', label: 'blur', min: 0, max: 1 },
 ];
 
 const TRANSFORM_KEYS = new Set(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
-const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov']);
+const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focusDistance', 'focusStrength']);
 
 /** the built-in animatable properties of a clip (effect params are added by the caller from the effect def) */
 export function animProps(clip: Clip): AnimPropInfo[] {
@@ -217,7 +219,11 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
       if (prop.startsWith('p.')) return clip.params[prop.slice(2)];
       return undefined;
     case 'camera':
-      return CAMERA_KEYS.has(prop) ? (clip as unknown as Record<string, number>)[prop] : undefined;
+      if (!CAMERA_KEYS.has(prop)) return undefined;
+      // depth of field is off when missing. a missing focus distance stays undefined: it means "the home
+      // distance", which depends on the project size (the inspector writes it down when blur is turned on).
+      if (prop === 'focusStrength') return clip.focusStrength ?? 0;
+      return (clip as unknown as Record<string, number | undefined>)[prop];
   }
 }
 

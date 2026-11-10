@@ -7,6 +7,7 @@ import type { SceneFog, Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
 import { mul } from './math';
 import { fogOn, writeFogUniforms } from './fog';
+import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
 import { interleave, knownShape, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 
@@ -54,16 +55,20 @@ uniform mat4 u_model;
 uniform float u_fogOn;
 out vec2 v_uv;
 out vec3 v_world;
+// distance along the view direction (depth of field)
+out float v_depth;
 void main() {
   v_uv = a_uv;
   v_world = u_fogOn > 0.0 ? (u_model * vec4(a_pos, 1.0)).xyz : vec3(0.0);
   gl_Position = u_mvp * vec4(a_pos, 1.0);
+  v_depth = gl_Position.w;
 }`;
 const PLANE_FS = `#version 300 es
 precision highp float;
 const float SOLID = 0.98;
 in vec2 v_uv;
 in vec3 v_world;
+in float v_depth;
 uniform sampler2D u_tex;
 uniform float u_alpha;
 uniform vec4 u_uv;
@@ -76,15 +81,63 @@ uniform float u_fogOn;
 uniform vec3 u_fogColor;
 uniform vec3 u_fogRange;
 uniform vec3 u_eye;
+// depth of field (focus.ts focusBlur): u_focusOn = 0 for sharp meshes, nothing below runs for them.
+// u_focus = distance, sharp range, reach, strength * MAX_BLUR. u_frameH = backing height in pixels.
+// u_edge = 1: the mesh is a plane, its border fades by the blur radius.
+uniform float u_focusOn;
+uniform vec4 u_focus;
+uniform float u_frameH;
+uniform float u_edge;
 out vec4 outColor;
+// a vogel disc of taps (radius r in screen pixels), each read at the mip level that matches the tap spacing
+vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
+  float s = max(1.0, r * 0.6);
+  vec2 gx = dx * s;
+  vec2 gy = dy * s;
+  vec2 lo = u_uv.xy;
+  vec2 hi = u_uv.xy + u_uv.zw;
+  vec4 sum = textureGrad(u_tex, tc, gx, gy);
+  for (int i = 0; i < 12; i++) {
+    float a = float(i) * 2.399963;
+    float rad = r * sqrt((float(i) + 0.5) / 12.0);
+    vec2 o = vec2(cos(a), sin(a)) * rad;
+    sum += textureGrad(u_tex, clamp(tc + dx * o.x + dy * o.y, lo, hi), gx, gy);
+  }
+  return sum / 13.0;
+}
 void main() {
+  vec2 tc = u_uv.xy + v_uv * u_uv.zw;
+  vec4 c;
+  // blur radius in screen pixels (0 = sharp)
+  float blur = 0.0;
+  if (u_focusOn > 0.0) {
+    // derivatives first, outside any branch that depends on the pixel
+    vec2 dx = dFdx(tc);
+    vec2 dy = dFdy(tc);
+    vec2 gu = vec2(length(vec2(dFdx(v_uv.x), dFdy(v_uv.x))), length(vec2(dFdx(v_uv.y), dFdy(v_uv.y))));
+    float dz = max(abs(v_depth - u_focus.x) - u_focus.y, 0.0);
+    blur = u_focus.w * u_frameH * dz / (dz + u_focus.z);
+    if (blur > 0.25) {
+      c = discBlur(tc, dx, dy, blur);
+      if (u_edge > 0.5) {
+        vec2 e = min(v_uv, 1.0 - v_uv) / max(gu, vec2(1e-6));
+        float t = clamp(min(e.x, e.y) / (1.5 * blur), 0.0, 1.0);
+        c *= t * t * (3.0 - 2.0 * t);
+      }
+    } else {
+      blur = 0.0;
+      c = texture(u_tex, tc);
+    }
+  } else {
+    c = texture(u_tex, tc);
+  }
   // the texture is premultiplied, so is the output
-  vec4 c = texture(u_tex, u_uv.xy + v_uv * u_uv.zw) * u_alpha;
+  c *= u_alpha;
   if (u_radius > 0.0) {
     // signed distance to a rounded rectangle, in plane pixels. the edge fades over about one screen pixel.
     vec2 q = abs((v_uv - 0.5) * u_size) - (u_size * 0.5 - vec2(u_radius));
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_radius;
-    c *= clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
+    c *= clamp(0.5 - d / (max(fwidth(d), 1e-4) * (1.0 + blur)), 0.0, 1.0);
   }
   if (c.a < 0.004) discard;
   if (u_pass < 1.5 ? c.a < SOLID : c.a >= SOLID) discard;
@@ -134,6 +187,10 @@ class SceneRenderer {
   private uFogColor: WebGLUniformLocation | null;
   private uFogRange: WebGLUniformLocation | null;
   private uEye: WebGLUniformLocation | null;
+  private uFocusOn: WebGLUniformLocation | null;
+  private uFocus: WebGLUniformLocation | null;
+  private uFrameH: WebGLUniformLocation | null;
+  private uEdge: WebGLUniformLocation | null;
   private fogBuf = new Float32Array(6);
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
@@ -142,6 +199,8 @@ class SceneRenderer {
   private lineBuf: WebGLBuffer | null;
   private cache = new Map<string, { tex: WebGLTexture; used: number }>();
   private scratch: WebGLTexture[] = [];
+  /** scratch textures that currently have a mip filter (only while a mesh is blurred) */
+  private scratchMips: boolean[] = [];
   private frame = 0;
   private aniso: { ext: EXT_texture_filter_anisotropic; max: number } | null = null;
   dead = false;
@@ -162,6 +221,10 @@ class SceneRenderer {
     this.uFogColor = gl.getUniformLocation(this.planeProg, 'u_fogColor');
     this.uFogRange = gl.getUniformLocation(this.planeProg, 'u_fogRange');
     this.uEye = gl.getUniformLocation(this.planeProg, 'u_eye');
+    this.uFocusOn = gl.getUniformLocation(this.planeProg, 'u_focusOn');
+    this.uFocus = gl.getUniformLocation(this.planeProg, 'u_focus');
+    this.uFrameH = gl.getUniformLocation(this.planeProg, 'u_frameH');
+    this.uEdge = gl.getUniformLocation(this.planeProg, 'u_edge');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -274,7 +337,7 @@ class SceneRenderer {
   }
 
   /** bind the texture for a plane, uploading when needed. false when the upload failed. */
-  private bindPlaneTexture(plane: Plane3D, slot: number): boolean {
+  private bindPlaneTexture(plane: Plane3D, slot: number, mips = false): boolean {
     const gl = this.gl;
     if (plane.cacheKey !== undefined) {
       const hit = this.cache.get(plane.cacheKey);
@@ -304,6 +367,12 @@ class SceneRenderer {
     }
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, plane.image);
+      // a blurred video frame reads smaller mip levels: build them for this frame only
+      if (mips !== (this.scratchMips[slot] === true)) {
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+        this.scratchMips[slot] = mips;
+      }
+      if (mips) gl.generateMipmap(gl.TEXTURE_2D);
     } catch {
       return false;
     }
@@ -319,7 +388,7 @@ class SceneRenderer {
     }
   }
 
-  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null): GLCanvas | null {
+  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null): GLCanvas | null {
     const gl = this.gl;
     if (this.isLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -356,6 +425,11 @@ class SceneRenderer {
       gl.uniform3f(this.uFogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
       gl.uniform3f(this.uEye, eye[0], eye[1], eye[2]);
     }
+    // depth of field: set once per render. off = one uniform at 0 for every mesh.
+    if (focus) {
+      gl.uniform4f(this.uFocus, focus.distance, focus.range, blurReach(focus), focus.strength * MAX_BLUR);
+      gl.uniform1f(this.uFrameH, h);
+    } else gl.uniform1f(this.uFocusOn, 0);
     let slot = 0;
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
     // nudge each one toward the viewer by a few depth steps per layer
@@ -364,7 +438,12 @@ class SceneRenderer {
       const plane = planes[index]!;
       if (!(plane.alpha > 0.001)) continue;
       gl.polygonOffset(0, -4 * index);
-      if (!this.bindPlaneTexture(plane, slot)) continue;
+      const blurred = focus !== null && meshNeedsBlur(plane.model, viewProj, focus);
+      if (!this.bindPlaneTexture(plane, slot, blurred)) continue;
+      if (focus) {
+        gl.uniform1f(this.uFocusOn, blurred ? 1 : 0);
+        if (blurred) gl.uniform1f(this.uEdge, knownShape(plane.shape) === 'plane' ? 1 : 0);
+      }
       if (plane.cacheKey === undefined) slot++;
       gl.uniformMatrix4fv(this.uMvp, false, mul(viewProj, plane.model));
       if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
@@ -497,13 +576,16 @@ export function renderScene(
   channel = 'default',
   /** distance haze over the planes (types.ts SceneFog). null = none. */
   fog: SceneFog | null = null,
+  /** depth of field. undefined = the one the camera rig bound to viewProj (camera.ts); null = none */
+  focus?: FocusRig | null,
 ): GLCanvas | null {
   if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0)) return null;
   let r = getRenderer(channel);
   if (!r) return null;
-  const out = r.render(planes, lines, viewProj, eye, width, height, fog);
+  const fo = focus === undefined ? boundFocus(viewProj) : focus;
+  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo);
   if (out || !r.isLost()) return out;
   // the context was lost: try once more on a fresh renderer (getRenderer drops the lost one)
   r = getRenderer(channel);
-  return r ? r.render(planes, lines, viewProj, eye, width, height, fog) : null;
+  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo) : null;
 }
