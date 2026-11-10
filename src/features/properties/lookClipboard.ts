@@ -4,7 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 
 /** fields every visual clip shares (copied as is; a missing one becomes null = removed on paste) */
-const COMMON_KEYS = ['blend', 'crop', 'radius', 'motionIn', 'motionOut', 'motionLoop', 'transition'] as const;
+const COMMON_KEYS = ['blend', 'crop', 'radius', 'motionIn', 'motionOut', 'motionLoop', 'transition', 'adjust', 'chromaKey', 'motionBlur'] as const;
 /** only copied from a text clip to a text clip */
 const TEXT_KEYS = [
   'color',
@@ -50,6 +50,8 @@ export function lookPatch(look: LookData, target: ClipType): Record<string, unkn
     if ((TEXT_KEYS as readonly string[]).includes(k) && !textToText) continue;
     out[k] = v === null || v === undefined ? null : structuredClone(v);
   }
+  // a green screen only exists on video and image
+  if (target !== 'video' && target !== 'image') delete out.chromaKey;
   // text has its own box rounding, `radius` makes no sense there
   if (target === 'text') {
     delete out.radius;

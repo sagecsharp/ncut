@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react';
 import { Eraser, RotateCcw } from 'lucide-react';
+import { hasKeyframes, valueAt } from '../../lib/anim';
 import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
@@ -9,6 +10,8 @@ import { AnimField } from './AnimField';
 import { setValuesNow } from './animEdit';
 import { Row, SelectRow, Section, Switch } from './controls';
 import { targetOptions } from './targets';
+import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
+import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { beginEdit, liveOpts, patchClip } from './edit';
 
 const actions = () => useEditor.getState();
@@ -130,7 +133,56 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, s
 
 /* ---------- camera clip ---------- */
 
+const CAMERA_PROPS: (keyof CameraValues)[] = ['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov'];
+
+/** write the keys of a named move as ONE undo step; only the values the move uses lose their old keys */
+function applyCameraMove(id: string, move: CameraMoveId): void {
+  const st = actions();
+  const p = st.project;
+  const clip = p?.clips.find((c) => c.id === id);
+  if (!p || !clip || clip.type !== 'camera') return;
+  const cur = {} as CameraValues;
+  for (const k of CAMERA_PROPS) cur[k] = valueAt(clip, k, clip.start) ?? clip[k];
+  const keys = cameraMove(move, cur, clip.duration, p.fps);
+  if (keys.length === 0) return;
+  st.pushHistory();
+  for (const prop of moveProps(keys)) st.clearKeyframes(id, clip.start, prop, { skipHistory: true });
+  for (const k of keys) st.setKeyframe(id, k.prop, clip.start + k.t, k.v, k.ease, { skipHistory: true });
+}
+
 const CAMERA_HOME = { x: 0, y: 0, z: 0, pan: 0, tilt: 0, roll: 0, fov: 50 };
+
+const CameraMoves = memo(function CameraMoves({ id }: { id: string }) {
+  const animated = useEditor((s) => {
+    const c = s.project?.clips.find((k) => k.id === id);
+    return !!c && hasKeyframes(c);
+  });
+  return (
+    <>
+      <div className="props-hint">moves: ready-made camera animation over the whole clip. you can combine them.</div>
+      <div className="props-buttons" role="group" aria-label="moves">
+        {CAMERA_MOVES.map((m) => (
+          <button key={m.id} type="button" className="btn btn-sm" title={m.title} onClick={() => applyCameraMove(id, m.id)}>
+            {m.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="btn btn-sm"
+          title="remove every keyframe of the camera. values stay as they are at the playhead."
+          disabled={!animated}
+          onClick={() => {
+            const c = actions().project?.clips.find((k) => k.id === id);
+            if (c) actions().clearKeyframes(id, clamp(usePlayback.getState().time, c.start, c.start + c.duration));
+          }}
+        >
+          <Eraser size={14} />
+          clear moves
+        </button>
+      </div>
+    </>
+  );
+});
 
 export const CameraSection = memo(function CameraSection({ id, target }: { id: string; target: string | null }) {
   const clips = useEditor((s) => s.project?.clips);
@@ -168,6 +220,7 @@ export const CameraSection = memo(function CameraSection({ id, target }: { id: s
       />
       <div className="props-hint">the camera keeps this clip centered. pan and tilt add an offset.</div>
       <div className="props-hint">the camera for every 3d clip while this clip is active</div>
+      <CameraMoves id={id} />
       <div className="props-buttons">
         <button type="button" className="btn btn-sm" title="back to the home view (all 0, field of view 50)" onClick={() => setValuesNow(id, CAMERA_HOME)}>
           <RotateCcw size={14} />

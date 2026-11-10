@@ -12,6 +12,8 @@ import { AnimField } from './AnimField';
 import { EffectSection } from './EffectSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
 import { LookSection } from './LookSection';
+import { ColorSection } from './ColorSection';
+import { LinksSection } from './AttachSection';
 import { ClipMotionSection } from './MotionSection';
 import { ShapeSection } from './ShapeSection';
 import { TextAnimSection, TextStyleSection } from './TextStyle';
@@ -429,7 +431,9 @@ export function ClipInspector({ id }: { id: string }) {
             defaultDepth={clip.threeD && (clip.shape === 'box' || clip.shape === 'cylinder') ? defaultThickness(clip) : 0}
           />
         ) : null}
+        <LinksSection clip={clip} />
         {isVisualClip(clip) ? <LookSection clip={clip} /> : null}
+        {isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
         {isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}

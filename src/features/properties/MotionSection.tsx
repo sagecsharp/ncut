@@ -9,7 +9,8 @@ import {
   DEFAULT_CLIP_MOTION_OUT,
 } from '../../engine/clipAnim';
 import type { ClipAnim, VisualClip } from '../../types';
-import { Row, Section } from './controls';
+import { Row, Section, SliderRow, Switch } from './controls';
+import { DEFAULT_MOTION_BLUR, setBlurValue } from './colorLogic';
 import { beginEdit, patchClip } from './edit';
 
 interface AnimRowProps {
@@ -93,6 +94,39 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
         durationTitle="seconds per cycle"
         onChange={set('motionLoop')}
       />
+      <Row label="motion blur" title="blur how the clip moves" wide>
+        <Switch
+          checked={!!clip.motionBlur}
+          title="motion blur on or off"
+          onChange={(on) => patchClip(id, { motionBlur: on ? { ...DEFAULT_MOTION_BLUR } : null })}
+        />
+      </Row>
+      {clip.motionBlur ? (
+        <>
+          <SliderRow
+            label="amount"
+            title="how long the shutter stays open, as a share of one frame (%)"
+            value={Math.round(clip.motionBlur.shutter * 100)}
+            min={0}
+            max={200}
+            suffix="%"
+            disabled={!!clip.threeD}
+            onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'shutter', v / 100) }, true)}
+          />
+          <SliderRow
+            label="smoothness"
+            title="how many copies are mixed. more is smoother and slower."
+            value={clip.motionBlur.samples}
+            min={2}
+            max={32}
+            disabled={!!clip.threeD}
+            onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'samples', v) }, true)}
+          />
+        </>
+      ) : null}
+      <div className="props-hint">
+        blurs how the clip moves (keyframes, motions). for 3d clips use the motion blur effect instead
+      </div>
     </Section>
   );
 });
