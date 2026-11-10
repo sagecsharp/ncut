@@ -14,6 +14,7 @@ import { valueAt } from '../../lib/anim';
 import { onFontsChanged } from '../../lib/fonts';
 import { APPEARANCE_EVENT } from '../../lib/appearance';
 import { fadeFactor, sourceTimeAt } from '../../lib/timelineOps';
+import { transitionHolds } from '../../lib/transitions';
 import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
@@ -288,7 +289,8 @@ export class PreviewEngine {
       const cam = toCamera3D(currentOrbit(project), project);
       renderSceneView(ctx, project, time, this.resolve, cam, this.sceneLineColor());
     } else {
-      renderFrame(ctx, project, time, this.resolve);
+      // while playing, motion blur uses fewer samples so the preview stays smooth
+      renderFrame(ctx, project, time, this.resolve, { quality: playing ? 0.5 : 1 });
     }
     this.hasDrawn = true;
     if (!playing) this.flushWants();
@@ -550,10 +552,15 @@ export class PreviewEngine {
     const { time, playing } = usePlayback.getState();
     this.gen++;
     if (project) {
+      const holds = transitionHolds(project);
       for (const clip of project.clips) {
         if (clip.type !== 'video' && clip.type !== 'audio') continue;
         const end = clip.start + clip.duration;
-        if (time < clip.start - LOOKAHEAD || time >= end + LINGER) continue;
+        // a clip in a transition shows its frozen first / last frame outside its own range
+        const hold = holds.get(clip.id);
+        const before = hold ? Math.max(LOOKAHEAD, hold.before + 0.25) : LOOKAHEAD;
+        const after = hold ? Math.max(LINGER, hold.after + 0.1) : LINGER;
+        if (time < clip.start - before || time >= end + after) continue;
         const entry = this.ensureEntry(clip);
         if (!entry) continue;
         entry.gen = this.gen;
@@ -587,6 +594,8 @@ export class PreviewEngine {
       if (!el.paused) el.pause();
       const park = toSource(clip.trimStart);
       if (time < clip.start) this.seek(entry, park, halfFrame);
+      // ended: a video rests on its last frame (a transition out of it shows that frame)
+      else if (clip.type === 'video') this.seek(entry, toSource(sourceTimeAt(clip, clip.start + clip.duration) - halfFrame), halfFrame * 2);
       return;
     }
 

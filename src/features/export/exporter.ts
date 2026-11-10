@@ -21,7 +21,7 @@ import {
 } from 'mediabunny';
 import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
-import { renderFrame, visibleClipsAt } from '../../engine/draw';
+import { neededClipsAt, renderFrame } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
@@ -172,6 +172,8 @@ interface VideoFeed {
   gen: AsyncGenerator<WrappedCanvas | null, void, unknown>;
   current: DrawSource | null;
   done: boolean;
+  /** the first frame was pulled early (a transition shows it before the clip starts) */
+  primed?: boolean;
 }
 
 /** source timestamps (seconds in the asset) for every output frame where the clip is visible */
@@ -381,12 +383,23 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       if (signal?.aborted) throw abortError();
       const t = i / fps;
 
-      // advance decoders of the video clips visible in this frame
-      const visible = visibleClipsAt(project, t);
+      // advance decoders of the video clips visible in this frame. a clip that a transition shows
+      // before it starts gets its first frame early; one shown after it ended holds its last frame.
+      const visible = neededClipsAt(project, t);
       for (const clip of visible) {
         if (clip.type !== 'video') continue;
         const feed = feeds.get(clip.id);
         if (!feed || feed.done) continue;
+        if (t < clip.start - EPS) {
+          if (feed.current) continue;
+          feed.primed = true;
+        } else if (t >= clip.start + clip.duration - EPS) {
+          continue;
+        } else if (feed.primed) {
+          // its first frame is already here
+          feed.primed = false;
+          continue;
+        }
         try {
           const next = await feed.gen.next();
           if (next.done) {
@@ -408,8 +421,11 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
       // free the decoder + canvas of video clips that just played their last frame
       const nextT = (i + 1) / fps;
+      const neededNext = neededClipsAt(project, nextT);
       for (const clip of visible) {
         if (clip.type !== 'video' || clip.start + clip.duration - EPS > nextT) continue;
+        // a transition out of the clip still shows its last frame
+        if (neededNext.includes(clip)) continue;
         const feed = feeds.get(clip.id);
         if (!feed) continue;
         feed.done = true;

@@ -42,6 +42,39 @@ export function transitionSpan(project: Project, clip: Clip): TransitionSpan | n
   return { start: clip.start, end: clip.start + len, from: null, to: clip, id: clip.transition.id };
 }
 
+export interface TransitionHold {
+  /** seconds before the clip starts that its first frame is already needed */
+  before: number;
+  /** seconds after the clip ends that its last frame is still needed */
+  after: number;
+}
+
+const holdCache = new WeakMap<Project, Map<string, TransitionHold>>();
+
+/**
+ * for every clip that takes part in a transition: how long its frozen edge frame is shown outside
+ * its own time range. cached per project object (projects are immutable snapshots).
+ */
+export function transitionHolds(project: Project): Map<string, TransitionHold> {
+  let map = holdCache.get(project);
+  if (map) return map;
+  map = new Map();
+  for (const clip of project.clips) {
+    if (!isVisualClip(clip) || !clip.transition) continue;
+    const span = transitionSpan(project, clip);
+    if (!span || !span.from) continue;
+    const half = clip.start - span.start;
+    const to = map.get(clip.id) ?? { before: 0, after: 0 };
+    to.before = Math.max(to.before, half);
+    map.set(clip.id, to);
+    const from = map.get(span.from.id) ?? { before: 0, after: 0 };
+    from.after = Math.max(from.after, span.end - clip.start);
+    map.set(span.from.id, from);
+  }
+  holdCache.set(project, map);
+  return map;
+}
+
 /** every transition running at a time (at most one per track in practice) */
 export function transitionsAt(project: Project, time: number): TransitionSpan[] {
   const out: TransitionSpan[] = [];

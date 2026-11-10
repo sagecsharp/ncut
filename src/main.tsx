@@ -10,6 +10,8 @@ import { App } from './App';
 import { EFFECTS } from './engine/effects/registry';
 import { checkEffects, renderEffects } from './engine/effects/runner';
 import { drawTestPattern } from './engine/effects/testPattern';
+import { TRANSITIONS } from './engine/transitions/registry';
+import { checkTransitions, renderTransition } from './engine/transitions/runner';
 import { initAppearance } from './lib/appearance';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
@@ -33,7 +35,7 @@ if (import.meta.env.DEV) {
     useUi,
     session,
     importFiles,
-    fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern },
+    fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern, TRANSITIONS, checkTransitions, renderTransition },
   };
 }
 
