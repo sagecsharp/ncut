@@ -10,7 +10,6 @@ import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
-import { fontsVersion } from '../lib/fonts';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
 import { renderEffects } from './effects/runner';
@@ -20,7 +19,7 @@ import { mul, scaling, translation } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, renderScene } from './scene3d/renderer';
 import { drawShape, shapeSignature, shapeSpill } from './shape';
-import { drawText, measureText, textSpill } from './text';
+import { drawText, measureText, textSignature, textSpill } from './text';
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
 import { easeTransition, renderTransition } from './transitions/runner';
@@ -32,7 +31,19 @@ export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
  * it with 'export' when a render ends so a big export does not stay in memory.
  */
 export function releaseRenderResources(channel: 'preview' | 'export'): void {
-  void channel;
+  const prefix = (channel === 'export' ? 'export' : 'default') + ':';
+  for (const [key, sc] of scratches) {
+    if (!key.startsWith(prefix)) continue;
+    // a zero sized canvas gives its backing store back right away
+    if (sc) {
+      sc.canvas.width = 0;
+      sc.canvas.height = 0;
+    }
+    scratches.delete(key);
+  }
+  // the text / shape texture caches are shared by both channels (the gl runners key their uploads on them),
+  // so they stay. they are bounded (64 entries) and pruned when the project changes.
+  // the gl runners (effects, transitions, scene3d) expose no per channel dispose yet, nothing to call there.
 }
 
 export interface DrawSource {
@@ -210,18 +221,6 @@ function resolveVisual<T extends VisualClip>(raw: T, time: number, project: Proj
   return hasClipMotion(raw) ? applyClipMotion(r, time, project) : r;
 }
 
-/** JSON of a style object, computed once per object (styles are immutable) */
-const jsonSigs = new WeakMap<object, string>();
-function jsonSig(o: object | null | undefined): string {
-  if (!o) return '0';
-  let v = jsonSigs.get(o);
-  if (v === undefined) {
-    v = JSON.stringify(o);
-    jsonSigs.set(o, v);
-  }
-  return v;
-}
-
 /** visual clips under a time in paint order (bottom layer first). skips hidden tracks. */
 export function visibleClipsAt(project: Project, time: number): VisualClip[] {
   const out: VisualClip[] = [];
@@ -289,7 +288,7 @@ export function effectPassAt(raw: EffectClip, time: number): EffectPass | null {
   const clip = resolveClip(raw, time);
   const amount = clip.amount * fadeFactor(clip, time);
   if (!(amount > 0.001)) return null;
-  return { def, time: Math.max(0, time - clip.start), duration: clip.duration, amount, seed: clip.seed, params: clip.params };
+  return { def, time: Math.max(0, time - clip.start + (raw.timeOffset ?? 0)), duration: clip.duration, amount, seed: clip.seed, params: clip.params };
 }
 
 type Channel = 'default' | 'export';
@@ -301,13 +300,13 @@ function channelOf(ctx: Ctx): Channel {
 }
 
 /** run effect passes over what is already on the canvas and put the result back */
-function applyEffects(ctx: Ctx, project: Project, passes: EffectPass[]): void {
+function applyEffects(ctx: Ctx, project: Project, passes: EffectPass[], channel: Channel): void {
   const canvas = ctx.canvas as AnyCanvas | undefined;
   if (!canvas || passes.length === 0) return;
   const out = renderEffects(canvas, canvas.width, canvas.height, passes, {
     projectWidth: project.width,
     projectHeight: project.height,
-    channel: channelOf(ctx),
+    channel,
   });
   if (!out) return;
   ctx.save();
@@ -389,6 +388,16 @@ const textTextures = new Map<string, TextTexture>();
 let textTextureSerial = 0;
 
 /**
+ * texture resolution factor for 3d text: 1, 2 or 4 pixels per unit by how big it is shown, capped by the max
+ * texture size. stepped (not continuous) so an animated scale does not make a new canvas + gl upload every frame.
+ */
+export function textureQuality(scale: number, fullW: number, fullH: number): number {
+  const want = scale * 1.5;
+  const step = want <= 1 ? 1 : want <= 2 ? 2 : 4;
+  return Math.min(step, 4096 / Math.max(fullW, fullH, 1));
+}
+
+/**
  * a text clip rendered to its own canvas for use as a 3d texture. cached until the text or its style
  * changes; while a text animation runs it is redrawn every frame (key undefined = upload every frame).
  */
@@ -401,33 +410,17 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
   const fullW = m.width + margin * 2;
   const fullH = m.height + margin * 2;
   // enough pixels for the size it is shown at, within reason
-  const q = Math.min(4, Math.max(1, clip.transform.scale * 1.5), 4096 / Math.max(fullW, fullH, 1));
+  const q = textureQuality(clip.transform.scale, fullW, fullH);
   const w = Math.max(2, Math.ceil(fullW * q));
   const h = Math.max(2, Math.ceil(fullH * q));
-  const sig = animated
-    ? ''
-    : [
-        fontsVersion(),
-        clip.text,
-        clip.fontFamily,
-        clip.fontSize,
-        clip.fontWeight,
-        clip.italic,
-        clip.color,
-        clip.background,
-        clip.align,
-        clip.letterSpacing,
-        clip.lineHeight,
-        clip.uppercase,
-        jsonSig(clip.stroke),
-        jsonSig(clip.shadow),
-        clip.backgroundRadius,
-        clip.backgroundPadding,
-        w,
-        h,
-      ].join('|');
+  const sig = animated ? '' : textSignature(clip) + '|' + w + '|' + h;
   const hit = textTextures.get(clip.id);
-  if (hit && !animated && hit.sig === sig) return hit;
+  if (hit && !animated && hit.sig === sig) {
+    // most recently used goes last, so the first key is the one to evict
+    textTextures.delete(clip.id);
+    textTextures.set(clip.id, hit);
+    return hit;
+  }
   let canvas: AnyCanvas | null = hit && hit.canvas.width === w && hit.canvas.height === h ? hit.canvas : null;
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
@@ -446,6 +439,7 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
   c.scale(q, q);
   drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined);
   const entry: TextTexture = { sig, canvas, key: animated ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin };
+  textTextures.delete(clip.id);
   textTextures.set(clip.id, entry);
   if (textTextures.size > 64) {
     const first = textTextures.keys().next().value;
@@ -477,7 +471,11 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   const h = Math.max(1, Math.ceil(fullH * q));
   const sig = shapeSignature(clip) + '|' + w + 'x' + h;
   const hit = shapeTextures.get(clip.id);
-  if (hit && hit.sig === sig) return hit;
+  if (hit && hit.sig === sig) {
+    shapeTextures.delete(clip.id);
+    shapeTextures.set(clip.id, hit);
+    return hit;
+  }
   let canvas: AnyCanvas | null = hit && hit.canvas.width === w && hit.canvas.height === h ? hit.canvas : null;
   if (!canvas) {
     if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
@@ -496,6 +494,7 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   c.scale(q, q);
   drawShape(c, clip, Math.max(1, clip.width), Math.max(1, clip.height), 1);
   const entry: ShapeTexture = { sig, canvas, key: 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
+  shapeTextures.delete(clip.id);
   shapeTextures.set(clip.id, entry);
   if (shapeTextures.size > 64) {
     const first = shapeTextures.keys().next().value;
@@ -504,7 +503,22 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   return entry;
 }
 
+/** the clips array the texture caches were last checked against */
+let cacheClips: readonly Clip[] | null = null;
+
+/** drop cached textures of clips that are not in the project any more (checked when the clips array changes) */
+function syncTextureCaches(project: Project): void {
+  if (project.clips === cacheClips) return;
+  cacheClips = project.clips;
+  if (textTextures.size === 0 && shapeTextures.size === 0) return;
+  const ids = new Set<string>();
+  for (const c of project.clips) ids.add(c.id);
+  for (const id of [...textTextures.keys()]) if (!ids.has(id)) textTextures.delete(id);
+  for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
+}
+
 export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | null {
+  syncTextureCaches(project);
   const { clip, source } = layer;
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
   const shape = clip.shape ?? 'plane';
@@ -584,7 +598,7 @@ const NO_LINES: Lines3D[] = [];
  * `op` is how the result mixes with the canvas (a clip with a blend mode is drawn as a run of its own,
  * see paintLayers: it does not depth-test against its neighbours).
  */
-function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, lines: Lines3D[] = NO_LINES, op: GlobalCompositeOperation = 'source-over'): void {
+function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, channel: Channel, lines: Lines3D[] = NO_LINES, op: GlobalCompositeOperation = 'source-over'): void {
   const canvas = ctx.canvas as AnyCanvas | undefined;
   if (!canvas) return;
   const planes: Plane3D[] = [];
@@ -592,7 +606,7 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, l
     const p = planeFor(project, layer, rig);
     if (p) planes.push(p);
   }
-  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channelOf(ctx));
+  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel);
   if (!out) return;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -673,7 +687,30 @@ function temporalSamples(raw: EffectClip, time: number, fps: number, quality: nu
     params[p.key] = typeof v === 'number' && Number.isFinite(v) ? v : p.default;
   }
   const samples = def.temporal(params, Math.min(1, amount), fps, quality).filter((sm) => sm.weight > 0);
-  return samples.length > 1 ? samples : null;
+  if (samples.length < 2) return null;
+  return pruneSamples(samples);
+}
+
+/**
+ * drop samples whose share of the total weight is below 1/512 (they cannot change an 8-bit pixel) but
+ * always keep the largest one, then renormalize so the weights add up to 1. order is kept.
+ */
+export function pruneSamples(samples: TemporalSample[]): TemporalSample[] {
+  let total = 0;
+  let big = 0;
+  for (let i = 0; i < samples.length; i++) {
+    total += samples[i]!.weight;
+    if (samples[i]!.weight > samples[big]!.weight) big = i;
+  }
+  const kept: TemporalSample[] = [];
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const sm = samples[i]!;
+    if (i !== big && sm.weight / total < 1 / 512) continue;
+    kept.push(sm);
+    sum += sm.weight;
+  }
+  return kept.map((sm) => ({ offset: sm.offset, weight: sm.weight / sum }));
 }
 
 /** reach of a clip path on a side that is not cropped (text / shape keep their outline and shadow room there) */
@@ -744,7 +781,7 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
     if (!source) return false;
   }
-  if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig());
+  if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig(), env.channel);
   else paintFlat(ctx, project, clip, source, alpha, time, false);
   return true;
 }
@@ -821,22 +858,35 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       const samples = temporalSamples(it.clip, time, project.fps || 30, env.quality);
       if (!samples) continue;
       const sc = scratchFor(ctx, env.channel, `temporal${env.depth}`);
+      const acc = scratchFor(ctx, env.channel, `temporalAcc${env.depth}`);
       const canvas = ctx.canvas as AnyCanvas | undefined;
-      if (!sc || !canvas) break;
+      if (!sc || !acc || !canvas) break;
       const inner: Env = { ...env, depth: env.depth + 1 };
+      // the weighted sum of the moments, built on a cleared accumulator with 'lighter' (adds the premultiplied
+      // pixels) at alpha = weight / total. a running average at alpha = w / runningTotal rounds to 8 bits on every
+      // step and late samples vanish (at 32 samples one that differs by under ~16 levels changes nothing). here
+      // every sample adds its own true share. a single sample at weight 1 is copied exactly.
       let total = 0;
+      for (const sm of samples) total += sm.weight;
+      clearScratch(acc);
       for (const sm of samples) {
         paintLayers(sc.ctx, project, Math.max(0, time + sm.offset), inner, it.track);
-        const isFirst = total === 0;
-        total += sm.weight;
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        // a running weighted average: each new moment replaces its share of what is there
-        ctx.globalAlpha = isFirst ? 1 : sm.weight / total;
-        ctx.globalCompositeOperation = isFirst ? 'copy' : 'source-over';
-        ctx.drawImage(sc.canvas, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
+        acc.ctx.save();
+        acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        acc.ctx.globalAlpha = sm.weight / total;
+        acc.ctx.globalCompositeOperation = 'lighter';
+        acc.ctx.drawImage(sc.canvas, 0, 0, canvas.width, canvas.height);
+        acc.ctx.restore();
       }
+      // the sum can fall a level or two short of opaque from rounding: lay it over the background so the frame stays opaque
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = project.background || '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
       first = k + 1;
       break;
     }
@@ -850,7 +900,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
   let bin: Layer3D[] = [];
   const flush3d = () => {
     if (bin.length === 0) return;
-    draw3d(ctx, project, bin, getRig());
+    draw3d(ctx, project, bin, getRig(), env.channel);
     bin = [];
   };
   // effect clips stack up until the next picture is drawn on top of them (or the frame ends),
@@ -858,7 +908,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
   let pending: EffectPass[] = [];
   const flushEffects = () => {
     if (pending.length === 0) return;
-    applyEffects(ctx, project, pending);
+    applyEffects(ctx, project, pending, env.channel);
     pending = [];
   };
 
@@ -895,7 +945,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
         // depth-test against the 3d clips around it.
         flush3d();
-        draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), NO_LINES, bop);
+        draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), env.channel, NO_LINES, bop);
         continue;
       }
       bin.push({ clip, source, alpha, time });
@@ -985,7 +1035,7 @@ export function renderSceneView(
     seg(frame, camRig.eye, far[i]!);
     seg(frame, far[i]!, far[(i + 1) % 4]!);
   }
-  draw3d(ctx, project, layers, rig, [
+  draw3d(ctx, project, layers, rig, channelOf(ctx), [
     { points: grid, color: dim },
     { points: frame, color: lineColor },
   ]);

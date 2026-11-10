@@ -310,3 +310,26 @@ describe('transitionsAt', () => {
     expect(transitionsAt(p, 0.5)).toEqual([]);
   });
 });
+
+describe('transitionSpan cache', () => {
+  it('returns the same span object for the same project and clip', () => {
+    const p = createProject();
+    const tr = p.tracks[0]!.id;
+    const a = vid(tr, 0, 4);
+    const b = vid(tr, 4, 4, { id: 'fade', duration: 1 });
+    const proj = { ...p, clips: [a, b] };
+    const s1 = transitionSpan(proj, b);
+    expect(s1).not.toBeNull();
+    expect(transitionSpan(proj, b)).toBe(s1);
+    expect(transitionsAt(proj, 4)[0]).toBe(s1);
+  });
+  it('recomputes for an edited copy of a clip', () => {
+    const p = createProject();
+    const tr = p.tracks[0]!.id;
+    const a = vid(tr, 0, 4);
+    const b = vid(tr, 4, 4, { id: 'fade', duration: 1 });
+    const proj = { ...p, clips: [a, b] };
+    expect(transitionSpan(proj, b)!.end).toBeCloseTo(4.5, 9);
+    expect(transitionSpan(proj, { ...b, transition: { id: 'fade', duration: 2 } })!.end).toBeCloseTo(5, 9);
+  });
+});
