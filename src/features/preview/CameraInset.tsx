@@ -4,14 +4,15 @@
  * scene view.
  *
  * it renders with the same renderFrame the output uses, small (240 css px, scaled by the preview quality), on its
- * own canvas, right after the main render has finished (everything is synchronous, so it cannot disturb it).
+ * own canvas and its own render channel ('inset', see setCanvasChannel: its gl contexts and scratch canvases are not shared
+ * with the main preview), right after the main render has finished (everything is synchronous, so it cannot disturb it).
  * pace: at most ~10 per second while playing, once per change while paused (plus one settling render a moment
  * later for late video frames). nothing runs when the scene view or the inset is off: the body is not mounted.
  *
  * the media sources come from the preview engine (its resolver is private, see getResolve in Preview.tsx).
  */
 import { useEffect, useRef } from 'react';
-import { renderFrame } from '../../engine/draw';
+import { releaseRenderResources, renderFrame, setCanvasChannel } from '../../engine/draw';
 import type { SourceResolver } from '../../engine/draw';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -32,6 +33,9 @@ function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) 
     if (!canvas || !hasProject) return;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
+    // its own gpu contexts + scratch canvases: at 240 px next to the main picture they would otherwise be resized
+    // back and forth between the two sizes on every render
+    setCanvasChannel(canvas, 'inset');
     let disposed = false;
     let raf = 0;
     let timer = 0;
@@ -101,6 +105,9 @@ function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) 
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
       window.clearTimeout(settle);
+      // the inset is off (or the scene view left): give its canvases and contexts back
+      releaseRenderResources('inset');
+      setCanvasChannel(canvas, 'default');
     };
   }, [hasProject, getResolve]);
 

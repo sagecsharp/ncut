@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioClip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { effectPassAt, hasEffectsAt, paintListAt, renderFrame, temporalReach } from './draw';
+import { clipFxPasses, effectPassAt, hasEffectsAt, paintListAt, renderFrame, samePose, temporalReach } from './draw';
+import { clampIntoClip, targetIndex } from './clipFx';
 import type { DrawSource } from './draw';
 import { EFFECTS, getEffect } from './effects/registry';
 
@@ -389,5 +390,51 @@ describe('effects on one clip', () => {
     expect(temporalReach(p1, 1)).not.toBeNull();
     const p2 = project([a, { ...adj, target: a.id }], tracks);
     expect(temporalReach(p2, 1)).toBeNull();
+  });
+});
+
+describe('effects on the frozen halves of a transition', () => {
+  const tracks = [track('top', 'video'), track('mid', 'video'), track('bot', 'video')];
+
+  it('a frozen start keeps the effect of its first frame, a frozen tail the effect of its last frame', () => {
+    const a = video('bot', 0, 2);
+    const b = video('bot', 2, 3);
+    const fa = effect('top', 0, 2, { target: a.id });
+    const fb = effect('mid', 2, 3, { target: b.id });
+    const p = project([a, b, fa, fb], tracks);
+    const idx = targetIndex(p);
+    // at frame time 1.9 clip b is frozen on its first frame: the frame time is before its start
+    expect(clipFxPasses(p, idx, b.id, 1.9)).toBeNull();
+    expect(clipFxPasses(p, idx, b.id, clampIntoClip(b, 1.9))).toHaveLength(1);
+    // at 2.1 clip a is frozen on its last frame
+    expect(clipFxPasses(p, idx, a.id, 2.1)).toBeNull();
+    expect(clipFxPasses(p, idx, a.id, clampIntoClip(a, 2.1))).toHaveLength(1);
+  });
+
+  it('the pass is evaluated at the clamped time too', () => {
+    const b = video('bot', 2, 3);
+    const fb = effect('mid', 2, 3, { target: b.id });
+    const p = project([b, fb], tracks);
+    const pass = clipFxPasses(p, targetIndex(p), b.id, clampIntoClip(b, 1.5))![0]!;
+    expect(pass.time).toBe(0);
+  });
+
+  it('a clip without targeted effects gets no passes', () => {
+    const b = video('bot', 2, 3);
+    const p = project([b], tracks);
+    expect(clipFxPasses(p, targetIndex(p), b.id, 3)).toBeNull();
+    expect(clipFxPasses(p, null, b.id, 3)).toBeNull();
+  });
+});
+
+describe('samePose', () => {
+  const t = { ...DEFAULT_TRANSFORM };
+  it('sees depth and tilt, not only the flat pose', () => {
+    expect(samePose(t, 1, { ...t }, 1)).toBe(true);
+    expect(samePose(t, 1, { ...t, z: 40 }, 1)).toBe(false);
+    expect(samePose(t, 1, { ...t, rotX: 10 }, 1)).toBe(false);
+    expect(samePose(t, 1, { ...t, rotY: 10 }, 1)).toBe(false);
+    expect(samePose(t, 1, { ...t, z: 0, rotX: 0 }, 1)).toBe(true);
+    expect(samePose(t, 1, t, 0.5)).toBe(false);
   });
 });
