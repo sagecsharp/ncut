@@ -208,6 +208,60 @@ describe('effects on one clip', () => {
     expect(clipOf<EffectClip>('fx').target).toBe('x');
   });
 
+  it('cut and paste keeps the effect on the clip', () => {
+    open((a, b) => [fx(a, 'x'), image(b, 'x', 0, 2)]);
+    ed().select(['x'], 'replace');
+    ed().cutSelection();
+    expect(proj().clips).toHaveLength(0);
+    const made = ed().paste(5);
+    expect(made).toHaveLength(2);
+    const pasted = made.map((id) => clipOf(id));
+    const img = pasted.find((c) => c.type === 'image')!;
+    const eff = pasted.find((c) => c.type === 'effect') as EffectClip;
+    expect(eff.target).toBe(img.id);
+    expect(eff.start).toBe(img.start);
+  });
+
+  it('ripple delete moves the effect with the clip it sits on, when there is room', () => {
+    open((a, b) => [{ ...fx(a, 'c'), start: 4 }, image(b, 'x', 0, 2), image(b, 'y', 2, 2), image(b, 'c', 4, 2)]);
+    ed().deleteClips(['y'], { ripple: true });
+    expect(clipOf('c').start).toBe(2);
+    expect(clipOf('fx').start).toBe(2);
+    ed().undo();
+    expect(clipOf('fx').start).toBe(4);
+  });
+
+  it('ripple delete leaves the effect where it is when its track has no room', () => {
+    open((a, b) => [
+      { ...fx(a, 'c'), start: 4 },
+      { ...fx(a, null), id: 'other', start: 1, duration: 2.5 },
+      image(b, 'y', 2, 2),
+      image(b, 'c', 4, 2),
+    ]);
+    ed().deleteClips(['y'], { ripple: true });
+    expect(clipOf('c').start).toBe(2);
+    expect(clipOf('fx').start).toBe(4);
+  });
+
+  it('removing a track takes the effects on its clips along', () => {
+    const [, b] = open((a2, b2) => [fx(a2, 'x'), image(b2, 'x', 0, 2)]);
+    ed().removeTrack(b);
+    expect(proj().clips).toHaveLength(0);
+  });
+
+  it('a split cuts what hangs on the clip, and the right halves point at each other', () => {
+    open((a, b) => [image(a, 'child', 0, 4, { parent: 'x' }), image(b, 'x', 0, 4)]);
+    const made = ed().splitClips(2, ['x']);
+    expect(proj().clips).toHaveLength(4);
+    const rightX = proj().clips.find((c) => c.trackId === clipOf('x').trackId && c.start === 2)!;
+    const rightChild = proj().clips.find((c) => c.trackId === clipOf('child').trackId && c.start === 2) as ImageClip;
+    expect(made).toContain(rightX.id);
+    expect(clipOf<ImageClip>('child').parent).toBe('x');
+    expect(rightChild.parent).toBe(rightX.id);
+    ed().undo();
+    expect(proj().clips).toHaveLength(2);
+  });
+
   it('a running number carries on across a split and a head trim', () => {
     open((a) => [
       {

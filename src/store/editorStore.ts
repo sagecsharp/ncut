@@ -334,6 +334,15 @@ function isLocked(project: Project, trackId: string): boolean {
   return project.tracks.find((t) => t.id === trackId)?.locked ?? false;
 }
 
+/** the ids plus the effect clips that sit on one of them (EffectClip.target). effects on locked tracks stay out. */
+function withTargetedEffects(p: Project, ids: ReadonlySet<string>): Set<string> {
+  const out = new Set(ids);
+  for (const c of p.clips) {
+    if (c.type === 'effect' && c.target && ids.has(c.target) && !isLocked(p, c.trackId)) out.add(c.id);
+  }
+  return out;
+}
+
 function nextTrackName(project: Project, kind: TrackKind): string {
   const used = new Set(project.tracks.map((t) => t.name));
   let n = project.tracks.filter((t) => t.kind === kind).length + 1;
@@ -524,7 +533,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       const { project } = get();
       if (!project) return;
       const uses = (c: Clip) => 'assetId' in c && c.assetId === assetId;
-      const gone = new Set(project.clips.filter(uses).map((c) => c.id));
+      const gone = withTargetedEffects(project, new Set(project.clips.filter(uses).map((c) => c.id)));
       const next: Project = {
         ...project,
         assets: project.assets.filter((a) => a.id !== assetId),
@@ -558,7 +567,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     removeTrack(trackId, opts) {
       mutate((p) => {
         if (!p.tracks.some((t) => t.id === trackId)) return null;
-        const gone = new Set(p.clips.filter((c) => c.trackId === trackId).map((c) => c.id));
+        const gone = withTargetedEffects(p, new Set(p.clips.filter((c) => c.trackId === trackId).map((c) => c.id)));
         return {
           ...p,
           tracks: p.tracks.filter((t) => t.id !== trackId),
@@ -989,11 +998,24 @@ export const useEditor = create<EditorState>()((set, get) => {
         const targets = new Set(scope);
         const asked = new Set(scope);
         const cuts = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId);
-        // an effect put on a clip that is cut is cut with it (its right half then follows the right half of the clip)
+        // what hangs on a clip that is cut is cut with it, so its right half can follow the right half of that
+        // clip: an effect put on it, a clip attached to it or looking at it, a camera aiming at it (and what
+        // hangs on those). left uncut they would stay with the left half and freeze at the cut.
         const extra = new Set<string>();
         for (const c of p.clips) if (targets.has(c.id) && cuts(c)) extra.add(c.id);
-        for (const c of p.clips) {
-          if (c.type === 'effect' && !targets.has(c.id) && c.target && extra.has(c.target) && cuts(c)) targets.add(c.id);
+        for (let grew = extra.size > 0; grew; ) {
+          grew = false;
+          for (const c of p.clips) {
+            if (extra.has(c.id) || !cuts(c)) continue;
+            const hangsOn =
+              c.type === 'effect' || c.type === 'camera'
+                ? !!c.target && extra.has(c.target)
+                : isVisualClip(c) && ((!!c.parent && extra.has(c.parent)) || (!!c.lookTarget && extra.has(c.lookTarget)));
+            if (!hangsOn) continue;
+            targets.add(c.id);
+            extra.add(c.id);
+            grew = true;
+          }
         }
         const clips: Clip[] = [];
         // original id -> right half id, to point the links of the right halves at each other
@@ -1085,11 +1107,32 @@ export const useEditor = create<EditorState>()((set, get) => {
           doomedIds,
         );
         if (opts?.ripple) {
-          clips = clips.map((c) => {
+          const shiftOf = (c: Clip): number => {
             let shift = 0;
             for (const d of doomed) if (d.trackId === c.trackId && d.start < c.start) shift += d.duration;
+            return shift;
+          };
+          const before = clips;
+          const byId = new Map(before.map((c) => [c.id, c]));
+          const followed = new Set<string>();
+          clips = before.map((c) => {
+            let shift = shiftOf(c);
+            // an effect that sits on a clip moves with it
+            if (shift === 0 && c.type === 'effect' && c.target && !isLocked(p, c.trackId)) {
+              const t = byId.get(c.target);
+              if (t) shift = shiftOf(t);
+              if (shift > 0) followed.add(c.id);
+            }
             return shift > 0 ? { ...c, start: Math.max(0, c.start - shift) } : c;
           });
+          // ... unless its own track has no room there: then it stays where it was
+          if (followed.size > 0) {
+            clips = clips.map((c, i) => {
+              if (!followed.has(c.id)) return c;
+              const hit = clips.some((o) => o !== c && o.trackId === c.trackId && o.start < clipEnd(c) - 1e-9 && c.start < clipEnd(o) - 1e-9);
+              return hit ? before[i]! : c;
+            });
+          }
         }
         return { ...p, clips };
       }, opts);
@@ -1251,7 +1294,10 @@ export const useEditor = create<EditorState>()((set, get) => {
     copySelection() {
       const { project, selection } = get();
       if (!project || selection.length === 0) return;
-      set({ clipboard: structuredClone(project.clips.filter((c) => selection.includes(c.id))) });
+      // the effects put on a copied clip come along (a cut would otherwise lose them: deleting a clip deletes them)
+      const ids = new Set(selection);
+      for (const c of project.clips) if (c.type === 'effect' && c.target && ids.has(c.target)) ids.add(c.id);
+      set({ clipboard: structuredClone(project.clips.filter((c) => ids.has(c.id))) });
     },
     cutSelection() {
       const { selection } = get();

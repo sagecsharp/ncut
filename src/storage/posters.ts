@@ -60,12 +60,13 @@ export function pruneOrphanPosters(known: Iterable<string>): number {
 }
 
 /**
- * true when the sampled pixels (rgba, row by row, width x height) look like nothing was drawn: fully
- * transparent or one flat color. samples a grid of at most 8 x 8 points, so it costs nothing.
+ * true when the sampled pixels (rgba, row by row, width x height) look like nothing was drawn: every sample
+ * fully transparent or black. a flat color other than black is a drawn background, so a small title on a
+ * colored canvas still gets its poster. samples a grid of 24 x 24 points, so it costs nothing.
  */
 export function isBlankPixels(data: ArrayLike<number>, width: number, height: number): boolean {
   if (!(width > 0) || !(height > 0) || data.length < width * height * 4) return true;
-  const n = 8;
+  const n = 24;
   let first: number[] | null = null;
   for (let gy = 0; gy < n; gy++) {
     for (let gx = 0; gx < n; gx++) {
@@ -78,7 +79,8 @@ export function isBlankPixels(data: ArrayLike<number>, width: number, height: nu
       else if (px.some((v, j) => Math.abs(v - first![j]!) > 2)) return false;
     }
   }
-  return true;
+  // one flat color: blank only when it is nothing (transparent) or black
+  return !first || first[3] === 0 || first[0]! + first[1]! + first[2]! <= 6;
 }
 
 export function deletePoster(projectId: string): void {

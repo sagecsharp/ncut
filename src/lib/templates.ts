@@ -352,7 +352,8 @@ function stats(project: Project): Project {
   const b = new Builder(project);
   const u = b.u;
   const len = 6;
-  const wide = b.w >= b.h;
+  // side by side only when there is room for three numbers: near-square canvases stack them
+  const wide = b.w >= b.h * 1.6;
   const items: { text: string; to: number; decimals: number; separator: boolean; label: string }[] = [
     { text: '{n}%', to: 87, decimals: 0, separator: false, label: 'happier' },
     { text: '{n}', to: 12500, decimals: 0, separator: true, label: 'views' },

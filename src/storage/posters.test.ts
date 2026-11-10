@@ -47,6 +47,15 @@ describe('isBlankPixels', () => {
     expect(isBlankPixels(fill(40, 20, [0, 0, 0, 255]), 40, 20)).toBe(true);
     expect(isBlankPixels(new Uint8ClampedArray(0), 40, 20)).toBe(true);
   });
+  it('a flat color that is not black is a drawn background', () => {
+    expect(isBlankPixels(fill(40, 20, [20, 40, 90, 255]), 40, 20)).toBe(false);
+    expect(isBlankPixels(fill(40, 20, [2, 2, 2, 255]), 40, 20)).toBe(true);
+  });
+  it('sees a small title on black', () => {
+    const d = fill(240, 120, [0, 0, 0, 255]);
+    for (let y = 55; y < 65; y++) for (let x = 100; x < 140; x++) d.set([255, 255, 255, 255], (y * 240 + x) * 4);
+    expect(isBlankPixels(d, 240, 120)).toBe(false);
+  });
   it('is not blank when something is drawn', () => {
     const d = fill(40, 20, [0, 0, 0, 255]);
     for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++) d.set([255, 255, 255, 255], (y * 40 + x) * 4);

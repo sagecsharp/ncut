@@ -95,8 +95,10 @@ function snapPoster(): void {
   // storage may be full of posters of deleted projects: drop those and try once more
   void listProjects()
     .then((list) => {
-      pruneOrphanPosters([id, ...list.map((p) => p.id)]);
-      savePoster(id, poster);
+      const known = list.map((p) => p.id);
+      pruneOrphanPosters(known);
+      // the project may have been deleted while this was waiting: no poster for something that is gone
+      if (known.includes(id)) savePoster(id, poster);
     })
     .catch(() => {});
 }
