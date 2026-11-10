@@ -135,6 +135,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'counter',
     'underline',
     'strike',
+    'hollow',
     'backgroundPerLine',
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],

@@ -426,6 +426,12 @@ export interface TextClip extends ClipBase, Spatial {
   /** a line through the middle of every line of text. missing = false. */
   strike?: boolean;
   /**
+   * hollow letters: the fill is left out and only the outline shows (what is behind the text shows through
+   * the letters). needs an outline (`stroke`); without one the text draws a thin outline in the fill color
+   * (about 1/30 of the font size) so it never disappears. missing = false.
+   */
+  hollow?: boolean;
+  /**
    * the background box (`background`) is drawn once per line, each hugging its own line's width
    * (the caption / label look), instead of one box around the whole block. missing = false.
    */
