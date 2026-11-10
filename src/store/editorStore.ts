@@ -137,9 +137,10 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'strike',
     'hollow',
     'backgroundPerLine',
+    'stroke2',
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
-  camera: ['target'],
+  camera: ['target', 'focusStrength', 'focusDistance', 'focusRange', 'focusOnTarget'],
   effect: ['timeOffset', 'target', 'fullDuration'],
 };
 

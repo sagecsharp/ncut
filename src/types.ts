@@ -367,6 +367,17 @@ export interface TextCounter {
   /** seconds at the end of the clip where the final number just stays. missing = 0. */
   hold?: number;
   /**
+   * how the number is written. 'number' (missing) = digits with `decimals` and `separator`.
+   * 'time' = the value is seconds, written as m:ss (h:mm:ss from one hour on). `decimals` adds fractions of a
+   * second (1:05.3), `separator` is ignored. a count from 90 to 0 reads 1:30 ... 0:00.
+   */
+  format?: 'number' | 'time';
+  /**
+   * every digit takes the width of the widest digit of the font, so the text around the number does not
+   * jiggle while it counts. missing = false.
+   */
+  fixedWidth?: boolean;
+  /**
    * seconds of counting that already happened before this clip starts. set on the right half of a split and
    * by a head trim, so the number carries on across the cut instead of starting over. missing = 0.
    */
@@ -411,6 +422,12 @@ export interface TextClip extends ClipBase, Spatial {
   /** draw the text in capitals */
   uppercase?: boolean;
   stroke?: TextStroke | null;
+  /**
+   * a second outline around the first one (sticker / comic titles). its width is a fraction of the font size
+   * like `stroke`, measured outward from the edge of the first outline (from the letters when there is no
+   * first outline). drawn under the first outline and the fill. null / missing = none.
+   */
+  stroke2?: TextStroke | null;
   shadow?: TextShadow | null;
   /** corner roundness of the background box, 0..1 (1 = pill) */
   backgroundRadius?: number;
@@ -549,6 +566,18 @@ export interface CameraClip extends ClipBase {
    * added on top as an offset. null / missing / unknown id = no target.
    */
   target?: string | null;
+  /**
+   * depth of field: 3d clips go soft the farther they are from the focus distance, like a real lens.
+   * focusStrength 0 / missing = off (everything sharp, the old look). 1 = strong. only 3d clips are affected,
+   * flat 2d layers stay sharp.
+   */
+  focusStrength?: number;
+  /** distance from the camera (project pixels, along its view direction) that is sharp. missing = the home distance (where z = 0 sits for the home camera). */
+  focusDistance?: number;
+  /** depth around the focus distance (project pixels) that stays fully sharp. missing = 0. */
+  focusRange?: number;
+  /** true = the focus distance follows the clip the camera looks at (`target`) and focusDistance is ignored while there is a target */
+  focusOnTarget?: boolean;
 }
 
 /**

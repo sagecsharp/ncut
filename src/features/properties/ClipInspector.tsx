@@ -12,6 +12,7 @@ import { AnimField } from './AnimField';
 import { AlignButtons } from './AlignButtons';
 import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
+import { FocusSection } from './FocusSection';
 import { AnimationSection, CameraSection, ThreeDSection } from './Sections3d';
 import { LookSection } from './LookSection';
 import { ColorSection } from './ColorSection';
@@ -448,6 +449,7 @@ export function ClipInspector({ id }: { id: string }) {
         {hasKeyframes(clip) ? <AnimationSection id={clip.id} keyframes={clip.keyframes!} start={clip.start} duration={clip.duration} /> : null}
         {clip.type === 'effect' ? <EffectSection id={clip.id} name={clip.name} effect={clip.effect} params={clip.params} target={clip.target} /> : null}
         {clip.type === 'camera' ? <CameraSection id={clip.id} target={clip.target ?? null} /> : null}
+        {clip.type === 'camera' ? <FocusSection clip={clip} /> : null}
         {clip.type === 'text' ? (
           <TextSection
             id={clip.id}
