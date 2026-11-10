@@ -1,6 +1,6 @@
 import { hasKeyedPose } from '../../engine/parent';
 import { canBeParent, indexClips, wouldCycleAny } from '../../lib/links';
-import type { Clip, Project } from '../../types';
+import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
 
 export interface ParentOption {
@@ -25,7 +25,7 @@ function baseName(c: Clip): string {
  * themselves and never one that would make a loop. clips that overlap any of them in time come first.
  * labels are the clip name, plus the type when two names are the same, plus a number if that still repeats.
  */
-export function parentOptions(project: Pick<Project, 'clips'>, ids: readonly string[]): ParentOption[] {
+export function parentOptions(project: { readonly clips: readonly Clip[] }, ids: readonly string[]): ParentOption[] {
   const want = new Set(ids);
   const from = project.clips.filter((c) => want.has(c.id) && isVisualClip(c));
   if (from.length === 0) return [];
@@ -39,7 +39,7 @@ export function parentOptions(project: Pick<Project, 'clips'>, ids: readonly str
  * the clips a 3d clip can face ("look at a clip"): visual clips and cameras except the clip itself.
  * a loop does not matter here (facing a clip never moves it). same labels and order as parentOptions.
  */
-export function lookTargetOptions(project: Pick<Project, 'clips'>, id: string): ParentOption[] {
+export function lookTargetOptions(project: { readonly clips: readonly Clip[] }, id: string): ParentOption[] {
   const from = project.clips.filter((c) => c.id === id && isVisualClip(c));
   if (from.length === 0) return [];
   return labelOptions(
@@ -52,7 +52,7 @@ export function lookTargetOptions(project: Pick<Project, 'clips'>, id: string): 
  * the clips an effect clip can be put on ("applies to"): visual clips only (no cameras), never the effect itself.
  * clips that overlap the effect in time come first. same labels and order as parentOptions.
  */
-export function effectTargetOptions(project: Pick<Project, 'clips'>, effectId: string): ParentOption[] {
+export function effectTargetOptions(project: { readonly clips: readonly Clip[] }, effectId: string): ParentOption[] {
   const from = project.clips.filter((c) => c.id === effectId);
   if (from.length === 0) return [];
   return labelOptions(

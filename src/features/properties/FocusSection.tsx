@@ -10,7 +10,7 @@ import { useUi } from '../../store/ui';
 import type { CameraClip, Clip, Project } from '../../types';
 import { isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
-import { Row, Section } from './controls';
+import { Row, Section, useSelectOpen } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { targetOptions } from './targets';
 
@@ -24,16 +24,48 @@ function distanceToClip(project: Project, cam: CameraClip, clip: Clip, time: num
   return focusDistanceForPoint(rig.eye, rig.forward, worldCenterOf(project, clip, clamp(t, clip.start, clip.start + clip.duration)));
 }
 
+/** "from a clip": always reads "pick a clip..." (or "no 3d clips"), so the list of 3d clips is only built while the select is open */
+function FromClip({ any3d, off, onPick }: { any3d: boolean; off: boolean; onPick: (id: string) => void }) {
+  const { open, handlers } = useSelectOpen();
+  const clips = useEditor((s) => (open ? s.project?.clips : undefined));
+  const tracks = useEditor((s) => (open ? s.project?.tracks : undefined));
+  const options = useMemo(() => {
+    if (!open || !clips || !tracks) return [];
+    const threeD = new Set(clips.filter((c) => isVisualClip(c) && c.threeD).map((c) => c.id));
+    return targetOptions(clips, tracks).filter((o) => threeD.has(o.id));
+  }, [open, clips, tracks]);
+  return (
+    <select
+      className="select"
+      title="set the focus distance to where a 3d clip is at the playhead"
+      aria-label="set focus from a clip"
+      disabled={!any3d || off}
+      value=""
+      onChange={(e) => {
+        if (e.target.value) onPick(e.target.value);
+      }}
+      {...handlers}
+    >
+      <option value="">{!any3d ? 'no 3d clips' : 'pick a clip...'}</option>
+      {options.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /** depth of field controls of a camera clip (CameraClip.focusStrength and friends). */
 export function FocusSection({ clip }: { clip: CameraClip }) {
   const id = clip.id;
-  const clips = useEditor((s) => s.project?.clips);
-  const tracks = useEditor((s) => s.project?.tracks);
   const height = useEditor((s) => s.project?.height ?? 1080);
   const home = homeDistance(height);
   const keyed = (prop: string) => (clip.keyframes?.[prop]?.length ?? 0) > 0;
   const blurOn = (clip.focusStrength ?? 0) > 0 || keyed('focusStrength');
-  const hasTarget = !!clip.target && !!clips?.some((c) => c.id === clip.target && isVisualClip(c));
+  const hasTarget = useEditor((s) => !!clip.target && !!s.project?.clips.some((c) => c.id === clip.target && isVisualClip(c)));
+  // is there any 3d clip to focus on (the list itself is only built while its select is open)
+  const any3d = useEditor((s) => !!s.project?.clips.some((c) => isVisualClip(c) && c.threeD));
   const following = !!clip.focusOnTarget && hasTarget;
 
   // a missing focus distance means "the home distance". write it down once blur is on, so it can be edited and keyed.
@@ -44,12 +76,6 @@ export function FocusSection({ clip }: { clip: CameraClip }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blurOn, clip.focusDistance, id, home]);
-
-  const options = useMemo(() => {
-    if (!clips || !tracks) return [];
-    const threeD = new Set(clips.filter((c) => isVisualClip(c) && c.threeD).map((c) => c.id));
-    return targetOptions(clips, tracks).filter((o) => threeD.has(o.id));
-  }, [clips, tracks]);
 
   const pickClip = (cid: string) => {
     const st = actions();
@@ -134,23 +160,7 @@ export function FocusSection({ clip }: { clip: CameraClip }) {
             />
           </Row>
           <Row label="from a clip" title="set the focus distance to where a 3d clip is right now" wide>
-            <select
-              className="select"
-              title="set the focus distance to where a 3d clip is at the playhead"
-              aria-label="set focus from a clip"
-              disabled={options.length === 0 || following}
-              value=""
-              onChange={(e) => {
-                if (e.target.value) pickClip(e.target.value);
-              }}
-            >
-              <option value="">{options.length === 0 ? 'no 3d clips' : 'pick a clip...'}</option>
-              {options.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <FromClip any3d={any3d} off={following} onPick={pickClip} />
           </Row>
         </>
       ) : null}
