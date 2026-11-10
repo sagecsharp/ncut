@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Project, ShapeClip, VideoClip } from '../../types';
 import { neededClipsAt } from '../../engine/draw';
 import { projectDuration } from '../../lib/timelineOps';
-import { clipEdgeTimestamp, clipTimestamps, frameCount, isAudioContainer, outputSize, planExport, videoBitrate } from './exporter';
+import { clipEdgeTimestamp, clipTimestamps, fileExtension, frameCount, isAudioContainer, isGifContainer, outputSize, planExport, videoBitrate } from './exporter';
 import { MIX_SAMPLE_RATE } from './audioMix';
 
 function withDuration(d: number): Pick<Project, 'clips'> {
@@ -130,5 +130,14 @@ describe('clipEdgeTimestamp', () => {
   it('stays inside the asset', () => {
     expect(clipEdgeTimestamp(clip, 10, 2, 0, 5)).toBeCloseTo(1.999);
     expect(clipEdgeTimestamp(clip, 10, 100, 0.8, 0)).toBeCloseTo(0.8);
+  });
+});
+
+describe('gif container', () => {
+  it('is its own kind of file', () => {
+    expect(isGifContainer('gif')).toBe(true);
+    expect(isGifContainer('mp4')).toBe(false);
+    expect(isAudioContainer('gif')).toBe(false);
+    expect(fileExtension('gif')).toBe('gif');
   });
 });
