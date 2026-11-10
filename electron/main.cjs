@@ -35,15 +35,15 @@ let win = null;
 
 /**
  * per window: the file its last download was saved to, the power blocker, whether the page can take a file,
- * and a project file waiting for it. keyed by webContents id, dropped with the window.
- * @type {Map<number, { lastSave: string | null, blocker: number | null, ready: boolean, pending: { name: string, bytes: Buffer } | null }>}
+ * a project file waiting for it, and whether the window was shown yet. keyed by webContents id, dropped with the window.
+ * @type {Map<number, { lastSave: string | null, blocker: number | null, ready: boolean, shown: boolean, pending: { name: string, bytes: Buffer } | null }>}
  */
 const bridge = new Map();
 
 function bridgeState(id) {
   let st = bridge.get(id);
   if (!st) {
-    st = { lastSave: null, blocker: null, ready: false, pending: null };
+    st = { lastSave: null, blocker: null, ready: false, shown: false, pending: null };
     bridge.set(id, st);
   }
   return st;
@@ -95,6 +95,18 @@ function onRequest(channel, fallback, fn) {
   });
 }
 
+/**
+ * show the window, once. the page says ready() after its first screen was painted (preload: ncut:ready), so the
+ * window never shows the empty page. a timer in createWindow shows it anyway when that never comes.
+ */
+function revealWindow(w) {
+  if (w.isDestroyed()) return;
+  const st = bridgeState(w.webContents.id);
+  if (st.shown) return;
+  st.shown = true;
+  if (!w.isVisible()) w.show();
+}
+
 function fileExists(file) {
   try {
     return fs.statSync(file).isFile();
@@ -123,6 +135,7 @@ function setupBridge() {
   });
   onMessage('ncut:ready', (w) => {
     bridgeState(w.webContents.id).ready = true;
+    revealWindow(w);
     flushPending(w);
   });
   onRequest('ncut:reveal-last-save', false, (w) => {
@@ -189,10 +202,9 @@ async function serve(request) {
   try {
     const body = await fs.promises.readFile(file);
     const headers = { 'content-type': shellRules.mimeFor(rel), 'x-content-type-options': 'nosniff' };
-    if (rel.endsWith('.html')) {
-      headers['content-security-policy'] = shellRules.CSP;
-      headers['cache-control'] = 'no-cache';
-    }
+    if (rel.endsWith('.html')) headers['content-security-policy'] = shellRules.CSP;
+    const cache = shellRules.cacheControlFor(rel);
+    if (cache !== null) headers['cache-control'] = cache;
     return new Response(request.method === 'HEAD' ? null : body, { status: 200, headers });
   } catch {
     return notFound();
@@ -307,11 +319,9 @@ function createWindow() {
   });
   const w = win;
   if (saved && saved.maximized) w.maximize();
-  w.once('ready-to-show', () => w.show());
-  // a page that never gets ready must not leave an invisible window behind
-  setTimeout(() => {
-    if (!w.isDestroyed() && !w.isVisible()) w.show();
-  }, 5000);
+  // not at ready-to-show: that is the first paint of the empty page. the page tells us (ncut:ready, see revealWindow)
+  // once its first screen is painted. a page that never gets there must not leave an invisible window behind
+  setTimeout(() => revealWindow(w), shellRules.SHOW_FALLBACK_MS);
 
   const wc = w.webContents;
   const wcId = wc.id;
@@ -331,6 +341,10 @@ function createWindow() {
     st.ready = false;
   });
   const home = devUrl ?? shellRules.HOME;
+  // the page failed to load at all: show the window (it is blank, but it must not be invisible)
+  wc.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
+    if (isMainFrame) revealWindow(w);
+  });
 
   // nothing opens inside the app except the app. web links go to the real browser.
   wc.setWindowOpenHandler(({ url }) => {
