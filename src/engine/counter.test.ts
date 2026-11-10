@@ -80,6 +80,14 @@ describe('counterText / resolveCounter', () => {
     expect(counterText(clip, 2)).toBe('0 of 0!');
     expect(counterText(clip, 6)).toBe('8 of 8!');
   });
+  it('carries on across a cut: offset and fullDuration', () => {
+    const whole = { text: '{n}', start: 0, duration: 10, counter: c({ to: 100 }) };
+    const left = { ...whole, duration: 5, counter: c({ to: 100, fullDuration: 10 }) };
+    const right = { ...whole, start: 5, duration: 5, counter: c({ to: 100, offset: 5, fullDuration: 10 }) };
+    for (const t of [0, 2.5, 4.9]) expect(counterText(left, t)).toBe(counterText(whole, t));
+    for (const t of [5, 7.5, 9.9]) expect(counterText(right, t)).toBe(counterText(whole, t));
+    expect(counterText(right, 5)).toBe('50');
+  });
   it('shows only the number when the text has no {n}', () => {
     expect(counterText({ ...clip, text: 'score' }, 6)).toBe('8');
   });

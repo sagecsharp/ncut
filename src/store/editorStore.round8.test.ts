@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Clip, EffectClip, ImageClip, MediaAsset, Project } from '../types';
+import type { Clip, EffectClip, ImageClip, MediaAsset, Project, TextClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { createProject } from '../lib/factory';
 import { useEditor } from './editorStore';
@@ -206,6 +206,25 @@ describe('effects on one clip', () => {
     ed().deleteClips(['x']);
     expect(proj().clips.map((c) => c.id)).toEqual(['fx']);
     expect(clipOf<EffectClip>('fx').target).toBe('x');
+  });
+
+  it('a running number carries on across a split and a head trim', () => {
+    open((a) => [
+      {
+        ...fx(a, null),
+        id: 'n',
+        type: 'text',
+        text: '{n}',
+        duration: 10,
+        counter: { from: 0, to: 100, decimals: 0, ease: 'linear' },
+      } as unknown as Clip,
+    ]);
+    const made = ed().splitClips(4, ['n']);
+    expect(clipOf<TextClip>('n').counter).toMatchObject({ fullDuration: 10 });
+    expect(clipOf<TextClip>('n').counter?.offset ?? 0).toBe(0);
+    expect(clipOf<TextClip>(made[0]!).counter).toMatchObject({ offset: 4, fullDuration: 10 });
+    ed().trimClip(made[0]!, 'start', 6);
+    expect(clipOf<TextClip>(made[0]!).counter).toMatchObject({ offset: 6, fullDuration: 10 });
   });
 
   it('a split or a head trim keeps the length the look was spread over', () => {

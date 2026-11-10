@@ -618,7 +618,9 @@ vec4 effect(vec2 uv) {
         // falls off about evenly all around the outline (the sextic itself is nearly flat in the two lobes, so a
         // soft edge on it eats them away)
         float val = a2 - pow(x * x, 1.0 / 3.0) * y;
-        float edge = 6.0 * px / max(r, 0.0001) + 0.03;
+        // a fixed share of the heart, so the preview and the export look the same (only below about 2 px
+        // the pixel size takes over, to keep the outline smooth)
+        float edge = max(0.22, 2.0 * px / max(r, 0.0001));
         float m = smoothstep(0.0, edge, -val);
         vec3 hc = hsv2rgb(vec3(fract(0.94 + 0.1 * h.x), 0.55 + 0.35 * h.y, 1.0));
         hc *= 0.85 + 0.15 * clamp(y, -1.0, 1.0);

@@ -1164,7 +1164,9 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   let over = false;
   const style = raw.motionBlur?.style;
   if (style === 'trail' || style === 'ghost') {
-    const plan = blurPlan(style, times.length, Math.min(2, raw.motionBlur!.shutter) / (project.fps || 30));
+    // ghost draws separate copies: their number is the look, so it does not follow the preview quality
+    const count = style === 'ghost' ? Math.min(MAX_MOTION_BLUR_SAMPLES, Math.floor(raw.motionBlur!.samples)) : times.length;
+    const plan = blurPlan(style, count, Math.min(2, raw.motionBlur!.shutter) / (project.fps || 30));
     times.length = 0;
     weights = [];
     over = plan.over;
@@ -1180,9 +1182,17 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     const c = resolveVisual(raw, t, project, time);
     return { c, a: c.transform.opacity * fadeFactor(c, t), w: worldTransformOf(project, c, t) };
   };
-  const first = pose(times[0]!);
-  const last = pose(times[times.length - 1]!);
-  if (samePose(first.w, first.a, last.w, last.a)) return false;
+  // still = every sample has the pose of the first one (not just the two ends: at the turning point of a
+  // move the ends match while the middle is somewhere else)
+  const poses: ReturnType<typeof pose>[] = [pose(times[0]!)];
+  const first = poses[0]!;
+  let still = true;
+  for (let i = times.length - 1; i >= 1 && still; i--) {
+    const p = pose(times[i]!);
+    poses[i] = p;
+    if (!samePose(first.w, first.a, p.w, p.a)) still = false;
+  }
+  if (still) return false;
   const canvas = ctx.canvas as AnyCanvas | undefined;
   const copy = scratchFor(ctx, env.channel, 'mbCopy');
   const acc = scratchFor(ctx, env.channel, 'mbAcc', true);
@@ -1191,7 +1201,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   const share = 1 / times.length;
   for (let i = 0; i < times.length; i++) {
     const t = times[i]!;
-    const p = i === 0 ? first : i === times.length - 1 ? last : pose(t);
+    const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
     clearScratch(copy);
     paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);

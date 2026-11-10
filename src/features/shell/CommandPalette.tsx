@@ -29,6 +29,8 @@ function PaletteBody() {
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // where the pointer last really was: the list scrolling under a resting pointer also fires mousemove
+  const pointer = useRef<{ x: number; y: number } | null>(null);
   const actions = useMemo(paletteActions, []);
   const results = useMemo(() => searchItems(query, actions), [query, actions]);
 
@@ -93,7 +95,11 @@ function PaletteBody() {
               role="option"
               aria-selected={i === active}
               className={`shell-palette-row${i === active ? ' is-active' : ''}`}
-              onMouseMove={() => i !== active && setActive(i)}
+              onMouseMove={(e) => {
+                const was = pointer.current;
+                pointer.current = { x: e.clientX, y: e.clientY };
+                if (was && (was.x !== e.clientX || was.y !== e.clientY) && i !== active) setActive(i);
+              }}
               onClick={() => run(i)}
             >
               <span className="shell-palette-title">{a.title}</span>
@@ -109,6 +115,8 @@ function PaletteBody() {
 
 export function CommandPalette() {
   const open = usePalette((s) => s.open);
+  // leaving the editor with the palette open must not leave it open for the next project
+  useEffect(() => closePalette, []);
   if (!open) return null;
   return createPortal(<PaletteBody />, document.body);
 }

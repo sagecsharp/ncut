@@ -2,6 +2,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { closeProject, exportProjectFile } from '../../store/session';
 import { useUi } from '../../store/ui';
+import { interaction } from '../timeline/view';
 import { SHORTCUTS } from './shortcuts';
 
 export interface PaletteAction {
@@ -56,7 +57,11 @@ export function paletteActions(): PaletteAction[] {
     title: s.description,
     group: s.group,
     keys: s.keys,
-    run: s.run,
+    // same guard as the keyboard: no edits in the middle of a drag
+    run: () => {
+      if (s.mutates && interaction.gestureActive) return;
+      s.run();
+    },
   }));
   return [...rows, ...EXTRA];
 }

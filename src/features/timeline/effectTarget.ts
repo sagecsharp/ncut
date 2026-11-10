@@ -85,14 +85,15 @@ export function effectDropTarget(project: Scope, trackId: string | undefined, ti
 }
 
 /**
- * an existing video track above the target's track that can hold the effect: unlocked, free for the
+ * an existing video track above the target's track that can hold the effect: unlocked, shown, free for the
  * range, and made of effects only (an empty one counts when it is named "effects"). null = make a new track.
  */
 export function pickEffectTrack(project: Scope, targetTrackId: string, start: number, duration: number): string | null {
   const at = project.tracks.findIndex((t) => t.id === targetTrackId);
   for (let i = at - 1; i >= 0; i--) {
     const t = project.tracks[i]!;
-    if (t.kind !== 'video' || t.locked) continue;
+    // an effect on a hidden track never runs
+    if (t.kind !== 'video' || t.locked || t.hidden) continue;
     const mine = project.clips.filter((c) => c.trackId === t.id);
     const ok = mine.length === 0 ? t.name === 'effects' : mine.every((c) => c.type === 'effect');
     if (ok && isRangeFree(project, t.id, start, duration)) return t.id;

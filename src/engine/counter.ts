@@ -46,7 +46,7 @@ export function formatCounter(value: number, counter: Pick<TextCounter, 'decimal
 export function counterText(clip: Pick<TextClip, 'text' | 'counter' | 'start' | 'duration'>, time: number): string {
   const counter = clip.counter;
   if (!counter) return clip.text;
-  const n = formatCounter(counterValue(counter, time - clip.start, clip.duration), counter);
+  const n = formatCounter(counterValue(counter, time - clip.start + (counter.offset ?? 0), counter.fullDuration ?? clip.duration), counter);
   return clip.text.includes(COUNTER_TOKEN) ? clip.text.split(COUNTER_TOKEN).join(n) : n;
 }
 

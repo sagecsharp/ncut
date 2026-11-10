@@ -366,6 +366,16 @@ export interface TextCounter {
   ease?: 'linear' | 'out' | 'in-out';
   /** seconds at the end of the clip where the final number just stays. missing = 0. */
   hold?: number;
+  /**
+   * seconds of counting that already happened before this clip starts. set on the right half of a split and
+   * by a head trim, so the number carries on across the cut instead of starting over. missing = 0.
+   */
+  offset?: number;
+  /**
+   * the length the count is spread over, in seconds: the clip's length before it was split or trimmed at the
+   * head. missing = the clip's own duration (making the clip longer or shorter then changes the pace).
+   */
+  fullDuration?: number;
 }
 
 /**

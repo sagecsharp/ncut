@@ -942,6 +942,10 @@ export const useEditor = create<EditorState>()((set, get) => {
             next.timeOffset = (clip.timeOffset ?? 0) + delta;
             next.fullDuration = clip.fullDuration ?? clip.duration;
           }
+          // a running number carries on from where the cut is (see TextCounter.offset)
+          if (next.type === 'text' && clip.type === 'text' && clip.counter) {
+            next.counter = { ...clip.counter, offset: (clip.counter.offset ?? 0) + delta, fullDuration: clip.counter.fullDuration ?? clip.duration };
+          }
           return replaceClip(p, clampFades(next));
         }
         let upper = Infinity;
@@ -1008,6 +1012,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           delete leftDraft.animOut;
           // an effect cut in two keeps the length its look was spread over (see EffectClip.fullDuration)
           if (c.type === 'effect') leftDraft.fullDuration = c.fullDuration ?? c.duration;
+          // same for a running number: both halves count over the old length
+          if (c.type === 'text' && c.counter) leftDraft.counter = { ...c.counter, fullDuration: c.counter.fullDuration ?? c.duration };
           const left = clampFades(leftDraft as unknown as Clip);
           const rightDraft = { ...c } as Record<string, unknown>;
           delete rightDraft.transition;
@@ -1026,6 +1032,9 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (right.type === 'effect' && c.type === 'effect') {
             right.timeOffset = (c.timeOffset ?? 0) + (time - c.start);
             right.fullDuration = c.fullDuration ?? c.duration;
+          }
+          if (right.type === 'text' && c.type === 'text' && c.counter) {
+            right.counter = { ...c.counter, offset: (c.counter.offset ?? 0) + (time - c.start), fullDuration: c.counter.fullDuration ?? c.duration };
           }
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           if (c.group) {

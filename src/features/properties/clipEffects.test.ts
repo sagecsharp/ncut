@@ -3,7 +3,14 @@ import type { Clip, Project, Track, VisualClip } from '../../types';
 import { effectHomeTrack, effectsOnClip, newTargetedEffect, overlapsInTime } from './clipEffects';
 import { effectTargetOptions } from './parentOptions';
 
-const track = (id: string, kind: 'video' | 'audio' = 'video', locked = false): Track => ({ id, kind, name: id, muted: false, hidden: false, locked });
+const track = (id: string, kind: 'video' | 'audio' = 'video', locked = false): Track => ({
+  id,
+  kind,
+  name: id === 'fx' ? 'effects' : id,
+  muted: false,
+  hidden: false,
+  locked,
+});
 const mk = (id: string, trackId: string, start: number, duration: number, extra: Record<string, unknown>): Clip =>
   ({ id, trackId, start, duration, name: id, fadeIn: 0, fadeOut: 0, transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, ...extra }) as Clip;
 
@@ -40,6 +47,10 @@ describe('effectHomeTrack', () => {
     expect(effectHomeTrack(base([track('fx', 'video', true), track('t2')], [v]), v)).toBeNull();
     const busy = mk('e', 'fx', 1, 1, { type: 'effect' });
     expect(effectHomeTrack(base([track('fx'), track('t2')], [v, busy]), v)).toBeNull();
+  });
+  it('skips a hidden track and an empty track that is not an effects track', () => {
+    expect(effectHomeTrack(base([{ ...track('fx'), hidden: true }, track('t2')], [v]), v)).toBeNull();
+    expect(effectHomeTrack(base([track('t1'), track('t2')], [v]), v)).toBeNull();
   });
   it('never uses a track below', () => {
     expect(effectHomeTrack(base([track('t2'), track('fx')], [v]), v)).toBeNull();
