@@ -12,7 +12,8 @@ import type { AlignBox, AlignKind, AlignMove, SpreadAxis } from './alignLogic';
 /** the visual clips among these that align can move: flat, not attached, on an unlocked track */
 export function alignableClips(project: Pick<Project, 'clips' | 'tracks'>, ids: readonly string[]): VisualClip[] {
   const locked = new Set(project.tracks.filter((t) => t.locked).map((t) => t.id));
-  return project.clips.filter((c): c is VisualClip => ids.includes(c.id) && isVisualClip(c) && isAlignable(c) && !locked.has(c.trackId));
+  const want = new Set(ids);
+  return project.clips.filter((c): c is VisualClip => want.has(c.id) && isVisualClip(c) && isAlignable(c) && !locked.has(c.trackId));
 }
 
 /** the playhead held inside a clip (what the transform fields and keyframes use) */

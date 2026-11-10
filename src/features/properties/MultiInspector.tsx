@@ -7,7 +7,6 @@ import type { ActionOpts } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
-import type { VisualClip } from '../../types';
 import { AlignButtons } from './AlignButtons';
 import { ArrangeSection } from './ArrangeSection';
 import { CascadeSection } from './CascadeSection';
@@ -20,6 +19,7 @@ import { Pair, Row, Section, SelectRow, SliderRow, Switch } from './controls';
 import { fitToMarkers, makeRow } from '../timeline/sequenceActions';
 import type { FitSpan } from '../timeline/sequenceActions';
 import { beginEdit, liveOpts } from './edit';
+import { anyGrouped, firstVisual, sharedParent, visualIdsOf } from './selectionSets';
 
 interface Summary {
   video: number;
@@ -136,22 +136,19 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
   };
 
   const clips = useEditor((s) => s.project?.clips);
+  // the selected ids as a Set, built once per selection: filters below are O(clips) instead of O(clips * selected)
+  const want = useMemo(() => new Set(ids), [ids]);
   const options = useMemo(() => (clips ? parentOptions({ clips }, ids) : []), [clips, ids]);
-  const parentValue = useMemo(() => {
-    const parents = new Set((clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => (isVisualClip(c) ? (c.parent ?? '') : '')));
-    return parents.size === 1 ? [...parents][0]! : null;
-  }, [clips, ids]);
+  const parentValue = useMemo(() => sharedParent(clips, want), [clips, want]);
 
-  const visualIds = useMemo(() => (clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => c.id), [clips, ids]);
+  // useShallow: the same list of ids keeps its identity, so the button groups below do not re-render on every drag frame
+  const visualIds = useEditor(useShallow((s) => visualIdsOf(s.project?.clips, want)));
 
   const seqCount = sum.video + sum.image + sum.audio + sum.text + sum.shape;
   const markerCount = useEditor((s) => s.project?.markers?.length ?? 0);
   const [span, setSpan] = useState<FitSpan>(1);
 
-  const source = useEditor((s) => {
-    const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
-    return c as VisualClip | undefined;
-  });
+  const source = useEditor((s) => firstVisual(s.project?.clips, want));
   return (
     <>
       {sum.visual > 0 ? (
@@ -266,7 +263,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
-  const anyGroup = useEditor((s) => !!s.project?.clips.some((c) => c.group && s.selection.includes(c.id)));
+  const anyGroup = useEditor((s) => anyGrouped(s.project?.clips, s.selection));
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
   const parts = (['video', 'image', 'audio', 'text', 'shape', 'effect', 'camera'] as const)
     .filter((k) => sum[k] > 0)
