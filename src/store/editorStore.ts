@@ -299,9 +299,10 @@ export interface EditorState {
   /**
    * copies of clips. by default the copies go after the originals in time. `sameTime`: every copy keeps its
    * start and goes to a track above its original that is free for that span (a new one when there is none),
-   * so it lies exactly over the original (for "leave a copy behind" gestures).
+   * so it lies exactly over the original (for "leave a copy behind" gestures). `copies` is filled with
+   * original id -> copy id, for a caller that goes on working with the copies.
    */
-  duplicateClips(ids: string[], opts?: ActionOpts & { sameTime?: boolean }): string[];
+  duplicateClips(ids: string[], opts?: ActionOpts & { sameTime?: boolean; copies?: Map<string, string> }): string[];
   /**
    * add ready-made clips in one undo step (captions, a frozen frame...). every clip gets a new id.
    * - newTrack (default true): they all go on ONE new track (video kinds: on top; audio: at the
@@ -1456,6 +1457,7 @@ export const useEditor = create<EditorState>()((set, get) => {
             next = { ...next, clips: [...next.clips, copy] };
           }
         }
+        if (opts?.copies) for (const [from, to] of idMap) opts.copies.set(from, to);
         return relinkIn(next, idMap, [...originals, ...extras.filter((e) => idMap.has(e.id))]);
       }, opts);
       if (created.length > 0) set({ selection: created });

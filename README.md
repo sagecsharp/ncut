@@ -72,7 +72,8 @@ press `?` in the editor for the full list. the main ones:
 - `left` / `right` step one frame
 - `m` add a marker
 - `3` turn 3d on for a clip, `c` add a camera, `v` scene view
-- `w` `e` `r` move / rotate / scale in the scene view, `f` frame the selection
+- scene view, like blender (pointer over the view): middle drag orbits, `g` `r` `s` move / rotate / scale, `x` `y` `z` pick the axis, type a number, click keeps, right click cancels, `shift+d` copies, numpad picks the view, `f` frames the selection
+- scene view, like unity (settings > unity 3d controls): left drag orbits, `w` `e` `r` pick the tool
 - `ctrl+wheel` zoom the timeline
 - `ctrl+k` search every action
 - `ctrl+e` export

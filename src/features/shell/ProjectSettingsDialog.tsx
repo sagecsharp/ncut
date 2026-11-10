@@ -7,6 +7,8 @@ import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { resetLayout } from '../editor/layoutReset';
+import { useSceneControls } from '../preview/sceneControls';
+import { Switch } from '../properties/controls';
 import type { ProjectSettingsPatch } from '../../store/editorStore';
 import './shell.css';
 
@@ -48,6 +50,8 @@ export function ProjectSettingsDialog({ open, onClose }: ProjectSettingsDialogPr
 }
 
 function SettingsForm({ onClose }: { onClose: () => void }) {
+  const sceneScheme = useSceneControls((s) => s.scheme);
+  const setSceneScheme = useSceneControls((s) => s.setScheme);
   const [initial] = useState(() => useEditor.getState().project);
   const [width, setWidth] = useState(initial?.width ?? 1920);
   const [height, setHeight] = useState(initial?.height ?? 1080);
@@ -112,6 +116,14 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
           <RotateCcw size={14} />
           reset layout
         </button>
+      </div>
+      <div className="field">
+        <span className="field-label">unity 3d controls</span>
+        <Switch
+          checked={sceneScheme === 'unity'}
+          title="drive the 3d scene view like unity: left drag orbits, w e r pick the tool. off: like blender (middle drag orbits, g r s move, rotate and scale)"
+          onChange={(on) => setSceneScheme(on ? 'unity' : 'blender')}
+        />
       </div>
 
       <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>

@@ -18,10 +18,11 @@ import { parentOf } from '../../lib/links';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import type { Project } from '../../types';
+import { useUi } from '../../store/ui';
+import type { Project, VisualClip } from '../../types';
 import { isVisualClip } from '../../types';
 import { floorY } from '../properties/place3d';
-import { isAttached, localDelta, localDelta3, resolveShown, worldClip } from './attached';
+import { isAttached, localDelta, localDelta3, resolveShown, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
@@ -42,9 +43,25 @@ import {
   sectionCorners,
   shouldWriteAxis,
 } from './sceneHelpers';
+import {
+  SCENE_HINTS,
+  type SceneCommand,
+  blenderCommand,
+  blenderPress,
+  blenderView,
+  boundingSphere,
+  clampOrbitDistance,
+  dollyDistance,
+  pointInRect,
+  quadTouchesRect,
+  rectOf,
+  typeNumber,
+  typedValue,
+  useSceneControls,
+} from './sceneControls';
 import { snapAngle, snapDelta } from './sceneSnap';
 import { useSceneGrid, useSceneTool } from './sceneTool';
-import { frameTarget, viewRig } from './sceneViews';
+import { cameraToView, frameSelected, frameTarget, viewRig, viewThroughCamera } from './sceneViews';
 
 const GIZMO_PX = 84;
 const AXIS_HIT_PX = 8;
@@ -104,34 +121,65 @@ interface GizmoState {
   target: Target | null;
 }
 
+/** one clip a move writes to */
+interface MoveItem {
+  id: string;
+  /** own x y z at the grab (an attached clip writes all of them so it follows a world axis exactly) */
+  v3: Vec3;
+  /** axes this gesture has written, so a lock pressed later still resets them to the grab value */
+  written: [boolean, boolean, boolean];
+  /** a 2d clip moved along z becomes 3d the moment z is the moved axis */
+  to3d: boolean;
+}
+
+/** one clip a turn writes to */
+interface RingItem {
+  id: string;
+  v0: number;
+  /** value change per clockwise degree */
+  sign: 1 | -1;
+  to3d: boolean;
+}
+
+interface ScaleItem {
+  id: string;
+  s0: number;
+}
+
+/**
+ * `modal`: a g / r / s transform of the blender controls. no button is held: the pointer just moves, a click or
+ * enter keeps it, a right click or escape takes it back. `typed` is the number typed so far ("g x 100").
+ */
 type SceneGesture =
   | { kind: 'orbit'; pointerId: number; startX: number; startY: number; o0: Orbit; moved: boolean; click: boolean }
   | { kind: 'pan'; pointerId: number; startX: number; startY: number; o0: Orbit; moved: boolean; click: boolean }
+  | { kind: 'dolly'; pointerId: number; startX: number; startY: number; o0: Orbit; moved: boolean; click: boolean }
+  /** blender controls, left button on empty space: a click selects what is under it, a drag draws a selection box. `add`: shift */
+  | { kind: 'box'; pointerId: number; startX: number; startY: number; moved: boolean; add: boolean }
   | {
       kind: 'axis';
       pointerId: number;
       startX: number;
       startY: number;
       started: boolean;
+      modal: boolean;
+      typed: string;
       /** the arrow that was grabbed (0 x, 1 y, 2 z) or -1 for the center dot (free move) */
       axis: number;
       /** x / y / z key lock, null = none (the grabbed arrow, or the free move, applies) */
       lock: AxisLock;
-      id: string;
       /** where the grab ray was along each axis line (null = that axis is edge on) */
       t0s: [number | null, number | null, number | null];
       /** the grab point on the plane of a free move, and that plane's normal (the canvas plane for a 2d clip, else facing the view) */
       p0: Vec3 | null;
       normal: Vec3;
       c0: Vec3;
-      /** own x y z at the grab (an attached clip writes all of them so it follows a world axis exactly) */
+      /** x y z of the clip with the gizmo at the grab: what the grid snap counts from */
       v3: Vec3;
-      /** axes this gesture has written, so a lock pressed later still resets them to the grab value */
-      written: [boolean, boolean, boolean];
+      /** the clips that are moved: the one with the gizmo, with the blender controls every selected one */
+      items: MoveItem[];
       rig: CameraRig;
-      /** a 2d clip moved along z becomes 3d the moment z is the moved axis */
-      to3d: boolean;
-      /** alt was held on the grab: the drag leaves a copy behind and moves the copy */
+      /** alt was held on the grab (unity controls) or shift + d was pressed (blender): the move leaves a copy behind and moves the copy */
       copy: boolean;
     }
   | {
@@ -155,10 +203,10 @@ type SceneGesture =
       startX: number;
       startY: number;
       started: boolean;
+      modal: boolean;
+      typed: string;
       ring: number;
       prop: RingProp;
-      id: string;
-      v0: number;
       /** projected center, css px relative to the overlay */
       cx: number;
       cy: number;
@@ -166,11 +214,17 @@ type SceneGesture =
       last: number;
       /** unwrapped clockwise pointer rotation since the grab, degrees */
       acc: number;
-      /** value change per clockwise degree */
-      sign: 1 | -1;
-      to3d: boolean;
+      /** the clips that are turned, the one with the gizmo first */
+      items: RingItem[];
     }
-  | { kind: 'scale'; pointerId: number; startX: number; startY: number; started: boolean; id: string; cx: number; cy: number; d0: number; s0: number };
+  | { kind: 'scale'; pointerId: number; startX: number; startY: number; started: boolean; modal: boolean; typed: string; cx: number; cy: number; d0: number; items: ScaleItem[] };
+
+type ModalMode = 'grab' | 'rotate' | 'scale';
+const MODAL_TOOL: Readonly<Record<ModalMode, SceneTool>> = { grab: 'move', rotate: 'rotate', scale: 'scale' };
+
+function isModal(g: SceneGesture | null): g is Extract<SceneGesture, { modal: boolean }> {
+  return !!g && (g.kind === 'axis' || g.kind === 'ring' || g.kind === 'scale') && g.modal;
+}
 
 interface PointerSnapshot {
   x: number;
@@ -185,23 +239,59 @@ const inRange = (c: { start: number; duration: number }, time: number) => time >
  * installs later on window (that guard swallows every key during a drag).
  */
 let keyHook: ((e: KeyboardEvent) => void) | null = null;
+/**
+ * blender controls. `modalKeys`: a g / r / s transform is running and every key belongs to it (also on release,
+ * for ctrl and shift). `sceneKeys`: nothing is running, the mounted scene view looks whether the key is one of
+ * its own (only while the pointer is over it). both run before the editor's shortcuts, like `keyHook`.
+ */
+let modalKeys: ((e: KeyboardEvent, up: boolean) => void) | null = null;
+let sceneKeys: ((e: KeyboardEvent) => void) | null = null;
 if (typeof window !== 'undefined') {
   window.addEventListener(
     'keydown',
     (e) => {
-      if (keyHook && !e.ctrlKey && !e.metaKey) keyHook(e);
+      if (modalKeys) modalKeys(e, false);
+      else if (keyHook) {
+        if (!e.ctrlKey && !e.metaKey) keyHook(e);
+      } else if (sceneKeys) sceneKeys(e);
+    },
+    true,
+  );
+  window.addEventListener(
+    'keyup',
+    (e) => {
+      if (modalKeys) modalKeys(e, true);
     },
     true,
   );
 }
 
 /** the selected clip the gizmo works on: the first selected visual clip or camera clip that is active now */
-function gizmoTarget(project: Project, selection: string[], time: number, rig: CameraRig): Target | null {
+function gizmoTarget(project: Project, selection: readonly string[], time: number, rig: CameraRig): Target | null {
   for (const id of selection) {
+    const t = targetOf(project, id, time, rig);
+    if (t) return t;
+  }
+  return null;
+}
+
+/** every selected clip a transform can work on, in the order of the selection */
+function allTargets(project: Project, selection: readonly string[], time: number, rig: CameraRig): Target[] {
+  const out: Target[] = [];
+  for (const id of selection) {
+    const t = targetOf(project, id, time, rig);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** a clip as something the gizmo can move: null when it is not active now, locked, or not a visual or camera clip */
+function targetOf(project: Project, id: string, time: number, rig: CameraRig): Target | null {
+  {
     const clip = project.clips.find((c) => c.id === id);
-    if (!clip || !inRange(clip, time)) continue;
+    if (!clip || !inRange(clip, time)) return null;
     // a clip on a locked track cannot be edited: no handles (a drag would do nothing, an alt drag would copy it)
-    if (project.tracks.find((t) => t.id === clip.trackId)?.locked) continue;
+    if (project.tracks.find((t) => t.id === clip.trackId)?.locked) return null;
     if (clip.type === 'camera') {
       const r = resolveClip(clip, time);
       return {
@@ -252,6 +342,65 @@ function gizmoTarget(project: Project, selection: string[], time: number, rig: C
     }
   }
   return null;
+}
+
+/**
+ * the clips a transform writes to. unity controls: the one with the gizmo. blender controls: every selected
+ * clip, except one that rides a selected parent (it follows its parent, moving it too would move it twice).
+ */
+function writeTargets(project: Project, primary: Target, time: number, rig: CameraRig): Target[] {
+  if (useSceneControls.getState().scheme !== 'blender') return [primary];
+  const all = allTargets(project, useEditor.getState().selection, time, rig);
+  const clips: VisualClip[] = [];
+  for (const t of all) {
+    const c = t.kind === 'clip' ? project.clips.find((x) => x.id === t.id) : undefined;
+    if (c && isVisualClip(c)) clips.push(c);
+  }
+  const keep = new Set(withoutRidingChildren(project, clips).map((c) => c.id));
+  const out = all.filter((t) => t.kind === 'camera' || keep.has(t.id));
+  return out.length > 0 ? out : [primary];
+}
+
+const moveItem = (t: Target): MoveItem => ({ id: t.id, v3: [t.v[0], t.v[1], t.v[2]], written: [false, false, false], to3d: t.kind === 'clip' && !t.threeD });
+
+/** the turn of `ring` (0 tilt, 1 turn, 2 roll) for every clip among the targets. a camera clip only moves. */
+function ringItems(targets: readonly Target[], ring: number, forward: Vec3): RingItem[] {
+  const prop = RING_PROPS[ring]!;
+  return targets
+    .filter((t) => t.kind === 'clip')
+    .map((t) => ({ id: t.id, v0: t.rot[ring]!, sign: ringValueSign(prop, t.axes[ring]!, forward), to3d: !t.threeD && ring < 2 }));
+}
+
+const scaleItems = (targets: readonly Target[]): ScaleItem[] => targets.filter((t) => t.kind === 'clip').map((t) => ({ id: t.id, s0: t.scale }));
+
+/** what a click or a selection box can pick in the scene view: the camera in charge and the 3d planes on open tracks */
+function sceneCandidates(project: Project, time: number): { camera: string | null; clips: VisualClip[] } {
+  const clips: VisualClip[] = [];
+  for (const clip of visibleClipsAt(project, time)) {
+    if (!clip.threeD) continue;
+    const track = project.tracks.find((t) => t.id === clip.trackId);
+    if (!track || track.locked) continue;
+    clips.push(clip);
+  }
+  return { camera: cameraClipAt(project, time)?.id ?? null, clips };
+}
+
+/** the ids a selection box picks. the box is in canvas pixels, like the projected planes. */
+function boxHits(project: Project, time: number, rig: CameraRig, x0: number, y0: number, x1: number, y1: number): string[] {
+  const box = rectOf(x0, y0, x1, y1);
+  const out: string[] = [];
+  const { camera, clips } = sceneCandidates(project, time);
+  const camClip = camera ? project.clips.find((c) => c.id === camera) : undefined;
+  if (camClip && camClip.type === 'camera') {
+    const r = resolveClip(camClip, time);
+    const e = projectPoint(rig, project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z, project.width, project.height);
+    if (e.visible && pointInRect(e.x, e.y, box)) out.push(camClip.id);
+  }
+  for (const clip of clips) {
+    const q = clipQuad(project, clip, time, rig);
+    if (q.visible && quadTouchesRect(q.p, box)) out.push(clip.id);
+  }
+  return out;
 }
 
 /** what is under a canvas point in the scene view: the project camera (its eye) or the nearest 3d plane */
@@ -340,6 +489,17 @@ export function SceneOverlay() {
   const dragCtrl = useRef(false);
   /** the selection when the running drag began (escape puts it back) */
   const selBefore = useRef<string[]>([]);
+  /** the selection box of the blender controls */
+  const boxRect = useRef<SVGRectElement>(null);
+  /** where the pointer was last seen over the scene view (client px): a g / r / s transform starts from there */
+  const hoverXY = useRef<PointerSnapshot | null>(null);
+  /** the pointer is over the scene view: its keys are live (blender controls) */
+  const inside = useRef(false);
+  /** takes the window listeners of a running g / r / s transform away */
+  const modalOff = useRef<(() => void) | null>(null);
+  /** the time a g / r / s transform started at: everything it writes lands there, also if the playhead moves */
+  const modalTime = useRef<number | null>(null);
+  const scheme = useSceneControls((s) => s.scheme);
   const tool = useSceneTool((s) => s.tool);
   const setTool = useSceneTool((s) => s.setTool);
   const gridOn = useSceneGrid((s) => s.on);
@@ -853,6 +1013,9 @@ export function SceneOverlay() {
       unGrid();
       unTool();
       keyHook = null;
+      modalKeys = null;
+      modalOff.current?.();
+      modalOff.current = null;
       cancelAnimationFrame(rafRef.current);
       endPreviewGesture();
     };
@@ -896,6 +1059,85 @@ export function SceneOverlay() {
     return hit ? { kind: 'scale', i: 0 } : null;
   };
 
+  /** the selection box of the blender controls, css px relative to the overlay. null hides it */
+  const drawBox = (r: { x0: number; y0: number; x1: number; y1: number } | null) => {
+    const el = boxRect.current;
+    if (!el) return;
+    if (!r) {
+      el.style.display = 'none';
+      return;
+    }
+    el.setAttribute('x', String(r.x0));
+    el.setAttribute('y', String(r.y0));
+    el.setAttribute('width', String(r.x1 - r.x0));
+    el.setAttribute('height', String(r.y1 - r.y0));
+    el.style.display = '';
+  };
+
+  /** leave a copy over what is moved and move the copies. part of the gesture's one undo step */
+  const makeCopies = (g: Extract<SceneGesture, { kind: 'axis' }>) => {
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!project) return;
+    // blender controls: everything selected is copied in one go, so a copied child stays attached to its copied parent
+    const ids =
+      useSceneControls.getState().scheme === 'blender'
+        ? allTargets(project, store.selection, usePlayback.getState().time, g.rig).map((t) => t.id)
+        : [];
+    for (const it of g.items) if (!ids.includes(it.id)) ids.push(it.id);
+    const copies = new Map<string, string>();
+    store.duplicateClips(ids, { sameTime: true, skipHistory: true, copies });
+    let made = 0;
+    for (const it of g.items) {
+      const to = copies.get(it.id);
+      if (!to) continue;
+      it.id = to;
+      made++;
+    }
+    if (made === 0) g.copy = false;
+  };
+
+  /** write a movement in the world to one clip: its own x y z change so that it moves by `D` on screen */
+  const writeMove = (it: MoveItem, D: Vec3, eff: number, time: number) => {
+    const store = useEditor.getState();
+    // a 2d clip moved along z becomes 3d the moment z is the moved axis
+    if (it.to3d && eff === 2) {
+      store.updateClip(it.id, { threeD: true }, { skipHistory: true });
+      it.to3d = false;
+    }
+    // read again: a z move has just turned a 2d clip into a 3d one
+    const now = useEditor.getState().project;
+    if (!now) return;
+    const raw = now.clips.find((c) => c.id === it.id);
+    if (raw && isVisualClip(raw) && isAttached(raw)) {
+      if (raw.threeD) {
+        // the arrow is a world axis: the world movement along it, in the parent's frame (moved, turned and scaled
+        // parents are exact), becomes the clip's own x / y / z. only what really changes is written.
+        const l = localDelta3(now, raw, time, D);
+        for (let i = 0; i < 3; i++) {
+          if (!shouldWriteAxis(i, eff, l[i]!, it.written)) continue;
+          it.written[i] = true;
+          store.setClipValue(it.id, AXIS_NAMES[i]!, time, Math.round((it.v3[i]! + l[i]!) * 100) / 100, { skipHistory: true });
+        }
+        return;
+      }
+      if (eff !== 2) {
+        // a 2d clip: x and y follow the parent's turn and scale in the canvas plane
+        const l = localDelta(now, raw, time, D[0], D[1]);
+        store.setClipValue(it.id, 'x', time, Math.round((it.v3[0]! + l.x) * 100) / 100, { skipHistory: true });
+        store.setClipValue(it.id, 'y', time, Math.round((it.v3[1]! + l.y) * 100) / 100, { skipHistory: true });
+        it.written[0] = true;
+        it.written[1] = true;
+        return;
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      if (!shouldWriteAxis(i, eff, D[i]!, it.written)) continue;
+      it.written[i] = true;
+      store.setClipValue(it.id, AXIS_NAMES[i]!, time, Math.round((it.v3[i]! + D[i]!) * 100) / 100, { skipHistory: true });
+    }
+  };
+
   const apply = (snap: PointerSnapshot) => {
     const g = gestureRef.current;
     const store = useEditor.getState();
@@ -924,9 +1166,21 @@ export function SceneOverlay() {
       });
       return;
     }
+    if (g.kind === 'dolly') {
+      if (!g.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      g.moved = true;
+      useSceneCamera.getState().set({ ...g.o0, distance: clampOrbitDistance(dollyDistance(g.o0.distance, dy), homeDistance(project.height)) });
+      return;
+    }
     const origin = originRef.current;
     const lx = snap.x - origin.left;
     const ly = snap.y - origin.top;
+    if (g.kind === 'box') {
+      if (!g.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      g.moved = true;
+      drawBox(rectOf(g.startX - origin.left, g.startY - origin.top, lx, ly));
+      return;
+    }
     if (g.kind === 'ring') {
       // follow the pointer's angle around the projected center step by step (unwrapped, no jump at the branch cut)
       const a = (Math.atan2(ly - g.cy, lx - g.cx) * 180) / Math.PI;
@@ -937,14 +1191,16 @@ export function SceneOverlay() {
       if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
-      if (g.kind === 'axis' && g.copy) {
-        // alt: leave a copy over the original and drag the copy (still the same single undo step)
-        const copies = store.duplicateClips([g.id], { sameTime: true, skipHistory: true });
-        if (copies[0]) g.id = copies[0];
-        else g.copy = false;
-      }
+      // alt: leave a copy over the original and drag the copy (still the same single undo step)
+      if (g.kind === 'axis' && g.copy) makeCopies(g);
       // dragging tilt or turn of a 2d clip turns it 3d; a plain click never does (z does it below, once z is the moved axis)
-      if (g.kind === 'ring' && g.to3d) store.updateClip(g.id, { threeD: true }, { skipHistory: true });
+      if (g.kind === 'ring') {
+        for (const it of g.items) {
+          if (!it.to3d) continue;
+          store.updateClip(it.id, { threeD: true }, { skipHistory: true });
+          it.to3d = false;
+        }
+      }
       if (g.kind === 'focus') {
         // a camera that never stored a focus distance draws the home distance: write it down so it can be dragged
         const cam = project.clips.find((c) => c.id === g.id);
@@ -953,7 +1209,7 @@ export function SceneOverlay() {
         }
       }
     }
-    const time = usePlayback.getState().time;
+    const time = modalTime.current ?? usePlayback.getState().time;
     if (g.kind === 'focus') {
       const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
       const t1 = closestOnAxis(ray.origin, ray.dir, g.eye, g.fwd);
@@ -961,76 +1217,60 @@ export function SceneOverlay() {
       store.setClipValue(g.id, 'focusDistance', time, focusFromDrag(g.d0, g.t0, t1, 1, g.max), { skipHistory: true });
       return;
     }
+    // blender controls: a typed number takes over from the pointer ("r 4 5", "g x 1 0 0")
+    const typed = typedValue(g.typed);
     if (g.kind === 'ring') {
-      let v = g.v0 + g.sign * g.acc;
-      v = snapAngle(v, dragCtrl.current, dragShift.current);
-      v = Math.round(v * 100) / 100;
-      readout.current = rotateReadout(RING_LABELS[g.ring]!, v - g.v0);
-      store.setClipValue(g.id, g.prop, time, v, { skipHistory: true });
+      const turned = (it: RingItem) => Math.round((typed !== null ? it.v0 + it.sign * typed : snapAngle(it.v0 + it.sign * g.acc, dragCtrl.current, dragShift.current)) * 100) / 100;
+      const first = g.items[0];
+      if (first) readout.current = rotateReadout(RING_LABELS[g.ring]!, typed ?? turned(first) - first.v0);
+      for (const it of g.items) {
+        const v = turned(it);
+        // g / r / s: a 2d clip becomes 3d once its tilt or turn really changes, not when the key is pressed
+        if (it.to3d && v !== it.v0) {
+          store.updateClip(it.id, { threeD: true }, { skipHistory: true });
+          it.to3d = false;
+        }
+        store.setClipValue(it.id, g.prop, time, v, { skipHistory: true });
+      }
       return;
     }
     if (g.kind === 'scale') {
       const d = Math.hypot(lx - g.cx, ly - g.cy);
-      const s = Math.round(scaleFromDrag(g.s0, g.d0, d, MIN_SCALE, MAX_SCALE) * 1000) / 1000;
-      readout.current = scaleReadout(s / Math.max(1e-6, g.s0));
-      store.setClipValue(g.id, 'scale', time, s, { skipHistory: true });
+      const sized = (it: ScaleItem) =>
+        Math.round((typed !== null && typed > 0 ? Math.min(MAX_SCALE, Math.max(MIN_SCALE, it.s0 * typed)) : scaleFromDrag(it.s0, g.d0, d, MIN_SCALE, MAX_SCALE)) * 1000) / 1000;
+      const first = g.items[0];
+      if (first) readout.current = scaleReadout(sized(first) / Math.max(1e-6, first.s0));
+      for (const it of g.items) store.setClipValue(it.id, 'scale', time, sized(it), { skipHistory: true });
       return;
     }
-    // move drag: an arrow moves along its axis, the center dot moves freely; x / y / z lock it to one axis
-    const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
-    const eff = g.lock ?? g.axis;
+    // move: an arrow moves along its axis, the center dot (and g) moves freely; x / y / z lock it to one axis
+    let eff: number = g.lock ?? g.axis;
     const D: Vec3 = [0, 0, 0];
-    if (eff >= 0) {
-      const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[eff]!);
-      const t0 = g.t0s[eff];
-      if (t1 === null || t0 === null || t0 === undefined) return;
-      // ctrl / cmd: the clip lands on a grid line (50 px, 10 with shift) along the moved axis
-      D[eff] = snapDelta(g.v3[eff]!, t1 - t0, dragCtrl.current, dragShift.current);
+    if (typed !== null) {
+      // the typed number is the distance along the locked axis (x without one)
+      if (eff < 0) eff = 0;
+      D[eff] = typed;
     } else {
-      const hit = g.p0 ? rayPlane(ray.origin, ray.dir, g.c0, g.normal) : null;
-      if (!hit || !g.p0) return;
-      for (let i = 0; i < 3; i++) D[i] = snapDelta(g.v3[i]!, hit[i]! - g.p0[i]!, dragCtrl.current, dragShift.current);
+      const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
+      if (eff >= 0) {
+        const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[eff]!);
+        const t0 = g.t0s[eff];
+        if (t1 === null || t0 === null || t0 === undefined) return;
+        // ctrl / cmd: the clip lands on a grid line (50 px, 10 with shift) along the moved axis
+        D[eff] = snapDelta(g.v3[eff]!, t1 - t0, dragCtrl.current, dragShift.current);
+      } else {
+        const hit = g.p0 ? rayPlane(ray.origin, ray.dir, g.c0, g.normal) : null;
+        if (!hit || !g.p0) return;
+        for (let i = 0; i < 3; i++) D[i] = snapDelta(g.v3[i]!, hit[i]! - g.p0[i]!, dragCtrl.current, dragShift.current);
+      }
     }
     const mr = moveReadout(D, eff >= 0 ? (eff as AxisLock) : null);
     readout.current = g.copy ? copyReadout(mr) : mr;
-    // a 2d clip moved along z becomes 3d the moment z is the moved axis
-    if (g.to3d && eff === 2) {
-      store.updateClip(g.id, { threeD: true }, { skipHistory: true });
-      g.to3d = false;
-    }
-    // read again: a z move has just turned a 2d clip into a 3d one
-    const now = useEditor.getState().project ?? project;
-    const raw = now.clips.find((c) => c.id === g.id);
-    if (raw && isVisualClip(raw) && isAttached(raw)) {
-      if (raw.threeD) {
-        // the arrow is a world axis: the world movement along it, in the parent's frame (moved, turned and scaled
-        // parents are exact), becomes the clip's own x / y / z. only what really changes is written.
-        const l = localDelta3(now, raw, time, D);
-        for (let i = 0; i < 3; i++) {
-          if (!shouldWriteAxis(i, eff, l[i]!, g.written)) continue;
-          g.written[i] = true;
-          store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + l[i]!) * 100) / 100, { skipHistory: true });
-        }
-        return;
-      }
-      if (eff !== 2) {
-        // a 2d clip: x and y follow the parent's turn and scale in the canvas plane
-        const l = localDelta(now, raw, time, D[0], D[1]);
-        store.setClipValue(g.id, 'x', time, Math.round((g.v3[0]! + l.x) * 100) / 100, { skipHistory: true });
-        store.setClipValue(g.id, 'y', time, Math.round((g.v3[1]! + l.y) * 100) / 100, { skipHistory: true });
-        g.written[0] = true;
-        g.written[1] = true;
-        return;
-      }
-    }
-    for (let i = 0; i < 3; i++) {
-      if (!shouldWriteAxis(i, eff, D[i]!, g.written)) continue;
-      g.written[i] = true;
-      store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + D[i]!) * 100) / 100, { skipHistory: true });
-    }
+    // a 2d clip stays on the canvas plane unless z itself is the moved axis (that turns it 3d)
+    for (const it of g.items) writeMove(it, it.to3d && eff !== 2 ? [D[0], D[1], 0] : D, eff, time);
   };
 
-  const queue = (e: ReactPointerEvent<HTMLDivElement>) => {
+  const queue = (e: { clientX: number; clientY: number; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
     pendingRef.current = { x: e.clientX, y: e.clientY };
     lastPointer.current = pendingRef.current;
     dragShift.current = e.shiftKey;
@@ -1045,23 +1285,33 @@ export function SceneOverlay() {
     }
   };
 
-  /** escape: drop the running drag. a drag that already changed things is undone (its one history step) */
-  const cancelGesture = () => {
-    const g = gestureRef.current;
-    if (!g) return;
+  /** forget the running gesture: its flags, listeners, readout and selection box. what it wrote stays */
+  const dropGesture = () => {
     cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
     pendingRef.current = null;
     lastPointer.current = null;
     gestureRef.current = null;
     keyHook = null;
+    modalKeys = null;
+    modalOff.current?.();
+    modalOff.current = null;
+    modalTime.current = null;
     readout.current = '';
+    drawBox(null);
     endPreviewGesture();
+  };
+
+  /** escape: drop the running drag. a drag that already changed things is undone (its one history step) */
+  const cancelGesture = () => {
+    const g = gestureRef.current;
+    if (!g) return;
+    dropGesture();
     const root = rootRef.current;
-    if (root && root.hasPointerCapture(g.pointerId)) root.releasePointerCapture(g.pointerId);
-    if (g.kind === 'orbit' || g.kind === 'pan') {
+    if (root && g.pointerId >= 0 && root.hasPointerCapture(g.pointerId)) root.releasePointerCapture(g.pointerId);
+    if (g.kind === 'orbit' || g.kind === 'pan' || g.kind === 'dolly') {
       useSceneCamera.getState().set(g.o0);
-    } else if (g.started) {
+    } else if (g.kind !== 'box' && g.started) {
       const store = useEditor.getState();
       // only what this drag wrote: a drag that changed nothing must not take back an earlier edit
       store.rollback();
@@ -1069,6 +1319,317 @@ export function SceneOverlay() {
     }
     redrawRef.current();
   };
+
+  /* ---------- blender controls: g / r / s without a button held ---------- */
+
+  /** click or enter: keep what the running transform did */
+  const finishModal = () => {
+    if (!isModal(gestureRef.current)) return;
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+    const snap = pendingRef.current;
+    pendingRef.current = null;
+    if (snap) apply(snap);
+    dropGesture();
+    redrawRef.current();
+  };
+
+  const modalKey = (ev: KeyboardEvent, up: boolean) => {
+    const cur = gestureRef.current;
+    if (!isModal(cur)) return;
+    // browser and system keys stay theirs (f5, f12 ...)
+    if (ev.metaKey || /^F\d{1,2}$/.test(ev.key)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    dragShift.current = ev.shiftKey;
+    dragCtrl.current = ev.ctrlKey;
+    const again = () => {
+      const last = lastPointer.current;
+      if (last) apply(last);
+      redrawRef.current();
+    };
+    // ctrl and shift change the snapping at once, also without a pointer move
+    if (ev.key === 'Control' || ev.key === 'Shift') {
+      again();
+      return;
+    }
+    if (up) return;
+    if (ev.key === 'Escape') {
+      cancelGesture();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      if (!ev.repeat) finishModal();
+      return;
+    }
+    if (ev.ctrlKey || ev.altKey) return;
+    const text = typeNumber(cur.typed, ev.key);
+    if (text !== null) {
+      cur.typed = text;
+      again();
+      return;
+    }
+    if (ev.repeat) return;
+    const k = lockForKey(ev.key);
+    if (k !== null) {
+      if (cur.kind === 'axis') {
+        cur.lock = nextLock(cur.lock, k);
+        again();
+      } else if (cur.kind === 'ring') {
+        // x tilts, y turns, z rolls. the key of the running one goes back to the roll
+        const ring = cur.ring === k ? 2 : k;
+        if (ring !== cur.ring) restartModal('rotate', ring);
+      }
+      return;
+    }
+    // g, r or s while another one runs: that one is taken back and the new one starts
+    const key = ev.key.toLowerCase();
+    const mode: ModalMode | null = key === 'g' ? 'grab' : key === 'r' ? 'rotate' : key === 's' ? 'scale' : null;
+    const now: ModalMode = cur.kind === 'axis' ? 'grab' : cur.kind === 'ring' ? 'rotate' : 'scale';
+    if (mode && mode !== now && !(cur.kind === 'axis' && cur.copy)) restartModal(mode);
+  };
+
+  /**
+   * g, r, s (and shift + d): the selection follows the pointer from where it is now, no button held.
+   * `ring`: which turn r starts with (0 tilt, 1 turn, 2 roll).
+   */
+  const beginModal = (mode: ModalMode, copy = false, ring = 2) => {
+    const root = rootRef.current;
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!root || !project || gestureRef.current) return;
+    const rect = root.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    originRef.current = { left: rect.left, top: rect.top };
+    viewF.current = rect.width / project.width;
+    const f = viewF.current;
+    const gz = gizmo.current;
+    const target = gz.target;
+    const ui = useUi.getState();
+    if (!target || !gz.visible) {
+      ui.toast('select a clip that is on screen first');
+      return;
+    }
+    // a transform during playback would write a key at every frame that passes: stop, and work at this time
+    if (usePlayback.getState().playing) usePlayback.getState().pause();
+    const time = usePlayback.getState().time;
+    const rig = viewRig(project);
+    const targets = writeTargets(project, target, time, rig);
+    const p = hoverXY.current ?? { x: rect.left + gz.cx, y: rect.top + gz.cy };
+    const lx = p.x - rect.left;
+    const ly = p.y - rect.top;
+    const base = { pointerId: -1, startX: p.x, startY: p.y, started: true, modal: true, typed: '' };
+    let g: Extract<SceneGesture, { modal: boolean }>;
+    if (mode === 'grab') {
+      const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
+      const t0s = AXES.map((a) => closestOnAxis(ray.origin, ray.dir, target.center, a)) as [number | null, number | null, number | null];
+      const normal: Vec3 = target.kind === 'clip' && !target.threeD ? [0, 0, 1] : rig.forward;
+      g = {
+        kind: 'axis',
+        ...base,
+        axis: -1,
+        lock: null,
+        t0s,
+        p0: rayPlane(ray.origin, ray.dir, target.center, normal),
+        normal,
+        c0: target.center,
+        v3: [target.v[0], target.v[1], target.v[2]],
+        items: targets.map(moveItem),
+        rig,
+        copy,
+      };
+      readout.current = copy ? copyReadout(moveReadout([0, 0, 0], null)) : moveReadout([0, 0, 0], null);
+    } else if (mode === 'rotate') {
+      const items = ringItems(targets, ring, rig.forward);
+      if (items.length === 0) {
+        ui.toast('a camera only moves here. turn it with pan, tilt and roll in the properties');
+        return;
+      }
+      g = { kind: 'ring', ...base, ring, prop: RING_PROPS[ring]!, cx: gz.cx, cy: gz.cy, last: (Math.atan2(ly - gz.cy, lx - gz.cx) * 180) / Math.PI, acc: 0, items };
+      readout.current = rotateReadout(RING_LABELS[ring]!, 0);
+    } else {
+      const items = scaleItems(targets);
+      if (items.length === 0) {
+        ui.toast('a camera has no size to scale');
+        return;
+      }
+      g = { kind: 'scale', ...base, cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items };
+      readout.current = scaleReadout(1);
+    }
+    selBefore.current = store.selection;
+    store.pushHistory();
+    gestureRef.current = g;
+    modalTime.current = time;
+    if (g.kind === 'axis' && g.copy) makeCopies(g);
+    beginPreviewGesture();
+    lastPointer.current = p;
+    useSceneTool.getState().setTool(MODAL_TOOL[mode]);
+
+    // no button is held, so nothing captures the pointer: follow it on the window
+    const onMove = (ev: PointerEvent) => {
+      hoverXY.current = { x: ev.clientX, y: ev.clientY };
+      queue(ev);
+    };
+    const swallow = (ev: Event) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    const onDown = (ev: PointerEvent) => {
+      // the press that ends the transform must not also press what is under the pointer
+      swallow(ev);
+      const act = blenderPress({ button: ev.button, shift: ev.shiftKey, ctrl: ev.ctrlKey || ev.metaKey, alt: ev.altKey }, true);
+      if (act !== 'confirm' && act !== 'cancel') return;
+      // nor may its click or context menu, which come right after the release
+      const off = () => {
+        window.removeEventListener('click', swallow, true);
+        window.removeEventListener('auxclick', swallow, true);
+        window.removeEventListener('contextmenu', swallow, true);
+        window.removeEventListener('pointerup', onUp, true);
+      };
+      const onUp = () => window.setTimeout(off, 0);
+      window.addEventListener('click', swallow, true);
+      window.addEventListener('auxclick', swallow, true);
+      window.addEventListener('contextmenu', swallow, true);
+      window.addEventListener('pointerup', onUp, true);
+      window.setTimeout(off, 5000);
+      if (act === 'confirm') finishModal();
+      else cancelGesture();
+    };
+    const onBlur = () => cancelGesture();
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('blur', onBlur);
+    modalOff.current = () => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('blur', onBlur);
+    };
+    modalKeys = modalKey;
+    redrawRef.current();
+  };
+
+  const restartModal = (mode: ModalMode, ring = 2) => {
+    cancelGesture();
+    beginModal(mode, false, ring);
+  };
+
+  /** alt + g / r / s: put the selection back to the middle, unturned, or to its own size */
+  const clearTransform = (kind: 'clear-move' | 'clear-rotate' | 'clear-scale') => {
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!project) return;
+    const time = usePlayback.getState().time;
+    const targets = allTargets(project, store.selection, time, viewRig(project));
+    if (targets.length === 0) return;
+    store.pushHistory();
+    const o = { skipHistory: true } as const;
+    for (const t of targets) {
+      if (kind === 'clear-move') {
+        store.setClipValue(t.id, 'x', time, 0, o);
+        store.setClipValue(t.id, 'y', time, 0, o);
+        if (t.kind === 'camera' || t.threeD) store.setClipValue(t.id, 'z', time, 0, o);
+      } else if (t.kind === 'clip' && kind === 'clear-rotate') {
+        if (t.threeD) {
+          store.setClipValue(t.id, 'rotX', time, 0, o);
+          store.setClipValue(t.id, 'rotY', time, 0, o);
+        }
+        store.setClipValue(t.id, 'rotation', time, 0, o);
+      } else if (t.kind === 'clip') {
+        store.setClipValue(t.id, 'scale', time, 1, o);
+      }
+    }
+  };
+
+  /** home: everything in the scene in view. nothing in it: the default view */
+  const frameAll = () => {
+    const project = useEditor.getState().project;
+    if (!project) return;
+    const time = usePlayback.getState().time;
+    const rig = viewRig(project);
+    const spheres: Array<{ center: Vec3; radius: number }> = [];
+    for (const c of sceneCandidates(project, time).clips) {
+      const t = frameTarget(project, c, time, rig);
+      if (t) spheres.push(t);
+    }
+    const all = boundingSphere(spheres);
+    if (!all) useSceneCamera.getState().reset();
+    else useSceneCamera.getState().set(frameOrbit(currentOrbit(project), all.center, all.radius, project, 0.8));
+  };
+
+  const runCommand = (cmd: SceneCommand) => {
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!project) return;
+    switch (cmd.kind) {
+      case 'grab':
+        beginModal('grab');
+        break;
+      case 'rotate':
+        beginModal('rotate');
+        break;
+      case 'scale':
+        beginModal('scale');
+        break;
+      case 'duplicate':
+        beginModal('grab', true);
+        break;
+      case 'clear-move':
+      case 'clear-rotate':
+      case 'clear-scale':
+        clearTransform(cmd.kind);
+        break;
+      case 'delete':
+        if (store.selection.length > 0) store.deleteClips(store.selection, { ripple: false });
+        break;
+      case 'select-all': {
+        const { camera, clips } = sceneCandidates(project, usePlayback.getState().time);
+        const ids = clips.map((c) => c.id);
+        if (camera) ids.push(camera);
+        if (ids.length > 0) store.select(ids, 'replace');
+        break;
+      }
+      case 'select-none':
+        store.clearSelection();
+        break;
+      case 'frame':
+        frameSelected();
+        break;
+      case 'frame-all':
+        frameAll();
+        break;
+      case 'camera-view':
+        viewThroughCamera();
+        break;
+      case 'camera-to-view':
+        cameraToView();
+        break;
+      case 'view': {
+        const o = blenderView(cmd.code, cmd.ctrl, currentOrbit(project));
+        if (o) useSceneCamera.getState().set({ ...o, distance: clampOrbitDistance(o.distance, homeDistance(project.height)) });
+        break;
+      }
+    }
+  };
+
+  // the keys of the blender controls belong to the scene view while the pointer is over it, like in blender
+  useLayoutEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (useSceneControls.getState().scheme !== 'blender' || !inside.current || gestureRef.current) return;
+      if (isTypingTarget(ev.target as HTMLElement | null)) return;
+      if (useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop')) return;
+      const cmd = blenderCommand({ key: ev.key, code: ev.code, shift: ev.shiftKey, ctrl: ev.ctrlKey, alt: ev.altKey, meta: ev.metaKey });
+      if (!cmd) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      // a held key only repeats the view steps
+      if (ev.repeat && cmd.kind !== 'view') return;
+      runCommand(cmd);
+    };
+    sceneKeys = onKey;
+    return () => {
+      if (sceneKeys === onKey) sceneKeys = null;
+    };
+  });
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const root = rootRef.current;
@@ -1115,109 +1676,119 @@ export function SceneOverlay() {
       };
     };
 
-    if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
-      begin({ kind: 'pan', ...base, o0, moved: false, click: false });
-      return;
-    }
-    if (e.button !== 0) return;
-
     const lx = e.clientX - rect.left;
     const ly = e.clientY - rect.top;
-    const h = handleAt(lx, ly);
-    const target = gizmo.current.target;
-    // alt orbits, except on a move handle: there it leaves a copy behind
-    const copy = e.altKey && !!h && !!target && (h.kind === 'axis' || h.kind === 'center');
-    if (e.altKey && !copy) {
-      begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
-      return;
-    }
-    if (h && h.kind === 'focus') {
-      // the focus handle of the camera in charge: slide along its view axis
-      const fh = focusHandle.current;
-      const time = usePlayback.getState().time;
-      const camClip = project.clips.find((c) => c.id === fh.id);
-      if (camClip && camClip.type === 'camera') {
-        const cr = cameraRig(cameraFromClip(camClip, time, project), project.width, project.height);
-        const f = viewF.current;
-        const rig = viewRig(project);
-        const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
-        const t0 = closestOnAxis(ray.origin, ray.dir, cr.eye, cr.forward);
-        if (cr.focus && t0 !== null) {
-          begin({ kind: 'focus', ...base, started: false, id: camClip.id, eye: cr.eye, fwd: cr.forward, t0, d0: cr.focus.distance, max: fh.max, rig });
-          redrawRef.current();
-          return;
+
+    /** a press on a gizmo handle starts its drag. false = nothing was grabbed. `copy`: the move leaves a copy behind */
+    const grabHandle = (h: Hover, copy: boolean): boolean => {
+      const target = gizmo.current.target;
+      if (h && h.kind === 'focus') {
+        // the focus handle of the camera in charge: slide along its view axis
+        const fh = focusHandle.current;
+        const time = usePlayback.getState().time;
+        const camClip = project.clips.find((c) => c.id === fh.id);
+        if (camClip && camClip.type === 'camera') {
+          const cr = cameraRig(cameraFromClip(camClip, time, project), project.width, project.height);
+          const f = viewF.current;
+          const rig = viewRig(project);
+          const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
+          const t0 = closestOnAxis(ray.origin, ray.dir, cr.eye, cr.forward);
+          if (cr.focus && t0 !== null) {
+            begin({ kind: 'focus', ...base, started: false, id: camClip.id, eye: cr.eye, fwd: cr.forward, t0, d0: cr.focus.distance, max: fh.max, rig });
+            redrawRef.current();
+            return true;
+          }
         }
+        return false;
       }
-    }
-    if (h && target) {
+      if (!h || !target) return false;
       const gz = gizmo.current;
       const rig = viewRig(project);
+      const targets = writeTargets(project, target, usePlayback.getState().time, rig);
       if (h.kind === 'axis' || h.kind === 'center') {
         const f = viewF.current;
         const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
         const t0s = AXES.map((a) => closestOnAxis(ray.origin, ray.dir, target.center, a)) as [number | null, number | null, number | null];
         const normal: Vec3 = target.kind === 'clip' && !target.threeD ? [0, 0, 1] : rig.forward;
         const p0 = h.kind === 'center' ? rayPlane(ray.origin, ray.dir, target.center, normal) : null;
-        if (h.kind === 'axis' ? t0s[h.i] !== null : p0 !== null) {
-          const mv: SceneGesture = {
-            kind: 'axis',
-            ...base,
-            started: false,
-            axis: h.kind === 'axis' ? h.i : -1,
-            lock: null,
-            id: target.id,
-            t0s,
-            p0,
-            normal,
-            c0: target.center,
-            v3: [target.v[0], target.v[1], target.v[2]],
-            written: [false, false, false],
-            rig,
-            to3d: target.kind === 'clip' && !target.threeD,
-            copy,
-          };
-          begin(mv);
-          redrawRef.current();
-          return;
-        }
-      } else if (h.kind === 'ring') {
-        const prop = RING_PROPS[h.i]!;
+        if (h.kind === 'axis' ? t0s[h.i] === null : p0 === null) return false;
+        begin({
+          kind: 'axis',
+          ...base,
+          started: false,
+          modal: false,
+          typed: '',
+          axis: h.kind === 'axis' ? h.i : -1,
+          lock: null,
+          t0s,
+          p0,
+          normal,
+          c0: target.center,
+          v3: [target.v[0], target.v[1], target.v[2]],
+          items: targets.map(moveItem),
+          rig,
+          copy,
+        });
+        redrawRef.current();
+        return true;
+      }
+      if (h.kind === 'ring') {
+        const items = ringItems(targets, h.i, rig.forward);
+        if (items.length === 0) return false;
         begin({
           kind: 'ring',
           ...base,
           started: false,
+          modal: false,
+          typed: '',
           ring: h.i,
-          prop,
-          id: target.id,
-          v0: target.rot[h.i]!,
+          prop: RING_PROPS[h.i]!,
           cx: gz.cx,
           cy: gz.cy,
           last: (Math.atan2(ly - gz.cy, lx - gz.cx) * 180) / Math.PI,
           acc: 0,
-          sign: ringValueSign(prop, target.axes[h.i]!, rig.forward),
-          to3d: target.kind === 'clip' && !target.threeD && h.i < 2,
+          items,
         });
         redrawRef.current();
-        return;
-      } else {
-        begin({
-          kind: 'scale',
-          ...base,
-          started: false,
-          id: target.id,
-          cx: gz.cx,
-          cy: gz.cy,
-          d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)),
-          s0: target.scale,
-        });
-        redrawRef.current();
-        return;
+        return true;
       }
+      const items = scaleItems(targets);
+      if (items.length === 0) return false;
+      begin({ kind: 'scale', ...base, started: false, modal: false, typed: '', cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items });
+      redrawRef.current();
+      return true;
+    };
+
+    if (useSceneControls.getState().scheme === 'blender') {
+      // the middle button turns the view (shift pans, ctrl zooms), the left one works on what is in the scene
+      const act = blenderPress({ button: e.button, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey }, false);
+      if (act === 'orbit') begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
+      else if (act === 'pan') begin({ kind: 'pan', ...base, o0, moved: false, click: false });
+      else if (act === 'dolly') begin({ kind: 'dolly', ...base, o0, moved: false, click: false });
+      else if (act === 'primary' && !grabHandle(handleAt(lx, ly), false)) begin({ kind: 'box', ...base, moved: false, add: e.shiftKey });
+      return;
     }
+
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
+      begin({ kind: 'pan', ...base, o0, moved: false, click: false });
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const h = handleAt(lx, ly);
+    // alt orbits, except on a move handle: there it leaves a copy behind
+    const copy = e.altKey && !!h && !!gizmo.current.target && (h.kind === 'axis' || h.kind === 'center');
+    if (e.altKey && !copy) {
+      begin({ kind: 'orbit', ...base, o0, moved: false, click: false });
+      return;
+    }
+    if (grabHandle(h, copy)) return;
     begin({ kind: 'orbit', ...base, o0, moved: false, click: true });
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    hoverXY.current = { x: e.clientX, y: e.clientY };
+    inside.current = true;
     const g = gestureRef.current;
     if (!g) {
       // hover highlight of the gizmo handles. the overlay origin is cached from the last gesture / hover
@@ -1239,6 +1810,7 @@ export function SceneOverlay() {
 
   // measured once when the pointer arrives (not per move)
   const onPointerEnter = () => {
+    inside.current = true;
     const root = rootRef.current;
     if (!root) return;
     const r = root.getBoundingClientRect();
@@ -1246,6 +1818,7 @@ export function SceneOverlay() {
   };
 
   const onPointerLeave = () => {
+    inside.current = false;
     if (hover.current && !gestureRef.current) {
       hover.current = null;
       if (rootRef.current) rootRef.current.style.cursor = '';
@@ -1263,23 +1836,32 @@ export function SceneOverlay() {
       dragCtrl.current = e.ctrlKey || e.metaKey;
       apply({ x: e.clientX, y: e.clientY });
     }
-    pendingRef.current = null;
-    lastPointer.current = null;
-    gestureRef.current = null;
-    keyHook = null;
-    readout.current = '';
-    endPreviewGesture();
+    dropGesture();
     const root = rootRef.current;
     if (root && root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
-    // a click (no drag) selects the plane under the pointer, or clears the selection on empty space
-    if (g.kind === 'orbit' && g.click && !g.moved && e.type === 'pointerup' && root) {
-      const store = useEditor.getState();
-      const project = store.project;
-      const f = viewF.current;
-      if (project && f > 0) {
-        const o = originRef.current;
-        const id = sceneHit(project, usePlayback.getState().time, viewRig(project), (e.clientX - o.left) / f, (e.clientY - o.top) / f, f);
+    const store = useEditor.getState();
+    const project = store.project;
+    const f = viewF.current;
+    if (e.type === 'pointerup' && root && project && f > 0) {
+      const o = originRef.current;
+      const time = usePlayback.getState().time;
+      const px = (e.clientX - o.left) / f;
+      const py = (e.clientY - o.top) / f;
+      if (g.kind === 'orbit' && g.click && !g.moved) {
+        // a click (no drag) selects the plane under the pointer, or clears the selection on empty space
+        const id = sceneHit(project, time, viewRig(project), px, py, f);
         if (id) store.select([id], 'replace');
+        else store.clearSelection();
+      } else if (g.kind === 'box' && !g.moved) {
+        // blender controls: a click selects, with shift it adds to the selection or takes out of it
+        const id = sceneHit(project, time, viewRig(project), px, py, f);
+        if (id) store.select([id], g.add ? 'toggle' : 'replace');
+        else if (!g.add) store.clearSelection();
+      } else if (g.kind === 'box') {
+        const ids = boxHits(project, time, viewRig(project), (g.startX - o.left) / f, (g.startY - o.top) / f, px, py);
+        if (g.add) {
+          if (ids.length > 0) store.select(ids, 'add');
+        } else if (ids.length > 0) store.select(ids, 'replace');
         else store.clearSelection();
       }
     }
@@ -1289,7 +1871,8 @@ export function SceneOverlay() {
   const onWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
     const root = rootRef.current;
     const project = useEditor.getState().project;
-    if (!root || !project) return;
+    // a running g / r / s works in the view it started in
+    if (!root || !project || isModal(gestureRef.current)) return;
     const rect = root.getBoundingClientRect();
     if (rect.width <= 0) return;
     const f = rect.width / project.width;
@@ -1316,7 +1899,7 @@ export function SceneOverlay() {
   const onDoubleClick = (e: ReactMouseEvent<HTMLDivElement>) => {
     const root = rootRef.current;
     const project = useEditor.getState().project;
-    if (!root || !project || e.altKey || e.shiftKey) return;
+    if (!root || !project || e.altKey || e.shiftKey || useSceneControls.getState().scheme !== 'unity') return;
     const rect = root.getBoundingClientRect();
     if (rect.width <= 0) return;
     const f = rect.width / project.width;
@@ -1458,6 +2041,7 @@ export function SceneOverlay() {
           <rect ref={scaleRect} className="scene-axis-tip" width="10" height="10" />
         </g>
         <circle ref={centerDot} className="scene-center" r="3" />
+        <rect ref={boxRect} className="scene-box" style={{ display: 'none' }} />
         <text ref={readoutEl} className="scene-readout" style={{ display: 'none' }} />
       </svg>
       <div ref={focusHandleEl} className="scene-focus-handle" style={{ display: 'none' }} role="img" aria-label="focus distance handle" />
@@ -1467,7 +2051,7 @@ export function SceneOverlay() {
             key={t}
             type="button"
             className={`icon-btn icon-btn-sm${tool === t ? ' is-active' : ''}`}
-            title={`${label} (${key}): ${hint}`}
+            title={scheme === 'unity' ? `${label} (${key}): ${hint}` : `${label}: ${hint}`}
             aria-label={label}
             aria-pressed={tool === t}
             onClick={() => setTool(t)}
@@ -1486,7 +2070,7 @@ export function SceneOverlay() {
           <Grid3x3 size={14} />
         </button>
       </div>
-      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap   x y z: lock axis   alt drag arrow: copy   esc: cancel</div>
+      <div className="preview-scene-hint">{SCENE_HINTS[scheme]}</div>
     </div>
   );
 }

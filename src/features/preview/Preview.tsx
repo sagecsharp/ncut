@@ -10,6 +10,7 @@ import { resolveClip } from '../../lib/anim';
 import type { SourceResolver } from '../../engine/draw';
 import { useSceneCamera } from './sceneCamera';
 import type { ViewPreset } from './sceneCamera';
+import { useSceneControls } from './sceneControls';
 import { useSceneTool, TOOL_KEYS } from './sceneTool';
 import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
 import { localDelta, withoutRidingChildren } from './attached';
@@ -293,12 +294,12 @@ export function Preview() {
   // left / right fall through to the global frame stepping when nothing can be nudged.
   const onStageKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // scene view tools: w e r pick the tool, f frames the selection. only while the scene view has the focus
+    // scene view tools: w e r pick the tool (unity controls), f frames the selection. only while the scene view has the focus
     // (e and r are global shortcuts: stop them here so they do not also fire)
     const fromTools = e.target instanceof Element && !!e.target.closest('.scene-tools');
     if (useUi.getState().previewMode === 'scene' && !e.shiftKey && (e.target === e.currentTarget || fromTools) && !e.repeat) {
       const key = e.key.toLowerCase();
-      const tool = TOOL_KEYS[key];
+      const tool = useSceneControls.getState().scheme === 'unity' ? TOOL_KEYS[key] : undefined;
       if (tool || key === 'f') {
         e.preventDefault();
         e.stopPropagation();

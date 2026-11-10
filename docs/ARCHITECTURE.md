@@ -72,6 +72,8 @@ features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followAppl
                          beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks).
                          sequence.ts + sequenceActions.ts (clips in a row, fitted to the markers, cut at the markers)
 features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizmo.ts (handles, axis lock),
+                         sceneControls.ts (blender or unity controls: what a press, a key and a numpad key mean,
+                         typed numbers, the selection box; the choice is kept in localStorage),
                          sceneHelpers.ts (focus plane, floor grid, readouts). scrubFeed.ts + scrubPlan.ts: decoded
                          frames for the paused preview while the playhead is dragged forward through a video
 features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,

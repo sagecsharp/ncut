@@ -314,6 +314,15 @@
   stroke: var(--accent);
   stroke-width: 1;
 }
+/* the selection box of the blender controls */
+.scene-box {
+  fill: var(--accent);
+  fill-opacity: 0.08;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
 .scene-poly-under {
   fill: none;
   stroke: var(--on-accent);
