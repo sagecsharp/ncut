@@ -12,7 +12,9 @@ import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
-import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, loadProjectMediaRows, putMediaBlob, saveProject, warmDb } from '../storage/db';
+import { whenIdle } from '../storage/idle';
+import { whenMediaStored } from '../storage/pendingMedia';
 import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
 import { useEditor } from './editorStore';
@@ -20,6 +22,8 @@ import { resetPlayback } from './playback';
 import { useUi } from './ui';
 
 const AUTOSAVE_MS = 600;
+/** the debounced write waits for an idle moment, at most this long */
+const AUTOSAVE_IDLE_MS = 1000;
 
 export type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error';
 
@@ -52,14 +56,37 @@ export function openProjectById(id: string): Promise<boolean> {
 
 let opening: { id: string; promise: Promise<boolean> } | null = null;
 
+/** the project json and its stored files, read at the same time (the files by the projectId index) */
+interface Prefetch {
+  id: string;
+  at: number;
+  project: Promise<Project | undefined>;
+  rows: Promise<Map<string, Blob>>;
+}
+
+function startPrefetch(id: string): Prefetch {
+  const project = loadProject(id);
+  project.catch(() => undefined); // the rejection is reported where the result is used (doOpen)
+  // a failed bulk read is not an error: loadProjectMedia asks for those files one by one then
+  const rows = loadProjectMediaRows(id).catch(() => new Map<string, Blob>());
+  return { id, at: Date.now(), project, rows };
+}
+
+/** what module evaluation started for the project in the url (used by the first open only) */
+let prefetched: Prefetch | null = null;
+const PREFETCH_MAX_AGE_MS = 15000;
+
 async function doOpen(id: string): Promise<boolean> {
-  const project = await loadProject(id);
+  const early = prefetched;
+  prefetched = null;
+  const read = early && early.id === id && Date.now() - early.at < PREFETCH_MAX_AGE_MS ? early : startPrefetch(id);
+  const project = await read.project;
   if (!project) return false;
   await flushAutosave();
   releaseAllAssets();
   releaseAllDerived();
   resetPlayback();
-  const missing = await loadProjectMedia(project);
+  const missing = await loadProjectMedia(project, await read.rows);
   useEditor.getState().openProject(project);
   setSaveState('saved');
   setHash(`#/project/${project.id}`);
@@ -128,6 +155,8 @@ async function discardPartialCopy(projectId: string): Promise<void> {
 
 /** deep copy a stored project including its media blobs. returns the new project id. */
 export async function duplicateProject(id: string): Promise<string | null> {
+  // media of the open project may still be on its way into the database
+  await whenMediaStored();
   const source = await loadProject(id);
   if (!source) return null;
   const now = Date.now();
@@ -229,6 +258,8 @@ export async function deleteStoredProject(id: string): Promise<void> {
 /* ---------- autosave ---------- */
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** cancels the write that waits for an idle moment (the project stays in `dirty` until it runs) */
+let cancelIdle: (() => void) | null = null;
 let dirty: Project | null = null;
 let saving: Promise<void> = Promise.resolve();
 let pendingSaves = 0;
@@ -238,6 +269,8 @@ function persist(project: Project): Promise<void> {
   pendingSaves++;
   setSaveState('saving');
   saving = saving
+    // a saved project never points at imported media that is not stored yet
+    .then(() => whenMediaStored())
     .then(() => saveProject({ ...project, updatedAt: Date.now() }))
     .then(() => {
       lastFailed = false;
@@ -256,9 +289,15 @@ function persist(project: Project): Promise<void> {
 }
 
 export async function flushAutosave(): Promise<void> {
+  // imported files still being copied: a copy that fails takes its asset out of the project, so wait before reading `dirty`
+  await whenMediaStored();
   if (timer) {
     clearTimeout(timer);
     timer = null;
+  }
+  if (cancelIdle) {
+    cancelIdle();
+    cancelIdle = null;
   }
   if (dirty) {
     const p = dirty;
@@ -282,13 +321,22 @@ export function startAutosave(): void {
     dirty = state.project;
     if (pendingSaves === 0) setSaveState('unsaved');
     if (timer) clearTimeout(timer);
+    // a new edit restarts the wait, also when the write was already waiting for an idle moment
+    if (cancelIdle) {
+      cancelIdle();
+      cancelIdle = null;
+    }
     timer = setTimeout(() => {
       timer = null;
-      if (dirty) {
-        const p = dirty;
-        dirty = null;
-        void persist(p);
-      }
+      // the copy of the whole project happens in an idle moment, not right when the user stops
+      cancelIdle = whenIdle(() => {
+        cancelIdle = null;
+        if (dirty) {
+          const p = dirty;
+          dirty = null;
+          void persist(p);
+        }
+      }, AUTOSAVE_IDLE_MS);
     }, AUTOSAVE_MS);
   });
   window.addEventListener('beforeunload', (e) => {
@@ -308,4 +356,16 @@ export function startAutosave(): void {
     snapPoster();
     void flushAutosave();
   });
+}
+
+// the database (and the project named by the url) start loading now, while the rest of the bundle evaluates and
+// the first render happens. doOpen takes this result instead of reading again.
+try {
+  if (typeof indexedDB !== 'undefined' && typeof location !== 'undefined') {
+    const hashId = projectIdFromHash();
+    if (hashId) prefetched = startPrefetch(hashId);
+    else warmDb();
+  }
+} catch {
+  /* the normal path reads (and reports) as before */
 }

@@ -4,7 +4,7 @@
  * waveform, export) asks here.
  */
 import type { Project } from '../types';
-import { getMediaBlob } from '../storage/db';
+import { getMediaBlobs } from '../storage/db';
 
 interface Entry {
   blob: Blob;
@@ -46,20 +46,30 @@ export function releaseAllAssets(): void {
   entries.clear();
 }
 
-/** load every blob of a project from indexeddb. returns ids of assets whose file is missing. */
-export async function loadProjectMedia(project: Project): Promise<string[]> {
+/**
+ * load every blob of a project from indexeddb. returns ids of assets whose file is missing.
+ * `known` = files that were already read (by asset id): only the rest is asked for, in one transaction.
+ */
+export async function loadProjectMedia(project: Project, known?: ReadonlyMap<string, Blob>): Promise<string[]> {
   const missing: string[] = [];
-  await Promise.all(
-    project.assets.map(async (asset) => {
-      if (entries.has(asset.id)) return;
-      try {
-        const blob = await getMediaBlob(asset.id);
-        if (blob) registerAsset(asset.id, blob);
-        else missing.push(asset.id);
-      } catch {
-        missing.push(asset.id);
-      }
-    }),
-  );
+  const toRead: string[] = [];
+  for (const asset of project.assets) {
+    if (entries.has(asset.id)) continue;
+    const blob = known?.get(asset.id);
+    if (blob) registerAsset(asset.id, blob);
+    else toRead.push(asset.id);
+  }
+  if (toRead.length === 0) return missing;
+  let read: Map<string, Blob | undefined | Error> | null = null;
+  try {
+    read = await getMediaBlobs(toRead);
+  } catch {
+    read = null; // the database could not be read: every one of these files counts as missing
+  }
+  for (const id of toRead) {
+    const blob = read?.get(id);
+    if (blob instanceof Blob) registerAsset(id, blob);
+    else missing.push(id);
+  }
   return missing;
 }
