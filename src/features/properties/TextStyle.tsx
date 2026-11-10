@@ -10,7 +10,7 @@ import {
 } from '../../engine/textAnim';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
-import type { TextAnim, TextClip, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
+import type { TextAnim, TextClip, TextExtrude, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
 import { ColorField, Row, Section, SelectRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
@@ -21,6 +21,7 @@ const actions = () => useEditor.getState();
 const DEFAULT_STROKE: TextStroke = { color: '#000000', width: 0.08 };
 const DEFAULT_HIGHLIGHT: TextHighlight = { color: '#ffe14d', mode: 'fill' };
 const DEFAULT_HIGHLIGHT_BOX = '#000000';
+const DEFAULT_EXTRUDE: TextExtrude = { depth: 0.2, angle: 135, color: '#555555' };
 const DEFAULT_SHADOW: TextShadow = { color: '#000000', opacity: 0.6, blur: 0.1, distance: 0.08, angle: 45 };
 
 /** a percent field for a fraction stored in the clip */
@@ -58,7 +59,7 @@ function Pct({
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
-  const { stroke, shadow, gradient, highlight } = clip;
+  const { stroke, shadow, gradient, highlight, extrude } = clip;
   const setGradient = (patch: Partial<TextGradient>) => {
     if (gradient) actions().updateClip(id, { gradient: { ...gradient, ...patch } }, liveOpts());
   };
@@ -67,6 +68,9 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
   };
   const setHighlight = (patch: Partial<TextHighlight>) => {
     if (highlight) actions().updateClip(id, { highlight: { ...highlight, ...patch } }, liveOpts());
+  };
+  const setExtrude = (patch: Partial<TextExtrude>) => {
+    if (extrude) actions().updateClip(id, { extrude: { ...extrude, ...patch } }, liveOpts());
   };
   const setShadow = (patch: Partial<TextShadow>) => {
     if (shadow) actions().updateClip(id, { shadow: { ...shadow, ...patch } }, liveOpts());
@@ -137,6 +141,33 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
               precision={0}
               onStart={beginEdit}
               onChange={(v) => setShadow({ angle: v })}
+            />
+          </Row>
+        </>
+      ) : null}
+
+      <Row label="depth" title="a solid side behind the letters, like block letters or a long shadow">
+        <Switch
+          checked={!!extrude}
+          title="depth on or off"
+          onChange={(v) => actions().updateClip(id, { extrude: v ? { ...DEFAULT_EXTRUDE } : null })}
+        />
+        {extrude ? <ColorField title="depth color" value={extrude.color} onChange={(c) => setExtrude({ color: c })} /> : null}
+      </Row>
+      {extrude ? (
+        <>
+          <Pct label="length" title="how far the side reaches (% of the font size)" value={extrude.depth} min={1} max={100} onChange={(v) => setExtrude({ depth: v })} />
+          <Row label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)">
+            <NumberField
+              className="props-grow"
+              suffix="deg"
+              title="depth angle (degrees)"
+              value={extrude.angle}
+              min={0}
+              max={360}
+              precision={0}
+              onStart={beginEdit}
+              onChange={(v) => setExtrude({ angle: v })}
             />
           </Row>
         </>

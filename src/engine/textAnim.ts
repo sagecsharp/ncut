@@ -56,6 +56,7 @@ export const TEXT_ANIMS_LOOP: TextAnimInfo[] = [
   { id: 'heartbeat', name: 'heartbeat' },
   { id: 'spin', name: 'spin' },
   { id: 'colors', name: 'colors' },
+  { id: 'flicker', name: 'flicker' },
 ];
 
 export const DEFAULT_TEXT_ANIM_IN = 0.6;
@@ -473,6 +474,15 @@ const LOOP: Record<string, LoopSpec> = {
       const u = Math.min(1, Math.max(0, (frac(cycles) - start) / w));
       const e = u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u);
       st.rot += e * Math.PI * 2;
+    },
+  },
+  flicker: {
+    unit: 'char',
+    apply: (st, _ph, i, cycles) => {
+      // 18 slots per cycle, every letter has its own irregular pattern: mostly on, now and then dark for a slot. periodic.
+      const slot = Math.floor(frac(cycles) * 18);
+      const r = rand(i + 3, slot + 29);
+      if (r < 0.18) st.alpha *= r < 0.06 ? 0.08 : 0.35;
     },
   },
   colors: {
