@@ -23,6 +23,10 @@ import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playbac
 import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './previewSync';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
+import { ParkingLot } from './mediaPark';
+import { frameInfo } from './frameStatic';
+import { SKIP_UNCHANGED_FRAMES, canSkipRepaint } from './repaintSkip';
+import type { FrameRecord } from './repaintSkip';
 import { backingSize, usePreviewQuality } from './quality';
 import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 
@@ -85,6 +89,13 @@ interface MediaEntry {
   cleanup: () => void;
 }
 
+/** a video element parked for the next clip of the same file: it keeps its src, decoder and audio graph nodes */
+interface ParkedMedia {
+  el: HTMLVideoElement;
+  node: MediaElementAudioSourceNode | null;
+  gain: GainNode | null;
+}
+
 interface ImageEntry {
   source: DrawSource | null;
   loading: boolean;
@@ -97,6 +108,16 @@ export class PreviewEngine {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pool = new Map<string, MediaEntry>();
   private readonly images = new Map<string, ImageEntry>();
+  /** video elements of clips that left the window, by url (see destroyEntry / createEntry) */
+  private readonly parked = new ParkingLot<ParkedMedia>();
+  /** sync() already swept the pool for stale entries this pass (so a new clip can take their elements) */
+  private swept = false;
+  /** video frames presented by any pooled element so far (counted in the requestVideoFrameCallback handler) */
+  private framesPresented = 0;
+  /** what the last painted frame was made of, kept only while playing (see canSkipTick); null = paint on the next tick */
+  private lastFrame: FrameRecord | null = null;
+  /** something changed that the canvas might show but did not ask for a draw itself: the next tick paints */
+  private mustDraw = false;
   private readonly unsubs: Array<() => void> = [];
   private audioCtx: AudioContext | null = null;
   private audioFailed = false;
@@ -133,20 +154,26 @@ export class PreviewEngine {
           return;
         }
         // shuttle key / speed menu while playing: every active element follows at once
-        if (s.rate !== prev.rate && s.playing) this.sync();
+        if (s.rate !== prev.rate && s.playing) {
+          this.mustDraw = true;
+          this.sync();
+        }
         if (s.volume !== prev.volume || s.muted !== prev.muted) this.applyGains();
         if (s.time !== prev.time) {
           this.sync();
           // draw right inside the clock's own frame while playing so the picture never lags a frame.
           // the clock ticks every animation frame, so this is also what animates an effect over a still
           // image or text (hasEffectsAt is true, nothing else on screen changes); every tick must paint
-          if (s.playing) this.draw();
-          else this.invalidate();
+          if (s.playing) {
+            if (!this.canSkipTick(s.time)) this.draw();
+          } else this.invalidate();
         }
       }),
     );
     this.unsubs.push(
       useEditor.subscribe((s, prev) => {
+        // any change of the store (not only the project) is painted by the next tick, as before
+        this.mustDraw = true;
         if (s.project === prev.project) return;
         if (s.project && prev.project && (s.project.width !== prev.project.width || s.project.height !== prev.project.height)) {
           this.applyBackingSize();
@@ -155,6 +182,8 @@ export class PreviewEngine {
         }
         if (s.project?.assets !== prev.project?.assets) this.pruneImages(s.project);
         this.sync();
+        // a closed project, another project or changed assets: parked elements of urls nobody uses any more go
+        if (s.project?.assets !== prev.project?.assets) this.purgeParked(s.project);
         // edits while paused draw in the same frame as the gesture that made them (the selection box moves
         // synchronously); a raf would show the picture one frame late
         if (usePlayback.getState().playing) this.invalidate();
@@ -172,6 +201,7 @@ export class PreviewEngine {
     // scene view: mode switch and the free camera redraw the canvas
     this.unsubs.push(
       useUi.subscribe((s, prev) => {
+        this.mustDraw = true;
         if (s.previewMode === prev.previewMode) return;
         this.invalidate();
       }),
@@ -280,6 +310,7 @@ export class PreviewEngine {
     this.unsubs.length = 0;
     for (const entry of Array.from(this.pool.values())) this.destroyEntry(entry);
     this.pool.clear();
+    this.discardAll(this.parked.clear());
     for (const img of this.images.values()) this.closeImage(img);
     this.images.clear();
     if (this.audioCtx) {
@@ -322,6 +353,8 @@ export class PreviewEngine {
   private draw(): boolean {
     if (this.disposed) return false;
     this.dirty = false;
+    this.mustDraw = false;
+    this.lastFrame = null;
     const project = useEditor.getState().project;
     const { time, playing } = usePlayback.getState();
     const { ctx, canvas } = this;
@@ -351,7 +384,55 @@ export class PreviewEngine {
     }
     this.hasDrawn = true;
     if (!playing) this.flushWants();
+    else if (SKIP_UNCHANGED_FRAMES && useUi.getState().previewMode !== 'scene') this.lastFrame = this.frameRecord(project, time);
     return true;
+  }
+
+  /** what a frame at this time is made of, with the engine's own counters (see repaintSkip) */
+  private frameRecord(project: Project, time: number): FrameRecord & { videos: VideoClip[] } {
+    const info = frameInfo(project, time);
+    return {
+      project,
+      key: info.key,
+      allStatic: info.allStatic,
+      time,
+      frames: this.framesPresented,
+      width: this.canvas.width,
+      height: this.canvas.height,
+      videos: info.videos,
+    };
+  }
+
+  /**
+   * a running clock ticked: can this tick leave the canvas as it is? only when nothing can look different from the
+   * last painted frame: no draw was asked for, no video presented a new frame, the same clips are on screen, and all of
+   * them are static (frameStatic.ts). anything else paints, exactly as before.
+   */
+  private canSkipTick(time: number): boolean {
+    const last = this.lastFrame;
+    if (!SKIP_UNCHANGED_FRAMES || !last || !last.allStatic || this.disposed) return false;
+    // cheap exits first: a pending draw request, a store change, a new video frame
+    if (this.dirty || this.mustDraw || this.holdTimer || this.framesPresented !== last.frames) return false;
+    const project = useEditor.getState().project;
+    if (!project || project !== last.project || this.canvas.width <= 0) return false;
+    const sceneView = useUi.getState().previewMode === 'scene';
+    if (sceneView) return false;
+    const now = this.frameRecord(project, time);
+    let videosReady = true;
+    for (const v of now.videos) {
+      const entry = this.pool.get(v.id);
+      if (!entry || entry.failed || entry.kind !== 'video') {
+        videosReady = false;
+        break;
+      }
+      const el = entry.el as RvfcElement;
+      // without requestVideoFrameCallback there is no way to know a new frame arrived: always paint
+      if (el.seeking || el.readyState < 2 || typeof el.requestVideoFrameCallback !== 'function') {
+        videosReady = false;
+        break;
+      }
+    }
+    return canSkipRepaint(last, now, { enabled: SKIP_UNCHANGED_FRAMES, playing: true, sceneView, pending: false, videosReady });
   }
 
   private armHoldTimer(ms: number): void {
@@ -633,23 +714,46 @@ export class PreviewEngine {
     const project = useEditor.getState().project;
     const { time, playing, rate } = usePlayback.getState();
     this.gen++;
+    this.swept = false;
     if (project) {
       const holds = transitionHolds(project);
       for (const clip of project.clips) {
         if (clip.type !== 'video' && clip.type !== 'audio') continue;
-        const end = clip.start + clip.duration;
-        // a clip in a transition shows its frozen first / last frame outside its own range
-        const hold = holds.get(clip.id);
-        const before = hold ? Math.max(LOOKAHEAD, hold.before + 0.25) : LOOKAHEAD;
-        const after = hold ? Math.max(LINGER, hold.after + 0.1) : LINGER;
-        if (time < clip.start - before || time >= end + after) continue;
-        const entry = this.ensureEntry(clip);
+        if (!this.inWindow(clip, holds, time)) continue;
+        const entry = this.ensureEntry(clip, project, holds, time);
         if (!entry) continue;
         entry.gen = this.gen;
-        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < end, rate);
+        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < clip.start + clip.duration, rate);
         this.setGain(entry, clip, project, time);
       }
       this.evictImages(project, time);
+    }
+    for (const entry of Array.from(this.pool.values())) {
+      if (entry.gen !== this.gen) this.destroyEntry(entry);
+    }
+  }
+
+  /** is the clip's element wanted at this time (its range, the lookahead / linger, the frozen edges of a transition) */
+  private inWindow(clip: VideoClip | AudioClip, holds: ReturnType<typeof transitionHolds>, time: number): boolean {
+    const end = clip.start + clip.duration;
+    // a clip in a transition shows its frozen first / last frame outside its own range
+    const hold = holds.get(clip.id);
+    const before = hold ? Math.max(LOOKAHEAD, hold.before + 0.25) : LOOKAHEAD;
+    const after = hold ? Math.max(LINGER, hold.after + 0.1) : LINGER;
+    return !(time < clip.start - before || time >= end + after);
+  }
+
+  /**
+   * destroy (park) the pool entries that this pass no longer wants, ahead of creating a new one: a clip entering the
+   * window can then take the element of a clip of the same file that is leaving it in the same pass (a jump across cuts)
+   */
+  private sweepStale(project: Project, holds: ReturnType<typeof transitionHolds>, time: number): void {
+    this.swept = true;
+    for (const clip of project.clips) {
+      if (clip.type !== 'video' && clip.type !== 'audio') continue;
+      const e = this.pool.get(clip.id);
+      if (!e || e.assetId !== clip.assetId || e.url !== getAssetUrl(clip.assetId)) continue;
+      if (this.inWindow(clip, holds, time)) e.gen = this.gen;
     }
     for (const entry of Array.from(this.pool.values())) {
       if (entry.gen !== this.gen) this.destroyEntry(entry);
@@ -752,7 +856,7 @@ export class PreviewEngine {
     }
   }
 
-  private ensureEntry(clip: VideoClip | AudioClip): MediaEntry | null {
+  private ensureEntry(clip: VideoClip | AudioClip, project: Project, holds: ReturnType<typeof transitionHolds>, time: number): MediaEntry | null {
     const url = getAssetUrl(clip.assetId);
     let entry = this.pool.get(clip.id);
     if (entry && (entry.assetId !== clip.assetId || entry.url !== url)) {
@@ -761,18 +865,29 @@ export class PreviewEngine {
     }
     if (entry) return entry;
     if (!url) return null;
+    if (!this.swept) this.sweepStale(project, holds, time);
     return this.createEntry(clip, url);
   }
 
   private createEntry(clip: Clip & { assetId: string }, url: string): MediaEntry {
     const isVideo = clip.type === 'video';
-    const el: HTMLVideoElement | HTMLAudioElement = isVideo ? document.createElement('video') : document.createElement('audio');
-    el.preload = 'auto';
-    el.muted = false;
-    // pitch follows speed, same as the export which resamples (no time stretch)
-    setPreservesPitch(el, false);
-    if (el instanceof HTMLVideoElement) el.playsInline = true;
-    el.src = url;
+    // a parked element of the same file (metadata and decoder already there) is set up like a new one
+    const parked = isVideo ? this.parked.take(url) : undefined;
+    let el: HTMLVideoElement | HTMLAudioElement;
+    if (parked) {
+      el = parked.el;
+      el.muted = false;
+      el.volume = 1;
+      el.playbackRate = 1;
+    } else {
+      el = isVideo ? document.createElement('video') : document.createElement('audio');
+      el.preload = 'auto';
+      el.muted = false;
+      // pitch follows speed, same as the export which resamples (no time stretch)
+      setPreservesPitch(el, false);
+      if (el instanceof HTMLVideoElement) el.playsInline = true;
+      el.src = url;
+    }
 
     const entry: MediaEntry = {
       clipId: clip.id,
@@ -785,8 +900,8 @@ export class PreviewEngine {
       failed: false,
       source: null,
       rvfc: 0,
-      gain: null,
-      node: null,
+      gain: parked ? parked.gain : null,
+      node: parked ? parked.node : null,
       lastGain: -1,
       createdAt: performance.now(),
       seekStart: 0,
@@ -839,6 +954,7 @@ export class PreviewEngine {
     if (isVideo && typeof v.requestVideoFrameCallback === 'function') {
       const onFrame = () => {
         if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        this.framesPresented++;
         if (!usePlayback.getState().playing) this.invalidate();
         entry.rvfc = v.requestVideoFrameCallback!(onFrame);
       };
@@ -857,32 +973,72 @@ export class PreviewEngine {
 
     this.pool.set(clip.id, entry);
     if (this.audioCtx) this.routeEntry(entry);
+    // a parked element will not fire loadeddata / canplay again: ask for the redraw those events would have asked for
+    if (parked) this.invalidate();
     return entry;
+  }
+
+  /** can this entry's element be parked: a healthy video of a url that is still the asset's current one */
+  private canPark(entry: MediaEntry): boolean {
+    if (this.disposed || entry.kind !== 'video' || entry.failed) return false;
+    if ((entry.el as HTMLVideoElement).error) return false;
+    return getAssetUrl(entry.assetId) === entry.url;
   }
 
   private destroyEntry(entry: MediaEntry): void {
     entry.cleanup();
-    const el = entry.el;
-    el.pause();
-    el.removeAttribute('src');
-    el.load();
-    if (entry.node) {
-      try {
-        entry.node.disconnect();
-      } catch {
-        // already disconnected
-      }
+    if (this.pool.get(entry.clipId) === entry) this.pool.delete(entry.clipId);
+    entry.source = null;
+    if (this.canPark(entry)) {
+      const el = entry.el as HTMLVideoElement;
+      // silent and still, but with its src, decoder and audio graph nodes (a media element can be captured by a
+      // MediaElementAudioSourceNode only once, so the nodes stay with the element)
+      el.pause();
+      el.muted = true;
+      if (entry.gain) entry.gain.gain.value = 0;
+      const out = this.parked.park(entry.url, { el, node: entry.node, gain: entry.gain });
+      entry.node = null;
+      entry.gain = null;
+      this.discardAll(out);
+      return;
     }
-    if (entry.gain) {
-      try {
-        entry.gain.disconnect();
-      } catch {
-        // already disconnected
-      }
-    }
+    // the url is gone or changed: parked elements of it cannot be reused either
+    if (getAssetUrl(entry.assetId) !== entry.url) this.discardAll(this.parked.evictUrl(entry.url));
+    this.unloadMedia({ el: entry.el, node: entry.node, gain: entry.gain });
     entry.node = null;
     entry.gain = null;
-    entry.source = null;
-    if (this.pool.get(entry.clipId) === entry) this.pool.delete(entry.clipId);
+  }
+
+  /** really give back an element: no src, no decoder, no audio graph nodes */
+  private unloadMedia(m: { el: HTMLMediaElement; node: MediaElementAudioSourceNode | null; gain: GainNode | null }): void {
+    m.el.pause();
+    m.el.removeAttribute('src');
+    m.el.load();
+    if (m.node) {
+      try {
+        m.node.disconnect();
+      } catch {
+        // already disconnected
+      }
+    }
+    if (m.gain) {
+      try {
+        m.gain.disconnect();
+      } catch {
+        // already disconnected
+      }
+    }
+  }
+
+  private discardAll(list: ParkedMedia[]): void {
+    for (const m of list) this.unloadMedia(m);
+  }
+
+  /** drop the parked elements whose url no asset of the project (if any) has any more */
+  private purgeParked(project: Project | null): void {
+    if (this.parked.size === 0) return;
+    const live = new Set<string | undefined>();
+    if (project) for (const a of project.assets) live.add(getAssetUrl(a.id));
+    this.discardAll(this.parked.evictWhere((u) => !live.has(u)));
   }
 }
