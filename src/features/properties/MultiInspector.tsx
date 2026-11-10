@@ -1,6 +1,6 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { useMemo } from 'react';
-import { Copy, Group, Trash2, Ungroup } from 'lucide-react';
+import { AlignHorizontalJustifyStart, Copy, Flag, Group, Trash2, Ungroup } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import type { ActionOpts } from '../../store/editorStore';
@@ -15,7 +15,9 @@ import { LookButtons } from './LookSection';
 import { ParentSelect } from './AttachSection';
 import { attachClips } from './attachActions';
 import { parentOptions } from './parentOptions';
-import { Pair, Row, Section, SliderRow, Switch } from './controls';
+import { Pair, Row, Section, SelectRow, SliderRow, Switch } from './controls';
+import { fitToMarkers, makeRow } from '../timeline/sequenceActions';
+import type { FitSpan } from '../timeline/sequenceActions';
 import { beginEdit, liveOpts } from './edit';
 
 interface Summary {
@@ -141,6 +143,10 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 
   const visualIds = useMemo(() => (clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => c.id), [clips, ids]);
 
+  const seqCount = sum.video + sum.image + sum.audio + sum.text + sum.shape;
+  const markerCount = useEditor((s) => s.project?.markers?.length ?? 0);
+  const [span, setSpan] = useState<FitSpan>(1);
+
   const source = useEditor((s) => {
     const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
     return c as VisualClip | undefined;
@@ -186,6 +192,37 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
               onChange={(e) => toggleMute(e.target.checked)}
             />
           </Row>
+        </Section>
+      ) : null}
+      {seqCount > 1 ? (
+        <Section id="m-sequence" title="sequence">
+          <div className="props-buttons">
+            <button type="button" className="btn btn-sm" title="lay the selected clips end to end on one track, in order of their start" onClick={() => makeRow(ids)}>
+              <AlignHorizontalJustifyStart size={14} />
+              in a row
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={markerCount === 0}
+              title={markerCount === 0 ? 'no markers yet: mark the beats of a clip first' : 'lay the clips end to end, each one starting on a marker and ending on a later one'}
+              onClick={() => fitToMarkers(ids, span)}
+            >
+              <Flag size={14} />
+              fit to markers
+            </button>
+          </div>
+          <SelectRow
+            label="span"
+            title="how many markers each clip spans when fitting to the markers"
+            value={String(span)}
+            options={[
+              ['1', 'every beat'],
+              ['2', 'every 2nd'],
+              ['4', 'every 4th'],
+            ]}
+            onChange={(v) => setSpan(v === '4' ? 4 : v === '2' ? 2 : 1)}
+          />
         </Section>
       ) : null}
       <Section id="m-fades" title="fades">
