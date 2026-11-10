@@ -179,6 +179,21 @@ function saveFilters(name) {
   return [{ name: Object.prototype.hasOwnProperty.call(KINDS, ext) ? KINDS[ext] : `${ext} file`, extensions: [ext] }, all];
 }
 
+/** the page's own background in its dark and its light theme (styles/theme.css, --surface-1) */
+const WINDOW_DARK = '#171717';
+const WINDOW_LIGHT = '#e1e1e1';
+
+/**
+ * the color of the window before the page has painted. the window is shown as soon as the page has its first
+ * screen, a moment before the gpu can paint it, so this color is what is seen first and must be the page's.
+ * `saved`: what the page said its theme was the last time (true = dark, false = light), anything else = never
+ * said: then the system's setting decides, which is what the page follows by default.
+ */
+function windowBackground(saved, systemDark) {
+  const dark = typeof saved === 'boolean' ? saved : systemDark !== false;
+  return dark ? WINDOW_DARK : WINDOW_LIGHT;
+}
+
 /** a stored window state with sane numbers, or null */
 function cleanWindowState(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -292,6 +307,9 @@ module.exports = {
   clampProgress,
   qosArgs,
   QOS_MAX_PIDS,
+  windowBackground,
+  WINDOW_DARK,
+  WINDOW_LIGHT,
   isProjectFile,
   projectFileFromArgs,
   baseName,

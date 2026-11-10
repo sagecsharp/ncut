@@ -38,6 +38,9 @@ media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
 media/seekFrame.ts       seek a video element and wait for the picture (not only 'seeked') before drawing it
+media/stripPlan.ts       which frame stands for a slot of a filmstrip: the key frame inside it when there is one
+media/shrink.ts          a decoded frame as a small picture, shrunk by the gpu (same pixels as the 2d canvas way)
+media/dataUrl.ts         a small canvas as a jpeg right now (toBlob waits for an idle moment of the page)
 engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + renderSceneView, getClipBox, hitTestBox
 engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
 engine/textAnim.ts       the per-letter text animations (in / out / loop)
@@ -219,7 +222,10 @@ scrubbing, dragging clips and zooming, with dozens of clips.
    long timeline canvases only draw the visible range.
 7. heavy work stays off the interaction path: thumbnails, filmstrips and waveforms are computed lazily,
    one at a time, cached per asset, and never block a drag or playback. decode/peaks work yields to the
-   main thread (or runs in a worker).
+   main thread (or runs in a worker). a filmstrip picture costs one decode where a key frame lies inside its
+   slot (`media/stripPlan.ts`, the strip carries the real time of every picture) and is shrunk on the gpu
+   (`media/shrink.ts`). waits that are not work have no place here: no cache lookup for a file imported in this
+   session (indexeddb has one queue per site and it is busy copying that file), no `toBlob` for small pictures.
 8. media elements are pooled and reused. while playing, do not seek a video every frame: let it play and only
    correct when it drifts (> ~0.15 s) from the clock.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
@@ -281,6 +287,9 @@ slower way).
 - gif (`gifPlan.ts`, `gifPool.ts`, `gifWorker.ts`): without video clips up to 8 workers render, index and compress
   their own frames (`parts`), with video the main thread draws and the workers index and compress (`pool`). the
   bytes are the same as on one thread.
+- the dialog asks the browser what it can encode for the chosen size, frame rate and quality. the answers are
+  kept for the session (`planMemo.ts`, only a yes) and the first question after a quiet moment is not debounced, so
+  the export button is ready at once when the dialog opens.
 - rules for changes here: the picture must stay identical to one thread (the 3d renderer has a run to run noise
   of a level or two on a handful of pixels, nothing else may differ), the file must keep its frame count, key frame
   rhythm, codec string and duration, and every new path needs its fallback. reference frames are only comparable
@@ -309,9 +318,12 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 - two globals are the rest of the bridge, set in `store/session.ts`: `window.__ncutBusy()` returns a sentence while work
   would be lost (`lib/busy.ts`, the export dialog marks itself) and `window.__ncutBeforeClose()` writes the last
   autosave. the shell calls both when the window closes. in a browser tab `beforeunload` uses the same busy flag.
-- the window is shown when the page says `ready()` after its first screen was painted (`App`), not at
+- the window is shown when the page says `ready(dark)` once its first screen is in the page (`App`, a plain task
+  after the first render: a window that was never shown gets its first animation frame about 300 ms late), not at
   `ready-to-show` (the empty page), and after `SHOW_FALLBACK_MS` (1.5 s) anyway or when the load fails, so a broken
-  page never leaves an invisible window.
+  page never leaves an invisible window. the gpu needs a moment longer for the first paint, until then the window
+  shows its own background: `rules.windowBackground` gives the page's background color for the theme the page had
+  the last time (`dark` in `window.json`), or for the system's setting on the first start.
 - `.ncut` is a registered file type (electron-builder `fileAssociations`). a double click, a file dropped on the exe or a
   second start passes the path on the command line; `main.cjs` reads it (regular file, `.ncut`, size cap) and holds it
   until the page called `ready()`, then sends `{ name, bytes }`. `main.tsx` subscribes with `shell.onOpenFile` first

@@ -17,7 +17,7 @@ interface RawShell {
   lastSaveName?: () => Promise<string | null>;
   onSaved?: (cb: (name: string) => void) => () => void;
   onOpenFile?: (cb: (file: ShellFile) => void) => () => void;
-  ready?: () => void;
+  ready?: (dark?: boolean) => void;
 }
 
 function raw(): RawShell | null {
@@ -114,9 +114,12 @@ export const shell = {
   onOpenFile(cb: (file: ShellFile) => void): () => void {
     return subscribe<ShellFile>(cb, (s, safe) => s.onOpenFile?.(safe));
   },
-  /** the page can take onOpenFile events now. call it after onOpenFile is subscribed */
-  ready(): void {
-    call((s) => s.ready?.());
+  /**
+   * the page has its first screen and can take onOpenFile events now. call it after onOpenFile is subscribed.
+   * `dark`: the theme of the page, the shell gives its window that background (seen before the first paint)
+   */
+  ready(dark?: boolean): void {
+    call((s) => s.ready?.(dark));
   },
 };
 

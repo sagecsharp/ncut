@@ -38,11 +38,10 @@ export function App() {
       if (e.target instanceof Element && e.target.closest('.projects-card')) preloadEditor();
     };
     window.addEventListener('pointerdown', warmEditor, true);
-    // the first screen is on its way to the glass: the desktop shell may show its window and hand over a file
-    let frame = requestAnimationFrame(() => {
-      frame = 0;
-      setTimeout(signalShellReady, 0);
-    });
+    // the first screen is in the page: the desktop shell may show its window and hand over a file. a plain task,
+    // not an animation frame: a window that was never shown gets its first frame about 300 ms late (measured), and
+    // the window would open that much later for nothing. what it paints first once shown is this screen.
+    const readyTimer = setTimeout(signalShellReady, 0);
     // a file dropped outside a drop zone would make the browser open it and leave the editor
     const blockFileNav = (e: DragEvent) => {
       if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
@@ -54,7 +53,7 @@ export function App() {
     return () => {
       cancelled = true;
       window.removeEventListener('pointerdown', warmEditor, true);
-      if (frame) cancelAnimationFrame(frame);
+      clearTimeout(readyTimer);
       window.removeEventListener('dragover', blockFileNav);
       window.removeEventListener('drop', blockFileNav);
       window.removeEventListener('popstate', sync);

@@ -10,6 +10,7 @@ import type { ExportPreset } from './presets';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { CODEC_LABEL, exportProject, isAudioContainer, isGifContainer, outputSize, planExport } from './exporter';
+import { createPlanMemo, probeDelay } from './planMemo';
 import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality, VideoContainer } from './exporter';
 import { markerRange, rangeFrameCount, resolveRange } from './range';
 import type { RangeMode } from './range';
@@ -53,6 +54,8 @@ const PROBE_DEBOUNCE_MS = 250;
 /** what the browser can encode for the current settings: undefined = still probing, null = nothing */
 type Plans = Record<VideoContainer, ExportPlan | null | undefined>;
 const PROBING: Plans = { mp4: undefined, webm: undefined };
+/** what the browser said it can encode, for the session (planMemo.ts) */
+const planMemo = createPlanMemo();
 
 function formatBitrate(bps: number): string {
   return bps >= 1e6 ? `${(bps / 1e6).toFixed(bps >= 1e7 ? 0 : 1)} mbps` : `${Math.round(bps / 1e3)} kbps`;
@@ -122,6 +125,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     video: { fps: saved.fps, scale: saved.scale ?? 1 },
   });
   const abortRef = useRef<AbortController | null>(null);
+  const lastProbeRef = useRef(Number.NEGATIVE_INFINITY);
   const startRef = useRef(0);
   const lastUiRef = useRef(0);
   const doneUrlRef = useRef<string | null>(null);
@@ -160,21 +164,29 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container) || isGifContainer(container)) return;
     const videoContainer: VideoContainer = container;
     const size = outputSize({ width: projectW, height: projectH }, scale);
-    setPlans(PROBING);
+    const ask = (c: VideoContainer) => ({ container: c, width: size.width, height: size.height, fps, quality });
+    // asked before in this session: the answer is there at once (undefined = still asking)
+    const known: Plans = { mp4: planMemo.get(ask('mp4')), webm: planMemo.get(ask('webm')) };
+    setPlans(known);
+    if (known.mp4 && known.webm) return;
     const ac = new AbortController();
+    // right away when the dialog just opened or after one click, debounced while a number is typed or dragged
+    const delay = probeDelay(performance.now() - lastProbeRef.current, PROBE_DEBOUNCE_MS);
+    lastProbeRef.current = performance.now();
     const timer = window.setTimeout(() => {
       void (async () => {
         const next: Plans = { mp4: null, webm: null };
         try {
           for (const c of [videoContainer, videoContainer === 'mp4' ? 'webm' : 'mp4'] as const) {
-            next[c] = await planExport({ container: c, width: size.width, height: size.height, fps, quality }, ac.signal);
+            next[c] = known[c] ?? (await planExport(ask(c), ac.signal));
+            planMemo.put(ask(c), next[c]);
           }
         } catch {
           return; // cancelled
         }
         if (!ac.signal.aborted) setPlans(next);
       })();
-    }, PROBE_DEBOUNCE_MS);
+    }, delay);
     return () => {
       window.clearTimeout(timer);
       ac.abort();

@@ -318,3 +318,24 @@ describe('the arguments of the export speed helper', () => {
     expect(rules.qosArgs(true, many).length).toBe(1 + rules.QOS_MAX_PIDS);
   });
 });
+
+describe('windowBackground', () => {
+  it('is the color of the theme the page had last time', () => {
+    expect(rules.windowBackground(true, false)).toBe(rules.WINDOW_DARK);
+    expect(rules.windowBackground(false, true)).toBe(rules.WINDOW_LIGHT);
+  });
+  it('follows the system when the page never said', () => {
+    expect(rules.windowBackground(null, true)).toBe(rules.WINDOW_DARK);
+    expect(rules.windowBackground(undefined, false)).toBe(rules.WINDOW_LIGHT);
+    expect(rules.windowBackground('light', false)).toBe(rules.WINDOW_LIGHT);
+    expect(rules.windowBackground(1, true)).toBe(rules.WINDOW_DARK);
+  });
+  it('is dark when nothing is known', () => {
+    expect(rules.windowBackground(null, undefined)).toBe(rules.WINDOW_DARK);
+    expect(rules.windowBackground()).toBe(rules.WINDOW_DARK);
+  });
+  it('gives plain hex colors', () => {
+    expect(rules.WINDOW_DARK).toMatch(/^#[0-9a-f]{6}$/);
+    expect(rules.WINDOW_LIGHT).toMatch(/^#[0-9a-f]{6}$/);
+  });
+});

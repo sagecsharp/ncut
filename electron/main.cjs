@@ -8,7 +8,7 @@
  * the page never sends a path, url, command or html. the csp, permissions and navigation guards are unchanged.
  * commonjs on purpose (package.json is "type": "module" for vite, electron's main entry stays simple).
  */
-const { app, BrowserWindow, Menu, dialog, ipcMain, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
@@ -165,7 +165,16 @@ function setupBridge() {
   onMessage('ncut:attention', (w) => {
     if (!w.isFocused()) w.flashFrame(true);
   });
-  onMessage('ncut:ready', (w) => {
+  onMessage('ncut:ready', (w, dark) => {
+    // the page's theme comes along: the window gets that color now and the next start opens with it
+    if (typeof dark === 'boolean') {
+      savedDark = dark;
+      try {
+        w.setBackgroundColor(shellRules.windowBackground(dark, dark));
+      } catch {
+        /* the window is closing */
+      }
+    }
     bridgeState(w.webContents.id).ready = true;
     revealWindow(w);
     flushPending(w);
@@ -247,11 +256,14 @@ async function serve(request) {
 
 /** the folder the last file was saved to: the next save dialog opens there */
 let saveDir = null;
+/** the theme the page had the last time it said so (true dark, false light, null = never): the window's first color */
+let savedDark = null;
 
 function readState() {
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_FILE(), 'utf8'));
     if (raw && typeof raw.saveDir === 'string' && path.isAbsolute(raw.saveDir)) saveDir = raw.saveDir;
+    if (raw && typeof raw.dark === 'boolean') savedDark = raw.dark;
     return shellRules.cleanWindowState(raw);
   } catch {
     return null;
@@ -267,9 +279,9 @@ function writeState() {
       const b = win.getNormalBounds();
       lastBounds = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() };
     }
-    if (!lastBounds && !saveDir) return;
+    if (!lastBounds && !saveDir && savedDark === null) return;
     fs.mkdirSync(path.dirname(STATE_FILE()), { recursive: true });
-    fs.writeFileSync(STATE_FILE(), JSON.stringify({ ...(lastBounds ?? {}), saveDir: saveDir ?? undefined }));
+    fs.writeFileSync(STATE_FILE(), JSON.stringify({ ...(lastBounds ?? {}), saveDir: saveDir ?? undefined, dark: savedDark ?? undefined }));
   } catch {
     /* losing the window position is not worth an error */
   }
@@ -331,7 +343,7 @@ function createWindow() {
     minHeight: 560,
     show: false,
     title: 'ncut',
-    backgroundColor: '#111111',
+    backgroundColor: shellRules.windowBackground(savedDark, nativeTheme.shouldUseDarkColors),
     autoHideMenuBar: true,
     icon: fs.existsSync(ICON) ? ICON : undefined,
     webPreferences: {
@@ -352,7 +364,7 @@ function createWindow() {
   const w = win;
   if (saved && saved.maximized) w.maximize();
   // not at ready-to-show: that is the first paint of the empty page. the page tells us (ncut:ready, see revealWindow)
-  // once its first screen is painted. a page that never gets there must not leave an invisible window behind
+  // once its first screen is in the page. a page that never gets there must not leave an invisible window behind
   setTimeout(() => revealWindow(w), shellRules.SHOW_FALLBACK_MS);
 
   const wc = w.webContents;

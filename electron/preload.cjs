@@ -77,8 +77,8 @@ const api = {
       cb,
     );
   },
-  ready() {
-    ipcRenderer.send('ncut:ready');
+  ready(dark) {
+    ipcRenderer.send('ncut:ready', typeof dark === 'boolean' ? dark : null);
   },
 };
 

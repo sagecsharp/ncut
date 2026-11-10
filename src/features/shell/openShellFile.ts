@@ -59,9 +59,9 @@ export function attachShellOpenFile(deps: OpenFileDeps, onFile?: () => void): vo
   });
 }
 
-/** tell the shell the page has painted its first screen and can take files (the shell shows its window on this) */
+/** tell the shell the page has its first screen and can take files (the shell shows its window on this) */
 export function signalShellReady(): void {
   if (readySent) return;
   readySent = true;
-  shell.ready();
+  shell.ready(typeof document !== 'undefined' ? document.documentElement.dataset.theme !== 'light' : undefined);
 }
