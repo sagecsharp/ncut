@@ -5,7 +5,8 @@
  */
 import type { Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
-import { mul, transformPoint } from './math';
+import { mul } from './math';
+import { paintOrder } from './order';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -53,12 +54,15 @@ void main() {
 }`;
 const PLANE_FS = `#version 300 es
 precision highp float;
+const float SOLID = 0.98;
 in vec2 v_uv;
 uniform sampler2D u_tex;
 uniform float u_alpha;
 uniform vec4 u_uv;
 uniform float u_radius;
 uniform vec2 u_size;
+// 1 = only the solid pixels, 2 = only the see-through ones (see render)
+uniform float u_pass;
 out vec4 outColor;
 void main() {
   // the texture is premultiplied, so is the output
@@ -70,6 +74,7 @@ void main() {
     c *= clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
   }
   if (c.a < 0.004) discard;
+  if (u_pass < 1.5 ? c.a < SOLID : c.a >= SOLID) discard;
   outColor = c;
 }`;
 const LINE_VS = `#version 300 es
@@ -192,6 +197,7 @@ class SceneRenderer {
   private uUv: WebGLUniformLocation | null;
   private uRadius: WebGLUniformLocation | null;
   private uSize: WebGLUniformLocation | null;
+  private uPass: WebGLUniformLocation | null;
   private uVp: WebGLUniformLocation | null;
   private uColor: WebGLUniformLocation | null;
   private meshes = new Map<Shape3D, Mesh>();
@@ -213,6 +219,7 @@ class SceneRenderer {
     this.uUv = gl.getUniformLocation(this.planeProg, 'u_uv');
     this.uRadius = gl.getUniformLocation(this.planeProg, 'u_radius');
     this.uSize = gl.getUniformLocation(this.planeProg, 'u_size');
+    this.uPass = gl.getUniformLocation(this.planeProg, 'u_pass');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -353,14 +360,11 @@ class SceneRenderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.CULL_FACE);
 
-    // far to near, so see-through pixels blend over what is behind them. the depth buffer sorts out
-    // planes that cut through each other.
-    const order = planes
-      .map((plane, index) => {
-        const c = transformPoint(plane.model, 0, 0, 0);
-        return { plane, index, dist: Math.hypot(c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]) };
-      })
-      .sort((a, b) => b.dist - a.dist);
+    // back to front (see order.ts), so see-through pixels blend over what is behind them.
+    // each plane is drawn twice: its solid pixels write depth, which sorts out planes that cut
+    // through each other; its see-through pixels (soft edges, shadows, fades) only test depth, so
+    // they never punch a hole into a plane that is painted after them.
+    const order = paintOrder(planes, viewProj, eye);
 
     gl.useProgram(this.planeProg);
     gl.activeTexture(gl.TEXTURE0);
@@ -368,7 +372,8 @@ class SceneRenderer {
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
     // nudge each one toward the viewer by a few depth steps per layer
     gl.enable(gl.POLYGON_OFFSET_FILL);
-    for (const { plane, index } of order) {
+    for (const index of order) {
+      const plane = planes[index]!;
       if (!(plane.alpha > 0.001)) continue;
       gl.polygonOffset(0, -4 * index);
       if (!this.bindPlaneTexture(plane, slot)) continue;
@@ -385,8 +390,17 @@ class SceneRenderer {
       } else gl.uniform1f(this.uRadius, 0);
       const mesh = this.mesh(plane.shape ?? 'plane');
       gl.bindVertexArray(mesh.vao);
+      // a plane that is faded as a whole has no solid pixels
+      if (plane.alpha >= 0.98) {
+        gl.depthMask(true);
+        gl.uniform1f(this.uPass, 1);
+        gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+      }
+      gl.depthMask(false);
+      gl.uniform1f(this.uPass, 2);
       gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
     }
+    gl.depthMask(true);
     gl.disable(gl.POLYGON_OFFSET_FILL);
 
     if (lines.length > 0) {
