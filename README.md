@@ -20,7 +20,7 @@
 
 ## features
 
-- **timeline** with video, image, text, shape and audio tracks
+- **timeline** with video, image, text, shape and audio tracks, drop clips inbetween others
 - **real time preview**, move / scale / rotate right on the picture
 - **keyframes** on almost every number
 - **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat, and effects can pulse and lock their rhythm to it
@@ -83,6 +83,7 @@ press `?` in the editor for the full list. the main ones:
 
 - `space` play / pause, `j` `k` `l` shuttle
 - `s` split, `delete` delete, `shift+delete` ripple delete
+- `[` / `]` cut off the left / right side of the clip at the playhead
 - `ctrl+z` / `ctrl+shift+z` undo / redo
 - `ctrl+c` `ctrl+x` `ctrl+v` `ctrl+d` copy, cut, paste, duplicate
 - `ctrl+g` / `ctrl+shift+g` group / ungroup

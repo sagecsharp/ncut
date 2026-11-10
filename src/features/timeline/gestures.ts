@@ -19,6 +19,7 @@ import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { findFollowers, placeFollowers } from './effectFollow';
 import type { ClipSpan } from './effectFollow';
+import { planGroupTrim } from './groupTrim';
 import { hitKey } from './keyGeometry';
 import { groupIds, marqueeReplaceList, pressedSelection } from './selectionRules';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
@@ -94,7 +95,15 @@ interface TrimGesture extends Base {
   points: number[];
   /** edge time minus pointer time at press, so the edge does not jump to the pointer */
   offset: number;
-  /** effect clips that follow the trimmed clip, and the clips as they were when the trim started */
+  /** the edge of the grabbed clip at press: the drag moves every trimmed clip by (edge now - this) */
+  startEdge: number;
+  /** the selection at press: with several clips in it the drag trims all of them (see planGroupTrim) */
+  selection: string[];
+  /** the clips this drag trims (just the grabbed one, or every selected clip that can be) */
+  ids: string[];
+  /** true when the drag trims more than the grabbed clip */
+  group: boolean;
+  /** effect clips that follow the trimmed clips, and the clips as they were when the trim started */
   follow: EffectClip[];
   baseClips: Clip[];
 }
@@ -521,7 +530,7 @@ export function createGestures(env: GestureEnv) {
       const project = st.project;
       if (project) {
         t.baseClips = project.clips;
-        t.follow = findFollowers(project.clips, project.tracks, [t.id]);
+        t.follow = findFollowers(project.clips, project.tracks, t.ids);
       }
     }
     let time = Math.max(0, laneX(t.geo, t.cx) / t.zoom + t.offset);
@@ -531,7 +540,12 @@ export function createGestures(env: GestureEnv) {
       time = r.time;
       hit = r.hit;
     }
-    st.trimClip(t.id, t.edge, time, { skipHistory: true });
+    if (t.group) {
+      // every selected clip gets its own start edge + the same delta, planned from the state at press (no drift)
+      for (const step of planGroupTrim(t.baseClips, st.project?.tracks ?? [], t.selection, t.id, t.edge, time - t.startEdge)) {
+        st.trimClip(step.id, t.edge, step.time, { skipHistory: true });
+      }
+    } else st.trimClip(t.id, t.edge, time, { skipHistory: true });
     if (t.follow.length > 0) followTrim(t);
     if (hit !== null) {
       const c = useEditor.getState().project?.clips.find((x) => x.id === t.id);
@@ -541,12 +555,15 @@ export function createGestures(env: GestureEnv) {
     env.overlays.setSnap(hit, t.zoom);
   }
 
-  /** effects that are put on the trimmed clip take its new start and end when their own track has room */
+  /** effects that are put on the trimmed clips take their new start and end when their own track has room */
   function followTrim(t: TrimGesture): void {
     const st = store();
-    const trimmed = st.project?.clips.find((c) => c.id === t.id);
-    if (!trimmed) return;
-    const changes = new Map<string, ClipSpan>([[t.id, { start: trimmed.start, duration: trimmed.duration }]]);
+    const changes = new Map<string, ClipSpan>();
+    for (const id of t.ids) {
+      const trimmed = st.project?.clips.find((c) => c.id === id);
+      if (trimmed) changes.set(id, { start: trimmed.start, duration: trimmed.duration });
+    }
+    if (changes.size === 0) return;
     for (const r of placeFollowers(t.baseClips, t.follow, changes)) {
       const now = store().project?.clips.find((c) => c.id === r.id);
       if (!now) continue;
@@ -765,6 +782,11 @@ export function createGestures(env: GestureEnv) {
       const edgeAttr = target.closest<HTMLElement>('[data-trim]')?.dataset.trim;
       if (edgeAttr === 'start' || edgeAttr === 'end') {
         if (!st.selection.includes(id)) st.select([id], 'replace');
+        // with several clips selected the drag trims all of them: they move with it, so they are no snap points
+        const selection = store().selection;
+        const planned = planGroupTrim(project.clips, project.tracks, selection, id, edgeAttr, 0).map((x) => x.id);
+        const group = planned.length > 1 || (planned.length === 1 && planned[0] !== id);
+        const ids = group ? planned : [id];
         begin(
           {
             ...base(e, geo, layout, captureEl),
@@ -772,7 +794,11 @@ export function createGestures(env: GestureEnv) {
             id,
             edge: edgeAttr,
             offset: (edgeAttr === 'start' ? clip.start : clipEnd(clip)) - laneX(geo, e.clientX) / st.zoom,
-            points: timelineSnapPoints(project, [id, ...findFollowers(project.clips, project.tracks, [id]).map((f) => f.id)], [usePlayback.getState().time]),
+            startEdge: edgeAttr === 'start' ? clip.start : clipEnd(clip),
+            selection,
+            ids,
+            group,
+            points: timelineSnapPoints(project, [...ids, ...findFollowers(project.clips, project.tracks, ids).map((f) => f.id)], [usePlayback.getState().time]),
             follow: [],
             baseClips: project.clips,
           },

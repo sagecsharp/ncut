@@ -12,9 +12,8 @@ import { getLastEffect, setLastEffect } from './lastEffect';
 import { SHAPE_PRESETS } from '../media/shapePresets';
 import { openPalette } from './paletteStore';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
-import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
-import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, ungroupIdsNow } from '../timeline/actions';
-import { applyFollowerSpans } from '../timeline/followApply';
+import { collectSnapPoints, projectDuration } from '../../lib/timelineOps';
+import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, trimToPlayhead, ungroupIdsNow } from '../timeline/actions';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
 
@@ -202,26 +201,6 @@ function seekMarker(dir: -1 | 1): void {
 
 function addCameraHere(): void {
   useEditor.getState().addCamera({ start: usePlayback.getState().time });
-}
-
-function trimToPlayhead(edge: 'start' | 'end'): void {
-  const { project, selection, trimClip } = useEditor.getState();
-  if (!project || selection.length === 0) return;
-  const time = usePlayback.getState().time;
-  const targets = project.clips.filter(
-    (c) => selection.includes(c.id) && (edge === 'start' ? time < clipEnd(c) : time > c.start),
-  );
-  if (targets.length === 0) {
-    toast('move the playhead onto the selected clip first');
-    return;
-  }
-  useEditor.getState().pushHistory();
-  const skip = { skipHistory: true };
-  for (const c of targets) {
-    trimClip(c.id, edge, time, skip);
-    // effects put on the clip are trimmed with it, like when the edge is dragged
-    applyFollowerSpans(project, c.id, skip);
-  }
 }
 
 function deleteSelection(ripple: boolean): void {
@@ -533,7 +512,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     mutates: true,
     keys: [['[']],
     group: 'editing',
-    description: 'trim clip start to playhead',
+    description: 'cut off the left side: the clip starts at the playhead',
     match: (e) => byCode('BracketLeft')(e) && notMapped(e),
     run: () => trimToPlayhead('start'),
   },
@@ -542,7 +521,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     mutates: true,
     keys: [[']']],
     group: 'editing',
-    description: 'trim clip end to playhead',
+    description: 'cut off the right side: the clip ends at the playhead',
     match: (e) => byCode('BracketRight')(e) && notMapped(e),
     run: () => trimToPlayhead('end'),
   },

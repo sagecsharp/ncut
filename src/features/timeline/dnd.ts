@@ -19,6 +19,8 @@ import { clipEnd, findFreeStart } from '../../lib/timelineOps';
 import { snapTimeFast as snapTime } from './snapSearch';
 import { timelineSnapPoints } from './markers';
 import { swapTarget } from './swap';
+import { planDropInsert } from './dropInsert';
+import type { DropPlan } from './dropInsert';
 import { effectDropTarget, pickEffectTrack } from './effectTarget';
 import { createEffectClip } from '../../lib/factory';
 import { importFiles } from '../../media/importer';
@@ -44,6 +46,8 @@ interface Target {
   /** lane under the pointer regardless of kind */
   hitIndex?: number;
   zone?: 'top' | 'bottom';
+  /** set when the drop opens a hole inbetween clips of the lane */
+  plan?: DropPlan;
 }
 
 function kindOfPayload(payload: DragPayload, assets: MediaAsset[]): TrackKind | null {
@@ -169,6 +173,9 @@ export function createDnd(env: DndEnv) {
     }
     const track = project.tracks[hit.index];
     if (track && !track.locked && kind === track.kind) {
+      // a clip that is dropped (not an os file) is put inbetween clips instead of jumping to a far free spot
+      const plan = payload ? planDropInsert(project, track.id, start, duration) : null;
+      if (plan) return { start: plan.start, duration, trackId: track.id, laneIndex: hit.index, hitIndex: hit.index, plan };
       const free = findFreeStart(project, track.id, start, duration);
       return { start: free, duration, trackId: track.id, laneIndex: hit.index, hitIndex: hit.index };
     }
@@ -310,7 +317,8 @@ export function createDnd(env: DndEnv) {
           h: layout.heights[target.laneIndex]! - CLIP_INSET * 2,
         },
         ghostKind(last.payload),
-        ghostLabel(last.payload),
+        target.plan?.insert ? 'insert here' : ghostLabel(last.payload),
+        target.plan?.insert === true,
       );
     } else {
       env.overlays.setGhost(null);
@@ -406,16 +414,20 @@ export function createDnd(env: DndEnv) {
         else if (payload.kind === 'camera') st.addCamera({ trackId, start: target.start, skipHistory: true });
         else if (payload.kind === 'shape') st.addShape({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
         else st.addText({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
-      } else if (payload.kind === 'asset') {
-        st.insertAsset(payload.assetId, { trackId: target.trackId, start: target.start });
-      } else if (payload.kind === 'effect') {
-        st.addEffect(payload.effect, { trackId: target.trackId, start: target.start });
-      } else if (payload.kind === 'camera') {
-        st.addCamera({ trackId: target.trackId, start: target.start });
-      } else if (payload.kind === 'shape') {
-        st.addShape({ trackId: target.trackId, start: target.start, preset: payload.preset });
+      } else if (target.plan?.insert) {
+        // one undo step: the clips after the insert point move right, then the new clip goes in the hole
+        st.pushHistory();
+        let at = target.start;
+        const moved = target.plan.moves.length > 0 && st.moveClips(target.plan.moves, { skipHistory: true });
+        if (target.plan.moves.length > 0 && !moved) {
+          // refused (no room for a follower ...): the drop goes to the nearest free spot like before
+          at = findFreeStart(st.project, target.trackId!, target.start, target.duration);
+        }
+        const made = placeOnLane(payload, target.trackId, at, true);
+        // nothing was made after the clips moved: take the move back too
+        if (!made && moved) useEditor.getState().rollback();
       } else {
-        st.addText({ trackId: target.trackId, start: target.start, preset: payload.preset });
+        placeOnLane(payload, target.trackId, target.start, false);
       }
       return;
     }
@@ -424,6 +436,18 @@ export function createDnd(env: DndEnv) {
       const tr = fileTarget.hitIndex !== undefined ? st.project.tracks[fileTarget.hitIndex] : undefined;
       void dropFiles(files, fileTarget.start, tr && !tr.locked ? { id: tr.id, kind: tr.kind } : undefined);
     }
+  }
+
+  /** put a dragged payload on a lane at a start. returns false when nothing was made */
+  function placeOnLane(payload: DragPayload, trackId: string | undefined, start: number, skipHistory: boolean): boolean {
+    const st = useEditor.getState();
+    const o = { trackId, start, ...(skipHistory ? { skipHistory: true } : {}) };
+    if (payload.kind === 'asset') return st.insertAsset(payload.assetId, o) !== null;
+    if (payload.kind === 'effect') return st.addEffect(payload.effect, o) !== null;
+    if (payload.kind === 'camera') return !!st.addCamera(o);
+    if (payload.kind === 'shape') return !!st.addShape({ ...o, preset: payload.preset });
+    if (payload.kind === 'text') return !!st.addText({ ...o, preset: payload.preset });
+    return false;
   }
 
   /** import os files, then lay the resulting assets out one after another from the drop time */

@@ -59,7 +59,7 @@ export class Overlays {
     if (el.hidden) el.hidden = false;
   }
 
-  setGhost(r: OverlayRect | null, kind?: GhostKind, label?: string): void {
+  setGhost(r: OverlayRect | null, kind?: GhostKind, label?: string, insert = false): void {
     const el = this.ghostEl;
     if (!el) return;
     if (!r) {
@@ -70,6 +70,9 @@ export class Overlays {
     el.style.width = `${Math.max(2, r.w)}px`;
     el.style.height = `${r.h}px`;
     el.dataset.kind = kind ?? 'asset';
+    // a drop inbetween clips: the css marks the cut with a solid edge
+    if (insert) el.dataset.insert = '';
+    else delete el.dataset.insert;
     const text = label ?? '';
     const span = el.firstElementChild;
     if (span && span.textContent !== text) span.textContent = text;
