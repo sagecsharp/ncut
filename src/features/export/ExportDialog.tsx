@@ -10,6 +10,7 @@ import { CODEC_LABEL, exportProject, isAudioContainer, outputSize, planExport } 
 import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality, VideoContainer } from './exporter';
 import { markerRange, rangeFrameCount, resolveRange } from './range';
 import type { RangeMode } from './range';
+import { loadExportSettings, saveExportSettings } from './settings';
 import './export.css';
 
 export interface ExportDialogProps {
@@ -75,10 +76,12 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
 
   const [phase, setPhase] = useState<Phase>('setup');
   const [fileName, setFileName] = useState('');
-  const [container, setContainer] = useState<ExportContainer>('mp4');
-  const [scale, setScale] = useState(1);
+  // the last used choices come back (the dialog mounts fresh every time it opens)
+  const [saved] = useState(loadExportSettings);
+  const [container, setContainer] = useState<ExportContainer>(saved.container ?? 'mp4');
+  const [scale, setScale] = useState(saved.scale ?? 1);
   const [fps, setFps] = useState(30);
-  const [quality, setQuality] = useState<ExportQuality>('medium');
+  const [quality, setQuality] = useState<ExportQuality>(saved.quality ?? 'medium');
   const [includeAudio, setIncludeAudio] = useState(true);
   const [plans, setPlans] = useState<Plans>(PROBING);
   const [rangeMode, setRangeMode] = useState<RangeMode>('all');
@@ -112,7 +115,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     if (!open) return;
     setPhase('setup');
     setFileName(sanitizeName(projectName));
-    setFps(projectFps);
+    setFps(saved.fps !== undefined && (FPS_OPTIONS as readonly number[]).includes(saved.fps) ? saved.fps : projectFps);
     setProgress(null);
     setDone(null);
     setError('');
@@ -212,6 +215,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setProgress({ phase: 'audio', progress: 0, frame: 0, totalFrames });
     setPhase('exporting');
     const name = `${sanitizeName(fileName || project.name)}.${container}`;
+    saveExportSettings({ container, quality, fps, scale });
     try {
       const blob = await exportProject(
         project,
@@ -255,6 +259,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   if (!project) return null;
 
   const size = outputSize(project, scale);
+  const outName = `${sanitizeName(fileName || project.name)}.${container}`;
   const frac = progress ? progress.progress : 0;
   const eta = frac > 0.02 ? (elapsed / frac) * (1 - frac) : null;
 
@@ -286,6 +291,9 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             spellCheck={false}
           />
         </label>
+        <div className="export-summary" title="the file that will be saved">
+          saves as <span className="mono">{outName}</span>
+        </div>
         <div className="export-grid">
           <label className="field">
             <span className="field-label">format</span>

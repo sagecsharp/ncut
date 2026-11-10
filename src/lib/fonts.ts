@@ -5,6 +5,7 @@
  * import-safe in node: nothing touches document / window / indexedDB at module load.
  */
 import type { Project } from '../types';
+import { faceKey, readFontMeta } from '../features/fonts/fontMeta';
 
 export type FontCategory = 'sans' | 'serif' | 'display' | 'handwriting' | 'mono' | 'system' | 'local' | 'imported';
 
@@ -149,9 +150,9 @@ export function listFonts(): FontInfo[] {
 
 // ---------- loading ----------
 
-const cssLoads = new Map<string, Promise<void>>();
+const cssLoads = new Map<string, Promise<boolean>>();
 const ready = new Set<string>();
-const inflight = new Map<string, Promise<void>>();
+const inflight = new Map<string, Promise<boolean>>();
 
 function hasDocFonts(): boolean {
   return typeof document !== 'undefined' && !!document.fonts;
@@ -161,8 +162,8 @@ function descriptor(family: string, weight: number, italic: boolean): string {
   return `${italic ? 'italic ' : ''}${weight >= 600 ? 700 : 400} 48px "${family}"`;
 }
 
-/** import the stylesheet that holds the closest file to what is asked (the browser synthesizes the rest) */
-function loadCss(b: Bundled, weight: number, italic: boolean): Promise<void> {
+/** import the stylesheet that holds the closest file to what is asked (the browser synthesizes the rest). false = the import failed. */
+function loadCss(b: Bundled, weight: number, italic: boolean): Promise<boolean> {
   const w = weight >= 600 ? 7 : 4;
   const order: FileKey[] = [
     `${italic ? 'i' : 'r'}${w}` as FileKey,
@@ -171,29 +172,33 @@ function loadCss(b: Bundled, weight: number, italic: boolean): Promise<void> {
     'r4',
   ];
   const key = order.find((k) => b.files[k]);
-  if (!key) return Promise.resolve();
+  if (!key) return Promise.resolve(true);
   const id = `${b.family}|${key}`;
   let p = cssLoads.get(id);
   if (!p) {
     p = Promise.resolve()
       .then(() => b.files[key]!())
-      .then(() => undefined)
+      .then(() => true)
       .catch(() => {
         cssLoads.delete(id); // allow a retry later
+        return false;
       });
     cssLoads.set(id, p);
   }
   return p;
 }
 
-/** make a family usable on a canvas. resolves when it is loaded (or cannot be: never rejects). */
-export async function ensureFont(family: string, weight: number = 400, italic = false, text?: string): Promise<void> {
+/**
+ * make a family usable on a canvas. never rejects. resolves true when the font is loaded (or there is nothing to load:
+ * system fonts, no document), false when loading failed: nothing is marked ready then, so a later call tries again.
+ */
+export async function ensureFont(family: string, weight: number = 400, italic = false, text?: string): Promise<boolean> {
   try {
-    if (!family || !hasDocFonts()) return;
+    if (!family || !hasDocFonts()) return true;
     const w = weight >= 600 ? 700 : 400;
     const id = `${family}|${w}|${italic ? 1 : 0}`;
     const customText = text !== undefined && text.trim() !== '';
-    if (!customText && ready.has(id)) return;
+    if (!customText && ready.has(id)) return true;
     const runId = customText ? `${id}|${text}` : id;
     let p = inflight.get(runId);
     if (!p) {
@@ -202,32 +207,36 @@ export async function ensureFont(family: string, weight: number = 400, italic = 
       });
       inflight.set(runId, p);
     }
-    await p;
+    return await p;
   } catch {
-    /* never rejects */
+    return false;
   }
 }
 
-async function run(family: string, weight: number, italic: boolean, text: string | undefined, id: string): Promise<void> {
+async function run(family: string, weight: number, italic: boolean, text: string | undefined, id: string): Promise<boolean> {
   let b = BUNDLED_BY_FAMILY.get(family);
   if (!b && !importedFonts.has(family)) {
     await restoreImportedFonts(); // a project can name an imported font before the list was ever asked for
     b = BUNDLED_BY_FAMILY.get(family);
   }
-  if (b) await loadCss(b, weight, italic);
+  const cssOk = b ? await loadCss(b, weight, italic) : true;
   const desc = descriptor(family, weight, italic);
   const wasThere = safeCheck(desc, text ?? SAMPLE);
+  let loaded = true;
   try {
     await document.fonts.load(desc, text ?? SAMPLE);
   } catch {
-    /* unknown / unloadable family: the canvas falls back */
+    loaded = false; // the font file could not be fetched / decoded: the canvas falls back
   }
+  // a failed load is not "ready": the next ensureFont tries again instead of showing the fallback for good
+  if (!cssOk || !loaded) return false;
   if (!ready.has(id)) {
     ready.add(id);
     if (b || !wasThere) bump();
   } else if (!wasThere && safeCheck(desc, text ?? SAMPLE)) {
     bump(); // new unicode ranges arrived for a custom text
   }
+  return true;
 }
 
 function safeCheck(desc: string, text: string): boolean {
@@ -238,22 +247,27 @@ function safeCheck(desc: string, text: string): boolean {
   }
 }
 
-/** load every font the project's text clips use. the exporter awaits this before the first frame. */
-export async function ensureProjectFonts(project: Project): Promise<void> {
+/**
+ * load every font the project's text clips use. the exporter awaits this before the first frame.
+ * resolves with the families that could not be loaded (their text is drawn in the fallback font). never rejects.
+ */
+export async function ensureProjectFonts(project: Project): Promise<string[]> {
   try {
     await restoreImportedFonts();
-    const jobs: Promise<void>[] = [];
+    const jobs: Promise<string | null>[] = [];
     const seen = new Set<string>();
     for (const c of project.clips) {
       if (c.type !== 'text') continue;
       const key = `${c.fontFamily}|${c.fontWeight}|${c.italic}|${c.text}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      jobs.push(ensureFont(c.fontFamily, c.fontWeight, c.italic, c.text));
+      const family = c.fontFamily;
+      jobs.push(ensureFont(family, c.fontWeight, c.italic, c.text).then((ok) => (ok ? null : family)));
     }
-    await Promise.all(jobs);
+    const failed = (await Promise.all(jobs)).filter((f): f is string => f !== null);
+    return [...new Set(failed)];
   } catch {
-    /* never rejects */
+    return [];
   }
 }
 
@@ -323,19 +337,39 @@ export async function loadLocalFonts(): Promise<number> {
 // ---------- imported font files (own indexeddb database) ----------
 
 const DB_NAME = 'ncut-fonts';
-const STORE = 'fonts';
+const DB_VERSION = 2;
+/** version 1 kept one row per family (keyPath 'family'). version 2 keeps one row per family + weight + style. */
+const LEGACY_STORE = 'fonts';
+const STORE = 'faces';
 
 interface StoredFont {
+  /** faceKey(family, weight, italic) */
+  key: string;
   family: string;
+  weight: number;
+  italic: boolean;
   bytes: ArrayBuffer;
 }
 
 function openFontDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') return reject(new Error('no indexeddb'));
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE, { keyPath: 'family' });
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'key' });
+      const tx = req.transaction;
+      if (tx && db.objectStoreNames.contains(LEGACY_STORE)) {
+        // old rows (family only) become 400 normal faces
+        const all = tx.objectStore(LEGACY_STORE).getAll();
+        all.onsuccess = () => {
+          const faceStore = tx.objectStore(STORE);
+          for (const old of all.result as Array<{ family: string; bytes: ArrayBuffer }>) {
+            faceStore.put({ key: faceKey(old.family, 400, false), family: old.family, weight: 400, italic: false, bytes: old.bytes } satisfies StoredFont);
+          }
+          db.deleteObjectStore(LEGACY_STORE);
+        };
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('could not open the font database'));
@@ -357,16 +391,32 @@ async function dbRun<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDB
   }
 }
 
-const faces = new Map<string, FontFace>();
+/** every registered face, by faceKey */
+const faces = new Map<string, { family: string; face: FontFace }>();
 
-async function registerImported(family: string, bytes: ArrayBuffer): Promise<void> {
-  const old = faces.get(family);
-  if (old) document.fonts.delete(old);
-  const face = new FontFace(family, bytes.slice(0));
+/** one picker entry per family, summed up from its faces */
+function refreshImportedInfo(family: string): void {
+  const weights = new Set<number>();
+  let italic = false;
+  for (const [key, e] of faces) {
+    if (e.family !== family) continue;
+    const parts = key.split('|');
+    weights.add(Number(parts[parts.length - 2]) || 400);
+    if (parts[parts.length - 1] === 'italic') italic = true;
+  }
+  if (weights.size === 0) importedFonts.delete(family);
+  else importedFonts.set(family, { family, category: 'imported', weights: [...weights].sort((a, b) => a - b), italic });
+}
+
+async function registerImported(family: string, weight: number, italic: boolean, bytes: ArrayBuffer): Promise<void> {
+  const key = faceKey(family, weight, italic);
+  const face = new FontFace(family, bytes.slice(0), { weight: String(weight), style: italic ? 'italic' : 'normal' });
   await face.load();
+  const old = faces.get(key);
+  if (old) document.fonts.delete(old.face);
   document.fonts.add(face);
-  faces.set(family, face);
-  importedFonts.set(family, { family, category: 'imported', weights: [400], italic: false });
+  faces.set(key, { family, face });
+  refreshImportedInfo(family);
   for (const w of [400, 700]) for (const i of [0, 1]) ready.add(`${family}|${w}|${i}`);
 }
 
@@ -381,9 +431,9 @@ export function restoreImportedFonts(): Promise<void> {
       const all = await dbRun<StoredFont[]>('readonly', (s) => s.getAll() as IDBRequest<StoredFont[]>);
       let any = false;
       for (const f of all) {
-        if (importedFonts.has(f.family)) continue; // imported this session before the restore finished
+        if (faces.has(f.key)) continue; // imported this session before the restore finished
         try {
-          await registerImported(f.family, f.bytes);
+          await registerImported(f.family, f.weight ?? 400, !!f.italic, f.bytes);
           any = true;
         } catch {
           /* a broken file stays in the database, it just is not offered */
@@ -409,67 +459,28 @@ function nameFromFile(file: File): string {
   return (cleaned || base || 'imported font').slice(0, 60);
 }
 
-/** read the family name (id 16, else 1) from a ttf / otf name table. returns '' when it cannot. */
-function readSfntFamily(buf: ArrayBuffer): string {
-  try {
-    const v = new DataView(buf);
-    const tag = v.getUint32(0);
-    if (tag !== 0x00010000 && tag !== 0x4f54544f && tag !== 0x74727565) return ''; // not ttf / otf / true
-    const n = v.getUint16(4);
-    let off = 0;
-    for (let i = 0; i < n; i++) {
-      const rec = 12 + i * 16;
-      if (v.getUint32(rec) === 0x6e616d65) {
-        off = v.getUint32(rec + 8); // 'name' table
-        break;
-      }
-    }
-    if (!off) return '';
-    const count = v.getUint16(off + 2);
-    const strings = off + v.getUint16(off + 4);
-    let best = '';
-    let bestScore = 0;
-    for (let i = 0; i < count; i++) {
-      const r = off + 6 + i * 12;
-      const platform = v.getUint16(r);
-      const nameId = v.getUint16(r + 6);
-      if (nameId !== 1 && nameId !== 16) continue;
-      const len = v.getUint16(r + 8);
-      const at = strings + v.getUint16(r + 10);
-      let s = '';
-      if (platform === 3 || platform === 0) {
-        for (let k = 0; k + 1 < len; k += 2) s += String.fromCharCode(v.getUint16(at + k));
-      } else if (platform === 1) {
-        for (let k = 0; k < len; k++) s += String.fromCharCode(v.getUint8(at + k));
-      } else continue;
-      const score = (nameId === 16 ? 2 : 1) + (platform === 3 ? 0.5 : 0);
-      if (s.trim() && score > bestScore) {
-        best = s.trim();
-        bestScore = score;
-      }
-    }
-    return best;
-  } catch {
-    return '';
-  }
-}
-
-/** add a .ttf / .otf / .woff / .woff2 file. keeps the bytes so it is there next session. throws a readable error. */
+/**
+ * add a .ttf / .otf / .woff / .woff2 file. keeps the bytes so it is there next session. throws a readable error.
+ * several files of one family (regular, bold, italic ...) all stay: they are told apart by weight + style.
+ */
 export async function importFontFile(file: File): Promise<FontInfo> {
   if (!hasDocFonts()) throw new Error('fonts are not available here');
   if (!FONT_EXT.test(file.name)) throw new Error('use a .ttf, .otf, .woff or .woff2 file');
   const bytes = await file.arrayBuffer();
-  let family = readSfntFamily(bytes) || nameFromFile(file);
+  const meta = readFontMeta(bytes, file.name);
+  let family = meta.family || nameFromFile(file);
   family = family.replace(/["\\]/g, '').slice(0, 60) || 'imported font';
   // never shadow a bundled / system family
   if (BUNDLED_BY_FAMILY.has(family) || SYSTEM_FONTS.includes(family)) family = `${family} (imported)`;
   try {
-    await registerImported(family, bytes);
+    await registerImported(family, meta.weight, meta.italic, bytes);
   } catch {
     throw new Error(`could not read ${file.name}, is it a valid font?`);
   }
   try {
-    await dbRun('readwrite', (s) => s.put({ family, bytes } satisfies StoredFont));
+    await dbRun('readwrite', (s) =>
+      s.put({ key: faceKey(family, meta.weight, meta.italic), family, weight: meta.weight, italic: meta.italic, bytes } satisfies StoredFont),
+    );
   } catch {
     /* works for this session, just not saved */
   }
@@ -478,17 +489,23 @@ export async function importFontFile(file: File): Promise<FontInfo> {
   return importedFonts.get(family)!;
 }
 
+/** remove an imported family with all its files */
 export async function removeImportedFont(family: string): Promise<void> {
-  const face = faces.get(family);
-  if (face && hasDocFonts()) document.fonts.delete(face);
-  faces.delete(family);
+  const keys = [...faces.entries()].filter(([, e]) => e.family === family).map(([k]) => k);
+  for (const k of keys) {
+    const e = faces.get(k);
+    if (e && hasDocFonts()) document.fonts.delete(e.face);
+    faces.delete(k);
+  }
   importedFonts.delete(family);
   for (const k of [...ready]) if (k.startsWith(`${family}|`)) ready.delete(k);
   invalidateList();
-  try {
-    await dbRun('readwrite', (s) => s.delete(family));
-  } catch {
-    /* nothing stored */
+  for (const k of keys) {
+    try {
+      await dbRun('readwrite', (s) => s.delete(k));
+    } catch {
+      /* nothing stored */
+    }
   }
   bump();
 }

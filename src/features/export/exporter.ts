@@ -23,13 +23,14 @@ import {
 } from 'mediabunny';
 import type { AudioCodec, VideoCodec, WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
-import { neededClipsAt, renderFrame } from '../../engine/draw';
+import { neededClipsAt, releaseRenderResources, renderFrame } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
 import { type TimeRange, clampRange, frameTime, rangeFrameCount } from './range';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
-import { MIX_CHANNELS, MIX_SAMPLE_RATE, renderAudioMix, sliceAudioBuffer } from './audioMix';
+import { MIX_CHANNELS, MIX_SAMPLE_RATE, createAudioMixer, sliceAudioBuffer } from './audioMix';
+import type { AudioMixer } from './audioMix';
 
 export type VideoContainer = 'mp4' | 'webm';
 /** wav / ogg are audio only files (no picture) */
@@ -186,8 +187,55 @@ interface VideoFeed {
   gen: AsyncGenerator<WrappedCanvas | null, void, unknown>;
   current: DrawSource | null;
   done: boolean;
-  /** the first frame was pulled early (a transition shows it before the clip starts) */
+  /** the first frame was pulled early (a transition shows it before the clip starts). set by the pull itself, whatever it yielded. */
   primed?: boolean;
+}
+
+/**
+ * feeds the chunks of an audio mixer to an audio source in 1 s slices, in order. `to(seconds)` mixes (one chunk at a
+ * time) and adds everything up to that time of the mix.
+ */
+function createAudioPump(mixer: AudioMixer, source: AudioBufferSource) {
+  let pos = 0;
+  let idx = 0;
+  let cur: AudioBuffer | null = null;
+  return {
+    /** frames fed so far */
+    position: () => pos,
+    async to(untilSeconds: number): Promise<void> {
+      const target = Math.min(mixer.totalFrames, Math.ceil(untilSeconds * MIX_SAMPLE_RATE));
+      while (pos < target) {
+        const chunk = mixer.chunks[idx];
+        if (!chunk) return;
+        if (!cur) cur = await mixer.renderChunk(idx);
+        const chunkEnd = chunk.startFrame + chunk.frames;
+        const end = Math.min(target, chunkEnd, pos + MIX_SAMPLE_RATE);
+        await source.add(sliceAudioBuffer(cur, pos - chunk.startFrame, end - chunk.startFrame));
+        pos = end;
+        if (pos >= chunkEnd) {
+          cur = null;
+          idx++;
+        }
+      }
+    },
+  };
+}
+
+/**
+ * the one source timestamp of a clip that is only needed as a frozen edge: the clip ended before the range starts
+ * (a transition still shows its last frame) or starts after it (a transition shows its first frame early).
+ */
+export function clipEdgeTimestamp(clip: VideoClip, fps: number, assetDuration: number, firstTimestamp = 0, rangeStart = 0): number {
+  const end = clip.start + clip.duration;
+  const maxT = assetDuration > 0 ? Math.max(0, assetDuration - 0.001) : Infinity;
+  const minT = Math.min(maxT, Math.max(0, firstTimestamp));
+  let local = 0;
+  if (rangeStart >= end - EPS) {
+    // the last frame of the clip on the frame grid of the project
+    const lastFrame = Math.max(0, Math.ceil(end * fps - EPS) - 1);
+    local = Math.min(clip.duration, Math.max(0, lastFrame / fps - clip.start));
+  }
+  return Math.min(maxT, Math.max(minT, 0, clip.trimStart + local * clip.speed));
 }
 
 /** source timestamps (seconds in the asset) for every output frame where the clip is visible */
@@ -254,30 +302,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   };
 
   // text must be drawn in its real font from the first frame (never rejects)
-  await ensureProjectFonts(project).catch(() => {});
-  if (signal?.aborted) throw abortError();
-
-  // ---- audio mix (phase 1) ----
-  let mix: AudioBuffer | null = null;
-  let audioCodec: AudioCodec | null = null;
-  if (options.includeAudio) {
-    report('audio', 0, 0);
-    await yieldToUi();
-    const res = await renderAudioMix(project, duration, signal, (f) => report('audio', f * 0.05, 0), rangeStart);
-    for (const w of res.warnings) onWarning?.(w);
-    mix = res.buffer;
-    if (mix) {
-      audioCodec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
-        numberOfChannels: MIX_CHANNELS,
-        sampleRate: MIX_SAMPLE_RATE,
-        quality: QUALITY_MEDIUM,
-      });
-      if (!audioCodec) {
-        onWarning?.('this browser cannot encode audio for this format, exported without sound');
-        mix = null;
-      }
-    }
-    report('audio', 0.05, 0);
+  for (const family of await ensureProjectFonts(project)) {
+    onWarning?.(`font "${family}" could not be loaded, its text is drawn in a fallback font`);
   }
   if (signal?.aborted) throw abortError();
 
@@ -287,6 +313,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   const images = new Map<string, DrawSource>();
   let output: Output | null = null;
   let finished = false;
+  let mixer: AudioMixer | null = null;
+  let audioCodec: AudioCodec | null = null;
 
   const resolver: SourceResolver = (clip: VideoClip | ImageClip) => {
     if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
@@ -319,7 +347,31 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   };
 
   try {
+    // ---- audio (mixed in chunks while the video renders) ----
+    if (options.includeAudio) {
+      report('audio', 0, 0);
+      await yieldToUi();
+      const m = createAudioMixer(project, duration, signal, onWarning, rangeStart);
+      if (m.hasAudio) {
+        mixer = m;
+        audioCodec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
+          numberOfChannels: MIX_CHANNELS,
+          sampleRate: MIX_SAMPLE_RATE,
+          quality: QUALITY_MEDIUM,
+        });
+        if (!audioCodec) {
+          onWarning?.('this browser cannot encode audio for this format, exported without sound');
+          mixer = null;
+          m.dispose();
+        }
+      } else m.dispose();
+      report('audio', 0.05, 0);
+    }
+    if (signal?.aborted) throw abortError();
+
     // ---- inputs for visible video / image clips ----
+    // clips a transition shows at the very first frame without the clip playing there (it ended before the range, or starts later)
+    const neededAtStart = new Set(neededClipsAt(project, rangeStart).map((c) => c.id));
     const hiddenTrack = new Set(project.tracks.filter((t) => t.kind !== 'video' || t.hidden).map((t) => t.id));
     for (const clip of project.clips) {
       if (hiddenTrack.has(clip.trackId)) continue;
@@ -363,9 +415,32 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         const first = await track.getFirstTimestamp();
         // one pooled canvas is enough: each frame is drawn right after it is pulled
         const sink = new CanvasSink(track, { poolSize: 1 });
-        const stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart);
-        if (stamps.length === 0) continue;
-        feeds.set(clip.id, { gen: sink.canvasesAtTimestamps(stamps), current: null, done: false });
+        let stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart);
+        const edgeOnly = stamps.length === 0;
+        if (edgeOnly) {
+          if (!neededAtStart.has(clip.id)) continue;
+          stamps = Float64Array.of(clipEdgeTimestamp(clip, fps, asset.duration, first, rangeStart));
+        }
+        const feed: VideoFeed = { gen: sink.canvasesAtTimestamps(stamps), current: null, done: false };
+        if (edgeOnly) {
+          // decode that one frame now, it never plays: the transition just holds it
+          try {
+            const next = await feed.gen.next();
+            if (!next.done && next.value) {
+              const c = next.value.canvas;
+              feed.current = { image: c, width: c.width, height: c.height };
+            }
+          } catch {
+            onWarning?.(`could not decode video "${asset.name}", the clip is skipped`);
+          }
+          feed.done = true;
+          try {
+            await feed.gen.return(undefined);
+          } catch {
+            // ignore
+          }
+        }
+        feeds.set(clip.id, feed);
       } catch {
         onWarning?.(`could not decode video "${asset.name}", the clip is skipped`);
       }
@@ -384,24 +459,17 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
     const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
     output.addVideoTrack(videoSource, { frameRate: fps });
-    let audioSource: AudioBufferSource | null = null;
-    if (mix && audioCodec) {
-      audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
+    let pump: ReturnType<typeof createAudioPump> | null = null;
+    if (mixer && audioCodec) {
+      const audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
       output.addAudioTrack(audioSource);
+      pump = createAudioPump(mixer, audioSource);
     }
     await output.start();
 
-    // audio is fed in 1 s slices, a little ahead of the video, so the muxer interleaves
-    const sliceFrames = MIX_SAMPLE_RATE;
-    let audioPos = 0;
+    // audio is fed in 1 s slices (mixed 30 s at a time), a little ahead of the video, so the muxer interleaves
     const feedAudio = async (untilSeconds: number) => {
-      if (!audioSource || !mix) return;
-      const target = Math.min(mix.length, Math.ceil(untilSeconds * MIX_SAMPLE_RATE));
-      while (audioPos < target) {
-        const end = Math.min(mix.length, audioPos + sliceFrames);
-        await audioSource.add(sliceAudioBuffer(mix, audioPos, end));
-        audioPos = end;
-      }
+      await pump?.to(untilSeconds);
     };
 
     lastYield = performance.now();
@@ -420,7 +488,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         const feed = feeds.get(clip.id);
         if (!feed || feed.done) continue;
         if (t < clip.start - EPS) {
-          if (feed.current) continue;
+          // at most one frame is pulled before the clip starts, even when the source gave no picture for it
+          if (feed.primed) continue;
           feed.primed = true;
         } else if (t >= clip.start + clip.duration - EPS) {
           continue;
@@ -500,6 +569,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     throw err;
   } finally {
     await dispose();
+    mixer?.dispose();
+    releaseRenderResources('export');
   }
 }
 
@@ -507,7 +578,6 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 async function exportAudioOnly(project: Project, container: AudioContainer, range: TimeRange, hooks: ExportHooks): Promise<Blob> {
   const { onProgress, onWarning, signal } = hooks;
   const length = range.end - range.start;
-  const frames = Math.max(1, Math.ceil(length * MIX_SAMPLE_RATE));
   let lastReport = 0;
   const report = (phase: ExportProgress['phase'], progress: number, force = true) => {
     const now = performance.now();
@@ -518,18 +588,25 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
 
   report('audio', 0);
   await yieldToUi();
-  const res = await renderAudioMix(project, length, signal, (f) => report('audio', f * 0.8, false), range.start);
-  for (const w of res.warnings) onWarning?.(w);
-  const mix = res.buffer;
-  if (!mix) throw new Error('there is no sound in this range, nothing to export');
-  if (signal?.aborted) throw abortError();
+  const mixer = createAudioMixer(project, length, signal, onWarning, range.start);
+  if (!mixer.hasAudio) {
+    mixer.dispose();
+    throw new Error('there is no sound in this range, nothing to export');
+  }
+  if (signal?.aborted) {
+    mixer.dispose();
+    throw abortError();
+  }
 
   const codec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
     numberOfChannels: MIX_CHANNELS,
     sampleRate: MIX_SAMPLE_RATE,
     quality: QUALITY_MEDIUM,
   });
-  if (!codec) throw new Error(`this browser cannot encode ${container} audio, try wav`);
+  if (!codec) {
+    mixer.dispose();
+    throw new Error(`this browser cannot encode ${container} audio, try wav`);
+  }
 
   const format = container === 'wav' ? new WavOutputFormat() : new OggOutputFormat();
   const target = new BufferTarget();
@@ -539,13 +616,12 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
     const source = new AudioBufferSource({ codec, quality: QUALITY_MEDIUM });
     output.addAudioTrack(source);
     await output.start();
-    // 1 s slices, so cancel and progress stay responsive
-    for (let pos = 0; pos < Math.min(mix.length, frames); ) {
+    // 1 s slices (mixed 30 s at a time), so cancel and progress stay responsive
+    const pump = createAudioPump(mixer, source);
+    for (let sec = 1; pump.position() < mixer.totalFrames; sec++) {
       if (signal?.aborted) throw abortError();
-      const end = Math.min(mix.length, pos + MIX_SAMPLE_RATE);
-      await source.add(sliceAudioBuffer(mix, pos, end));
-      pos = end;
-      report('audio', 0.8 + 0.18 * (pos / mix.length), false);
+      await pump.to(sec);
+      report('audio', 0.98 * (pump.position() / mixer.totalFrames), false);
       if (performance.now() - lastYield > 14) await yieldToUi();
     }
     report('finalizing', 0.98);
@@ -567,5 +643,7 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
     }
     if (signal?.aborted && !(err instanceof DOMException && err.name === 'AbortError')) throw abortError();
     throw err;
+  } finally {
+    mixer.dispose();
   }
 }

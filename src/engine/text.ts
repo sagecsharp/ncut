@@ -71,6 +71,8 @@ export interface TextBox {
   curveCy: number;
   /** letter layout at rest, filled the first time it is needed */
   glyphCache: { glyphs: TextGlyph[]; words: number } | null;
+  /** prefix widths of every line (see lineEdges), filled the first time they are needed */
+  edges: number[][] | null;
 }
 
 /* ---------- wrapping (pure) ---------- */
@@ -232,12 +234,36 @@ export function remapPoint(from: Mat, to: Mat, x: number, y: number): [number, n
 /* ---------- measuring ---------- */
 
 const requested = new Set<string>();
-/** ask for the clip's font once (it loads in the background, the preview redraws when it arrives) */
+/** fonts whose load failed: not asked again before `at` (ms), the wait doubles with every failure */
+const retryAfter = new Map<string, { at: number; delay: number }>();
+const FONT_RETRY_FIRST_MS = 2000;
+const FONT_RETRY_MAX_MS = 60000;
+
+/** how long to wait before asking again after a failed font load (prev = the last wait, 0 for the first failure) */
+export function fontRetryDelay(prev: number): number {
+  return prev <= 0 ? FONT_RETRY_FIRST_MS : Math.min(FONT_RETRY_MAX_MS, prev * 2);
+}
+
+/**
+ * ask for the clip's font (it loads in the background, the preview redraws when it arrives).
+ * asked once; when the load fails it is asked again later (with a growing pause), so the preview does not stay in the
+ * fallback font until a reload while the export, which loads again, would use the real one.
+ */
 function wantFont(clip: TextClip): void {
   const key = `${clip.fontFamily}|${clip.fontWeight}|${clip.italic}`;
   if (requested.has(key)) return;
+  const wait = retryAfter.get(key);
+  if (wait && Date.now() < wait.at) return;
   requested.add(key);
-  void ensureFont(clip.fontFamily, clip.fontWeight, clip.italic);
+  const failed = (): void => {
+    requested.delete(key);
+    const delay = fontRetryDelay(retryAfter.get(key)?.delay ?? 0);
+    retryAfter.set(key, { at: Date.now() + delay, delay });
+  };
+  ensureFont(clip.fontFamily, clip.fontWeight, clip.italic).then((ok) => {
+    if (ok) retryAfter.delete(key);
+    else failed();
+  }, failed);
 }
 
 const boxCache = new Map<string, TextBox>();
@@ -264,6 +290,7 @@ function lineEdges(ctx: Ctx, font: string, line: string): number[] {
 /** unscaled size of a text clip's box (text + padding) and its lines */
 export function measureText(clip: TextClip): TextBox {
   const v = fontsVersion();
+  if (retryAfter.size > 0) wantFont(clip); // cheap: only while some font failed to load
   const front = boxByClip.get(clip);
   if (front && front.v === v) return front.box;
   wantFont(clip);
@@ -300,9 +327,10 @@ export function measureText(clip: TextClip): TextBox {
     curveCx: 0,
     curveCy: 0,
     glyphCache: null,
+    edges: null,
   };
   if (curve !== 0) {
-    const edges = lines.map((l) => lineEdges(ctx, font, l));
+    const edges = (box.edges = lines.map((l) => lineEdges(ctx, font, l)));
     const cl = curveLayout(edges, spacing, lineHeight, curve, clip.align, box.curveRef);
     box.curveCx = (cl.minX + cl.maxX) / 2;
     box.curveCy = (cl.minY + cl.maxY) / 2;
@@ -355,6 +383,17 @@ export function textSignature(clip: TextClip): string {
   return sig;
 }
 
+/**
+ * true when some animation moves letters (or words / lines) on their own at this clip-local time. block animations
+ * (pulse, wobble ...) move the whole text and do not need the letters laid out one by one.
+ */
+export function glyphAnimActive(clip: TextClip, local: number, units: ReturnType<typeof textAnimUnits>): boolean {
+  if (units.enter && units.enter.unit !== 'block' && clip.animIn && local < clip.animIn.duration) return true;
+  if (units.exit && units.exit.unit !== 'block' && clip.animOut && local > clip.duration - clip.animOut.duration) return true;
+  if (units.loop && units.loop.unit !== 'block' && clip.animLoop) return true;
+  return false;
+}
+
 /* ---------- letter layout ---------- */
 
 /** where every letter sits. only needed when letters are drawn one by one. */
@@ -364,7 +403,7 @@ function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number
   const innerW = m.width - m.pad * 2;
   const top = -m.height / 2 + m.pad;
   const spacing = m.spacing + extraSpacing;
-  const edgesOf = m.lines.map((l) => lineEdges(ctx, font, l));
+  const edgesOf = (m.edges ??= m.lines.map((l) => lineEdges(ctx, font, l)));
   const curved = m.curve !== 0 ? curveLayout(edgesOf, spacing, m.lineHeight, m.curve, clip.align, m.curveRef) : null;
   let cg = 0;
   let index = 0;
@@ -464,9 +503,12 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
 
-  const perGlyph = animated || m.spacing !== 0 || m.curve !== 0;
   const units = animated ? textAnimUnits(clip) : null;
   const extra = animated ? block.spacing * fs : 0;
+  // letters are only drawn one by one when something needs it: spacing, a curve, a letter animation. a block animation
+  // (pulse, wobble ...) moves the whole text, which stays on the cheap one fill per line path.
+  const letterAnim = animated && glyphAnimActive(clip, local!, units!);
+  const perGlyph = letterAnim || extra !== 0 || m.spacing !== 0 || m.curve !== 0;
   let layout: { glyphs: TextGlyph[]; words: number } | null = null;
   if (perGlyph) {
     if (extra !== 0) layout = layoutGlyphs(ctx, clip, m, extra);
@@ -475,7 +517,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const count = layout ? layout.glyphs.length : 0;
   // letter states once per frame, shared by the shadow / outline / fill passes
   const states: GlyphState[] | null =
-    layout && animated ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;
+    layout && letterAnim ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;
 
   const innerW = m.width - m.pad * 2;
   const innerH = m.height - m.pad * 2;
