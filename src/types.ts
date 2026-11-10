@@ -327,6 +327,11 @@ export interface EffectClip extends ClipBase {
   params: Record<string, number>;
   /** varies the random parts (shake path, noise) between clips */
   seed: number;
+  /**
+   * seconds added to the clip-local time that animates the look. set on the right half when an
+   * effect clip is split, so the animation carries on across the cut instead of starting over.
+   */
+  timeOffset?: number;
 }
 
 /**

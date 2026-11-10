@@ -126,12 +126,20 @@ export function shiftKeyframes(kf: Keyframes | undefined, dt: number): Keyframes
 }
 
 /** every distinct key time of a clip (clip-local), sorted. for timeline markers and prev/next jumps. */
-export function keyTimes(kf: Keyframes | undefined, prop?: string): number[] {
+/**
+ * the distinct key times (clip-local seconds), sorted. pass the clip's `duration` to leave out keys
+ * that lie outside the clip: a trimmed or split clip keeps them so its motion stays unbroken, but
+ * they are not something the user can see or jump to.
+ */
+export function keyTimes(kf: Keyframes | undefined, prop?: string, duration?: number): number[] {
   if (!kf) return [];
   const times: number[] = [];
   for (const [p, keys] of Object.entries(kf)) {
     if (prop !== undefined && p !== prop) continue;
-    for (const k of keys) times.push(k.t);
+    for (const k of keys) {
+      if (duration !== undefined && (k.t < -KEY_EPS || k.t > duration + KEY_EPS)) continue;
+      times.push(k.t);
+    }
   }
   times.sort((a, b) => a - b);
   const out: number[] = [];
@@ -314,6 +322,8 @@ export function withoutKeyAt<T extends Clip>(clip: T, prop: string, time: number
 export function withoutKeys<T extends Clip>(clip: T, time: number, prop?: string): T {
   const kf = clip.keyframes;
   if (!kf) return clip;
+  // nothing to remove: hand back the same object so callers can tell
+  if (prop !== undefined && !(prop in kf)) return clip;
   let out = clip;
   const rest: Keyframes = {};
   for (const [p, keys] of Object.entries(kf)) {

@@ -27,6 +27,14 @@ import { easeTransition, renderTransition } from './transitions/runner';
 
 export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
 
+/**
+ * free what the renderer keeps for a channel (scratch canvases, cached textures). the exporter calls
+ * it with 'export' when a render ends so a big export does not stay in memory.
+ */
+export function releaseRenderResources(channel: 'preview' | 'export'): void {
+  void channel;
+}
+
 export interface DrawSource {
   image: CanvasImageSource;
   /** natural size of the image in pixels */

@@ -457,6 +457,9 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (patch.height !== undefined) next.height = clamp(Math.round(patch.height), 16, 7680);
         if (patch.fps !== undefined) next.fps = clamp(patch.fps, 1, MAX_FPS);
         if (patch.name !== undefined) next.name = patch.name.trim() || 'untitled project';
+        const before = p as unknown as Record<string, unknown>;
+        const after = next as unknown as Record<string, unknown>;
+        if (Object.keys(patch).every((k) => before[k] === after[k])) return null;
         return next;
       }, opts);
     },
@@ -742,6 +745,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         const clip = p.clips.find((c) => c.id === id);
         if (!clip || !clip.keyframes || isLocked(p, clip.trackId)) return null;
         const next = withoutKeys(clip, time, prop);
+        if (next === clip) return null;
         return replaceClip(p, next);
       }, opts);
     },
@@ -769,7 +773,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (!(key in clip) && !OPTIONAL_CLIP_KEYS[clip.type]?.includes(key)) continue;
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
-          if (next[key] !== value) {
+          // an optional field that is missing and one set to null mean the same thing
+          if (next[key] !== value && !(next[key] == null && value == null)) {
             next[key] = value;
             changed = true;
           }
@@ -921,6 +926,7 @@ export const useEditor = create<EditorState>()((set, get) => {
             keyframes: shiftKeyframes(c.keyframes, -(time - c.start)),
           } as Clip;
           if (isTimedClip(right) && isTimedClip(c)) right.trimStart = c.trimStart + (time - c.start) * c.speed;
+          if (right.type === 'effect' && c.type === 'effect') right.timeOffset = (c.timeOffset ?? 0) + (time - c.start);
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           created.push(right.id);
           clips.push(left, clampFades(right));
