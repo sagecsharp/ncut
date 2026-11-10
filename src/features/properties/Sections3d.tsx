@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Eraser, RotateCcw } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
@@ -8,7 +8,8 @@ import type { Keyframes, LookAt, Shape3D } from '../../types';
 import { AnimField } from './AnimField';
 import { setValuesNow } from './animEdit';
 import { Row, SelectRow, Section, Switch } from './controls';
-import { beginEdit, liveOpts } from './edit';
+import { targetOptions } from './targets';
+import { beginEdit, liveOpts, patchClip } from './edit';
 
 const actions = () => useEditor.getState();
 
@@ -131,7 +132,11 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, s
 
 const CAMERA_HOME = { x: 0, y: 0, z: 0, pan: 0, tilt: 0, roll: 0, fov: 50 };
 
-export const CameraSection = memo(function CameraSection({ id }: { id: string }) {
+export const CameraSection = memo(function CameraSection({ id, target }: { id: string; target: string | null }) {
+  const clips = useEditor((s) => s.project?.clips);
+  const tracks = useEditor((s) => s.project?.tracks);
+  const options = useMemo(() => (clips && tracks ? targetOptions(clips, tracks) : []), [clips, tracks]);
+  const known = target !== null && options.some((o) => o.id === target);
   return (
     <Section id="camera" title="camera">
       <AnimField wide id={id} prop="x" label="move right" title="move the camera right (px)" suffix="px" step={1} precision={0} />
@@ -153,6 +158,15 @@ export const CameraSection = memo(function CameraSection({ id }: { id: string })
         step={1}
         precision={0}
       />
+      <SelectRow
+        wide
+        label="look at"
+        title="keep the camera pointed at a clip"
+        value={known ? target : ''}
+        options={[['', 'none'], ...options.map((o): [string, string] => [o.id, o.label])]}
+        onChange={(v) => patchClip(id, { target: v === '' ? null : v })}
+      />
+      <div className="props-hint">the camera keeps this clip centered. pan and tilt add an offset.</div>
       <div className="props-hint">the camera for every 3d clip while this clip is active</div>
       <div className="props-buttons">
         <button type="button" className="btn btn-sm" title="back to the home view (all 0, field of view 50)" onClick={() => setValuesNow(id, CAMERA_HOME)}>
