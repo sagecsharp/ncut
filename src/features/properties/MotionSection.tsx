@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo, useMemo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import {
@@ -137,7 +138,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
           <SliderRow
             label="amount"
             title="how long the shutter stays open, as a share of one frame (%)"
-            value={Math.round(clip.motionBlur.shutter * 100)}
+            value={roundShown(clip.motionBlur.shutter * 100, 0)}
             min={0}
             max={200}
             suffix="%"

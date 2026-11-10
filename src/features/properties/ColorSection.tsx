@@ -1,11 +1,11 @@
 import { memo } from 'react';
 import { RotateCcw } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
-import { DEFAULT_ADJUST, DEFAULT_CHROMA_KEY } from '../../engine/clipLook';
+import { DEFAULT_CHROMA_KEY } from '../../engine/clipLook';
 import type { ChromaKey, VisualClip } from '../../types';
-import { ColorField, Row, Section, SliderRow, Switch } from './controls';
-import { beginEdit, patchClip } from './edit';
-import { setAdjustValue } from './colorLogic';
+import { AnimField } from './AnimField';
+import { resetWithKeys } from './animEdit';
+import { ColorField, Row, Section, Switch } from './controls';
+import { patchClip } from './edit';
 import type { AdjustKey } from './colorLogic';
 
 const ROWS: { key: AdjustKey; label: string; title: string; scale: number; max: number; suffix: string }[] = [
@@ -16,6 +16,13 @@ const ROWS: { key: AdjustKey; label: string; title: string; scale: number; max: 
   { key: 'hue', label: 'hue', title: 'turn the colors around the color wheel (degrees). double click to reset.', scale: 1, max: 180, suffix: 'deg' },
 ];
 
+const ADJUST_PROPS = ROWS.map((r) => 'adjust.' + r.key);
+
+/** the color correction has something to reset: a value is set, or a value is animated */
+function adjustActive(clip: VisualClip): boolean {
+  return !!clip.adjust || ADJUST_PROPS.some((p) => !!clip.keyframes?.[p]?.length);
+}
+
 const KEY_COLORS: { label: string; color: string }[] = [
   { label: 'green', color: '#00d000' },
   { label: 'blue', color: '#0050ff' },
@@ -25,7 +32,6 @@ const KEY_COLORS: { label: string; color: string }[] = [
 /** color correction for every visual clip, and green screen for video and image */
 export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualClip }) {
   const id = clip.id;
-  const adjust = clip.adjust ?? DEFAULT_ADJUST;
   const key: ChromaKey | null = clip.chromaKey ?? null;
   const keyable = clip.type === 'video' || clip.type === 'image';
   const setKey = (patch: Partial<ChromaKey>, live = true) => {
@@ -35,49 +41,24 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
   return (
     <Section id="color" title="color">
       {ROWS.map(({ key: k, label, title, scale, max, suffix }) => (
-        <Row key={k} label={label} title={title}>
-          <input
-            type="range"
-            className="range props-range"
-            title={title}
-            aria-label={label}
-            min={-max}
-            max={max}
-            step={1}
-            value={Math.round(adjust[k] * scale)}
-            onPointerDown={beginEdit}
-            onKeyDown={(e) => {
-              if (!e.repeat) beginEdit();
-            }}
-            onDoubleClick={() => patchClip(id, { adjust: setAdjustValue(clip.adjust, k, 0) })}
-            onChange={(e) => patchClip(id, { adjust: setAdjustValue(clip.adjust, k, Number(e.target.value) / scale) }, true)}
-          />
-          <NumberField
-            className="props-num"
-            title={title}
-            value={Math.round(adjust[k] * scale)}
-            min={-max}
-            max={max}
-            step={1}
-            precision={0}
-            suffix={suffix}
-            onStart={beginEdit}
-            onChange={(v) => patchClip(id, { adjust: setAdjustValue(clip.adjust, k, v / scale) }, true)}
-          />
-          <button
-            type="button"
-            className="icon-btn"
-            title={`reset ${label}`}
-            aria-label={`reset ${label}`}
-            disabled={adjust[k] === 0}
-            onClick={() => patchClip(id, { adjust: setAdjustValue(clip.adjust, k, 0) })}
-          >
-            <RotateCcw size={14} />
-          </button>
-        </Row>
+        <AnimField
+          key={k}
+          id={id}
+          prop={'adjust.' + k}
+          label={label}
+          title={title}
+          scale={scale}
+          suffix={suffix}
+          min={-max}
+          max={max}
+          step={1}
+          precision={0}
+          slider
+          reset={0}
+        />
       ))}
       <div className="props-buttons">
-        <button type="button" className="btn btn-sm" title="set every color value back to 0" disabled={!clip.adjust} onClick={() => patchClip(id, { adjust: null })}>
+        <button type="button" className="btn btn-sm" title="set every color value back to 0" disabled={!adjustActive(clip)} onClick={() => resetWithKeys(id, ADJUST_PROPS, { adjust: null })}>
           <RotateCcw size={14} />
           reset color
         </button>
@@ -103,32 +84,44 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
                   </button>
                 ))}
               </div>
-              <SliderRow
+              <AnimField
+                id={id}
+                prop="chromaKey.tolerance"
                 label="range"
                 title="how far from the color still gets removed (%)"
-                value={Math.round(key.tolerance * 100)}
+                scale={100}
+                suffix="%"
                 min={0}
                 max={100}
-                suffix="%"
-                onChange={(v) => setKey({ tolerance: v / 100 })}
+                step={1}
+                precision={0}
+                slider
               />
-              <SliderRow
+              <AnimField
+                id={id}
+                prop="chromaKey.softness"
                 label="soft edge"
                 title="how soft the edge of the cut out is (%)"
-                value={Math.round(key.softness * 100)}
+                scale={100}
+                suffix="%"
                 min={0}
                 max={100}
-                suffix="%"
-                onChange={(v) => setKey({ softness: v / 100 })}
+                step={1}
+                precision={0}
+                slider
               />
-              <SliderRow
+              <AnimField
+                id={id}
+                prop="chromaKey.spill"
                 label="clean edges"
                 title="take the leftover color out of the edges (%)"
-                value={Math.round(key.spill * 100)}
+                scale={100}
+                suffix="%"
                 min={0}
                 max={100}
-                suffix="%"
-                onChange={(v) => setKey({ spill: v / 100 })}
+                step={1}
+                precision={0}
+                slider
               />
             </>
           ) : null}

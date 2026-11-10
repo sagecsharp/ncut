@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { DEFAULT_MASK } from '../../engine/mask';
 import type { Mask, MaskShape } from '../../types';
 
@@ -42,9 +43,9 @@ const round4 = (v: number) => Number(v.toFixed(4));
 
 /** the number shown in a field for a stored value (rotation is degrees, the rest percent) */
 export function maskUiValue(mask: Mask, key: MaskKey): number {
-  if (key === 'rotation') return Math.round(mask.rotation * 10) / 10;
+  if (key === 'rotation') return roundShown(mask.rotation, 1);
   const stored = key === 'radius' ? (mask.radius ?? 0) : mask[key];
-  return Math.round(stored * 100);
+  return roundShown(stored * 100, 0);
 }
 
 /** the mask after one field is typed in (ui units). clamps to the ui range; radius 0 is stored as missing. */

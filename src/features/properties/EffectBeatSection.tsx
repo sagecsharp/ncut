@@ -1,5 +1,5 @@
 /**
- * "on the beat" of an effect clip: the effect follows the tempo of a clip with sound. a pulse that hits on every
+ * "follow the tempo" of an effect clip: the effect follows the tempo of a clip with sound. a pulse that hits on every
  * cycle line, and (for effects that repeat on their own) a lock that makes their rhythm one cycle per beat cycle.
  * evaluated when a frame is drawn, so it stays right when the effect or the music is moved, trimmed or split.
  */
@@ -27,7 +27,7 @@ export const EffectBeatSection = memo(function EffectBeatSection({ id, effect, b
   const set = (next: ReturnType<typeof followPatch>, live = false) => patchClip(id, { beat: next }, live);
 
   return (
-    <Section id="effect-beat" title="on the beat">
+    <Section id="effect-beat" title="follow the tempo">
       {sources.length === 0 && !beat ? (
         <div className="props-hint">set a tempo on a clip with sound first. then the effect can hit on its beat.</div>
       ) : (

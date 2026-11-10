@@ -92,7 +92,7 @@ function resetEffect(id: string): void {
 
 export const EffectSection = memo(function EffectSection({ id, name, effect, params, target }: EffectSectionProps) {
   const def = getEffect(effect);
-  // the param the tempo drives (lock on in "on the beat" and a tempo to follow)
+  // the param the tempo drives (lock on in "follow the tempo" and a tempo to follow)
   const locked = useEditor((s) => {
     const clip = s.project?.clips.find((c) => c.id === id);
     return s.project && clip?.type === 'effect' ? lockedParam(def, clip.beat, effectBeatGrid(s.project, clip) !== null) : null;
@@ -151,7 +151,7 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
       />
       {def.params.map((p) =>
         p.key === locked ? (
-          <Row key={p.key} label={p.label} title="the tempo drives this one while the lock in on the beat is on">
+          <Row key={p.key} label={p.label} title="the tempo drives this one while the lock in follow the tempo is on">
             <span className="props-hint">follows the tempo</span>
           </Row>
         ) : p.options ? (

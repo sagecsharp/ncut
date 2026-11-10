@@ -1,17 +1,13 @@
 import { Eraser, PenLine } from 'lucide-react';
 import { memo } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import type { ShapeClip, ShapeKind } from '../../types';
 import { AnimField } from './AnimField';
 import { ColorField, Row, SelectRow, Section, Switch } from './controls';
-import { beginEdit, patchClip } from './edit';
+import { patchClip } from './edit';
 import {
-  DEFAULT_GRADIENT_ANGLE,
   DEFAULT_SHAPE_STROKE,
-  DEFAULT_STAR_INNER,
   SHAPE_LABELS,
-  defaultPoints,
   defaultSecondColor,
   hasPoints,
 } from './shapeLogic';
@@ -37,7 +33,6 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
   const id = clip.id;
   const filled = clip.filled !== false;
   const { stroke, color2 } = clip;
-  const angle = clip.gradientAngle ?? DEFAULT_GRADIENT_ANGLE;
   const radial = !!clip.gradientRadial;
   const set = (patch: Record<string, unknown>) => patchClip(id, patch, true);
 
@@ -50,60 +45,13 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         options={SHAPE_LABELS}
         onChange={(v) => patchClip(id, { kind: v as ShapeKind })}
       />
-      <Row label="size" title="width and height of the figure (px, at scale 100%)">
-        <NumberField
-          label="w"
-          className="props-grow"
-          suffix="px"
-          title="width (px)"
-          value={clip.width}
-          min={1}
-          max={20000}
-          precision={0}
-          onStart={beginEdit}
-          onChange={(v) => set({ width: v })}
-        />
-        <NumberField
-          label="h"
-          className="props-grow"
-          suffix="px"
-          title="height (px)"
-          value={clip.height}
-          min={1}
-          max={20000}
-          precision={0}
-          onStart={beginEdit}
-          onChange={(v) => set({ height: v })}
-        />
-      </Row>
+      <AnimField id={id} prop="width" label="width" title="width of the figure (px, at scale 100%)" suffix="px" min={1} max={20000} step={1} precision={0} />
+      <AnimField id={id} prop="height" label="height" title="height of the figure (px, at scale 100%)" suffix="px" min={1} max={20000} step={1} precision={0} />
       {hasPoints(clip.kind) ? (
-        <Row label="points" title="number of corners (3 to 12)">
-          <NumberField
-            className="props-grow"
-            title="number of corners"
-            value={clip.points ?? defaultPoints(clip.kind)}
-            min={3}
-            max={12}
-            precision={0}
-            onStart={beginEdit}
-            onChange={(v) => set({ points: Math.round(v) })}
-          />
-        </Row>
+        <AnimField id={id} prop="points" label="points" title="number of corners (3 to 12)" min={3} max={12} step={1} precision={0} />
       ) : null}
       {clip.kind === 'star' ? (
-        <Row label="inner" title="inner radius of the star (% of the outer radius)">
-          <NumberField
-            className="props-grow"
-            suffix="%"
-            title="inner radius (%)"
-            value={Math.round((clip.inner ?? DEFAULT_STAR_INNER) * 100)}
-            min={10}
-            max={95}
-            precision={0}
-            onStart={beginEdit}
-            onChange={(v) => set({ inner: v / 100 })}
-          />
-        </Row>
+        <AnimField id={id} prop="inner" label="inner" title="inner radius of the star (% of the outer radius)" scale={100} suffix="%" min={10} max={95} step={1} precision={0} />
       ) : null}
 
       <Row label="fill" title="fill the figure with color">
@@ -126,19 +74,7 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
                 <Switch checked={radial} title="radial on or off" onChange={(v) => patchClip(id, { gradientRadial: v ? true : null })} />
               </Row>
               {!radial ? (
-                <Row label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)">
-                  <NumberField
-                    className="props-grow"
-                    suffix="deg"
-                    title="gradient angle (degrees)"
-                    value={angle}
-                    min={-360}
-                    max={360}
-                    precision={0}
-                    onStart={beginEdit}
-                    onChange={(v) => set({ gradientAngle: v })}
-                  />
-                </Row>
+                <AnimField id={id} prop="gradientAngle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" suffix="deg" min={-360} max={360} step={1} precision={0} />
               ) : null}
             </>
           ) : null}
@@ -154,20 +90,7 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         {stroke ? <ColorField title="outline color" value={stroke.color} onChange={(c) => set({ stroke: { ...stroke, color: c } })} /> : null}
       </Row>
       {stroke ? (
-        <Row label="width" title="outline width (px)">
-          <NumberField
-            className="props-grow"
-            suffix="px"
-            title="outline width (px)"
-            value={stroke.width}
-            min={0.5}
-            max={500}
-            step={0.5}
-            precision={1}
-            onStart={beginEdit}
-            onChange={(v) => set({ stroke: { ...stroke, width: v } })}
-          />
-        </Row>
+        <AnimField id={id} prop="stroke.width" label="width" title="outline width (px)" suffix="px" min={0.5} max={500} step={0.5} precision={1} />
       ) : null}
 
       {stroke || clip.kind === 'line' || clip.kind === 'arrow' ? (

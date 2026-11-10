@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import { memo, useMemo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
@@ -12,6 +13,7 @@ import {
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 import type { TextAnim, TextClip, TextCounter, TextExtrude, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
+import { AnimField } from './AnimField';
 import { ColorField, Row, Section, SelectRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
@@ -28,8 +30,13 @@ const DEFAULT_HIGHLIGHT_BOX = '#000000';
 const DEFAULT_EXTRUDE: TextExtrude = { depth: 0.2, angle: 135, color: '#555555' };
 const DEFAULT_SHADOW: TextShadow = { color: '#000000', opacity: 0.6, blur: 0.1, distance: 0.08, angle: 45 };
 
-/** a percent field for a fraction stored in the clip */
+/**
+ * a percent field for a fraction stored in the clip. with `prop` it is an animatable field of that clip (its own diamond and
+ * keys, see lib/anim.ts), the value then goes through the key list instead of `onChange`.
+ */
 function Pct({
+  id,
+  prop,
   label,
   title,
   value,
@@ -37,6 +44,8 @@ function Pct({
   max,
   onChange,
 }: {
+  id?: string;
+  prop?: string;
   label: string;
   title: string;
   value: number;
@@ -44,13 +53,16 @@ function Pct({
   max: number;
   onChange: (fraction: number) => void;
 }) {
+  if (id !== undefined && prop !== undefined) {
+    return <AnimField id={id} prop={prop} label={label} title={title} scale={100} suffix="%" min={min} max={max} step={1} precision={0} />;
+  }
   return (
     <Row label={label} title={title}>
       <NumberField
         className="props-grow"
         suffix="%"
         title={title}
-        value={Math.round(value * 100)}
+        value={roundShown(value * 100, 0)}
         min={min}
         max={max}
         precision={0}
@@ -94,7 +106,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 
   return (
     <Section id="text-style" title="text style">
-      <Pct
+      <Pct id={id} prop="letterSpacing"
         label="spacing"
         title="space between letters (% of the font size)"
         value={clip.letterSpacing ?? 0}
@@ -102,7 +114,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         max={200}
         onChange={(v) => actions().updateClip(id, { letterSpacing: v }, liveOpts())}
       />
-      <Pct
+      <Pct id={id} prop="lineHeight"
         label="line gap"
         title="space between lines (% of the font size)"
         value={clip.lineHeight ?? 1.25}
@@ -123,7 +135,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         {stroke ? <ColorField title="outline color" value={stroke.color} onChange={(c) => setStroke({ color: c })} /> : null}
       </Row>
       {stroke ? (
-        <Pct label="width" title="outline width (% of the font size)" value={stroke.width} min={1} max={50} onChange={(v) => setStroke({ width: v })} />
+        <Pct id={id} prop="stroke.width" label="width" title="outline width (% of the font size)" value={stroke.width} min={1} max={50} onChange={(v) => setStroke({ width: v })} />
       ) : null}
       {stroke || stroke2 || clip.hollow ? (
         <>
@@ -136,7 +148,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             {stroke2 ? <ColorField title="second outline color" value={stroke2.color} onChange={(c) => setStroke2({ color: c })} /> : null}
           </Row>
           {stroke2 ? (
-            <Pct
+            <Pct id={id} prop="stroke2.width"
               label="width"
               title="second outline width, outside the first one (% of the font size)"
               value={stroke2.width}
@@ -161,9 +173,9 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {shadow ? (
         <>
-          <Pct label="opacity" title="shadow opacity (%)" value={shadow.opacity} min={0} max={100} onChange={(v) => setShadow({ opacity: v })} />
-          <Pct label="blur" title="shadow softness (% of the font size)" value={shadow.blur} min={0} max={100} onChange={(v) => setShadow({ blur: v })} />
-          <Pct
+          <Pct id={id} prop="shadow.opacity" label="opacity" title="shadow opacity (%)" value={shadow.opacity} min={0} max={100} onChange={(v) => setShadow({ opacity: v })} />
+          <Pct id={id} prop="shadow.blur" label="blur" title="shadow softness (% of the font size)" value={shadow.blur} min={0} max={100} onChange={(v) => setShadow({ blur: v })} />
+          <Pct id={id} prop="shadow.distance"
             label="distance"
             title="how far the shadow falls (% of the font size)"
             value={shadow.distance}
@@ -171,19 +183,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             max={100}
             onChange={(v) => setShadow({ distance: v })}
           />
-          <Row label="angle" title="direction the shadow falls (degrees, 0 = right, 90 = down)">
-            <NumberField
-              className="props-grow"
-              suffix="deg"
-              title="shadow angle (degrees)"
-              value={shadow.angle}
-              min={-360}
-              max={360}
-              precision={0}
-              onStart={beginEdit}
-              onChange={(v) => setShadow({ angle: v })}
-            />
-          </Row>
+          <AnimField id={id} prop="shadow.angle" label="angle" title="direction the shadow falls (degrees, 0 = right, 90 = down)" suffix="deg" min={-360} max={360} step={1} precision={0} />
         </>
       ) : null}
 
@@ -197,20 +197,8 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {extrude ? (
         <>
-          <Pct label="length" title="how far the side reaches (% of the font size)" value={extrude.depth} min={1} max={100} onChange={(v) => setExtrude({ depth: v })} />
-          <Row label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)">
-            <NumberField
-              className="props-grow"
-              suffix="deg"
-              title="depth angle (degrees)"
-              value={extrude.angle}
-              min={0}
-              max={360}
-              precision={0}
-              onStart={beginEdit}
-              onChange={(v) => setExtrude({ angle: v })}
-            />
-          </Row>
+          <Pct id={id} prop="extrude.depth" label="length" title="how far the side reaches (% of the font size)" value={extrude.depth} min={1} max={100} onChange={(v) => setExtrude({ depth: v })} />
+          <AnimField id={id} prop="extrude.angle" label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)" suffix="deg" min={0} max={360} step={1} precision={0} />
         </>
       ) : null}
 
@@ -229,48 +217,12 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
           <Row label="to" title="gradient end color">
             <ColorField title="gradient end color" value={gradient.to} onChange={(c) => setGradient({ to: c })} />
           </Row>
-          <Row label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)">
-            <NumberField
-              className="props-grow"
-              suffix="deg"
-              title="gradient angle (degrees)"
-              value={gradient.angle}
-              min={-360}
-              max={360}
-              precision={0}
-              onStart={beginEdit}
-              onChange={(v) => setGradient({ angle: v })}
-            />
-          </Row>
+          <AnimField id={id} prop="gradient.angle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" suffix="deg" min={-360} max={360} step={1} precision={0} />
         </>
       ) : null}
 
-      <Row label="curve" title="bend each line along a circle (degrees of arc, + arch, - smile, 0 straight)">
-        <NumberField
-          className="props-grow"
-          suffix="deg"
-          title="curve (degrees, 0 = straight)"
-          value={clip.curve ?? 0}
-          min={-360}
-          max={360}
-          precision={0}
-          onStart={beginEdit}
-          onChange={(v) => actions().updateClip(id, { curve: v === 0 ? null : v } as ClipPatch, liveOpts())}
-        />
-      </Row>
-      <Row label="wrap" title="wrap lines longer than this width (px, 0 = off)">
-        <NumberField
-          className="props-grow"
-          suffix="px"
-          title="wrap width (px, 0 = off)"
-          value={clip.wrapWidth ?? 0}
-          min={0}
-          max={20000}
-          precision={0}
-          onStart={beginEdit}
-          onChange={(v) => actions().updateClip(id, { wrapWidth: v === 0 ? null : v } as ClipPatch, liveOpts())}
-        />
-      </Row>
+      <AnimField id={id} prop="curve" label="curve" title="bend each line along a circle (degrees of arc, + arch, - smile, 0 straight)" suffix="deg" min={-360} max={360} step={1} precision={0} />
+      <AnimField id={id} prop="wrapWidth" label="wrap" title="wrap lines longer than this width (px, 0 = off)" suffix="px" min={0} max={20000} step={1} precision={0} />
 
       <Row label="counter" title="a number that counts up or down over the length of the clip">
         <Switch
@@ -404,7 +356,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 
       {clip.background !== null ? (
         <>
-          <Pct
+          <Pct id={id} prop="backgroundRadius"
             label="corners"
             title="corner roundness of the box (0 square, 100 pill)"
             value={clip.backgroundRadius ?? 0}
@@ -412,7 +364,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             max={100}
             onChange={(v) => actions().updateClip(id, { backgroundRadius: v }, liveOpts())}
           />
-          <Pct
+          <Pct id={id} prop="backgroundPadding"
             label="padding"
             title="space between the text and the edge of the box (% of the font size)"
             value={clip.backgroundPadding ?? 0.3}

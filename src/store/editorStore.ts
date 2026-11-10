@@ -52,6 +52,8 @@ import {
   KEY_EPS,
   animProps,
   baseValue,
+  canKey,
+  isSeedable,
   evalKeys,
   isAnimated,
   keyIndexAt,
@@ -482,7 +484,8 @@ function clampProp(clip: Clip, prop: string, value: number): number | null {
   }
   const info = animProps(clip).find((a) => a.prop === prop);
   if (!info) return null;
-  return clamp(value, info.min ?? -Infinity, info.max ?? Infinity);
+  const v = clamp(value, info.min ?? -Infinity, info.max ?? Infinity);
+  return info.int ? Math.round(v) : v;
 }
 
 /** the value a property has when nothing is stored for it (effect params fall back to the effect default) */
@@ -912,7 +915,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
         if (!clip || isLocked(p, clip.trackId) || !Number.isFinite(value)) return null;
-        if (baseValue(clip, prop) === undefined && !prop.startsWith('p.')) return null;
+        if (baseValue(clip, prop) === undefined && !prop.startsWith('p.') && !isSeedable(clip, prop)) return null;
         const v = clampProp(clip, prop, value);
         if (v === null) return null;
         if (valueAt(clip, prop, time) === v && (!isAnimated(clip, prop) || keyIndexAt(clip.keyframes![prop]!, time - clip.start) >= 0)) {
@@ -936,7 +939,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     setKeyframe(id, prop, time, value, ease, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
-        if (!clip || isLocked(p, clip.trackId)) return null;
+        if (!clip || isLocked(p, clip.trackId) || !canKey(clip, prop)) return null;
         let v = value ?? valueAt(clip, prop, time) ?? propDefault(clip, prop);
         if (v === undefined || !Number.isFinite(v)) return null;
         const c = clampProp(clip, prop, v);

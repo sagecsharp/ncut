@@ -2,9 +2,10 @@ import { memo } from 'react';
 import { Circle, Heart, RectangleHorizontal, Square, SquareSplitHorizontal, Star, Trash2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { MaskShape, VisualClip } from '../../types';
-import { Row, Section, SliderRow, Switch } from './controls';
+import { AnimField } from './AnimField';
+import { Row, Section, Switch } from './controls';
 import { patchClip } from './edit';
-import { MASK_RANGES, MASK_SHAPE_LABELS, maskFields, maskUiValue, newMask, setMaskShape, setMaskValue } from './maskLogic';
+import { MASK_RANGES, MASK_SHAPE_LABELS, maskFields, newMask, setMaskShape } from './maskLogic';
 import type { MaskKey } from './maskLogic';
 
 const SHAPE_ICONS: Record<MaskShape, LucideIcon> = {
@@ -33,17 +34,20 @@ export const MaskSection = memo(function MaskSection({ clip }: { clip: VisualCli
   const slider = (key: MaskKey, label: string, title: string, suffix = '%') => {
     if (!mask) return null;
     const { min, max } = MASK_RANGES[key];
+    const deg = key === 'rotation';
     return (
-      <SliderRow
+      <AnimField
+        id={id}
+        prop={'mask.' + key}
         label={label}
         title={title}
-        value={maskUiValue(mask, key)}
+        scale={deg ? 1 : 100}
         min={min}
         max={max}
-        precision={key === 'rotation' ? 1 : 0}
-        step={key === 'rotation' ? 0.5 : 1}
+        precision={deg ? 1 : 0}
+        step={deg ? 0.5 : 1}
         suffix={suffix}
-        onChange={(v) => patchClip(id, { mask: setMaskValue(mask, key, v) }, true)}
+        slider
       />
     );
   };

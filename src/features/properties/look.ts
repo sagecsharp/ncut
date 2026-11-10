@@ -1,3 +1,4 @@
+import { roundShown } from '../../components/ui/numberFormat';
 import type { BlendMode, Crop } from '../../types';
 
 /** plain names for the blend modes, in menu order */
@@ -25,7 +26,7 @@ const round4 = (v: number) => Number(v.toFixed(4));
 
 /** percent shown in a field for a stored fraction */
 export function cropPercent(crop: Crop | null | undefined, edge: CropEdge): number {
-  return Math.round((crop?.[edge] ?? 0) * 1000) / 10;
+  return roundShown((crop?.[edge] ?? 0) * 100, 1);
 }
 
 /** the biggest percent an edge may take right now (the opposite edge keeps its share) */

@@ -1,7 +1,8 @@
 import { createContext, memo, useContext } from 'react';
 import { ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
-import { EASINGS, KEY_EPS, baseValue, evalKeys, keyIndexAt } from '../../lib/anim';
+import { roundShown } from '../../components/ui/numberFormat';
+import { EASINGS, KEY_EPS, baseValue, evalKeys, isSeedable, keyIndexAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -39,6 +40,8 @@ export interface AnimFieldProps {
   wide?: boolean;
   /** stored value to show when the clip has none (effect params fall back to the effect default) */
   fallback?: number;
+  /** stored value a double click on the slider sets (color correction goes back to 0) */
+  reset?: number;
 }
 
 /** clip-local time of the playhead, held inside the clip */
@@ -95,6 +98,7 @@ function FieldView(p: ViewProps) {
               onKeyDown={(e) => {
                 if (!e.repeat) beginEdit();
               }}
+              onDoubleClick={p.reset === undefined ? undefined : () => p.onValue(p.reset! * (p.scale ?? 1))}
               onChange={(e) => p.onValue(Number(e.target.value))}
             />
           ) : null}
@@ -170,7 +174,7 @@ interface BodyProps extends AnimFieldProps {
 }
 
 /** no keys: nothing here listens to the playhead */
-function StaticBody(p: BodyProps & { stored: number }) {
+function StaticBody(p: BodyProps & { stored: number; seed: boolean }) {
   const { id, prop, start, duration } = p;
   const scale = p.scale ?? 1;
   const precision = p.precision ?? 0;
@@ -179,14 +183,15 @@ function StaticBody(p: BodyProps & { stored: number }) {
   return (
     <FieldView
       {...p}
-      value={Number((p.stored * scale).toFixed(precision))}
+      value={roundShown(p.stored * scale, precision)}
       animated={false}
       keyHere={false}
       hasPrev={false}
       hasNext={false}
       ease="ease"
       onValue={(v) => actions().setClipValue(id, prop, time(), v / scale, liveOpts())}
-      onToggle={() => actions().toggleKeyframe(id, prop, time())}
+      // a value that is not stored yet (thickness) is keyed with the number the field shows
+      onToggle={() => (p.seed ? actions().setKeyframe(id, prop, time(), p.stored) : actions().toggleKeyframe(id, prop, time()))}
       onJump={jump}
       onEase={jump}
     />
@@ -202,9 +207,8 @@ function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
   const scale = p.scale ?? 1;
   const precision = p.precision ?? 0;
   const tol = 0.5 / fps;
-  const f = 10 ** precision;
 
-  const value = usePlayback((s) => Math.round(evalKeys(keys, s.time - start) * scale * f) / f);
+  const value = usePlayback((s) => roundShown(evalKeys(keys, s.time - start) * scale, precision));
   const keyHere = usePlayback((s) => keyIndexAt(keys, localTime(s.time, start, duration), tol) >= 0);
   const hasPrev = usePlayback((s) => {
     const l = localTime(s.time, start, duration);
@@ -256,6 +260,7 @@ export const AnimField = memo(function AnimField(props: AnimFieldProps) {
   const keys = clip.keyframes?.[props.prop];
   const body: BodyProps = { ...props, start: clip.start, duration: clip.duration, fps };
   if (keys && keys.length > 0) return <AnimatedBody key={props.prop} {...body} keys={keys} />;
-  const stored = baseValue(clip, props.prop) ?? props.fallback ?? 0;
-  return <StaticBody key={props.prop} {...body} stored={stored} />;
+  const base = baseValue(clip, props.prop);
+  const seed = base === undefined && props.fallback !== undefined && isSeedable(clip, props.prop);
+  return <StaticBody key={props.prop} {...body} stored={base ?? props.fallback ?? 0} seed={seed} />;
 });

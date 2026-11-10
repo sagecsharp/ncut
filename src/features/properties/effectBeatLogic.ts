@@ -1,5 +1,5 @@
 /**
- * the choices of the "on the beat" section of an effect clip (EffectClip.beat). pure: no dom, no store.
+ * the choices of the "follow the tempo" section of an effect clip (EffectClip.beat). pure: no dom, no store.
  * what the link does when a frame is drawn is in engine/draw.ts (effectPassAt) and lib/tempo.ts.
  */
 import type { EffectBeat } from '../../lib/tempo';
