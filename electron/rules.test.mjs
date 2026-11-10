@@ -361,11 +361,19 @@ describe('what the taskbar pin starts', () => {
     expect(rules.taskbarDetails(undefined, exe, yes).appIconPath).toBe(exe);
     expect(rules.taskbarDetails(null, exe, yes).appIconPath).toBe(exe);
   });
-  it('uses the id the app and its shortcuts have', () => {
-    expect(rules.APP_ID).toBe('com.sagecsharp.ncut');
+  it('uses the id the installer gives its shortcuts', () => {
+    const pkg = createRequire(import.meta.url)('../package.json');
+    expect(rules.APP_ID).toBe(pkg.build.appId);
   });
-  it('takes paths with spaces, forward slashes and network shares', () => {
-    for (const p of ['C:\\my apps\\ncut portable.exe', 'c:/tools/ncut.EXE', '\\\\server\\share\\ncut.exe']) {
+  it('takes paths with spaces, forward slashes, network shares, odd characters and a drive root', () => {
+    for (const p of [
+      'C:\\my apps\\ncut portable.exe',
+      'c:/tools/ncut.EXE',
+      '\\\\server\\share\\ncut.exe',
+      'D:\\ncut.exe',
+      'C:\\Users\\zoë müller\\Downloads\\ncut.exe',
+      "C:\\tom & jerry's (apps) 100%\\ncut.exe",
+    ]) {
       expect(rules.taskbarDetails({ PORTABLE_EXECUTABLE_FILE: p }, temp, yes).relaunchCommand).toBe(`"${p}"`);
     }
   });

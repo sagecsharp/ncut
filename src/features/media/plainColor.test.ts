@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_IMAGE_DURATION, createShapeClip } from '../../lib/factory';
 import { SHAPE_KINDS } from '../../types';
 import { PLAIN_COLOR_DEFAULT, PLAIN_COLOR_NAME, parsePlainColor, plainColorPreset, showsPlainColor, usePlainColor } from './plainColor';
@@ -70,10 +70,53 @@ describe('the remembered color', () => {
   beforeEach(() => {
     usePlainColor.setState({ color: PLAIN_COLOR_DEFAULT });
   });
-  it('starts white and takes a new color', () => {
-    expect(usePlainColor.getState().color).toBe(PLAIN_COLOR_DEFAULT);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+  it('is white by default', () => {
+    expect(PLAIN_COLOR_DEFAULT).toBe('#ffffff');
+  });
+  it('takes a new color', () => {
     usePlainColor.getState().setColor('#102030');
     expect(usePlainColor.getState().color).toBe('#102030');
+  });
+  it('starts with what the browser kept, and keeps what is picked', async () => {
+    const kept = new Map<string, string>([['ncut.plainColor', '#00FF7F']]);
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => kept.get(k) ?? null,
+      setItem: (k: string, v: string) => void kept.set(k, v),
+    });
+    vi.resetModules();
+    const fresh = await import('./plainColor');
+    expect(fresh.usePlainColor.getState().color).toBe('#00ff7f');
+    fresh.usePlainColor.getState().setColor('#ABCDEF');
+    expect(kept.get('ncut.plainColor')).toBe('#abcdef');
+    // the same color again writes nothing
+    kept.delete('ncut.plainColor');
+    fresh.usePlainColor.getState().setColor('#abcdef');
+    expect(kept.has('ncut.plainColor')).toBe(false);
+  });
+  it('starts white when the stored value is broken or storage throws, and survives a failing write', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => 'url(evil)',
+      setItem: () => {
+        throw new Error('full');
+      },
+    });
+    vi.resetModules();
+    const broken = await import('./plainColor');
+    expect(broken.usePlainColor.getState().color).toBe(PLAIN_COLOR_DEFAULT);
+    expect(() => broken.usePlainColor.getState().setColor('#123456')).not.toThrow();
+    expect(broken.usePlainColor.getState().color).toBe('#123456');
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    vi.resetModules();
+    const blocked = await import('./plainColor');
+    expect(blocked.usePlainColor.getState().color).toBe(PLAIN_COLOR_DEFAULT);
   });
   it('cleans what it is given', () => {
     usePlainColor.getState().setColor('#ABC');
