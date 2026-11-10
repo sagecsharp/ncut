@@ -605,6 +605,73 @@ function timer(project: Project): Project {
   return b.finish(project, '#0b0c0e');
 }
 
+function blockTitle(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 6;
+
+  b.camera(b.track('camera'), 0, { duration: len, keyframes: { z: ramp(-420 * u, 0, len, 'ease-out') } });
+  // a line of flat text: it stays put while the letters turn
+  b.text(b.track('caption'), 0.8, {
+    duration: len - 0.8,
+    name: 'caption',
+    text: 'a line under it',
+    fontSize: 50 * u,
+    fontWeight: 400,
+    color: DIM,
+    letterSpacing: 0.3,
+    fadeIn: 0.6,
+    fadeOut: 0.4,
+    transform: { x: 0, y: b.h / 2 - 120 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  // block depth on a 3d text is real: the letters have a side when they turn
+  b.text(b.track('title'), 0, {
+    duration: len,
+    name: 'title',
+    text: 'block',
+    uppercase: true,
+    fontSize: 330 * u,
+    fontWeight: 700,
+    color: ACCENT,
+    letterSpacing: 0.03,
+    threeD: true,
+    extrude: { depth: 0.3, angle: 45, color: '#a8551c' },
+    fadeIn: 0.3,
+    fadeOut: 0.4,
+    keyframes: {
+      rotY: [
+        { t: 0, v: -58, ease: 'ease-out' },
+        { t: 2.4, v: 30, ease: 'ease' },
+        { t: len, v: -16, ease: 'ease' },
+      ],
+      rotX: ramp(-24, -8, len, 'ease-out'),
+    },
+    transform: { x: 0, y: -40 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: -24, rotY: -58 },
+  });
+  const solid = (name: string, shape: 'star' | 'heart' | 'hexagon', x: number, y: number, z: number, color: string, color2: string, spin: number) =>
+    b.shape(b.track(name), 0, {
+      duration: len,
+      name,
+      kind: 'rect',
+      width: 230 * u,
+      height: 230 * u,
+      color,
+      color2,
+      gradientAngle: 90,
+      threeD: true,
+      shape,
+      shapeDepth: 70 * u,
+      fadeIn: 0.4,
+      fadeOut: 0.4,
+      keyframes: { rotY: ramp(20, 20 + spin, len, 'linear') },
+      transform: { x: x * u, y: y * u, scale: 1, rotation: 0, opacity: 1, z: z * u, rotX: -14, rotY: 20 },
+    });
+  solid('star', 'star', -820, -290, 260, '#fff2a8', '#ff9f1c', 360);
+  solid('heart', 'heart', 700, 210, 140, '#ff9ebb', '#c9184a', -360);
+  solid('hexagon', 'hexagon', 640, -300, 620, '#9ad1ff', '#27408b', 300);
+  return b.finish(project, '#0d0e12');
+}
+
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
@@ -615,6 +682,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'winter', name: 'snow title', description: 'a block title in falling snow and mist over an evening sky', build: winter },
   { id: 'carousel', name: 'carousel', description: 'eight cards on a turning ring in 3d: they are attached to the pole in the middle', build: carousel },
   { id: 'rack-focus', name: 'rack focus', description: 'three cards at different depths while the camera pulls the focus from one to the next', build: rackFocus },
+  { id: 'block-title', name: 'block title', description: 'thick 3d letters that turn, with a star, a heart and a hexagon spinning around them', build: blockTitle },
   { id: 'timer', name: 'timer', description: 'a ten second count down written as m:ss, with a bar that runs out', build: timer },
 ];
 
