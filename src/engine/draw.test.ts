@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, blendOp, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 
 let seq = 0;
@@ -708,5 +708,59 @@ describe('releaseRenderResources', () => {
       releaseRenderResources('export');
       releaseRenderResources('preview');
     }).not.toThrow();
+  });
+});
+
+describe('motionBlurTimes', () => {
+  it('spreads samples evenly over the shutter, ends included', () => {
+    const t = motionBlurTimes(2, 30, { shutter: 0.5, samples: 3 });
+    expect(t).toHaveLength(3);
+    expect(t[0]).toBeCloseTo(2 - 1 / 120, 9);
+    expect(t[1]).toBeCloseTo(2, 9);
+    expect(t[2]).toBeCloseTo(2 + 1 / 120, 9);
+  });
+  it('is empty for no blur, a closed shutter, one sample or a bad fps', () => {
+    expect(motionBlurTimes(1, 30, null)).toEqual([]);
+    expect(motionBlurTimes(1, 30, undefined)).toEqual([]);
+    expect(motionBlurTimes(1, 30, { shutter: 0, samples: 8 })).toEqual([]);
+    expect(motionBlurTimes(1, 30, { shutter: 0.5, samples: 1 })).toEqual([]);
+    expect(motionBlurTimes(1, 30, { shutter: 0.5, samples: Number.NaN })).toEqual([]);
+    expect(motionBlurTimes(1, 0, { shutter: 0.5, samples: 8 })).toEqual([]);
+  });
+  it('caps the samples at 32 and the shutter at 2 frames', () => {
+    const t = motionBlurTimes(5, 10, { shutter: 9, samples: 500 });
+    expect(t).toHaveLength(MAX_MOTION_BLUR_SAMPLES);
+    expect(t[t.length - 1]! - t[0]!).toBeCloseTo(2 / 10, 9);
+  });
+  it('a lower quality uses fewer copies but at least 2', () => {
+    expect(motionBlurTimes(1, 30, { shutter: 1, samples: 16 }, 0.5)).toHaveLength(8);
+    expect(motionBlurTimes(1, 30, { shutter: 1, samples: 16 }, 0.01)).toHaveLength(2);
+  });
+});
+
+describe('parents in the renderer', () => {
+  const tracks = [track('t', 'video')];
+  it('getClipBoxWorld without a parent is getClipBox', () => {
+    const c = shape('t', 0, 5, { transform: { ...DEFAULT_TRANSFORM, x: 40 } });
+    const p = project([c], tracks);
+    expect(getClipBoxWorld(p, c, 1)).toEqual(getClipBox(p, c));
+  });
+  it('getClipBoxWorld follows the parent', () => {
+    const par = shape('t', 0, 5, { transform: { ...DEFAULT_TRANSFORM, x: 100, rotation: 90, scale: 2 } });
+    const kid = shape('t', 0, 5, { parent: par.id, transform: { ...DEFAULT_TRANSFORM, x: 10 } });
+    const p = project([par, kid], tracks);
+    const b = getClipBoxWorld(p, kid, 1);
+    expect(b.cx).toBeCloseTo(960 + 100, 6);
+    expect(b.cy).toBeCloseTo(540 + 20, 6);
+    expect(b.rotation).toBeCloseTo(90, 6);
+    expect(b.width).toBeCloseTo(800, 6);
+  });
+  it('a 3d plane sits in its parent frame', () => {
+    const par = shape('t', 0, 5, { transform: { ...DEFAULT_TRANSFORM, x: 100 } });
+    const kid = video('t', 0, 5, { threeD: true, parent: par.id, transform: { ...DEFAULT_TRANSFORM, x: 10, z: 50 } });
+    const p = project([par, kid], tracks);
+    const rig = { eye: [960, 540, -1500] } as unknown as Parameters<typeof planeFor>[2];
+    const plane = planeFor(p, { clip: kid, source: mkSource('a', 1080, 1080), alpha: 1, time: 1 }, rig)!;
+    expect([plane.model[12], plane.model[13], plane.model[14]]).toEqual([1070, 540, 50]);
   });
 });

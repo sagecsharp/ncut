@@ -5,11 +5,13 @@
  * it does not know where pixels come from: the caller passes a resolver that returns the
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
-import type { BlendMode, Clip, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
+import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
+import { clipLookSignature, clipLookTexture, hasClipLook } from './clipLook';
+import { parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
 import { renderEffects } from './effects/runner';
@@ -105,6 +107,39 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
     height = fit.height * t.scale;
   }
   return { cx: project.width / 2 + t.x, cy: project.height / 2 + t.y, width, height, rotation: t.rotation };
+}
+
+/**
+ * getClipBox that follows clip.parent: the box where the clip really is at a time. `clip` has its keyframes
+ * applied (same as for getClipBox). without a parent this is getClipBox itself.
+ */
+export function getClipBoxWorld(project: Project, clip: VisualClip, time: number, natural?: { width: number; height: number }): ClipBox {
+  if (!clip.parent) return getClipBox(project, clip, natural);
+  const wt = worldTransformOf(project, clip, time);
+  return getClipBox(project, wt === clip.transform ? clip : ({ ...clip, transform: wt } as VisualClip), natural);
+}
+
+/* ---------- per-clip motion blur ---------- */
+
+/** most copies a clip's motion blur averages */
+export const MAX_MOTION_BLUR_SAMPLES = 32;
+
+/**
+ * the timeline moments a clip's motion blur averages: `samples` times spread evenly over the open shutter,
+ * [time - shutter / fps / 2, time + shutter / fps / 2], ends included. empty when there is no blur to do.
+ * quality < 1 (the live preview) uses proportionally fewer copies, never fewer than 2.
+ */
+export function motionBlurTimes(time: number, fps: number, blur: ClipMotionBlur | null | undefined, quality = 1): number[] {
+  if (!blur || !(fps > 0)) return [];
+  const shutter = Math.min(2, blur.shutter);
+  if (!(shutter > 0)) return [];
+  let n = Math.min(MAX_MOTION_BLUR_SAMPLES, Math.floor(blur.samples));
+  if (!(n >= 2)) return [];
+  if (quality < 1) n = Math.max(2, Math.ceil(n * Math.max(0.1, quality)));
+  const half = shutter / fps / 2;
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) out.push(time - half + (2 * half * i) / (n - 1));
+  return out;
 }
 
 /* ---------- blend, crop, radius (pure helpers) ---------- */
@@ -510,14 +545,81 @@ let cacheClips: readonly Clip[] | null = null;
 function syncTextureCaches(project: Project): void {
   if (project.clips === cacheClips) return;
   cacheClips = project.clips;
-  if (textTextures.size === 0 && shapeTextures.size === 0) return;
+  if (textTextures.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0) return;
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
+  for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
   for (const id of [...textTextures.keys()]) if (!ids.has(id)) textTextures.delete(id);
   for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
 }
 
-export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plane3D | null {
+/* ---------- clip look (color correction / chroma key) ---------- */
+
+type LookChannel = 'preview' | 'export';
+const lookChannel = (c: Channel): LookChannel => (c === 'export' ? 'export' : 'preview');
+
+/** a 2d source with the clip's look applied. only valid until the next look on the same channel: draw it right away. */
+function lookSource(source: DrawSource, clip: VisualClip, channel: Channel): DrawSource {
+  if (!hasClipLook(clip)) return source;
+  const image = clipLookTexture(source.image, source.width, source.height, clip, lookChannel(channel));
+  return image === source.image ? source : { image, width: source.width, height: source.height };
+}
+
+/**
+ * 3d: the looked picture is copied into a canvas of the clip's own, because several planes are uploaded after
+ * all of them were built and clipLookTexture reuses one canvas. a still source (key given) is only redone when
+ * the look or the source key changes; the returned key then changes with it.
+ */
+interface LookCopy {
+  sig: string;
+  srcKey: string | undefined;
+  canvas: AnyCanvas;
+  key: string | undefined;
+}
+const lookCopies = new Map<string, LookCopy>();
+let lookSerial = 0;
+
+function lookedTexture(
+  clip: VisualClip,
+  image: TexImageSource,
+  w: number,
+  h: number,
+  key: string | undefined,
+  channel: Channel,
+): { image: TexImageSource; key: string | undefined } {
+  const sig = clipLookSignature(clip);
+  const hit = lookCopies.get(clip.id);
+  if (key !== undefined && hit && hit.srcKey === key && hit.sig === sig && hit.canvas.width === w && hit.canvas.height === h) {
+    return { image: hit.canvas, key: hit.key };
+  }
+  const out = clipLookTexture(image as CanvasImageSource, w, h, clip, lookChannel(channel));
+  if (out === (image as CanvasImageSource)) return { image, key };
+  let canvas: AnyCanvas | null = hit && hit.canvas.width === w && hit.canvas.height === h ? hit.canvas : null;
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
+    else if (typeof document !== 'undefined') {
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+    } else return { image: out as TexImageSource, key: undefined };
+  }
+  const c = canvas.getContext('2d') as Ctx | null;
+  if (!c) return { image: out as TexImageSource, key: undefined };
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'copy';
+  c.drawImage(out, 0, 0, w, h);
+  const outKey = key === undefined ? undefined : `look:${clip.id}:${++lookSerial}`;
+  lookCopies.delete(clip.id);
+  lookCopies.set(clip.id, { sig, srcKey: key, canvas, key: outKey });
+  if (lookCopies.size > 32) {
+    const first = lookCopies.keys().next().value;
+    if (first !== undefined) lookCopies.delete(first);
+  }
+  return { image: canvas as TexImageSource, key: outKey };
+}
+
+export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, channel: Channel = 'default'): Plane3D | null {
   syncTextureCaches(project);
   const { clip, source } = layer;
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
@@ -526,6 +628,9 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plan
   let cacheKey: string | undefined;
   // extra texture room around the clip box (text / shape), in canvas pixels
   let pad = 0;
+  // size in pixels of the picture, for the clip look (0 = unknown)
+  let lw = 0;
+  let lh = 0;
   if (clip.type === 'text') {
     const t = textTexture(clip, layer.time);
     if (!t) return null;
@@ -535,6 +640,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plan
     box.height += pad * 2;
     image = t.canvas;
     cacheKey = t.key;
+    lw = t.canvas.width;
+    lh = t.canvas.height;
   } else if (clip.type === 'shape') {
     const t = shapeTexture(clip);
     if (!t) return null;
@@ -543,13 +650,22 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig): Plan
     box.height += pad * 2;
     image = t.canvas;
     cacheKey = t.key;
+    lw = t.canvas.width;
+    lh = t.canvas.height;
   } else {
     if (!source) return null;
+    lw = source.width;
+    lh = source.height;
     image = source.image as TexImageSource;
     // still images keep their texture between frames, video uploads every frame
     cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${source.width}x${source.height}` : undefined;
   }
-  let model = clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye);
+  if (lw > 0 && lh > 0 && hasClipLook(clip)) {
+    const looked = lookedTexture(clip, image, lw, lh, cacheKey, channel);
+    image = looked.image;
+    cacheKey = looked.key;
+  }
+  let model = clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye, clip.parent ? parentModelMatrix(project, clip, layer.time) : null);
   let uv: [number, number, number, number] | undefined;
   let radius: number | undefined;
   let size: [number, number] | undefined;
@@ -603,7 +719,7 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   if (!canvas) return;
   const planes: Plane3D[] = [];
   for (const layer of layers) {
-    const p = planeFor(project, layer, rig);
+    const p = planeFor(project, layer, rig, channel);
     if (p) planes.push(p);
   }
   const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel);
@@ -720,7 +836,13 @@ const OPEN_SIDE = 1e5;
  * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
  * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
  */
-function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSource | null, alpha: number, time: number, blend = true): void {
+function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: DrawSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
+  // under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path)
+  let clip = clip0;
+  if (clip0.parent) {
+    const wt = worldTransformOf(project, clip0, poseTime);
+    if (wt !== clip0.transform) clip = { ...clip0, transform: wt } as VisualClip;
+  }
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
   const op = blend ? blendOp(clip.blend) : null;
   const crop = normalizeCrop(clip.crop);
@@ -770,6 +892,65 @@ function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSou
   ctx.restore();
 }
 
+/** true when two poses put the clip in the same place with the same alpha */
+function samePose(a: Transform, aa: number, b: Transform, ba: number): boolean {
+  return (
+    Math.abs(a.x - b.x) < 1e-4 &&
+    Math.abs(a.y - b.y) < 1e-4 &&
+    Math.abs(a.scale - b.scale) < 1e-6 &&
+    Math.abs(a.rotation - b.rotation) < 1e-4 &&
+    Math.abs(aa - ba) < 1e-4
+  );
+}
+
+/**
+ * draw a flat clip with its motion blur: `samples` copies at moments spread over the shutter, each with its own
+ * pose (keyframes, motions, parents, fades), summed premultiplied on a scratch layer ('lighter' at 1 / samples) and
+ * laid over the frame with the clip's blend mode. the picture itself (video frame, text animation) is the one of the
+ * real time, only the placement is blurred. false = nothing to blur (a still clip), the caller draws it plain.
+ * not used inside a transition (those layers are drawn plain).
+ */
+function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: DrawSource | null, time: number, env: Env): boolean {
+  const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
+  if (times.length < 2) return false;
+  const end = Math.max(raw.start, clipEnd(raw) - 1e-4);
+  // a copy never comes from outside the clip (it would fade the first frames)
+  for (let i = 0; i < times.length; i++) times[i] = Math.min(end, Math.max(raw.start, times[i]!));
+  const pose = (t: number) => {
+    const c = resolveVisual(raw, t, project);
+    return { c, a: c.transform.opacity * fadeFactor(c, t), w: worldTransformOf(project, c, t) };
+  };
+  const first = pose(times[0]!);
+  const last = pose(times[times.length - 1]!);
+  if (samePose(first.w, first.a, last.w, last.a)) return false;
+  const canvas = ctx.canvas as AnyCanvas | undefined;
+  const copy = scratchFor(ctx, env.channel, 'mbCopy');
+  const acc = scratchFor(ctx, env.channel, 'mbAcc');
+  if (!canvas || !copy || !acc) return false;
+  clearScratch(acc);
+  const share = 1 / times.length;
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i]!;
+    const p = i === 0 ? first : i === times.length - 1 ? last : pose(t);
+    if (p.a <= 0.001) continue;
+    clearScratch(copy);
+    paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
+    acc.ctx.save();
+    acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    acc.ctx.globalAlpha = share;
+    acc.ctx.globalCompositeOperation = 'lighter';
+    acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
+    acc.ctx.restore();
+  }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = blendOp(raw.blend) ?? 'source-over';
+  ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  return true;
+}
+
 /** draw one clip by itself (2d or 3d) at a time, e.g. onto a transition layer. false when nothing was drawn. */
 function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false): boolean {
   // a frozen side of a transition sits on its edge frame: its entrance / exit would hold it at nothing, so only the loop runs
@@ -782,7 +963,7 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     if (!source) return false;
   }
   if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig(), env.channel);
-  else paintFlat(ctx, project, clip, source, alpha, time, false);
+  else paintFlat(ctx, project, clip, source && lookSource(source, clip, env.channel), alpha, time, false);
   return true;
 }
 
@@ -952,6 +1133,8 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       continue;
     }
     flush3d();
+    if (source) source = lookSource(source, clip, env.channel);
+    if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env)) continue;
     paintFlat(ctx, project, clip, source, alpha, time);
   }
   flush3d();

@@ -3,7 +3,7 @@ import type { Transform } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
 import type { ClipBox } from '../draw';
 import { clipModelMatrix, planeCorners } from './model';
-import { cross, dot, length, normalize, sub, type Mat4, type Vec3 } from './math';
+import { cross, dot, length, mul, normalize, rotationZ, scaling, sub, translation, type Mat4, type Vec3 } from './math';
 
 const box = (o: Partial<ClipBox> = {}): ClipBox => ({ cx: 500, cy: 300, width: 400, height: 200, rotation: 0, ...o });
 const tf = (o: Partial<Transform> = {}): Transform => ({ ...DEFAULT_TRANSFORM, ...o });
@@ -283,5 +283,32 @@ describe('planeCorners', () => {
     expect(c[0][1]).toBeLessThan(c[3][1]);
     expect(c[1][1]).toBeCloseTo(c[0][1], 4);
     expect(c[2][0]).toBeCloseTo(c[1][0], 4);
+  });
+});
+
+describe('with a parent matrix', () => {
+  it('x / y / z are offsets in the parent frame', () => {
+    const parent = translation(500, 300, 20);
+    const m = clipModelMatrix(box({ cx: 9999, cy: 9999 }), tf({ x: 10, y: -5, z: 3 }), undefined, EYE, parent);
+    expect([m[12], m[13], m[14]]).toEqual([510, 295, 23]);
+  });
+  it('the parent rotation and scale come along', () => {
+    const parent = mul(translation(100, 100, 0), mul(rotationZ(Math.PI / 2), scaling(2, 2, 2)));
+    const c = planeCorners(clipModelMatrix(box({ width: 10, height: 10 }), tf({ x: 10 }), undefined, EYE, parent));
+    // child center (10, 0) -> turned 90 deg clockwise and doubled: (100, 120). 10 wide -> 20
+    near([(c[0][0] + c[2][0]) / 2, (c[0][1] + c[2][1]) / 2, 0], [100, 120, 0]);
+    expect(length(sub(c[1], c[0]))).toBeCloseTo(20, 3);
+  });
+  it('lookAt keeps the parent scale but faces the eye', () => {
+    const parent = mul(translation(960, 540, 400), scaling(3, 3, 3));
+    const m = clipModelMatrix(box({ width: 10, height: 10 }), tf(), 'camera', EYE, parent);
+    near(normalOf(m), normalize(sub([960, 540, 400], EYE)), 4);
+    const c = planeCorners(m);
+    expect(length(sub(c[1], c[0]))).toBeCloseTo(30, 3);
+  });
+  it('null parent is the plain path', () => {
+    const a = clipModelMatrix(box(), tf({ z: 5 }), undefined, EYE, null);
+    const b = clipModelMatrix(box(), tf({ z: 5 }), undefined, EYE);
+    expect(Array.from(a)).toEqual(Array.from(b));
   });
 });

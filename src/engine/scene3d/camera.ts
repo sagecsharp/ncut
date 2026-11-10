@@ -98,6 +98,21 @@ export function cameraRig(cam: Camera3D, projectWidth: number, projectHeight: nu
   return { eye, right, down, forward, view, proj, viewProj: mul(proj, view), tanHalf, aspect, near, far };
 }
 
+/**
+ * the camera's pose as a matrix (camera space -> world, rigid): columns are right, down, forward, eye.
+ * double precision, the inverse of rig.view. used to attach clips to the camera (engine/parent).
+ */
+export function cameraWorldMatrix(rig: CameraRig): Float64Array {
+  const m = new Float64Array(16);
+  m.set([...rig.right, 0, ...rig.down, 0, ...rig.forward, 0, ...rig.eye, 1]);
+  return m;
+}
+
+/** where the home camera (the default camera with no camera clip) sits for a project size */
+export function homeEye(projectWidth: number, projectHeight: number): Vec3 {
+  return [projectWidth / 2, projectHeight / 2, -homeDistance(projectHeight)];
+}
+
 /** the world center of the camera clip's target at a time, or null (no / unknown / self / non visual target) */
 export function cameraTargetCenter(project: Project, clip: CameraClip, time: number): Vec3 | null {
   const id = clip.target;
