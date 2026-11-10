@@ -680,13 +680,13 @@ export function measureText(clip: TextClip): TextBox {
 }
 
 /** how far (as a fraction of the font size) letters can reach outside the box: outline, shadow, animation */
-export function textSpill(clip: TextClip, animated: boolean): number {
+export function textSpill(clip: TextClip, animated: boolean, noExtrude = false): number {
   let s = 0.05;
   if (clip.stroke) s += clip.stroke.width;
   if (clip.stroke2 && clip.stroke2.width > 0) s += clip.stroke2.width; // the second outline reaches its own width past the first
   if (clip.shadow) s += clip.shadow.distance + clip.shadow.blur * 2;
   if (animated) s += 1.5;
-  if (clip.extrude && clip.extrude.depth > 0) s += Math.min(1, clip.extrude.depth); // the side reaches this far in any direction
+  if (!noExtrude && clip.extrude && clip.extrude.depth > 0) s += Math.min(1, clip.extrude.depth); // the side reaches this far in any direction (3d depth text has no flat side)
   if (clip.highlight?.background) s += 0.15; // the box behind the lit word reaches a little past the letters
   return s;
 }
@@ -863,12 +863,19 @@ function makeGradient(ctx: Ctx, g: TextGradient, x0: number, y0: number, x1: num
   }
 }
 
+export interface DrawTextOptions {
+  /** leave the flat extrude out (3d depth text draws its side as planes, see engine/textDepth.ts) */
+  noExtrude?: boolean;
+  /** letters only: no background boxes and no shadow (the picture a flat silhouette is made from) */
+  bare?: boolean;
+}
+
 /**
  * draw a text clip centered on the origin of the context (the caller already moved / rotated it).
  * applies transform.scale. `local` = seconds since the clip started (drives the text animations);
  * leave it out for a still picture of the text at rest.
  */
-export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
+export function drawText(ctx: Ctx, clip: TextClip, local?: number, opts?: DrawTextOptions): void {
   const m = measureText(clip);
   const s = clip.transform.scale;
   const fs = clip.fontSize;
@@ -897,7 +904,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const perLine = straight && !!clip.backgroundPerLine && !!clip.background;
   const spans = wantLines || perLine ? lineSpans(m.lineWidths, extra !== 0 ? lineLengths(m.lines) : null, innerW, clip.align, extra) : null;
 
-  if (clip.background) {
+  if (clip.background && !opts?.bare) {
     ctx.fillStyle = clip.background;
     const rad = Math.min(1, Math.max(0, clip.backgroundRadius ?? 0));
     if (perLine && spans) {
@@ -942,7 +949,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
 
   const gradient = clip.gradient ?? null;
   // the transform of the whole block: letters that move on their own need the gradient mapped into their frame
-  const ext = clip.extrude && clip.extrude.depth > 0 ? clip.extrude : null;
+  const ext = !opts?.noExtrude && clip.extrude && clip.extrude.depth > 0 ? clip.extrude : null;
   const blockT = gradient || animated || ext ? ctx.getTransform() : null;
   const dev = blockT ? Math.hypot(blockT.a, blockT.b) || 1 : 1;
   const canFilter = 'filter' in ctx;
@@ -1003,7 +1010,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const { inner: strokeW, outer: outerW } = strokeWidths(stroke, stroke2, hollow, fs);
   const outlined = !!stroke || !!stroke2 || hollow;
 
-  if (hl && hl.background && layout && litWord >= 0 && m.curve === 0) {
+  if (hl && hl.background && !opts?.bare && layout && litWord >= 0 && m.curve === 0) {
     // the box behind the current word sits under every letter pass (shadow, outline, fill)
     let x0 = Infinity;
     let x1 = -Infinity;
@@ -1046,7 +1053,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     bby = vy - oy;
   };
 
-  const shadow = clip.shadow && clip.shadow.opacity > 0 ? clip.shadow : null;
+  const shadow = clip.shadow && clip.shadow.opacity > 0 && !opts?.bare ? clip.shadow : null;
   if (shadow) {
     // draw the letters far outside the canvas and let only their shadow land on it: the shadow of one
     // letter then never covers its neighbour, and it can be softer than the letter

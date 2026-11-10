@@ -907,3 +907,41 @@ describe('steady digits', () => {
     expect(box.digits ?? null).toBeNull();
   });
 });
+
+describe('drawText options for 3d depth text', () => {
+  const ex = { depth: 0.5, angle: 45, color: '#ff0000' };
+  it('noExtrude leaves the flat side out and bare leaves the shadow and boxes out', () => {
+    const flat = createTextClip('t', 0, { text: 'hi', fontFamily: 'Depth T', extrude: ex });
+    const a = fakeCtx();
+    drawText(a.ctx, flat);
+    const b = fakeCtx();
+    drawText(b.ctx, flat, undefined, { noExtrude: true });
+    expect(a.calls.fillText).toBeGreaterThan(1);
+    expect(b.calls.fillText).toBe(1);
+    const same = fakeCtx();
+    drawText(same.ctx, { ...flat, extrude: null });
+    expect(same.calls).toEqual(b.calls);
+
+    const boxed = createTextClip('t', 0, { text: 'hi', fontFamily: 'Depth T', background: '#000000', shadow: { color: '#000000', opacity: 1, distance: 0.1, blur: 0, angle: 45 } });
+    const c = fakeCtx();
+    drawText(c.ctx, boxed);
+    const d = fakeCtx();
+    drawText(d.ctx, boxed, undefined, { bare: true });
+    expect(c.calls.fillText).toBe(2);
+    expect(d.calls.fillText).toBe(1);
+    expect(d.calls.fill ?? 0).toBeLessThan(c.calls.fill ?? 0);
+  });
+  it('without options the 2d picture is the same as before', () => {
+    const clip = createTextClip('t', 0, { text: 'hi', fontFamily: 'Depth T', extrude: ex });
+    const a = fakeCtx();
+    drawText(a.ctx, clip);
+    const b = fakeCtx();
+    drawText(b.ctx, clip, undefined, {});
+    expect(a.calls).toEqual(b.calls);
+  });
+  it('textSpill can leave the side out', () => {
+    const clip = createTextClip('t', 0, { text: 'hi', fontFamily: 'Depth T', extrude: ex });
+    expect(textSpill(clip, false, true)).toBeCloseTo(textSpill(clip, false) - 0.5, 9);
+    expect(textSpill(clip, false)).toBeGreaterThan(textSpill({ ...clip, extrude: null }, false));
+  });
+});
