@@ -32,6 +32,23 @@ export interface TransitionSpan {
  * either clip). without one the whole transition plays inside the clip's head.
  */
 export function transitionSpan(project: Project, clip: Clip): TransitionSpan | null {
+  let per = spanCache.get(project);
+  if (!per) {
+    per = new Map();
+    spanCache.set(project, per);
+  }
+  const hit = per.get(clip.id);
+  // the clip object is checked too: a caller may pass an edited copy of a clip of the project
+  if (hit && hit.clip === clip) return hit.span;
+  const span = computeSpan(project, clip);
+  per.set(clip.id, { clip, span });
+  return span;
+}
+
+/** per project: span by clip id (projects are immutable snapshots, previousClipOnTrack scans every clip) */
+const spanCache = new WeakMap<Project, Map<string, { clip: Clip; span: TransitionSpan | null }>>();
+
+function computeSpan(project: Project, clip: Clip): TransitionSpan | null {
   if (!isVisualClip(clip) || !clip.transition || !(clip.transition.duration > 0)) return null;
   const from = previousClipOnTrack(project, clip);
   if (from) {

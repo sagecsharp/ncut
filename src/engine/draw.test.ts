@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, blendOp, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, blendOp, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 
 let seq = 0;
@@ -655,5 +655,58 @@ describe('renderFrame: clip motions', () => {
     expect(visibleClipsAt({ ...p, clips: [a, b] }, 1)).toHaveLength(2);
     clips.push(b);
     expect(visibleClipsAt(p, 1)).toHaveLength(2);
+  });
+});
+
+describe('textureQuality', () => {
+  it('steps 1, 2, 4 so an animated scale keeps the same texture size', () => {
+    const qs = new Set<number>();
+    for (let s = 0.7; s <= 1.3; s += 0.01) qs.add(textureQuality(s, 200, 100));
+    expect(qs.size).toBe(1);
+    expect(textureQuality(0.5, 200, 100)).toBe(1);
+    expect(textureQuality(1.2, 200, 100)).toBe(2);
+    expect(textureQuality(2, 200, 100)).toBe(4);
+    expect(textureQuality(9, 200, 100)).toBe(4);
+  });
+  it('is capped by the max texture size', () => {
+    expect(textureQuality(3, 2048, 100)).toBe(2);
+    expect(textureQuality(3, 8192, 100)).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe('pruneSamples', () => {
+  it('drops samples under 1/512 of the total and renormalizes', () => {
+    const out = pruneSamples([
+      { offset: -2, weight: 0.001 },
+      { offset: -1, weight: 0.5 },
+      { offset: 0, weight: 1 },
+    ]);
+    expect(out.map((s) => s.offset)).toEqual([-1, 0]);
+    expect(out[0]!.weight + out[1]!.weight).toBeCloseTo(1, 9);
+    expect(out[1]!.weight).toBeCloseTo(2 / 3, 9);
+  });
+  it('keeps everything that matters and the order', () => {
+    const out = pruneSamples([
+      { offset: 0, weight: 1 },
+      { offset: 1, weight: 1 },
+      { offset: 2, weight: 1 },
+      { offset: 3, weight: 1 },
+    ]);
+    expect(out).toHaveLength(4);
+    expect(out.map((s) => s.offset)).toEqual([0, 1, 2, 3]);
+    expect(out[0]!.weight).toBeCloseTo(0.25, 9);
+  });
+  it('always keeps the largest', () => {
+    const out = pruneSamples([{ offset: 0, weight: 1e-9 }, { offset: 1, weight: 1e-8 }]);
+    expect(out.some((s) => s.offset === 1)).toBe(true);
+  });
+});
+
+describe('releaseRenderResources', () => {
+  it('can be called for both channels without canvases', () => {
+    expect(() => {
+      releaseRenderResources('export');
+      releaseRenderResources('preview');
+    }).not.toThrow();
   });
 });

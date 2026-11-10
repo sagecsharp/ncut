@@ -175,6 +175,12 @@ describe('hasEffectsAt', () => {
 });
 
 describe('effectPassAt', () => {
+  it('adds timeOffset to the look time but not to fades', () => {
+    const clip = effect('t', 2, 4, { timeOffset: 3, fadeIn: 2 });
+    const pass = effectPassAt(clip, 3)!;
+    expect(pass.time).toBeCloseTo(4, 9);
+    expect(pass.amount).toBeCloseTo(0.5, 9);
+  });
   it('builds a pass with clip-local time', () => {
     const clip = effect('t', 2, 4, { amount: 0.8, seed: 123, params: { strength: 50 } });
     const pass = effectPassAt(clip, 3.5)!;
