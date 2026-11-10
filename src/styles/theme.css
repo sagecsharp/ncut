@@ -1,51 +1,68 @@
 /*
- * ncut theme. dark, flat, linux mint (mint-y dark) inspired.
+ * ncut theme. monochrome, high contrast, flat. kode mono everywhere.
+ * the black palette is matched to near-black neutral grays (#111 wells, #1a1a1a panels, #222 controls, #d4d4d4 text).
+ *
+ * two palettes: black (default) and white. lib/appearance.ts sets data-theme="dark|light" on <html>
+ * (auto follows the system) and the two tint variables:
+ *   --tint-h  hue in degrees
+ *   --tint-s  strength 0..1   (0 = pure black and white)
+ * every color below is a lightness step in oklch with a little of the tint mixed in, so with
+ * strength 0 the whole ui is neutral gray and the accent is plain white (or black on the white theme).
  *
  * hard rules for every stylesheet in this app:
  *  - no glow: no box-shadow, no text-shadow, no drop-shadow/blur filters, no backdrop-filter
  *  - no gradients. solid fills only.
  *  - depth comes from the surface steps below and 1px borders, nothing else
- *  - small radii (--radius), compact controls, mint green for the one accent
+ *  - small radii (--radius), compact controls
  *  - never hardcode a color in a component stylesheet. use these tokens.
  */
 :root {
   color-scheme: dark;
 
+  --tint-h: 150;
+  --tint-s: 0;
+  /* chroma amounts derived from the tint strength */
+  --c-surface: calc(var(--tint-s) * 0.022);
+  --c-text: calc(var(--tint-s) * 0.012);
+  --c-accent: calc(var(--tint-s) * 0.15);
+  --c-clip: calc(var(--tint-s) * 0.06);
+
   /* surfaces, darkest to lightest */
-  --surface-0: #1b1b1b; /* wells: preview backdrop, timeline lanes */
-  --surface-1: #242424; /* app background */
-  --surface-2: #2e2e2e; /* panels */
-  --surface-3: #383838; /* panel headers, raised rows, controls */
-  --surface-4: #454545; /* hover on controls */
-  --surface-5: #525252; /* pressed / active controls */
+  --surface-0: oklch(0.178 var(--c-surface) var(--tint-h)); /* wells: preview backdrop, timeline lanes */
+  --surface-1: oklch(0.205 var(--c-surface) var(--tint-h)); /* app background */
+  --surface-2: oklch(0.22 var(--c-surface) var(--tint-h)); /* panels */
+  --surface-3: oklch(0.255 var(--c-surface) var(--tint-h)); /* panel headers, raised rows, controls */
+  --surface-4: oklch(0.3 var(--c-surface) var(--tint-h)); /* hover on controls */
+  --surface-5: oklch(0.36 var(--c-surface) var(--tint-h)); /* pressed / active controls */
 
-  --border: #161616; /* separators between panels */
-  --border-soft: #4a4a4a; /* outlines on controls */
+  --border: oklch(0.15 var(--c-surface) var(--tint-h)); /* separators between panels */
+  --border-soft: oklch(0.4 var(--c-surface) var(--tint-h)); /* outlines on controls */
 
-  --text: #dedede;
-  --text-dim: #a3a3a3;
-  --text-faint: #737373;
+  --text: oklch(0.89 var(--c-text) var(--tint-h));
+  --text-dim: oklch(0.72 var(--c-text) var(--tint-h));
+  --text-faint: oklch(0.56 var(--c-text) var(--tint-h));
 
-  /* mint green */
-  --accent: #8fb573;
-  --accent-hover: #a2c589;
-  --accent-press: #7a9f60;
-  --accent-muted: #3d4d33; /* selected rows, tinted fills */
-  --on-accent: #1b1b1b;
+  /* the accent is white, drifting toward the tint color as strength goes up */
+  --accent: oklch(calc(0.94 - var(--tint-s) * 0.13) var(--c-accent) var(--tint-h));
+  --accent-hover: oklch(calc(0.86 - var(--tint-s) * 0.1) var(--c-accent) var(--tint-h));
+  --accent-press: oklch(calc(0.77 - var(--tint-s) * 0.08) var(--c-accent) var(--tint-h));
+  --accent-muted: oklch(0.34 calc(var(--tint-s) * 0.05) var(--tint-h)); /* selected rows, tinted fills */
+  --on-accent: oklch(0.178 var(--c-surface) var(--tint-h));
 
-  --danger: #d0605a;
-  --danger-muted: #4d2c2a;
-  --warn: #d9a441;
-  --info: #6aa5c9;
+  /* the only non-monochrome colors: destructive actions and the fps health dot */
+  --danger: oklch(0.68 0.17 25);
+  --danger-muted: oklch(0.3 0.07 25);
+  --warn: oklch(0.8 0.13 80);
+  --info: var(--text-dim);
 
-  /* timeline clip fills by type */
-  --clip-video: #4c7a5e;
-  --clip-image: #7b6a9a;
-  --clip-audio: #4a7797;
-  --clip-text: #a8834a;
-  --clip-label: #f2f2f2;
-  --playhead: #e8e8e8;
-  --snap-line: #d9a441;
+  /* timeline clip fills by type: told apart by lightness */
+  --clip-video: oklch(0.47 var(--c-clip) var(--tint-h));
+  --clip-image: oklch(0.39 var(--c-clip) var(--tint-h));
+  --clip-audio: oklch(0.32 var(--c-clip) var(--tint-h));
+  --clip-text: oklch(0.55 var(--c-clip) var(--tint-h));
+  --clip-label: oklch(0.98 0 0);
+  --playhead: var(--text);
+  --snap-line: var(--accent);
 
   --radius: 4px;
   --radius-sm: 3px;
@@ -55,11 +72,11 @@
   --header-h: 40px;
   --panel-header-h: 32px;
 
-  --font: 'Ubuntu', 'Noto Sans', 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'Ubuntu Mono', 'DejaVu Sans Mono', 'Cascadia Mono', Consolas, monospace;
-  --font-size: 13px;
-  --font-size-sm: 12px;
-  --font-size-xs: 11px;
+  --font: 'Kode Mono', 'Ubuntu Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-mono: 'Kode Mono', 'Ubuntu Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-size: 12px;
+  --font-size-sm: 11px;
+  --font-size-xs: 10px;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -68,4 +85,41 @@
   --space-5: 24px;
 
   --ease: 90ms linear;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --c-surface: calc(var(--tint-s) * 0.018);
+  --c-accent: calc(var(--tint-s) * 0.16);
+
+  --surface-0: oklch(0.86 var(--c-surface) var(--tint-h));
+  --surface-1: oklch(0.91 var(--c-surface) var(--tint-h));
+  --surface-2: oklch(0.975 var(--c-surface) var(--tint-h));
+  --surface-3: oklch(0.935 var(--c-surface) var(--tint-h));
+  --surface-4: oklch(0.88 var(--c-surface) var(--tint-h));
+  --surface-5: oklch(0.82 var(--c-surface) var(--tint-h));
+
+  --border: oklch(0.42 var(--c-surface) var(--tint-h));
+  --border-soft: oklch(0.56 var(--c-surface) var(--tint-h));
+
+  --text: oklch(0.13 var(--c-text) var(--tint-h));
+  --text-dim: oklch(0.34 var(--c-text) var(--tint-h));
+  --text-faint: oklch(0.5 var(--c-text) var(--tint-h));
+
+  /* the accent is black, drifting toward the tint color as strength goes up */
+  --accent: oklch(calc(0.15 + var(--tint-s) * 0.3) var(--c-accent) var(--tint-h));
+  --accent-hover: oklch(calc(0.27 + var(--tint-s) * 0.25) var(--c-accent) var(--tint-h));
+  --accent-press: oklch(calc(0.36 + var(--tint-s) * 0.2) var(--c-accent) var(--tint-h));
+  --accent-muted: oklch(0.83 calc(var(--tint-s) * 0.05) var(--tint-h));
+  --on-accent: oklch(0.985 var(--c-surface) var(--tint-h));
+
+  --danger: oklch(0.52 0.19 25);
+  --danger-muted: oklch(0.9 0.05 25);
+  --warn: oklch(0.62 0.14 75);
+
+  --clip-video: oklch(0.38 var(--c-clip) var(--tint-h));
+  --clip-image: oklch(0.47 var(--c-clip) var(--tint-h));
+  --clip-audio: oklch(0.29 var(--c-clip) var(--tint-h));
+  --clip-text: oklch(0.54 var(--c-clip) var(--tint-h));
 }

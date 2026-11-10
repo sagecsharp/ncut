@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/kode-mono": "^5.3.0",
     "lucide-react": "^1.70.0",
     "mediabunny": "^1.65.2",
     "react": "^19.3.1",

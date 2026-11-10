@@ -24,6 +24,7 @@ export const DEFAULT_IMAGE_DURATION = 5;
 export const DEFAULT_TEXT_DURATION = 4;
 
 export const FONT_FAMILIES = [
+  'Kode Mono',
   'Ubuntu',
   'Noto Sans',
   'Arial',
@@ -109,7 +110,7 @@ export function createTextClip(trackId: string, start: number, overrides: Partia
     fadeIn: 0,
     fadeOut: 0,
     text: 'your text',
-    fontFamily: 'Ubuntu',
+    fontFamily: 'Kode Mono',
     fontSize: 96,
     fontWeight: 700,
     italic: false,

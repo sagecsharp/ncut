@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Copy, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Copy, Palette, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { ProjectSummary } from '../../types';
+import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { formatDuration } from '../../lib/time';
@@ -238,6 +239,8 @@ export function ProjectsScreen() {
     };
   }, [refresh]);
 
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+
   const openNew = useCallback(() => {
     setNewName('untitled project');
     setNewOpen(true);
@@ -369,11 +372,18 @@ export function ProjectsScreen() {
           <span className="projects-name">ncut</span>
         </div>
         <p className="projects-tagline">local-only video editor. no accounts, no watermark.</p>
+        <button className="icon-btn" onClick={() => setAppearanceOpen(true)} title="appearance: theme and tint" aria-label="appearance">
+          <Palette size={16} />
+        </button>
         <button className="btn btn-primary" onClick={openNew} title="new project (n)">
           <Plus size={16} />
           new project
         </button>
       </header>
+
+      <Dialog open={appearanceOpen} title="appearance" onClose={() => setAppearanceOpen(false)} width={380}>
+        <AppearanceSettings />
+      </Dialog>
 
       <main className="projects-main">
         {!loaded ? (

@@ -1,15 +1,25 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import '@fontsource/kode-mono/400.css';
+import '@fontsource/kode-mono/500.css';
+import '@fontsource/kode-mono/700.css';
 import './styles/theme.css';
 import './styles/base.css';
 import './components/ui/ui.css';
 import { App } from './App';
+import { initAppearance } from './lib/appearance';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
 import { usePlayback } from './store/playback';
 import * as session from './store/session';
 import { useUi } from './store/ui';
 
+initAppearance();
+// the canvas (preview + export) can only draw a web font once it is loaded, so fetch both weights up front
+if (document.fonts) {
+  void document.fonts.load('400 16px "Kode Mono"');
+  void document.fonts.load('700 16px "Kode Mono"');
+}
 session.startAutosave();
 
 // handy for poking at the app from the devtools console (dev builds only)

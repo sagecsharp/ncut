@@ -102,6 +102,12 @@ export class PreviewEngine {
         this.invalidate();
       }),
     );
+    // text clips drawn before their web font finished loading must be redrawn once it arrives
+    if (typeof document !== 'undefined' && document.fonts) {
+      const onFonts = () => this.invalidate();
+      document.fonts.addEventListener('loadingdone', onFonts);
+      this.unsubs.push(() => document.fonts.removeEventListener('loadingdone', onFonts));
+    }
     this.sync();
   }
 

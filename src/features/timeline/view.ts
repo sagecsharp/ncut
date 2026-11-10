@@ -7,6 +7,8 @@
  * lane range is [scrollLeft, scrollLeft + width].
  */
 
+import { APPEARANCE_EVENT } from '../../lib/appearance';
+
 export const view = {
   scrollLeft: 0,
   scrollTop: 0,
@@ -49,13 +51,36 @@ export function resetView(): void {
 }
 
 const colorCache = new Map<string, string>();
+let probe: HTMLSpanElement | null = null;
 
-/** value of a css custom property on :root, cached (theme is static). for canvas drawing. */
+/**
+ * value of a css custom property on :root for canvas drawing, cached until the theme changes.
+ * color tokens are built from oklch() + calc() + var(), so they are resolved through a hidden
+ * element to get a plain color string the canvas accepts.
+ */
 export function cssVar(name: string): string {
   let v = colorCache.get(name);
   if (v === undefined) {
-    v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    if (name.startsWith('--font')) {
+      v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    } else {
+      if (!probe) {
+        probe = document.createElement('span');
+        probe.style.display = 'none';
+        document.body.appendChild(probe);
+      }
+      probe.style.color = `var(${name})`;
+      v = getComputedStyle(probe).color;
+    }
     colorCache.set(name, v);
   }
   return v;
+}
+
+// theme / tint changed: drop cached colors and redraw every timeline canvas
+if (typeof window !== 'undefined') {
+  window.addEventListener(APPEARANCE_EVENT, () => {
+    colorCache.clear();
+    notifyView();
+  });
 }

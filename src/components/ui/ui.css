@@ -50,6 +50,51 @@
   background: var(--surface-4);
 }
 
+.appearance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.appearance-modes {
+  display: flex;
+  gap: var(--space-1);
+}
+.appearance-mode {
+  flex: 1;
+}
+.appearance-mode.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.appearance-swatches {
+  display: flex;
+  gap: var(--space-2);
+}
+.appearance-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.appearance-swatch.is-active {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.appearance-label {
+  width: 56px;
+  flex-shrink: 0;
+}
+.appearance-value {
+  width: 40px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  text-align: right;
+}
+
 .number-field {
   display: inline-flex;
   align-items: center;

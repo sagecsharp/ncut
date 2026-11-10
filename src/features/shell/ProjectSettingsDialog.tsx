@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
@@ -79,7 +80,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
   return (
     <Dialog
       open
-      title="project settings"
+      title="settings"
       onClose={onClose}
       width={420}
       footer={
@@ -93,6 +94,10 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
         </>
       }
     >
+      <h3 className="shell-settings-heading">appearance</h3>
+      <AppearanceSettings />
+
+      <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>
       <label className="field">
         <span className="field-label">canvas preset</span>
         <select
