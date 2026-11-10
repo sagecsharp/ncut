@@ -276,12 +276,26 @@ function cpCount(s: string): number {
 }
 
 /**
+ * can a code point of this line not be drawn alone? right-to-left scripts (letters join and reorder), combining marks
+ * (they sit on the letter before), joiners, variation selectors, emoji modifiers, flags (regional indicator pairs).
+ * steady digits draw one code point at a time, which would break these.
+ */
+const NEEDS_WHOLE_LINE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]|\p{M}|[\u200C\u200D\uFE00-\uFE0F\u{E0100}-\u{E01EF}]|\p{Emoji_Modifier}|\p{Regional_Indicator}/u;
+export function needsWholeLine(line: string): boolean {
+  return NEEDS_WHOLE_LINE.test(line);
+}
+
+/**
  * which letters of the wrapped lines are digits of the counter's number. `ranges` are code point ranges of the whole
  * text; wrapping drops one separator (a line break or a space) between neighbouring lines, so a line starts one letter
  * after the previous one ended. null when no letter qualifies or the lines do not add up to the text.
+ * also null when a line holds something that cannot be drawn one code point at a time (needsWholeLine): the digit
+ * layout draws the whole text per code point, so it is skipped and the text is drawn as one string per line as
+ * without the switch.
  */
 export function counterDigitFlags(lines: string[], ranges: readonly DigitRange[] | undefined, textLength: number): boolean[][] | null {
   if (!ranges || ranges.length === 0) return null;
+  if (lines.some(needsWholeLine)) return null;
   const chars = lines.map((l) => Array.from(l));
   let total = Math.max(0, chars.length - 1);
   for (const c of chars) total += c.length;

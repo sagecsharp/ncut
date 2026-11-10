@@ -605,9 +605,8 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
  * background box) the face canvas is copied and tinted ('source-in'), so an animated text costs a copy and a fill per
  * frame, not a second text layout. otherwise the letters are drawn again without shadow / boxes and tinted.
  * cached with the face (the face entry is replaced whenever the picture is redrawn, which drops the silhouette).
- * it always has a texture key, even while the face is live: the n planes of the stack share it, so the gl side uploads
- * it once per redraw (a key-less picture would be uploaded again for every plane). the keys of live pictures are
- * unique per redraw and age out of the gl cache.
+ * it has a texture key when the face has one; a live face gives a key-less silhouette: the n planes of the stack share
+ * the image object, and the gl side uploads a key-less picture once for consecutive planes that carry the same image.
  */
 function textSide(t: TextTexture, clip: TextClip, time: number, color: string): { canvas: AnyCanvas; key: string | undefined } | null {
   // its own cache key: the text signature of the face + 'side' (+ colour). an animated face has no signature: redrawn every frame.
@@ -642,7 +641,8 @@ function textSide(t: TextTexture, clip: TextClip, time: number, color: string): 
   c.fillStyle = color;
   c.fillRect(0, 0, w, h);
   c.globalCompositeOperation = 'source-over';
-  t.side = { canvas, key: `side:${clip.id}:${++textTextureSerial}`, sig };
+  // a live face (no key) gives a live silhouette: the gl side uploads it once for the whole stack (same image object)
+  t.side = { canvas, key: t.key === undefined ? undefined : `side:${clip.id}:${++textTextureSerial}`, sig };
   return t.side;
 }
 
@@ -1007,8 +1007,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     clip.transform,
     clip.lookAt,
     rig.eye,
-    clip.parent ? parentModelMatrix(project, clip, layer.poseTime ?? layer.time) : null,
-    clip.lookAt === 'clip' ? clipLookPoint(project, clip, layer.poseTime ?? layer.time) : null,
+    clip.parent ? parentModelMatrix(project, clip, layer.poseTime ?? layer.time, layer.time) : null,
+    clip.lookAt === 'clip' ? clipLookPoint(project, clip, layer.poseTime ?? layer.time, layer.time) : null,
   );
   let uv: [number, number, number, number] | undefined;
   let radius: number | undefined;
@@ -1067,10 +1067,15 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   const canvas = ctx.canvas as AnyCanvas | undefined;
   if (!canvas) return;
   const planes: Plane3D[] = [];
+  let li = 0;
   for (const layer of layers) {
     // a 3d depth text pushes its side planes (far to near) before its face
+    const from = planes.length;
     const p = planeFor(project, layer, rig, channel, planes);
     if (p) planes.push(p);
+    // one layer number per clip: the planes of its stack are not nudged against each other (renderer.ts)
+    for (let i = from; i < planes.length; i++) planes[i]!.layer = li;
+    li++;
   }
   const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null);
   if (!out) return;
@@ -1316,9 +1321,9 @@ function sameNums(a: ArrayLike<number> | null, b: ArrayLike<number> | null): boo
  * inside a transition (blend false) the layer is mixed with normal blending, the mixed result carries the blend.
  * `rig` = the clip is 3d: every copy is a 3d run of its own (one clip through the camera of the frame, at the pose of
  * its sample time: position, depth, tilt, parents and look target move, the camera does not) added into the same
- * accumulator. one gpu render per copy, so it is only paid by clips that switch the blur on.
+ * accumulator (a camera parent or look target is read at the frame time: the camera is not sampled). one gpu render per copy, so it is only paid by clips that switch the blur on.
  */
-function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true, rig: CameraRig | null = null): boolean {
+function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true, rig: CameraRig | null = null, beforeDraw?: () => void): boolean {
   const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
   if (times.length < 2) return false;
   // 'trail' / 'ghost' choose their own moments and weights; 'even' (or no style) keeps the old times and equal shares
@@ -1347,8 +1352,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
       a: c.transform.opacity * fadeFactor(c, t),
       w: worldTransformOf(project, c, t),
       // 3d only: what a parent chain or a look target does in space (worldTransformOf only knows the flat part)
-      m: rig && c.parent ? parentModelMatrix(project, c, t) : null,
-      l: rig && c.lookAt === 'clip' ? clipLookPoint(project, c, t) : null,
+      m: rig && c.parent ? parentModelMatrix(project, c, t, time) : null,
+      l: rig && c.lookAt === 'clip' ? clipLookPoint(project, c, t, time) : null,
     };
   };
   // still = every sample has the pose of the first one (not just the two ends: at the turning point of a
@@ -1366,6 +1371,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   const copy = scratchFor(ctx, env.channel, 'mbCopy');
   const acc = scratchFor(ctx, env.channel, 'mbAcc', true);
   if (!canvas || !copy || !acc) return false;
+  // the clip really moves: now (and not before) the 3d run in the bin is composited, so a still clip stays in it
+  beforeDraw?.();
   clearScratch(acc);
   const share = 1 / times.length;
   for (let i = 0; i < times.length; i++) {
@@ -1681,8 +1688,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       if (raw.motionBlur) {
         // a 3d clip with a motion blur is a run of its own too: one render per copy, summed, then mixed onto the
         // canvas with its blend mode. a clip that does not move takes the normal paths below.
-        flush3d();
-        if (paintBlurred(ctx, project, raw, source, time, env, true, getRig())) continue;
+        if (paintBlurred(ctx, project, raw, source, time, env, true, getRig(), flush3d)) continue;
       }
       if (bop) {
         // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
@@ -1721,8 +1727,8 @@ export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: S
 
 /**
  * the scene view: the 3d world seen from a free editor camera instead of the project camera.
- * shows every active 3d clip as a plane, the output frame (the canvas rectangle at z = 0), a floor grid
- * and the project camera as a wire pyramid. 2d clips and effects are screen space and are not drawn.
+ * shows every active 3d clip as a plane, the output frame (the canvas rectangle at z = 0)
+ * and the project camera as a wire pyramid (the floor grid is the scene overlay's). 2d clips and effects are screen space and are not drawn.
  * crop and radius apply here too; blend modes do not (all planes share one depth sorted run).
  * `lineColor` is straight rgba 0..1 for the helpers (pass a theme color).
  */
@@ -1759,19 +1765,7 @@ export function renderSceneView(
     layers.push({ clip, source, alpha, time });
   }
 
-  const dim: [number, number, number, number] = [lineColor[0], lineColor[1], lineColor[2], lineColor[3] * 0.35];
   const seg = (out: number[], a: readonly number[], b: readonly number[]) => out.push(a[0]!, a[1]!, a[2]!, b[0]!, b[1]!, b[2]!);
-  // floor grid at the bottom edge of the canvas
-  const grid: number[] = [];
-  const step = H / 4;
-  const x0 = W / 2 - step * 12;
-  const x1 = W / 2 + step * 12;
-  const z0 = -step * 6;
-  const z1 = step * 18;
-  for (let i = 0; i <= 24; i++) {
-    seg(grid, [x0 + i * step, H, z0], [x0 + i * step, H, z1]);
-    seg(grid, [x0, H, z0 + i * step], [x1, H, z0 + i * step]);
-  }
   // the output frame
   const frame: number[] = [];
   seg(frame, [0, 0, 0], [W, 0, 0]);
@@ -1787,7 +1781,6 @@ export function renderSceneView(
     seg(frame, far[i]!, far[(i + 1) % 4]!);
   }
   draw3d(ctx, project, layers, rig, channelOf(ctx), [
-    { points: grid, color: dim },
     { points: frame, color: lineColor },
   ]);
 }

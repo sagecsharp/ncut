@@ -10,6 +10,11 @@ export function isScrubbing(playing: boolean, rate: number, playbackRate: number
   return isVideo && playing && rate !== 1 && playbackRate === 0;
 }
 
+/** true when an element that scrubbed on the last sync does not scrub now: its deferred seek target (`want`) is stale */
+export function staleScrubTarget(wasScrub: boolean, scrubNow: boolean): boolean {
+  return wasScrub && !scrubNow;
+}
+
 /**
  * does this video keep the last picture on screen (the hold) while it seeks / loads?
  * a scrubbing element never holds the canvas while seeking (the other layers must keep moving and the

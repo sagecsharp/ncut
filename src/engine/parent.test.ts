@@ -244,6 +244,33 @@ describe('camera parent', () => {
     expect(sb.x).toBeCloseTo(sa.x, 1);
     expect(sb.y).toBeCloseTo(sa.y, 1);
   });
+  it('a separate camera time: the camera is read there, the clip chain at the sample time', () => {
+    const slide = { x: [{ t: 0, v: 0, ease: 'linear' }, { t: 10, v: 200, ease: 'linear' }] } as CameraClip['keyframes'];
+    const mk = (cam: Partial<CameraClip>, midKeys: boolean) =>
+      setup((t) => [
+        camClip(t, cam),
+        sh(t, 'mid', { parent: 'cam', threeD: true, transform: tf({ z: 30 }), keyframes: midKeys ? { x: [{ t: 0, v: 0, ease: 'linear' }, { t: 10, v: 100, ease: 'linear' }] } : undefined } as Partial<ShapeClip>),
+        sh(t, 'kid', { parent: 'mid', threeD: true }),
+        sh(t, 'hud', { parent: 'cam', threeD: true }),
+      ]);
+    const moving = mk({ keyframes: slide }, true);
+    const hud = moving.clips[3] as ShapeClip;
+    const same = parentModelMatrix(moving, hud, 5, 5)!;
+    // a camera parent at a sample time but the camera of the frame time 1
+    const frozen = parentModelMatrix(moving, hud, 5, 1)!;
+    const atOne = parentModelMatrix(moving, hud, 1)!;
+    for (let i = 0; i < 16; i++) expect(frozen[i]).toBeCloseTo(atOne[i]!, 4);
+    expect(same[12]).not.toBeCloseTo(atOne[12]!, 1);
+    // without a camera time it is the old behaviour
+    const old = parentModelMatrix(moving, hud, 5)!;
+    for (let i = 0; i < 16; i++) expect(old[i]).toBeCloseTo(same[i]!, 6);
+    // a clip chain under the camera: the clip moves with the sample time, the camera stays at the frame time
+    const kid = moving.clips[2] as ShapeClip;
+    const mixed = parentModelMatrix(moving, kid, 5, 1)!;
+    const ref = mk({ x: 20 }, true);
+    const want = parentModelMatrix(ref, ref.clips[2] as ShapeClip, 5)!;
+    for (let i = 0; i < 16; i++) expect(mixed[i]).toBeCloseTo(want[i]!, 3);
+  });
   it('a 2d child ignores a camera parent', () => {
     const p = setup((t) => [camClip(t, { x: 300 }), sh(t, 'kid', { parent: 'cam', transform: tf({ x: 7 }) })]);
     expect(worldTransform(p, p.clips[1] as ShapeClip, 1).x).toBe(7);
