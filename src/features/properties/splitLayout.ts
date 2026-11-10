@@ -103,8 +103,11 @@ export function splitCells(kind: SplitKind, count: number, canvasW: number, canv
   const w = canvasW * PIP_SHARE;
   const h = canvasH * PIP_SHARE;
   const perRow = Math.max(1, Math.floor((canvasW - margin) / (w + margin)));
+  // only the rows that fit: a window outside the canvas would be a clip nobody can see
+  const rows = Math.max(1, Math.floor((canvasH - margin) / (h + margin)));
+  const windows = Math.min(n - 1, perRow * rows);
   const out: SplitCell[] = [cell(0, 0, canvasW, canvasH)];
-  for (let i = 0; i < n - 1; i++) {
+  for (let i = 0; i < windows; i++) {
     const col = i % perRow;
     const row = Math.floor(i / perRow);
     out.push(cell(canvasW - margin - w - col * (w + margin), canvasH - margin - h - row * (h + margin), w, h));

@@ -24,9 +24,9 @@ export function splitOrder(project: Pick<Project, 'clips' | 'tracks'>, ids: read
 }
 
 /**
- * put the selected flat clips into the cells of a split screen: position and size through the same path as
- * the transform fields (so a keyframed clip gets a key at the playhead), the crop of pictures on the clip.
- * one undo step.
+ * put the selected flat clips into the cells of a split screen. a part of a split screen holds still and
+ * upright: keys on position, size and rotation are removed, the rotation is set to 0, and the crop of a
+ * picture is replaced by the one that fits its cell. one undo step.
  */
 export function splitScreen(ids: readonly string[], kind: SplitKind, gap = 0): void {
   const st = useEditor.getState();
@@ -49,13 +49,25 @@ export function splitScreen(ids: readonly string[], kind: SplitKind, gap = 0): v
   if (plan.length === 0) return;
   st.pushHistory();
   const skip = { skipHistory: true };
+  let unkeyed = 0;
   for (const w of plan) {
     const clip = clips.find((c) => c.id === w.id)!;
     const t = timeOf(clip);
+    let had = false;
+    for (const prop of ['x', 'y', 'scale', 'rotation']) {
+      if (!clip.keyframes?.[prop]?.length) continue;
+      st.clearKeyframes(w.id, t, prop, skip);
+      had = true;
+    }
+    if (had) unkeyed++;
     st.setClipValue(w.id, 'x', t, w.x, skip);
     st.setClipValue(w.id, 'y', t, w.y, skip);
     st.setClipValue(w.id, 'scale', t, w.scale, skip);
+    st.setClipValue(w.id, 'rotation', t, 0, skip);
     if (clip.type === 'video' || clip.type === 'image') st.updateClip(w.id, { crop: w.crop }, skip);
   }
-  if (plan.length < clips.length) useUi.getState().toast(`${plan.length} clips laid out, the rest stay where they are`);
+  const notes: string[] = [];
+  if (plan.length < clips.length) notes.push(`${plan.length} clips laid out, the rest stay where they are`);
+  if (unkeyed > 0) notes.push(`${unkeyed === 1 ? '1 clip was' : `${unkeyed} clips were`} animated: the keys on position, size and rotation are gone`);
+  if (notes.length > 0) useUi.getState().toast(notes.join('. '));
 }

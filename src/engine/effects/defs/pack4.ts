@@ -187,7 +187,8 @@ vec4 effect(vec2 uv) {
     glsl: `${SOBEL}
 vec4 effect(vec2 uv) {
   vec3 c = tex(uv).rgb;
-  vec2 g = sobel(uv, max(p_thickness, 0.5) / u_size);
+  // never a step under one real pixel: a small preview would lose the edges the export finds
+  vec2 g = sobel(uv, max(max(p_thickness, 0.5) / u_size, 1.0 / u_res));
   float line = sat((length(g) - 0.06) * 4.0);
   vec3 col;
   if (p_color < 0.5) col = hsv2rgb(vec3(fract(atan(g.y, g.x + 0.00001) / TAU + u_time * 0.08), 0.85, 1.0));
@@ -235,7 +236,7 @@ vec4 effect(vec2 uv) {
     glsl: `${SOBEL}
 vec4 effect(vec2 uv) {
   vec3 c = tex(uv).rgb;
-  vec2 g = sobel(uv, max(p_thickness, 0.5) / u_size);
+  vec2 g = sobel(uv, max(max(p_thickness, 0.5) / u_size, 1.0 / u_res));
   float line = sat((length(g) - 0.05) * (1.5 + p_ink * 0.08));
   float tone = 1.0 - luma(c);
   // two sets of slanted strokes in project pixels: one for mid tones, a crossed one for the darks.
@@ -323,7 +324,7 @@ vec4 effect(vec2 uv) {
   float lines = 0.75 + 0.25 * sin(uv.y * u_size.y * TAU / period);
   res *= mix(0.75, lines, smoothstep(1.5, 3.0, period * u_res.y / u_size.y));
   // a bright band that travels up
-  res += tintc * smoothstep(0.08, 0.0, abs(fract(uv.y + u_time * 0.25) - 0.5)) * 0.12;
+  res += tintc * (1.0 - smoothstep(0.0, 0.08, abs(fract(uv.y + u_time * 0.25) - 0.5))) * 0.12;
   res *= 1.0 - p_flicker * 0.0035 * hash11(floor(u_time * 24.0) + u_seed);
   return vec4(mix(c0, res, u_amount), 1.0);
 }`,

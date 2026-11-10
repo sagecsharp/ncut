@@ -246,7 +246,11 @@ interface Spatial {
   lookTarget?: string | null;
   /** 3d only. missing = 'plane'. */
   shape?: Shape3D;
-  /** 3d only, box / cylinder / capsule / prism / hexagon / star / heart: thickness in project pixels at scale 1. missing = the clip's height. */
+  /**
+   * 3d only, every solid shape: thickness in project pixels at scale 1. missing = the clip's height for a
+   * box and the clip's width for every other solid (as deep as wide), measured on the clip's own box
+   * (a text's outline, shadow or animation room does not count).
+   */
   shapeDepth?: number;
   /** transition into this clip. null / missing = a plain cut. */
   transition?: Transition | null;

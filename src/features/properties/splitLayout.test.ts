@@ -115,6 +115,19 @@ describe('splitCells', () => {
     }
   });
 
+  it('pip never puts a window outside the canvas: clips beyond the rows that fit get no cell', () => {
+    for (const [w, h] of [[1920, 1080], [1080, 1920], [1000, 1000]] as const) {
+      const cells = splitCells('pip', 16, w, h);
+      expect(cells.length).toBeLessThanOrEqual(16);
+      expect(cells.length).toBeGreaterThan(4);
+      for (const c of cells) {
+        expect(top(c)).toBeGreaterThanOrEqual(0);
+        expect(left(c)).toBeGreaterThanOrEqual(0);
+      }
+    }
+    expect(splitCells('pip', 16, 1920, 1080)).toHaveLength(10);
+  });
+
   it('never makes more cells than the limit', () => {
     expect(splitCells('grid', 500, W, H)).toHaveLength(MAX_SPLIT);
   });
