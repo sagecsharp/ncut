@@ -36,6 +36,17 @@ export function marqueeSelection(project: Clips, hits: readonly string[]): strin
   return expandGroups(project, hits);
 }
 
+/**
+ * the list to hand to select(list, 'replace') in ONE call for a marquee over `hits` that started with the
+ * selection `base`. select(base, 'replace') followed by select(widened hits, 'add') ends with the base
+ * followed by the hits not already in it (add merges through a Set); filtering out missing / locked clips
+ * happens per id, so it gives the same list whether it runs before or after the merge.
+ */
+export function marqueeReplaceList(project: Clips, base: readonly string[], hits: readonly string[]): string[] {
+  if (hits.length === 0) return [...base];
+  return [...new Set([...base, ...marqueeSelection(project, hits)])];
+}
+
 /** clips that start at or after `time` (optionally one track only), widened to whole groups */
 export function idsAfter(project: Clips, time: number, trackId?: string): string[] {
   const eps = 1e-6;
