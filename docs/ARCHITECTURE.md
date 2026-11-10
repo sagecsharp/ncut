@@ -162,6 +162,9 @@ numbers at draw time (effects get a per-clip `seed`).
 - running numbers (`TextClip.counter`): `resolveVisual` writes the number into the text right after the
   keyframes (`resolveCounter`), so layout, caches and overlays see a plain text clip. ui code that measures
   a text clip does the same (`features/preview/attached.ts` `resolveShown`).
+- things that run over the length of a clip carry on across a cut: a split and a head trim write `offset` +
+  `fullDuration` on the counter, on the karaoke highlight (`TextHighlight`, read by `highlightProgress`) and
+  `timeOffset` + `fullDuration` on effect clips, so both halves show what the whole clip showed.
 - playback speed: the clock advances by `dt * rate` (`store/playback.ts`). the frame renderer never sees
   the rate. the preview's media elements follow it (playbackRate forward, pause + seek backwards, audio
   muted backwards and above 4x). the export ignores it.
