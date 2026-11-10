@@ -51,6 +51,9 @@
   color: var(--text-faint);
   font-size: var(--font-size-xs);
 }
+.shell-saved.is-error {
+  color: var(--danger);
+}
 .shell-sep {
   width: 1px;
   height: 16px;

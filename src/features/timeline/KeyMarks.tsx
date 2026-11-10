@@ -1,9 +1,9 @@
 import { memo, useEffect, useRef } from 'react';
 import type { Clip } from '../../types';
-import { keyTimes } from '../../lib/anim';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { KEY_STRIP_H, keyX, mergeKeys } from './keyGeometry';
+import { clipKeyTimes, keyAt } from './keyTimesCache';
 import { cssVar, subscribeView, view } from './view';
 
 interface Props {
@@ -37,10 +37,7 @@ export const KeyMarks = memo(function KeyMarks({ clip, zoom, clipH }: Props) {
       const p = latest.current;
       const fps = useEditor.getState().project?.fps ?? 30;
       const local = usePlayback.getState().time - p.clip.start;
-      const times = keyTimes(p.clip.keyframes);
-      const tol = 0.5 / fps;
-      for (const t of times) if (Math.abs(t - local) <= tol) return t;
-      return NaN;
+      return keyAt(p.clip.keyframes, p.clip.duration, local, 0.5 / fps);
     };
 
     const draw = () => {
@@ -70,7 +67,7 @@ export const KeyMarks = memo(function KeyMarks({ clip, zoom, clipH }: Props) {
       activeKey = activeAt();
       const fill = cssVar('--clip-label');
       const hollow = cssVar('--clip-audio');
-      const groups = mergeKeys(keyTimes(p.clip.keyframes), p.zoom, w);
+      const groups = mergeKeys(clipKeyTimes(p.clip.keyframes, p.clip.duration), p.zoom, w);
       const cy = KEY_STRIP_H / 2;
       ctx.lineWidth = 1;
       ctx.strokeStyle = fill;

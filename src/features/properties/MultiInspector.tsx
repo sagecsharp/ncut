@@ -2,6 +2,8 @@ import { memo } from 'react';
 import { Copy, Trash2 } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
+import type { ActionOpts } from '../../store/editorStore';
+import { usePlayback } from '../../store/playback';
 import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
@@ -83,6 +85,16 @@ function targets(ids: string[], pick: (c: ReturnType<typeof getClips>[number]) =
   const set = new Set(ids);
   return getClips().filter((c) => set.has(c.id) && pick(c)).map((c) => c.id);
 }
+/** animatable value for several clips: keyframed clips get a key at the playhead, the others a static value */
+function setAtPlayhead(ids: string[], prop: string, value: number, opts: ActionOpts): void {
+  const st = useEditor.getState();
+  const time = usePlayback.getState().time;
+  for (const id of ids) {
+    const c = st.project?.clips.find((k) => k.id === id);
+    if (!c) continue;
+    st.setClipValue(id, prop, Math.min(c.start + c.duration, Math.max(c.start, time)), value, opts);
+  }
+}
 function getClips() {
   return useEditor.getState().project?.clips ?? [];
 }
@@ -90,7 +102,7 @@ function getClips() {
 const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[]; sum: Summary }) {
   const setOpacity = (v: number) => {
     const o = liveOpts();
-    for (const id of targets(ids, isVisualClip)) useEditor.getState().updateTransform(id, { opacity: v / 100 }, o);
+    setAtPlayhead(targets(ids, isVisualClip), 'opacity', v / 100, o);
   };
   const setThreeD = (on: boolean) => {
     const st = useEditor.getState();
@@ -99,9 +111,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
   };
   const setVolume = (v: number) => {
     const o = liveOpts();
-    for (const id of targets(ids, (c) => c.type === 'audio' || c.type === 'video')) {
-      useEditor.getState().updateClip(id, { volume: v / 100 }, o);
-    }
+    setAtPlayhead(targets(ids, (c) => c.type === 'audio' || c.type === 'video'), 'volume', v / 100, o);
   };
   const setFade = (key: 'fadeIn' | 'fadeOut', v: number) => {
     const o = liveOpts();

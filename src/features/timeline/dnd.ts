@@ -9,7 +9,8 @@ import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_SHAPE_DURATIO
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { getEffect } from '../../engine/effects/registry';
-import { DEFAULT_TRANSITION_DURATION, getTransition } from '../../engine/transitions/registry';
+import { getTransition } from '../../engine/transitions/registry';
+import { transitionFor } from '../media/transitionApply';
 import { CUT_EPS } from '../../lib/transitions';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
@@ -294,7 +295,7 @@ export function createDnd(env: DndEnv) {
     if (payload?.kind === 'transition') {
       // dropping on empty space, audio, effect or camera clips does nothing
       if (transitionTarget) {
-        st.updateClip(transitionTarget.clip.id, { transition: { id: payload.transition, duration: DEFAULT_TRANSITION_DURATION } });
+        st.updateClip(transitionTarget.clip.id, { transition: transitionFor(payload.transition, transitionTarget.clip.transition) });
         st.select([transitionTarget.clip.id], 'replace');
       }
       return;

@@ -21,6 +21,18 @@ interface EffectSectionProps {
   params: Record<string, number>;
 }
 
+/** back to defaults in one undo step: animated params lose their keys, then the static values reset */
+function resetEffect(id: string): void {
+  const st = actions();
+  const clip = st.project?.clips.find((c) => c.id === id);
+  if (!clip) return;
+  st.pushHistory();
+  for (const prop of Object.keys(clip.keyframes ?? {})) {
+    if (prop === 'amount' || prop.startsWith('p.')) st.clearKeyframes(id, clip.start, prop, { skipHistory: true });
+  }
+  st.updateClip(id, { params: {}, amount: 1 }, { skipHistory: true });
+}
+
 export const EffectSection = memo(function EffectSection({ id, name, effect, params }: EffectSectionProps) {
   const def = getEffect(effect);
 
@@ -113,7 +125,7 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
           type="button"
           className="btn btn-sm"
           title="back to the default settings and full strength"
-          onClick={() => actions().updateClip(id, { params: {}, amount: 1 })}
+          onClick={() => resetEffect(id)}
         >
           <RotateCcw size={14} />
           reset

@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { ChevronLeft, ChevronRight, Diamond } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
-import { EASINGS, baseValue, evalKeys, keyIndexAt } from '../../lib/anim';
+import { EASINGS, KEY_EPS, baseValue, evalKeys, keyIndexAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useClip, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -36,6 +36,11 @@ export interface AnimFieldProps {
 /** clip-local time of the playhead, held inside the clip */
 function localTime(time: number, start: number, duration: number): number {
   return clamp(time, start, start + duration) - start;
+}
+
+/** keys outside the clip (kept by a trim / split for an unbroken motion) are not listed or jumped to */
+function inClip(k: Keyframe, duration: number): boolean {
+  return k.t >= -KEY_EPS && k.t <= duration + KEY_EPS;
 }
 
 /** the key the easing select edits: the last key at or before the playhead, else the first key */
@@ -195,11 +200,11 @@ function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
   const keyHere = usePlayback((s) => keyIndexAt(keys, localTime(s.time, start, duration), tol) >= 0);
   const hasPrev = usePlayback((s) => {
     const l = localTime(s.time, start, duration);
-    return keys.some((k) => k.t < l - tol);
+    return keys.some((k) => inClip(k, duration) && k.t < l - tol);
   });
   const hasNext = usePlayback((s) => {
     const l = localTime(s.time, start, duration);
-    return keys.some((k) => k.t > l + tol);
+    return keys.some((k) => inClip(k, duration) && k.t > l + tol);
   });
   const ease = usePlayback((s) => keys[easeKeyIndex(keys, localTime(s.time, start, duration), tol)]!.ease);
 
@@ -217,7 +222,8 @@ function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
       onToggle={() => actions().toggleKeyframe(id, prop, clamp(now(), start, start + duration))}
       onJump={(dir) => {
         const l = localTime(now(), start, duration);
-        const target = dir < 0 ? [...keys].reverse().find((k) => k.t < l - tol) : keys.find((k) => k.t > l + tol);
+        const target = dir < 0 ? [...keys].reverse().find((k) => inClip(k, duration) && k.t < l - tol)
+          : keys.find((k) => inClip(k, duration) && k.t > l + tol);
         if (target) usePlayback.getState().seek(start + target.t);
       }}
       onEase={(e) => {

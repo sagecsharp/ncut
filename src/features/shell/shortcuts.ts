@@ -13,9 +13,9 @@ import { SHAPE_PRESETS } from '../media/shapePresets';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 
-export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'app';
+export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
 
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'app'];
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'preview', 'app'];
 
 export interface Shortcut {
   id: string;
@@ -25,6 +25,8 @@ export interface Shortcut {
   description: string;
   /** true when holding the key should repeat the action */
   repeat?: boolean;
+  /** true when run() changes the project: ignored while a pointer gesture is active */
+  mutates?: boolean;
   match(e: KeyboardEvent): boolean;
   run(): void;
 }
@@ -103,8 +105,8 @@ function toggleMute(): void {
   const targets = project.clips.filter((c): c is TimedClip => selection.includes(c.id) && isTimedClip(c));
   if (targets.length === 0) return;
   const mute = targets.some((c) => !c.muted);
-  // first change records one undo step, the rest ride along
-  targets.forEach((c, i) => updateClip(c.id, { muted: mute }, { skipHistory: i > 0 }));
+  useEditor.getState().pushHistory();
+  for (const c of targets) updateClip(c.id, { muted: mute }, { skipHistory: true });
 }
 
 /** jump to the previous / next keyframe of the selected clips */
@@ -117,7 +119,7 @@ function seekKeyframe(dir: -1 | 1): void {
   let target: number | null = null;
   for (const c of project.clips) {
     if (!selection.includes(c.id)) continue;
-    for (const k of keyTimes(c.keyframes)) {
+    for (const k of keyTimes(c.keyframes, undefined, c.duration)) {
       const at = c.start + k;
       if (dir < 0 ? at < t - eps && (target === null || at > target) : at > t + eps && (target === null || at < target)) {
         target = at;
@@ -151,7 +153,8 @@ function addKeyframes(): void {
     toast(outside ? 'move the playhead onto the selected clip first' : 'select a video, image, text or camera clip first');
     return;
   }
-  jobs.forEach((j, i) => setKeyframe(j.id, j.prop, time, undefined, undefined, { skipHistory: i > 0 }));
+  useEditor.getState().pushHistory();
+  for (const j of jobs) setKeyframe(j.id, j.prop, time, undefined, undefined, { skipHistory: true });
 }
 
 function toggle3d(): void {
@@ -163,7 +166,8 @@ function toggle3d(): void {
     return;
   }
   const on = !targets.every((c) => isVisualClip(c) && c.threeD);
-  targets.forEach((c, i) => updateClip(c.id, { threeD: on }, { skipHistory: i > 0 }));
+  useEditor.getState().pushHistory();
+  for (const c of targets) updateClip(c.id, { threeD: on }, { skipHistory: true });
   toast(on ? '3d on' : '3d off');
 }
 
@@ -206,7 +210,8 @@ function trimToPlayhead(edge: 'start' | 'end'): void {
     toast('move the playhead onto the selected clip first');
     return;
   }
-  targets.forEach((c, i) => trimClip(c.id, edge, time, { skipHistory: i > 0 }));
+  useEditor.getState().pushHistory();
+  for (const c of targets) trimClip(c.id, edge, time, { skipHistory: true });
 }
 
 function deleteSelection(ripple: boolean): void {
@@ -328,6 +333,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   // editing
   {
     id: 'split',
+    mutates: true,
     keys: [['s'], ['ctrl', 'b']],
     group: 'editing',
     description: 'split at playhead',
@@ -336,6 +342,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'delete',
+    mutates: true,
     keys: [['delete'], ['backspace']],
     group: 'editing',
     description: 'delete selection',
@@ -344,6 +351,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'ripple-delete',
+    mutates: true,
     keys: [['shift', 'delete']],
     group: 'editing',
     description: 'ripple delete (close the gap)',
@@ -352,6 +360,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'undo',
+    mutates: true,
     keys: [['ctrl', 'z']],
     group: 'editing',
     description: 'undo',
@@ -361,6 +370,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'redo',
+    mutates: true,
     keys: [['ctrl', 'shift', 'z'], ['ctrl', 'y']],
     group: 'editing',
     description: 'redo',
@@ -378,6 +388,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'cut',
+    mutates: true,
     keys: [['ctrl', 'x']],
     group: 'editing',
     description: 'cut',
@@ -386,6 +397,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'paste',
+    mutates: true,
     keys: [['ctrl', 'v']],
     group: 'editing',
     description: 'paste at playhead',
@@ -394,6 +406,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'duplicate',
+    mutates: true,
     keys: [['ctrl', 'd']],
     group: 'editing',
     description: 'duplicate selection',
@@ -421,6 +434,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'add-text',
+    mutates: true,
     keys: [['t']],
     group: 'editing',
     description: 'add text at playhead',
@@ -429,6 +443,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'add-effect',
+    mutates: true,
     keys: [['e']],
     group: 'editing',
     description: 'add the last used effect at playhead',
@@ -441,6 +456,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'add-shape',
+    mutates: true,
     keys: [['r']],
     group: 'editing',
     description: 'add a rectangle at playhead',
@@ -452,6 +468,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'mute',
+    mutates: true,
     keys: [['shift', 'm']],
     group: 'editing',
     description: 'mute / unmute selected clips',
@@ -460,6 +477,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'trim-start',
+    mutates: true,
     keys: [['[']],
     group: 'editing',
     description: 'trim clip start to playhead',
@@ -468,6 +486,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'trim-end',
+    mutates: true,
     keys: [[']']],
     group: 'editing',
     description: 'trim clip end to playhead',
@@ -496,6 +515,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'key-add',
+    mutates: true,
     keys: [['i']],
     group: 'animation',
     description: 'keyframe position, scale, rotation and opacity (all of a camera) at playhead',
@@ -504,6 +524,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'toggle-3d',
+    mutates: true,
     keys: [['3']],
     group: 'animation',
     description: 'turn 3d on / off for selected clips',
@@ -520,6 +541,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   {
     id: 'add-camera',
+    mutates: true,
     keys: [['c']],
     group: 'animation',
     description: 'add a camera at playhead',
@@ -530,6 +552,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   // markers
   {
     id: 'marker-add',
+    mutates: true,
     keys: [['m']],
     group: 'markers',
     description: 'add a marker at playhead',
@@ -587,6 +610,32 @@ export const SHORTCUTS: readonly Shortcut[] = [
       setSnapping(!snapping);
       toast(snapping ? 'snapping off' : 'snapping on');
     },
+  },
+
+  // preview (handled by the preview itself; listed here so the dialog shows them)
+  {
+    id: 'preview-nudge',
+    keys: [['←', '↑', '→', '↓']],
+    group: 'preview',
+    description: 'nudge the selected clip 1 px (preview focused)',
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'preview-nudge-big',
+    keys: [['shift', '←', '↑', '→', '↓']],
+    group: 'preview',
+    description: 'nudge the selected clip 10 px (preview focused)',
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'preview-no-snap',
+    keys: [['alt']],
+    group: 'preview',
+    description: 'hold while dragging to turn snapping off',
+    match: () => false,
+    run: () => undefined,
   },
 
   // app

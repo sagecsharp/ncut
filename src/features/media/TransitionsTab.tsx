@@ -5,8 +5,10 @@ import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { beginDrag, endDrag } from '../../lib/dnd';
 import { isVisualClip } from '../../types';
-import { DEFAULT_TRANSITION_DURATION, TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
+import type { VisualClip } from '../../types';
+import { TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
 import type { TransitionDef } from '../../engine/transitions/registry';
+import { transitionFor } from './transitionApply';
 import { renderTransition } from '../../engine/transitions/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -19,6 +21,8 @@ const LOOP_MS = 1200;
 /* ---------- the two pictures every thumbnail blends (built once) ---------- */
 
 let pictures: { a: HTMLCanvasElement; b: HTMLCanvasElement } | null = null;
+/** true while the tab is unmounted / being torn down: nothing is rendered (it would rebuild the pictures) */
+let disposed = false;
 
 function bigLetter(ctx: CanvasRenderingContext2D, letter: string): void {
   ctx.save();
@@ -59,6 +63,7 @@ function getPictures(): { a: HTMLCanvasElement; b: HTMLCanvasElement } {
 
 /** blend a and b at `progress` and paint it on the card canvas right away (the runner reuses its canvas) */
 function drawFrame(def: TransitionDef, canvas: HTMLCanvasElement, progress: number): void {
+  if (disposed) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const { a, b } = getPictures();
@@ -100,6 +105,7 @@ function requestStill(def: TransitionDef, canvas: HTMLCanvasElement): void {
 }
 
 function releaseThumbs(): void {
+  disposed = true;
   if (pumpRaf) cancelAnimationFrame(pumpRaf);
   pumpRaf = 0;
   queue.clear();
@@ -111,15 +117,13 @@ function releaseThumbs(): void {
 
 function applyTo(def: TransitionDef): void {
   const { project, selection, updateClip } = useEditor.getState();
-  const targets = project ? project.clips.filter((c) => selection.includes(c.id) && isVisualClip(c)) : [];
+  const targets = project ? project.clips.filter((c): c is VisualClip => selection.includes(c.id) && isVisualClip(c)) : [];
   if (targets.length === 0) {
     useUi.getState().toast('select a clip first, or drag this onto a clip');
     return;
   }
-  // first change records one undo step, the rest ride along
-  targets.forEach((c, i) =>
-    updateClip(c.id, { transition: { id: def.id, duration: DEFAULT_TRANSITION_DURATION } }, { skipHistory: i > 0 }),
-  );
+  useEditor.getState().pushHistory();
+  for (const c of targets) updateClip(c.id, { transition: transitionFor(def.id, c.transition) }, { skipHistory: true });
 }
 
 /* ---------- card ---------- */
@@ -230,7 +234,10 @@ const TransitionCard = memo(function TransitionCard({ def }: { def: TransitionDe
 export function TransitionsTab() {
   const [query, setQuery] = useState('');
 
-  useEffect(() => releaseThumbs, []);
+  useEffect(() => {
+    disposed = false;
+    return releaseThumbs;
+  }, []);
 
   const q = query.trim().toLowerCase();
   const groups = useMemo(

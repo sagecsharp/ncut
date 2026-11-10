@@ -37,4 +37,29 @@ describe('shortcut table', () => {
       }
     }
   });
+  it('keeps the everyday shortcuts', () => {
+    expect(findShortcut(key(' ', { code: 'Space' }))?.id).toBe('play-pause');
+    expect(findShortcut(key('s'))?.id).toBe('split');
+    expect(findShortcut(key('Delete'))?.id).toBe('delete');
+    expect(findShortcut(key('z', { ctrlKey: true }))?.id).toBe('undo');
+    expect(findShortcut(key('c', { ctrlKey: true }))?.id).toBe('copy');
+    expect(findShortcut(key('x', { ctrlKey: true }))?.id).toBe('cut');
+    expect(findShortcut(key('v', { ctrlKey: true }))?.id).toBe('paste');
+    expect(findShortcut(key('d', { ctrlKey: true }))?.id).toBe('duplicate');
+    expect(findShortcut(key('ArrowLeft'))?.id).toBe('frame-back');
+    expect(findShortcut(key('e', { ctrlKey: true }))?.id).toBe('export');
+  });
+  it('lists the preview keys in their own group, and every shortcut has a description and keys', () => {
+    expect(SHORTCUTS.filter((s) => s.group === 'preview').length).toBeGreaterThanOrEqual(3);
+    for (const s of SHORTCUTS) {
+      expect(s.description.length).toBeGreaterThan(0);
+      expect(s.keys.length).toBeGreaterThan(0);
+    }
+  });
+  it('marks store-changing shortcuts so they wait for a drag to end', () => {
+    for (const id of ['undo', 'redo', 'delete', 'split', 'paste', 'duplicate', 'cut', 'mute']) {
+      expect(SHORTCUTS.find((s) => s.id === id)?.mutates).toBe(true);
+    }
+    expect(SHORTCUTS.find((s) => s.id === 'play-pause')?.mutates).toBeFalsy();
+  });
 });
