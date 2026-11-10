@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Project, ShapeClip, VideoClip } from '../../types';
 import { neededClipsAt } from '../../engine/draw';
 import { projectDuration } from '../../lib/timelineOps';
-import { clipTimestamps, frameCount, isAudioContainer, outputSize, planExport, videoBitrate } from './exporter';
+import { clipEdgeTimestamp, clipTimestamps, frameCount, isAudioContainer, outputSize, planExport, videoBitrate } from './exporter';
 import { MIX_SAMPLE_RATE } from './audioMix';
 
 function withDuration(d: number): Pick<Project, 'clips'> {
@@ -111,5 +111,24 @@ describe('shape clips', () => {
   it('are drawn: the exporter asks for them like for images', () => {
     expect(neededClipsAt(project, 2)).toEqual([shape]);
     expect(neededClipsAt(project, 0.5)).toEqual([]);
+  });
+});
+
+describe('clipEdgeTimestamp', () => {
+  const clip = { start: 1, duration: 2, speed: 1, trimStart: 0.5 } as unknown as VideoClip;
+  it('a clip that ended before the range holds its last frame on the frame grid', () => {
+    // end 3, 10 fps: last frame at 2.9 = 1.9 into the clip, source 0.5 + 1.9
+    expect(clipEdgeTimestamp(clip, 10, 100, 0, 5)).toBeCloseTo(2.4);
+  });
+  it('speed scales the source time', () => {
+    const fast = { start: 1, duration: 2, speed: 2, trimStart: 0 } as unknown as VideoClip;
+    expect(clipEdgeTimestamp(fast, 10, 100, 0, 5)).toBeCloseTo(3.8);
+  });
+  it('a clip that starts after the range shows its first frame', () => {
+    expect(clipEdgeTimestamp(clip, 10, 100, 0, 0)).toBeCloseTo(0.5);
+  });
+  it('stays inside the asset', () => {
+    expect(clipEdgeTimestamp(clip, 10, 2, 0, 5)).toBeCloseTo(1.999);
+    expect(clipEdgeTimestamp(clip, 10, 100, 0.8, 0)).toBeCloseTo(0.8);
   });
 });

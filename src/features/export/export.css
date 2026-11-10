@@ -10,6 +10,7 @@
 .export-summary {
   color: var(--text-dim);
   font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
 }
 .export-note {
   padding: var(--space-2) var(--space-3);

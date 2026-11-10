@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextClip } from '../lib/factory';
-import { curveLayout, gradientLine, remapPoint, textSignature, wrapLine, wrapText } from './text';
+import { curveLayout, drawText, fontRetryDelay, glyphAnimActive, gradientLine, measureText, remapPoint, textSignature, wrapLine, wrapText } from './text';
+import { textAnimUnits } from './textAnim';
+import { ensureFont } from '../lib/fonts';
+
+vi.mock('../lib/fonts', () => ({ ensureFont: vi.fn(async () => true), fontsVersion: () => 0 }));
+
 
 /** every character is 10 wide, spaces too */
 const measure = (s: string) => Array.from(s).length * 10;
@@ -245,5 +250,152 @@ describe('textSignature', () => {
   it('ignores animation and position', () => {
     expect(textSignature({ ...base, animIn: { id: 'fade', duration: 1 } })).toBe(sig);
     expect(textSignature({ ...base, transform: { ...base.transform, x: 50 } })).toBe(sig);
+  });
+});
+
+/* ---------- drawing cost ---------- */
+
+const counts = { measure: 0 };
+
+beforeAll(() => {
+  // the measuring canvas: every letter is 10 wide, and every measureText call is counted
+  class FakeOffscreen {
+    getContext() {
+      return {
+        font: '',
+        measureText: (s: string) => {
+          counts.measure++;
+          return { width: Array.from(s).length * 10 };
+        },
+      };
+    }
+  }
+  vi.stubGlobal('OffscreenCanvas', FakeOffscreen);
+});
+afterAll(() => vi.unstubAllGlobals());
+
+/** a drawing context that does nothing and counts the calls */
+function fakeCtx() {
+  const calls: Record<string, number> = {};
+  const target: Record<string, unknown> = {
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    measureText: (s: string) => {
+      counts.measure++;
+      return { width: Array.from(s).length * 10 };
+    },
+  };
+  const ctx = new Proxy(target, {
+    get(t, k: string) {
+      if (k in t) return t[k];
+      return () => {
+        calls[k] = (calls[k] ?? 0) + 1;
+      };
+    },
+    set(t, k: string, v) {
+      t[k] = v;
+      return true;
+    },
+    has: (t, k: string) => k in t,
+  });
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls };
+}
+
+const LONG = 'abcdefghij'.repeat(30); // 300 characters
+
+describe('drawText cost', () => {
+  it('measures a 300 character text once, not on every frame', () => {
+    const clip = createTextClip('t', 0, { text: LONG, fontFamily: 'Cost A', animLoop: { id: 'pulse', duration: 1 } });
+    const { ctx } = fakeCtx();
+    counts.measure = 0;
+    drawText(ctx, clip, 0);
+    const first = counts.measure;
+    expect(first).toBeGreaterThan(0);
+    for (let i = 1; i <= 30; i++) drawText(ctx, clip, i / 30);
+    expect(counts.measure).toBe(first);
+  });
+
+  it('a letter animation also measures nothing after the first frame', () => {
+    const clip = createTextClip('t', 0, { text: LONG, fontFamily: 'Cost B', animLoop: { id: 'wobble', duration: 1 } });
+    const { ctx } = fakeCtx();
+    counts.measure = 0;
+    drawText(ctx, clip, 0);
+    const first = counts.measure;
+    for (let i = 1; i <= 30; i++) drawText(ctx, clip, i / 30);
+    expect(counts.measure).toBe(first);
+  });
+
+  it('a block animation (pulse) fills the line once, a letter animation (wobble) fills every letter', () => {
+    const block = createTextClip('t', 0, { text: LONG, fontFamily: 'Cost C', animLoop: { id: 'pulse', duration: 1 } });
+    const a = fakeCtx();
+    drawText(a.ctx, block, 0.3);
+    expect(a.calls.fillText).toBe(1);
+
+    const letters = createTextClip('t', 0, { text: LONG, fontFamily: 'Cost C', animLoop: { id: 'wobble', duration: 1 } });
+    const b = fakeCtx();
+    drawText(b.ctx, letters, 0.3);
+    expect(b.calls.fillText).toBe(300);
+  });
+
+  it('spacing, curve and block spacing animations still lay the letters out', () => {
+    const spaced = createTextClip('t', 0, { text: 'hello', fontFamily: 'Cost D', letterSpacing: 0.1 });
+    const a = fakeCtx();
+    drawText(a.ctx, spaced);
+    expect(a.calls.fillText).toBe(5);
+
+    const expand = createTextClip('t', 0, { text: 'hello', fontFamily: 'Cost D', animIn: { id: 'expand', duration: 1 } });
+    const b = fakeCtx();
+    drawText(b.ctx, expand, 0.2);
+    expect(b.calls.fillText).toBe(5);
+  });
+
+  it('the box is cached on the clip object', () => {
+    const clip = createTextClip('t', 0, { text: LONG, fontFamily: 'Cost E' });
+    expect(measureText(clip)).toBe(measureText(clip));
+  });
+});
+
+describe('glyphAnimActive', () => {
+  it('is false for block animations and true for letter animations', () => {
+    const pulse = createTextClip('t', 0, { animLoop: { id: 'pulse', duration: 1 } });
+    expect(glyphAnimActive(pulse, 0.5, textAnimUnits(pulse))).toBe(false);
+    const wobble = createTextClip('t', 0, { animLoop: { id: 'wobble', duration: 1 } });
+    expect(glyphAnimActive(wobble, 0.5, textAnimUnits(wobble))).toBe(true);
+  });
+  it('an in animation only counts while it runs', () => {
+    const clip = createTextClip('t', 0, { animIn: { id: 'cascade', duration: 1 } });
+    expect(glyphAnimActive(clip, 0.5, textAnimUnits(clip))).toBe(true);
+    expect(glyphAnimActive(clip, 1.5, textAnimUnits(clip))).toBe(false);
+  });
+});
+
+describe('font retry', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(ensureFont).mockReset();
+  });
+  afterAll(() => vi.useRealTimers());
+
+  it('the pause grows and is capped', () => {
+    expect(fontRetryDelay(0)).toBe(2000);
+    expect(fontRetryDelay(2000)).toBe(4000);
+    expect(fontRetryDelay(1e9)).toBe(60000);
+  });
+
+  it('a failed font load is asked again later, not every frame and not never', async () => {
+    const ask = vi.mocked(ensureFont);
+    ask.mockResolvedValueOnce(false).mockResolvedValue(true);
+    const clip = createTextClip('t', 0, { text: 'retry', fontFamily: 'Retry Font' });
+    measureText(clip);
+    expect(ask).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0); // the failure lands
+    for (let i = 0; i < 5; i++) measureText(clip); // frames inside the pause
+    expect(ask).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2500);
+    measureText(clip); // the same clip object still asks again after the pause
+    expect(ask).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(120000);
+    measureText(clip); // it loaded: no more asking
+    expect(ask).toHaveBeenCalledTimes(2);
   });
 });

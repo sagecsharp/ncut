@@ -1,7 +1,7 @@
 /**
  * offline audio mix of a project. no react.
- * decodes only the used range of each clip (streaming), schedules every audible clip on an OfflineAudioContext with a gain
- * envelope (volume + fades) and renders the whole timeline to one stereo buffer.
+ * decodes only the used range of each clip (streaming), schedules the audible clips on an OfflineAudioContext with a gain
+ * envelope (volume + fades) and renders the timeline to stereo in chunks of MIX_CHUNK_SECONDS (flat memory).
  */
 import { ALL_FORMATS, AudioBufferSink, BlobSource, Input } from 'mediabunny';
 import type { InputAudioTrack } from 'mediabunny';
@@ -13,12 +13,6 @@ import { getAssetBlob } from '../../media/registry';
 
 export const MIX_SAMPLE_RATE = 48000;
 export const MIX_CHANNELS = 2;
-
-export interface AudioMixResult {
-  /** null when nothing is audible */
-  buffer: AudioBuffer | null;
-  warnings: string[];
-}
 
 type TimedAudible = Extract<Clip, { type: 'video' | 'audio' }>;
 
@@ -160,48 +154,87 @@ async function decodeClipRange(
   return out;
 }
 
+/** seconds of sound mixed in one offline context. 30 s of stereo float32 at 48 khz is 11.5 mb, however long the project is. */
+export const MIX_CHUNK_SECONDS = 30;
+
+/** a piece of the mix: frames [startFrame, startFrame + frames) of the whole range */
+export interface MixChunk {
+  startFrame: number;
+  frames: number;
+}
+
+/** cut `totalFrames` into pieces of at most `chunkFrames` (the last one is the rest). pure. */
+export function planMixChunks(totalFrames: number, chunkFrames: number): MixChunk[] {
+  const out: MixChunk[] = [];
+  const size = Math.max(1, Math.floor(chunkFrames));
+  for (let at = 0; at < totalFrames; at += size) out.push({ startFrame: at, frames: Math.min(size, totalFrames - at) });
+  return out;
+}
+
+export interface AudioMixer {
+  /** frames of the whole mix (MIX_SAMPLE_RATE) */
+  totalFrames: number;
+  chunks: MixChunk[];
+  /** false = no audible clip touches the range, there is nothing to mix */
+  hasAudio: boolean;
+  /**
+   * mix one chunk (call them in order). never rejects except for a cancel: when the browser cannot mix, the chunk is
+   * silent and `onWarning` says so once, so the file keeps its length and the video still exports.
+   */
+  renderChunk(index: number): Promise<AudioBuffer>;
+  /** close the decoders. call once when done (also after a failure or cancel). */
+  dispose(): void;
+}
+
+function silence(frames: number): AudioBuffer {
+  return new AudioBuffer({ length: Math.max(1, frames), numberOfChannels: MIX_CHANNELS, sampleRate: MIX_SAMPLE_RATE });
+}
+
 /**
- * mix `duration` seconds of the timeline starting at `offset` (an export range) into one buffer.
- * the buffer's time 0 is the timeline's `offset`.
+ * a mixer for `duration` seconds of the timeline starting at `offset` (an export range). the mix is rendered in
+ * chunks (MIX_CHUNK_SECONDS each), every chunk in its own OfflineAudioContext that only schedules the clips touching
+ * it, so memory stays flat for a 90 minute project. chunk 0 starts at the timeline's `offset`.
  */
-export async function renderAudioMix(
+export function createAudioMixer(
   project: Project,
   duration: number,
   signal?: AbortSignal,
-  onProgress?: (fraction: number) => void,
+  onWarning?: (message: string) => void,
   offset = 0,
-): Promise<AudioMixResult> {
-  const warnings: string[] = [];
-  const clips = getAudibleClips(project);
-  if (clips.length === 0 || duration <= 0) return { buffer: null, warnings };
-
-  const length = Math.max(1, Math.ceil(duration * MIX_SAMPLE_RATE));
-  const ctx = new OfflineAudioContext(MIX_CHANNELS, length, MIX_SAMPLE_RATE);
+): AudioMixer {
+  const clips = duration > 0 ? getAudibleClips(project) : [];
+  const totalFrames = Math.max(1, Math.ceil(duration * MIX_SAMPLE_RATE));
+  const chunks = planMixChunks(totalFrames, MIX_CHUNK_SECONDS * MIX_SAMPLE_RATE);
+  const hasAudio = clips.some((c) => clipWindow(c.start, c.duration, c.speed, offset, duration) !== null);
 
   const inputs = new Map<string, Input>();
   const tracks = new Map<string, InputAudioTrack | null>();
   const fallback = new Map<string, AudioBuffer | null>();
   const warned = new Set<string>();
+  let mixFailed = false;
   const warn = (assetId: string, fallbackName: string) => {
     if (warned.has(assetId)) return;
     warned.add(assetId);
     const asset = project.assets.find((a) => a.id === assetId);
-    warnings.push(`could not decode audio of "${asset?.name ?? fallbackName}", it is silent in the export`);
+    onWarning?.(`could not decode audio of "${asset?.name ?? fallbackName}", it is silent in the export`);
   };
 
-  try {
+  const mixChunk = async (chunk: MixChunk): Promise<AudioBuffer | null> => {
+    const chunkOffset = offset + chunk.startFrame / MIX_SAMPLE_RATE;
+    const chunkLength = chunk.frames / MIX_SAMPLE_RATE;
+    const here = clips.filter((c) => clipWindow(c.start, c.duration, c.speed, chunkOffset, chunkLength) !== null);
+    if (here.length === 0) return null;
+    const ctx = new OfflineAudioContext(MIX_CHANNELS, chunk.frames, MIX_SAMPLE_RATE);
     let scheduled = 0;
-    for (let ci = 0; ci < clips.length; ci++) {
-      const clip = clips[ci]!;
+    for (const clip of here) {
       if (signal?.aborted) throw abortError();
       const blob = getAssetBlob(clip.assetId);
       if (!blob) {
         warn(clip.assetId, clip.name);
         continue;
       }
-      const win = clipWindow(clip.start, clip.duration, clip.speed, offset, duration);
-      if (!win) continue;
-      // the part of the source this clip plays inside the range
+      const win = clipWindow(clip.start, clip.duration, clip.speed, chunkOffset, chunkLength)!;
+      // the part of the source this clip plays inside the chunk
       const from = Math.max(0, clip.trimStart) + win.skip;
       const span = win.span;
 
@@ -264,22 +297,43 @@ export async function renderAudioMix(
       gain.connect(ctx.destination);
       src.start(win.when, bufferOffset, span);
       scheduled++;
-      onProgress?.((ci + 1) / clips.length);
     }
-    if (scheduled === 0) return { buffer: null, warnings };
-
+    if (scheduled === 0) return null;
     if (signal?.aborted) throw abortError();
-    const buffer = await ctx.startRendering();
-    return { buffer, warnings };
-  } finally {
-    for (const input of inputs.values()) {
-      try {
-        input.dispose();
-      } catch {
-        // ignore
+    return ctx.startRendering();
+  };
+
+  return {
+    totalFrames,
+    chunks,
+    hasAudio,
+    async renderChunk(index: number): Promise<AudioBuffer> {
+      const chunk = chunks[index]!;
+      if (signal?.aborted) throw abortError();
+      if (!mixFailed) {
+        try {
+          return (await mixChunk(chunk)) ?? silence(chunk.frames);
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') throw e;
+          if (signal?.aborted) throw abortError();
+          // a context the browser refuses (memory) or a broken decoder: carry on without sound
+          mixFailed = true;
+          onWarning?.('the sound could not be mixed, exporting without sound');
+        }
       }
-    }
-  }
+      return silence(chunk.frames);
+    },
+    dispose() {
+      for (const input of inputs.values()) {
+        try {
+          input.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      inputs.clear();
+    },
+  };
 }
 
 /** copy a time slice of a buffer into a new buffer (so it can be encoded in pieces) */

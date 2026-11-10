@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clipWindow, trimGainPoints } from './audioMix';
+import { MIX_CHUNK_SECONDS, MIX_SAMPLE_RATE, clipWindow, planMixChunks, trimGainPoints } from './audioMix';
 
 describe('clipWindow', () => {
   it('a clip fully inside the range lands at its offset', () => {
@@ -50,5 +50,39 @@ describe('trimGainPoints', () => {
   });
   it('never returns negative times', () => {
     for (const p of trimGainPoints(env, 2, 3.5)) expect(p[0]).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('planMixChunks', () => {
+  it('cuts the mix in pieces that cover it exactly, the last one is the rest', () => {
+    const chunks = planMixChunks(100, 40);
+    expect(chunks).toEqual([
+      { startFrame: 0, frames: 40 },
+      { startFrame: 40, frames: 40 },
+      { startFrame: 80, frames: 20 },
+    ]);
+  });
+  it('one chunk when it fits, none for an empty mix', () => {
+    expect(planMixChunks(10, 40)).toEqual([{ startFrame: 0, frames: 10 }]);
+    expect(planMixChunks(0, 40)).toEqual([]);
+  });
+  it('a 90 minute project is 180 chunks of 30 s, each far below the old 2 gb buffer', () => {
+    const total = 90 * 60 * MIX_SAMPLE_RATE;
+    const chunks = planMixChunks(total, MIX_CHUNK_SECONDS * MIX_SAMPLE_RATE);
+    expect(chunks.length).toBe(180);
+    expect(chunks.reduce((n, c) => n + c.frames, 0)).toBe(total);
+    expect(Math.max(...chunks.map((c) => c.frames)) * 2 * 4).toBeLessThan(12 * 1024 * 1024);
+  });
+  it('a clip crossing a chunk border is split into two windows that tile it', () => {
+    const [a, b] = planMixChunks(60 * MIX_SAMPLE_RATE, MIX_CHUNK_SECONDS * MIX_SAMPLE_RATE);
+    // clip 20..40 s at speed 1.5
+    const wa = clipWindow(20, 20, 1.5, a!.startFrame / MIX_SAMPLE_RATE, a!.frames / MIX_SAMPLE_RATE)!;
+    const wb = clipWindow(20, 20, 1.5, b!.startFrame / MIX_SAMPLE_RATE, b!.frames / MIX_SAMPLE_RATE)!;
+    expect(wa.when).toBeCloseTo(20);
+    expect(wb.when).toBeCloseTo(0);
+    // the second piece resumes exactly where the first stopped, in source seconds
+    expect(wa.skip + wa.span).toBeCloseTo(wb.skip);
+    expect(wa.localTo).toBeCloseTo(wb.localFrom);
+    expect(wa.span + wb.span).toBeCloseTo(20 * 1.5);
   });
 });
