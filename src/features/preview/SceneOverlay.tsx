@@ -8,10 +8,10 @@
  */
 import { useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react';
-import { Maximize2, Move, RotateCw } from 'lucide-react';
+import { Grid3x3, Maximize2, Move, RotateCw } from 'lucide-react';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { parentModelMatrix } from '../../engine/parent';
-import { type CameraRig, cameraClipAt, cameraRig, homeDistance, projectPoint, screenRay } from '../../engine/scene3d/camera';
+import { type CameraRig, cameraClipAt, cameraFromClip, cameraRig, homeDistance, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
 import { type Vec3, add, dot, scale as vscale } from '../../engine/scene3d/math';
 import { resolveClip } from '../../lib/anim';
 import { parentOf } from '../../lib/links';
@@ -20,17 +20,32 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Project } from '../../types';
 import { isVisualClip } from '../../types';
+import { floorY } from '../properties/place3d';
 import { isAttached, localDelta, localDelta3, resolveShown, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
+import {
+  type AxisLock,
+  floorGrid,
+  focusFromDrag,
+  focusPlanes,
+  lockForKey,
+  moveReadout,
+  nextLock,
+  rotateReadout,
+  scaleReadout,
+  sectionCorners,
+} from './sceneHelpers';
 import { snapAngle, snapDelta } from './sceneSnap';
-import { useSceneTool } from './sceneTool';
+import { useSceneGrid, useSceneTool } from './sceneTool';
 import { frameTarget, viewRig } from './sceneViews';
 
 const GIZMO_PX = 84;
 const AXIS_HIT_PX = 8;
+const CENTER_HIT_PX = 7;
+const FOCUS_HIT_PX = 9;
 const RING_HIT_PX = 7;
 const SCALE_HIT_PX = 11;
 /** the scale handle sits this far up and to the right of the clip center, css px */
@@ -70,7 +85,7 @@ interface Target {
   axes: [Vec3, Vec3, Vec3];
 }
 
-type Hover = { kind: 'axis' | 'ring' | 'scale'; i: number } | null;
+type Hover = { kind: 'axis' | 'ring' | 'scale' | 'center' | 'focus'; i: number } | null;
 
 interface GizmoState {
   visible: boolean;
@@ -94,18 +109,37 @@ type SceneGesture =
       startX: number;
       startY: number;
       started: boolean;
+      /** the arrow that was grabbed (0 x, 1 y, 2 z) or -1 for the center dot (free move) */
       axis: number;
+      /** x / y / z key lock, null = none (the grabbed arrow, or the free move, applies) */
+      lock: AxisLock;
       id: string;
-      t0: number;
+      /** where the grab ray was along each axis line (null = that axis is edge on) */
+      t0s: [number | null, number | null, number | null];
+      /** the grab point on the plane of a free move, and that plane's normal (the canvas plane for a 2d clip, else facing the view) */
+      p0: Vec3 | null;
+      normal: Vec3;
       c0: Vec3;
-      v0: number;
-      /** own x / y at the grab: an attached clip writes both so it follows a world axis exactly */
-      x0: number;
-      y0: number;
-      z0: number;
+      /** own x y z at the grab (an attached clip writes all of them so it follows a world axis exactly) */
+      v3: Vec3;
       rig: CameraRig;
-      /** a 2d clip dragged along z becomes 3d when the drag really starts */
+      /** a 2d clip moved along z becomes 3d the moment z is the moved axis */
       to3d: boolean;
+    }
+  | {
+      kind: 'focus';
+      pointerId: number;
+      startX: number;
+      startY: number;
+      started: boolean;
+      id: string;
+      /** the camera's view axis (unit) and eye at the grab */
+      eye: Vec3;
+      fwd: Vec3;
+      t0: number;
+      d0: number;
+      max: number;
+      rig: CameraRig;
     }
   | {
       kind: 'ring';
@@ -136,6 +170,22 @@ interface PointerSnapshot {
 }
 
 const inRange = (c: { start: number; duration: number }, time: number) => time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
+
+/**
+ * the running move gesture's handler for the x / y / z lock keys, null when no move is being dragged.
+ * the listener is installed once when this module loads, so it runs BEFORE the shortcut guard that gesture.ts
+ * installs later on window (that guard swallows every key during a drag).
+ */
+let keyHook: ((e: KeyboardEvent) => void) | null = null;
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (keyHook && !e.ctrlKey && !e.metaKey && !e.altKey) keyHook(e);
+    },
+    true,
+  );
+}
 
 /** the selected clip the gizmo works on: the first selected visual clip or camera clip that is active now */
 function gizmoTarget(project: Project, selection: string[], time: number, rig: CameraRig): Target | null {
@@ -242,6 +292,21 @@ export function SceneOverlay() {
   const targetLine = useRef<SVGLineElement>(null);
   /** some camera clip has a target: the time subscription keeps its line fresh even without a selection */
   const hasTargetCam = useRef(false);
+  const gridPath = useRef<SVGPathElement>(null);
+  const axisXPath = useRef<SVGPathElement>(null);
+  const axisZPath = useRef<SVGPathElement>(null);
+  const focusPoly = useRef<Array<SVGPolygonElement | null>>([null, null, null]);
+  const focusLabel = useRef<SVGTextElement>(null);
+  const focusHandleEl = useRef<HTMLDivElement>(null);
+  /** the focus handle of the camera in charge: where it is (css px), and whether it can be dragged */
+  const focusHandle = useRef({ ok: false, x: 0, y: 0, id: '', disabled: false, max: 1 });
+  /** some camera clip has depth of field on: the time subscription keeps the focus plane fresh */
+  const hasFocusCam = useRef(false);
+  const focusShown = useRef(false);
+  const readoutEl = useRef<SVGTextElement>(null);
+  /** live text of the running drag ("x +240"), empty = none */
+  const readout = useRef('');
+  const lastPointer = useRef<PointerSnapshot | null>(null);
   const viewF = useRef(0);
   const redrawRef = useRef<() => void>(() => undefined);
   const gizmo = useRef<GizmoState>({
@@ -265,6 +330,8 @@ export function SceneOverlay() {
   const dragCtrl = useRef(false);
   const tool = useSceneTool((s) => s.tool);
   const setTool = useSceneTool((s) => s.setTool);
+  const gridOn = useSceneGrid((s) => s.on);
+  const toggleGrid = useSceneGrid((s) => s.toggle);
 
   /* ---------- imperative drawing ---------- */
   useLayoutEffect(() => {
@@ -311,6 +378,94 @@ export function SceneOverlay() {
         lookLines.push(l);
       }
       return lookLines[i]!;
+    };
+
+    /** the focus plane of the camera in charge: where things are sharp, as rectangles across its view pyramid */
+    const drawFocus = (project: Project | null, f: number) => {
+      const polys = focusPoly.current;
+      const label = focusLabel.current;
+      const handle = focusHandleEl.current;
+      const fh = focusHandle.current;
+      fh.ok = false;
+      hasFocusCam.current = !!project && project.clips.some((c) => c.type === 'camera' && ((c.focusStrength ?? 0) > 0 || (c.keyframes?.focusStrength?.length ?? 0) > 0));
+      let on = false;
+      if (project && f > 0 && hasFocusCam.current) {
+        const time = usePlayback.getState().time;
+        const camClip = cameraClipAt(project, time);
+        const cr = camClip ? cameraRig(cameraFromClip(camClip, time, project), project.width, project.height) : null;
+        const focus = camClip && cr ? cr.focus : null;
+        if (camClip && cr && focus) {
+          on = true;
+          const rig = viewRig(project);
+          const planes = focusPlanes(focus, cr.near);
+          for (let k = 0; k < 3; k++) {
+            const el = polys[k];
+            if (!el) continue;
+            const plane = planes[k];
+            let pts = '';
+            if (plane) {
+              const corners = sectionCorners(cr, plane.distance);
+              for (let ci = 0; ci < 4; ci++) {
+                const c = corners[ci]!;
+                const sp = projectPoint(rig, c[0], c[1], c[2], project.width, project.height);
+                if (!sp.visible) {
+                  pts = '';
+                  break;
+                }
+                pts += `${sp.x * f},${sp.y * f} `;
+                if (k === 0 && label && ci === 0) {
+                  label.setAttribute('x', String(sp.x * f + 4));
+                  label.setAttribute('y', String(sp.y * f + 13));
+                }
+              }
+            }
+            if (pts) el.setAttribute('points', pts);
+            el.style.display = pts ? '' : 'none';
+            if (k === 0 && label) {
+              label.style.display = pts ? '' : 'none';
+              label.textContent = `focus ${Math.round(focus.distance)}`;
+            }
+          }
+          // the handle rides the view axis at the focus distance, only while the camera clip is selected
+          if (useEditor.getState().selection.includes(camClip.id)) {
+            const hp = projectPoint(
+              rig,
+              cr.eye[0] + cr.forward[0] * focus.distance,
+              cr.eye[1] + cr.forward[1] * focus.distance,
+              cr.eye[2] + cr.forward[2] * focus.distance,
+              project.width,
+              project.height,
+            );
+            if (hp.visible) {
+              fh.ok = true;
+              fh.x = hp.x * f;
+              fh.y = hp.y * f;
+              fh.id = camClip.id;
+              fh.max = Math.round(homeDistance(project.height) * 6);
+              fh.disabled = !!camClip.focusOnTarget && !!camClip.target && project.clips.some((c) => c.id === camClip.target && isVisualClip(c));
+            }
+          }
+        }
+      }
+      if (on || focusShown.current) {
+        focusShown.current = on;
+        if (!on) {
+          for (const el of polys) if (el) el.style.display = 'none';
+          if (label) label.style.display = 'none';
+        }
+      }
+      if (handle) {
+        handle.style.display = fh.ok ? '' : 'none';
+        if (fh.ok) {
+          handle.style.transform = `translate3d(${fh.x - 6}px, ${fh.y - 6}px, 0)`;
+          handle.classList.toggle('is-disabled', fh.disabled);
+          handle.classList.toggle('is-active', gestureRef.current?.kind === 'focus');
+          const title = fh.disabled
+            ? 'focus distance: the focus follows the camera target. turn off follow target in the inspector to drag it'
+            : 'focus distance: drag along the view axis';
+          if (handle.title !== title) handle.title = title;
+        }
+      }
     };
 
     const redraw = () => {
@@ -472,6 +627,8 @@ export function SceneOverlay() {
         lines[i]!.style.display = show;
       }
 
+      drawFocus(project, f);
+
       // a handle is "hover" under the pointer and "active" while it is being dragged
       const g = gestureRef.current;
       const hv = hover.current;
@@ -580,15 +737,71 @@ export function SceneOverlay() {
         dot.style.display = gz.visible ? '' : 'none';
         dot.setAttribute('cx', String(gz.cx));
         dot.setAttribute('cy', String(gz.cy));
+        dot.classList.toggle('is-hover', !g && hv?.kind === 'center');
+        dot.classList.toggle('is-active', g?.kind === 'axis' && g.axis < 0);
+      }
+      const ro = readoutEl.current;
+      if (ro) {
+        const text = gz.visible ? readout.current : '';
+        ro.style.display = text ? '' : 'none';
+        if (text) {
+          ro.textContent = text;
+          ro.setAttribute('x', String(gz.cx + 14));
+          ro.setAttribute('y', String(gz.cy + 30));
+        }
       }
     };
     redrawRef.current = redraw;
+
+    /** floor grid and world axis lines. depends on the view and the project size only, never on time */
+    const gridEl = gridPath.current;
+    const axXEl = axisXPath.current;
+    const axZEl = axisZPath.current;
+    const pathOf = (seg: ArrayLike<number>, f: number, w: number, h: number, rig: CameraRig): string => {
+      let d = '';
+      for (let i = 0; i + 5 < seg.length; i += 6) {
+        const a = projectPoint(rig, seg[i]!, seg[i + 1]!, seg[i + 2]!, w, h);
+        const b = projectPoint(rig, seg[i + 3]!, seg[i + 4]!, seg[i + 5]!, w, h);
+        if (!a.visible || !b.visible) continue;
+        d += `M${(a.x * f).toFixed(1)} ${(a.y * f).toFixed(1)}L${(b.x * f).toFixed(1)} ${(b.y * f).toFixed(1)}`;
+      }
+      return d;
+    };
+    const drawGrid = () => {
+      if (!gridEl || !axXEl || !axZEl) return;
+      const project = useEditor.getState().project;
+      const f = viewF.current;
+      if (!project || f <= 0 || !useSceneGrid.getState().on) {
+        gridEl.style.display = 'none';
+        axXEl.style.display = 'none';
+        axZEl.style.display = 'none';
+        return;
+      }
+      const o = currentOrbit(project);
+      const rig = viewRig(project);
+      const g = floorGrid({
+        eye: rig.eye,
+        forward: rig.forward,
+        targetX: o.targetX,
+        targetZ: o.targetZ,
+        orbitDistance: o.distance,
+        floorY: floorY(project.height),
+        near: rig.near,
+      });
+      gridEl.setAttribute('d', pathOf(g.lines, f, project.width, project.height, rig));
+      axXEl.setAttribute('d', g.axisX ? pathOf(g.axisX, f, project.width, project.height, rig) : '');
+      axZEl.setAttribute('d', g.axisZ ? pathOf(g.axisZ, f, project.width, project.height, rig) : '');
+      gridEl.style.display = '';
+      axXEl.style.display = '';
+      axZEl.style.display = '';
+    };
 
     let lastW = 0;
     const measure = (w: number) => {
       lastW = w;
       const project = useEditor.getState().project;
       viewF.current = project && project.width > 0 ? w / project.width : 0;
+      drawGrid();
       redraw();
     };
     const ro = new ResizeObserver((entries) => {
@@ -599,12 +812,19 @@ export function SceneOverlay() {
 
     const unEditor = useEditor.subscribe((s, p) => {
       if (s.project && p.project && s.project.width !== p.project.width && lastW > 0) measure(lastW);
-      else if (s.project !== p.project || s.selection !== p.selection) redraw();
+      else if (s.project && p.project && s.project.height !== p.project.height) {
+        drawGrid();
+        redraw();
+      } else if (s.project !== p.project || s.selection !== p.selection) redraw();
     });
     const unTime = usePlayback.subscribe((s, p) => {
-      if (s.time !== p.time && (hasTargetCam.current || useEditor.getState().selection.length > 0)) redraw();
+      if (s.time !== p.time && (hasTargetCam.current || hasFocusCam.current || useEditor.getState().selection.length > 0)) redraw();
     });
-    const unCam = useSceneCamera.subscribe(redraw);
+    const unCam = useSceneCamera.subscribe(() => {
+      drawGrid();
+      redraw();
+    });
+    const unGrid = useSceneGrid.subscribe(drawGrid);
     const unTool = useSceneTool.subscribe((s, p) => {
       if (s.tool !== p.tool) {
         hover.current = null;
@@ -617,7 +837,9 @@ export function SceneOverlay() {
       unEditor();
       unTime();
       unCam();
+      unGrid();
       unTool();
+      keyHook = null;
       cancelAnimationFrame(rafRef.current);
       endPreviewGesture();
     };
@@ -644,8 +866,11 @@ export function SceneOverlay() {
   /** the gizmo handle under a point (css px relative to the overlay) */
   const handleAt = (x: number, y: number): Hover => {
     const gz = gizmo.current;
+    const fh = focusHandle.current;
+    if (fh.ok && !fh.disabled && Math.hypot(x - fh.x, y - fh.y) <= FOCUS_HIT_PX) return { kind: 'focus', i: 0 };
     if (!gz.visible || !gz.target) return null;
     if (gz.tool === 'move') {
+      if (Math.hypot(x - gz.cx, y - gz.cy) <= CENTER_HIT_PX) return { kind: 'center', i: 0 };
       const a = nearestAxis(x, y);
       return a >= 0 ? { kind: 'axis', i: a } : null;
     }
@@ -699,58 +924,91 @@ export function SceneOverlay() {
       if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
-      // dragging z, tilt or turn of a 2d clip turns it 3d; a plain click never does
-      if ((g.kind === 'axis' || g.kind === 'ring') && g.to3d) store.updateClip(g.id, { threeD: true }, { skipHistory: true });
+      // dragging tilt or turn of a 2d clip turns it 3d; a plain click never does (z does it below, once z is the moved axis)
+      if (g.kind === 'ring' && g.to3d) store.updateClip(g.id, { threeD: true }, { skipHistory: true });
+      if (g.kind === 'focus') {
+        // a camera that never stored a focus distance draws the home distance: write it down so it can be dragged
+        const cam = project.clips.find((c) => c.id === g.id);
+        if (cam && cam.type === 'camera' && cam.focusDistance === undefined && !cam.keyframes?.focusDistance?.length) {
+          store.updateClip(g.id, { focusDistance: Math.round(g.d0) }, { skipHistory: true });
+        }
+      }
     }
     const time = usePlayback.getState().time;
+    if (g.kind === 'focus') {
+      const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
+      const t1 = closestOnAxis(ray.origin, ray.dir, g.eye, g.fwd);
+      if (t1 === null) return;
+      store.setClipValue(g.id, 'focusDistance', time, focusFromDrag(g.d0, g.t0, t1, 1, g.max), { skipHistory: true });
+      return;
+    }
     if (g.kind === 'ring') {
       let v = g.v0 + g.sign * g.acc;
       v = snapAngle(v, dragCtrl.current, dragShift.current);
-      store.setClipValue(g.id, g.prop, time, Math.round(v * 100) / 100, { skipHistory: true });
+      v = Math.round(v * 100) / 100;
+      readout.current = rotateReadout(RING_LABELS[g.ring]!, v - g.v0);
+      store.setClipValue(g.id, g.prop, time, v, { skipHistory: true });
       return;
     }
     if (g.kind === 'scale') {
       const d = Math.hypot(lx - g.cx, ly - g.cy);
-      const s = scaleFromDrag(g.s0, g.d0, d, MIN_SCALE, MAX_SCALE);
-      store.setClipValue(g.id, 'scale', time, Math.round(s * 1000) / 1000, { skipHistory: true });
+      const s = Math.round(scaleFromDrag(g.s0, g.d0, d, MIN_SCALE, MAX_SCALE) * 1000) / 1000;
+      readout.current = scaleReadout(s / Math.max(1e-6, g.s0));
+      store.setClipValue(g.id, 'scale', time, s, { skipHistory: true });
       return;
     }
-    // axis drag
+    // move drag: an arrow moves along its axis, the center dot moves freely; x / y / z lock it to one axis
     const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
-    const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[g.axis]!);
-    if (t1 === null) return;
-    // ctrl / cmd: the clip lands on a grid line (50 px, 10 with shift) along the dragged axis
-    const delta = snapDelta(g.v0, t1 - g.t0, dragCtrl.current, dragShift.current);
-    // read again: the first step of a z drag has just turned a 2d clip into a 3d one
+    const eff = g.lock ?? g.axis;
+    const D: Vec3 = [0, 0, 0];
+    if (eff >= 0) {
+      const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[eff]!);
+      const t0 = g.t0s[eff];
+      if (t1 === null || t0 === null || t0 === undefined) return;
+      // ctrl / cmd: the clip lands on a grid line (50 px, 10 with shift) along the moved axis
+      D[eff] = snapDelta(g.v3[eff]!, t1 - t0, dragCtrl.current, dragShift.current);
+    } else {
+      const hit = g.p0 ? rayPlane(ray.origin, ray.dir, g.c0, g.normal) : null;
+      if (!hit || !g.p0) return;
+      for (let i = 0; i < 3; i++) D[i] = snapDelta(g.v3[i]!, hit[i]! - g.p0[i]!, dragCtrl.current, dragShift.current);
+    }
+    readout.current = moveReadout(D, eff >= 0 ? (eff as AxisLock) : null);
+    // a 2d clip moved along z becomes 3d the moment z is the moved axis
+    if (g.to3d && eff === 2) {
+      store.updateClip(g.id, { threeD: true }, { skipHistory: true });
+      g.to3d = false;
+    }
+    // read again: a z move has just turned a 2d clip into a 3d one
     const now = useEditor.getState().project ?? project;
     const raw = now.clips.find((c) => c.id === g.id);
     if (raw && isVisualClip(raw) && isAttached(raw)) {
       if (raw.threeD) {
         // the arrow is a world axis: the world movement along it, in the parent's frame (moved, turned and scaled
         // parents are exact), becomes the clip's own x / y / z. only what really changes is written.
-        const d: Vec3 = [0, 0, 0];
-        d[g.axis] = delta;
-        const l = localDelta3(now, raw, time, d);
-        const start = [g.x0, g.y0, g.z0];
+        const l = localDelta3(now, raw, time, D);
         for (let i = 0; i < 3; i++) {
-          if (i !== g.axis && Math.abs(l[i]!) < 1e-9) continue;
-          store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((start[i]! + l[i]!) * 100) / 100, { skipHistory: true });
+          if (i !== eff && Math.abs(l[i]!) < 1e-9) continue;
+          store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + l[i]!) * 100) / 100, { skipHistory: true });
         }
         return;
       }
-      if (g.axis < 2) {
+      if (eff !== 2) {
         // a 2d clip: x and y follow the parent's turn and scale in the canvas plane
-        const l = localDelta(now, raw, time, g.axis === 0 ? delta : 0, g.axis === 1 ? delta : 0);
-        store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
-        store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
+        const l = localDelta(now, raw, time, D[0], D[1]);
+        store.setClipValue(g.id, 'x', time, Math.round((g.v3[0]! + l.x) * 100) / 100, { skipHistory: true });
+        store.setClipValue(g.id, 'y', time, Math.round((g.v3[1]! + l.y) * 100) / 100, { skipHistory: true });
         return;
       }
     }
-    store.setClipValue(g.id, AXIS_NAMES[g.axis]!, time, Math.round((g.v0 + delta) * 100) / 100, { skipHistory: true });
+    for (let i = 0; i < 3; i++) {
+      if (i !== eff && Math.abs(D[i]!) < 1e-9) continue;
+      store.setClipValue(g.id, AXIS_NAMES[i]!, time, Math.round((g.v3[i]! + D[i]!) * 100) / 100, { skipHistory: true });
+    }
   };
 
   const queue = (e: ReactPointerEvent<HTMLDivElement>) => {
     pendingRef.current = { x: e.clientX, y: e.clientY };
+    lastPointer.current = pendingRef.current;
     dragShift.current = e.shiftKey;
     dragCtrl.current = e.ctrlKey || e.metaKey;
     if (!rafRef.current) {
@@ -799,15 +1057,61 @@ export function SceneOverlay() {
     const ly = e.clientY - rect.top;
     const h = handleAt(lx, ly);
     const target = gizmo.current.target;
+    if (h && h.kind === 'focus') {
+      // the focus handle of the camera in charge: slide along its view axis
+      const fh = focusHandle.current;
+      const time = usePlayback.getState().time;
+      const camClip = project.clips.find((c) => c.id === fh.id);
+      if (camClip && camClip.type === 'camera') {
+        const cr = cameraRig(cameraFromClip(camClip, time, project), project.width, project.height);
+        const f = viewF.current;
+        const rig = viewRig(project);
+        const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
+        const t0 = closestOnAxis(ray.origin, ray.dir, cr.eye, cr.forward);
+        if (cr.focus && t0 !== null) {
+          begin({ kind: 'focus', ...base, started: false, id: camClip.id, eye: cr.eye, fwd: cr.forward, t0, d0: cr.focus.distance, max: fh.max, rig });
+          redrawRef.current();
+          return;
+        }
+      }
+    }
     if (h && target) {
       const gz = gizmo.current;
       const rig = viewRig(project);
-      if (h.kind === 'axis') {
+      if (h.kind === 'axis' || h.kind === 'center') {
         const f = viewF.current;
         const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
-        const t0 = closestOnAxis(ray.origin, ray.dir, target.center, AXES[h.i]!);
-        if (t0 !== null) {
-          begin({ kind: 'axis', ...base, started: false, axis: h.i, id: target.id, t0, c0: target.center, v0: target.v[h.i]!, x0: target.v[0], y0: target.v[1], z0: target.v[2], rig, to3d: target.kind === 'clip' && !target.threeD && h.i === 2 });
+        const t0s = AXES.map((a) => closestOnAxis(ray.origin, ray.dir, target.center, a)) as [number | null, number | null, number | null];
+        const normal: Vec3 = target.kind === 'clip' && !target.threeD ? [0, 0, 1] : rig.forward;
+        const p0 = h.kind === 'center' ? rayPlane(ray.origin, ray.dir, target.center, normal) : null;
+        if (h.kind === 'axis' ? t0s[h.i] !== null : p0 !== null) {
+          const mv: SceneGesture = {
+            kind: 'axis',
+            ...base,
+            started: false,
+            axis: h.kind === 'axis' ? h.i : -1,
+            lock: null,
+            id: target.id,
+            t0s,
+            p0,
+            normal,
+            c0: target.center,
+            v3: [target.v[0], target.v[1], target.v[2]],
+            rig,
+            to3d: target.kind === 'clip' && !target.threeD,
+          };
+          begin(mv);
+          // x / y / z lock the move to that axis (the same key again lets go)
+          keyHook = (e) => {
+            const k = lockForKey(e.key);
+            if (k === null) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.repeat || gestureRef.current !== mv || mv.kind !== 'axis') return;
+            mv.lock = nextLock(mv.lock, k);
+            const last = lastPointer.current;
+            if (last) apply(last);
+          };
           redrawRef.current();
           return;
         }
@@ -895,7 +1199,10 @@ export function SceneOverlay() {
       apply({ x: e.clientX, y: e.clientY });
     }
     pendingRef.current = null;
+    lastPointer.current = null;
     gestureRef.current = null;
+    keyHook = null;
+    readout.current = '';
     endPreviewGesture();
     const root = rootRef.current;
     if (root && root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
@@ -979,6 +1286,31 @@ export function SceneOverlay() {
       onContextMenu={(e) => e.preventDefault()}
     >
       <svg className="scene-svg" aria-hidden="true">
+        <path ref={gridPath} className="scene-grid" style={{ display: 'none' }} />
+        <path ref={axisXPath} className="scene-grid-axis" style={{ display: 'none' }} />
+        <path ref={axisZPath} className="scene-grid-axis" style={{ display: 'none' }} />
+        <polygon
+          className="scene-focus-range"
+          style={{ display: 'none' }}
+          ref={(n) => {
+            focusPoly.current[1] = n;
+          }}
+        />
+        <polygon
+          className="scene-focus-range"
+          style={{ display: 'none' }}
+          ref={(n) => {
+            focusPoly.current[2] = n;
+          }}
+        />
+        <polygon
+          className="scene-focus"
+          style={{ display: 'none' }}
+          ref={(n) => {
+            focusPoly.current[0] = n;
+          }}
+        />
+        <text ref={focusLabel} className="scene-focus-label" style={{ display: 'none' }} />
         <g ref={polyGroup} />
         <g ref={linkGroup} />
         <g ref={lookGroup} />
@@ -1060,7 +1392,9 @@ export function SceneOverlay() {
           <rect ref={scaleRect} className="scene-axis-tip" width="10" height="10" />
         </g>
         <circle ref={centerDot} className="scene-center" r="3" />
+        <text ref={readoutEl} className="scene-readout" style={{ display: 'none' }} />
       </svg>
+      <div ref={focusHandleEl} className="scene-focus-handle" style={{ display: 'none' }} role="img" aria-label="focus distance handle" />
       <div className="scene-tools" role="group" aria-label="scene tool" onPointerDown={stop} onDoubleClick={stop} onWheel={stop} onContextMenu={stop}>
         {TOOLS.map(({ tool: t, label, key, Icon, hint }) => (
           <button
@@ -1075,8 +1409,18 @@ export function SceneOverlay() {
             <Icon size={14} />
           </button>
         ))}
+        <button
+          type="button"
+          className={`icon-btn icon-btn-sm${gridOn ? ' is-active' : ''}`}
+          title={gridOn ? 'hide the floor grid and axis lines' : 'show the floor grid and axis lines (x right, z away)'}
+          aria-label="floor grid"
+          aria-pressed={gridOn}
+          onClick={toggleGrid}
+        >
+          <Grid3x3 size={14} />
+        </button>
       </div>
-      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap</div>
+      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap   x y z: lock axis</div>
     </div>
   );
 }
