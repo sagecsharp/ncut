@@ -853,6 +853,9 @@ function stillStep(
 ): { image: CanvasImageSource; key: string | undefined } {
   const sig = isMask ? maskSignature(clip) : clipLookSignature(clip);
   const slot = channel + '|' + clip.id + (isMask ? '|mask' : '|look');
+  // a hit (every frame after the first) answers before the three closures below are made
+  const hit = stillCopies.hit(slot, key, sig, w, h);
+  if (hit) return { image: hit.canvas, key: hit.key };
   return keptStep<CanvasImageSource, AnyCanvas>(
     stillCopies,
     slot,
