@@ -614,9 +614,11 @@ vec4 effect(vec2 uv) {
         float x = loc.x;
         float y = 0.125 - loc.y;
         float a2 = x * x + y * y - 1.0;
-        // implicit heart curve: negative inside
-        float val = a2 * a2 * a2 - x * x * y * y * y;
-        float edge = 4.0 * px / max(r, 0.0001) + 0.02;
+        // the heart curve (x2 + y2 - 1)^3 = x2 y3 with the cube taken off both sides: negative inside, and it
+        // falls off about evenly all around the outline (the sextic itself is nearly flat in the two lobes, so a
+        // soft edge on it eats them away)
+        float val = a2 - pow(x * x, 1.0 / 3.0) * y;
+        float edge = 6.0 * px / max(r, 0.0001) + 0.03;
         float m = smoothstep(0.0, edge, -val);
         vec3 hc = hsv2rgb(vec3(fract(0.94 + 0.1 * h.x), 0.55 + 0.35 * h.y, 1.0));
         hc *= 0.85 + 0.15 * clamp(y, -1.0, 1.0);
