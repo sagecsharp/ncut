@@ -36,7 +36,7 @@ export function hashString(s: string): number {
 
 /**
  * the order a cascade runs in. `tracks` gives the layer: tracks[0] is the top row, so the last track is
- * the bottom layer and runs first. x / y are read at the clip's own start (keys included). ties keep the
+ * the bottom layer and runs first. x / y are read in the middle of the clip (keys included), where a clip that flies in or out rests. ties keep the
  * layer order (bottom first, then by start).
  */
 export function orderClips<T extends Clip>(clips: readonly T[], order: CascadeOrder, seed: number, tracks: readonly { id: string }[]): T[] {
@@ -44,7 +44,9 @@ export function orderClips<T extends Clip>(clips: readonly T[], order: CascadeOr
   const layerCmp = (a: T, b: T) => (layer.get(b.trackId) ?? 0) - (layer.get(a.trackId) ?? 0) || a.start - b.start || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const base = [...clips].sort(layerCmp);
   if (order === 'layer' || base.length < 2) return base;
-  const pos = new Map(base.map((c) => [c.id, { x: valueAt(c, 'x', c.start) ?? 0, y: valueAt(c, 'y', c.start) ?? 0 }]));
+  // the middle of the clip: where it rests. its start (or end) may be the far end of a fly in / out
+  const mid = (c: T) => c.start + c.duration / 2;
+  const pos = new Map(base.map((c) => [c.id, { x: valueAt(c, 'x', mid(c)) ?? 0, y: valueAt(c, 'y', mid(c)) ?? 0 }]));
   const key = new Map<string, number>();
   if (order === 'left') for (const c of base) key.set(c.id, pos.get(c.id)!.x);
   else if (order === 'right') for (const c of base) key.set(c.id, -pos.get(c.id)!.x);
