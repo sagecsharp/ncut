@@ -10,6 +10,9 @@ import {
   gradientLine,
   highlightIndex,
   highlightIndexFromCounts,
+  hollowEdgeWidth,
+  sideOverlap,
+  stackAlpha,
   lineBackgrounds,
   lineDecorations,
   lineLengths,
@@ -699,5 +702,43 @@ describe('underline, strike and per line boxes drawing', () => {
     drawText(r.ctx, c);
     expect(r.fills[0]!.text).toBe('{n}');
     expect(measureText(c).lines).toEqual(['{n}']);
+  });
+});
+
+describe('stackAlpha', () => {
+  it('composites n copies to the wanted alpha', () => {
+    for (const a of [0.1, 0.35, 0.5, 0.9]) {
+      for (const n of [2, 8, 64]) {
+        const each = stackAlpha(a, n);
+        expect(1 - Math.pow(1 - each, n)).toBeCloseTo(a, 9);
+      }
+    }
+  });
+  it('leaves full and empty alpha and a single copy alone', () => {
+    expect(stackAlpha(1, 10)).toBe(1);
+    expect(stackAlpha(0, 10)).toBe(0);
+    expect(stackAlpha(0.4, 1)).toBe(0.4);
+    expect(stackAlpha(0.4, 0)).toBe(0.4);
+  });
+  it('gets lower per copy as more copies stack', () => {
+    expect(stackAlpha(0.5, 16)).toBeLessThan(stackAlpha(0.5, 4));
+  });
+  it('sideOverlap counts the copies that cover a point of a stem', () => {
+    expect(sideOverlap(1, 10, 100)).toBe(1);
+    expect(sideOverlap(10, 10, 100)).toBe(10); // stem 15 > depth: all copies overlap
+    expect(sideOverlap(64, 64, 100)).toBe(15); // 1px steps, stem 15px
+    expect(sideOverlap(64, 0, 100)).toBe(1);
+  });
+});
+
+describe('hollow text', () => {
+  it('has its own signature', () => {
+    const c = createTextClip('h1', 0, { duration: 2 });
+    expect(textSignature({ ...c, hollow: true })).not.toBe(textSignature({ ...c }));
+    expect(textSignature({ ...c, hollow: false })).toBe(textSignature({ ...c }));
+  });
+  it('thin outline is fontSize / 30, at least 1', () => {
+    expect(hollowEdgeWidth(300)).toBe(10);
+    expect(hollowEdgeWidth(12)).toBe(1);
   });
 });

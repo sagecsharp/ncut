@@ -48,6 +48,17 @@ describe('text presets', () => {
     expect(byId('caption-line').build(1920, 1080).stroke).toBeTruthy();
     expect(byId('caption-box').build(1920, 1080).background).toBeTruthy();
   });
+  it('has hollow cards with a thin outline and no fill', () => {
+    const h = byId('hollow').build(1, 1);
+    expect(h.hollow).toBe(true);
+    expect(h.stroke!.width).toBeGreaterThanOrEqual(0.03);
+    expect(h.stroke!.width).toBeLessThanOrEqual(0.04);
+    expect(h.fontWeight).toBe(700);
+    const n = byId('neon-sign').build(1, 1);
+    expect(n.hollow).toBe(true);
+    expect(n.shadow?.color).toBe(n.stroke?.color);
+    expect(n.shadow!.blur).toBeGreaterThan(0);
+  });
   it('has karaoke cards with a highlight', () => {
     expect(byId('karaoke').build(1920, 1080).highlight?.mode).toBe('fill');
     expect(byId('karaoke').build(1920, 1080).highlight?.background).toBeUndefined();
