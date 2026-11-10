@@ -8,3 +8,4 @@ notes/
 .claude/
 *.tsbuildinfo
 release
+dist-bench

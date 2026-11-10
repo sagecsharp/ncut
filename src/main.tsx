@@ -28,7 +28,11 @@ if (document.fonts) {
 session.startAutosave();
 
 // handy for poking at the app from the devtools console (dev builds only)
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
+  // benchmarks and pixel comparisons (src/dev/bench.ts), never in a normal build
+  void import('./dev/bench').then((m) => {
+    ((window as unknown as Record<string, unknown>).__ncut as Record<string, unknown>).bench = m.bench;
+  });
   (window as unknown as Record<string, unknown>).__ncut = {
     useEditor,
     usePlayback,

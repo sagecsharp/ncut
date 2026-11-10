@@ -70,10 +70,36 @@ export interface ExportProgress {
   totalFrames: number;
 }
 
+/** where the time of an export went, in milliseconds. the stages do not overlap. */
+export interface ExportStats {
+  frames: number;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+  /** fonts, opening the sources, starting the output */
+  setupMs: number;
+  /** waiting for the next decoded frame of the video clips */
+  decodeMs: number;
+  /** renderFrame (the drawing commands; the gpu may finish them later, inside the encode stage) */
+  renderMs: number;
+  /** handing the frame to the encoder, including waiting for it to keep up */
+  encodeMs: number;
+  /** mixing and encoding sound */
+  audioMs: number;
+  /** flushing the encoders and writing the file */
+  finalizeMs: number;
+  totalMs: number;
+}
+
 export interface ExportHooks {
   onProgress?: (p: ExportProgress) => void;
   onWarning?: (message: string) => void;
   signal?: AbortSignal;
+  /** once, when a video export ends well */
+  onStats?: (stats: ExportStats) => void;
+  /** after a frame is drawn and before it is encoded (benchmarks and tests read pixels here) */
+  onFrame?: (index: number, canvas: OffscreenCanvas) => void;
 }
 
 /** tried in this order, the first one the browser can encode at the chosen size + fps + bitrate wins */
@@ -288,6 +314,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
 async function runExport(project: Project, options: ExportOptions, hooks: ExportHooks): Promise<Blob> {
   const { onProgress, onWarning, signal } = hooks;
+  const startedAt = performance.now();
+  const stats: ExportStats = { frames: 0, width: 0, height: 0, fps: 0, codec: '', setupMs: 0, decodeMs: 0, renderMs: 0, encodeMs: 0, audioMs: 0, finalizeMs: 0, totalMs: 0 };
   const projectLength = projectDuration(project);
   if (projectLength <= 0) throw new Error('the project is empty');
   const range = clampRange(options.range, projectLength);
@@ -557,7 +585,9 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
       const t = frameTime(rangeStart, i, fps);
       const visible = neededForFrame(project, t);
+      const t0 = performance.now();
       await advanceFeeds(t, visible);
+      stats.decodeMs += performance.now() - t0;
       await draw(t);
       await freeFeeds(i, visible);
     };
@@ -645,10 +675,14 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       pump = createAudioPump(mixer, audioSource);
     }
     await output.start();
+    stats.setupMs = performance.now() - startedAt;
 
     // audio is fed in 1 s slices (mixed 30 s at a time), a little ahead of the video, so the muxer interleaves
     const feedAudio = async (untilSeconds: number) => {
-      await pump?.to(untilSeconds);
+      if (!pump) return;
+      const t0 = performance.now();
+      await pump.to(untilSeconds);
+      stats.audioMs += performance.now() - t0;
     };
 
     lastYield = performance.now();
@@ -657,8 +691,13 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     for (let i = 0; i < totalFrames; i++) {
       if (signal?.aborted) throw abortError();
       await stepFrame(i, async (t) => {
+        const t0 = performance.now();
         renderFrame(ctx, project, t, resolver);
+        hooks.onFrame?.(i, canvas);
+        const t1 = performance.now();
         await videoSource.add(i / fps, frameDur);
+        stats.renderMs += t1 - t0;
+        stats.encodeMs += performance.now() - t1;
       });
       await feedAudio(i / fps + 1.5);
 
@@ -670,8 +709,17 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     if (signal?.aborted) throw abortError();
     report('finalizing', 0.96, totalFrames);
     await yieldToUi();
+    const finalizeAt = performance.now();
     await output.finalize();
     finished = true;
+    stats.finalizeMs = performance.now() - finalizeAt;
+    stats.frames = totalFrames;
+    stats.width = width;
+    stats.height = height;
+    stats.fps = fps;
+    stats.codec = videoCodec;
+    stats.totalMs = performance.now() - startedAt;
+    hooks.onStats?.(stats);
     if (signal?.aborted) throw abortError();
     const buffer = target.buffer;
     if (!buffer) throw new Error('the encoder produced no data');
