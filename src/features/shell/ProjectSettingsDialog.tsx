@@ -1,4 +1,4 @@
-import { RotateCcw } from 'lucide-react';
+import { ArrowLeftRight, RotateCcw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
@@ -141,6 +141,17 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
         <span className="field-label">canvas size</span>
         <div className="shell-settings-size">
           <NumberField label="w" suffix="px" value={width} min={MIN_SIDE} max={MAX_SIDE} onChange={setWidth} title="canvas width" />
+ <button
+            className="icon-btn"
+            title="swap width and height"
+            aria-label="swap width and height"
+            onClick={() => {
+              setWidth(height);
+              setHeight(width);
+            }}
+          >
+            <ArrowLeftRight size={14} />
+          </button>
           <NumberField label="h" suffix="px" value={height} min={MIN_SIDE} max={MAX_SIDE} onChange={setHeight} title="canvas height" />
         </div>
       </div>

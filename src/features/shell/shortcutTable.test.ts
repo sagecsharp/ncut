@@ -71,4 +71,18 @@ describe('shortcut table', () => {
     }
     expect(SHORTCUTS.find((s) => s.id === 'play-pause')?.mutates).toBeFalsy();
   });
+  it('j steps back a second, k pauses, l plays', () => {
+    expect(findShortcut(key('j'))?.id).toBe('back-second');
+    expect(findShortcut(key('k'))?.id).toBe('pause');
+    expect(findShortcut(key('l'))?.id).toBe('play');
+    expect(findShortcut(key('j', { ctrlKey: true }))).toBeUndefined();
+  });
+  it('trim and ripple delete keep their keys, w e r only live in the scene view rows', () => {
+    expect(findShortcut(key('[', { code: 'BracketLeft' }))?.id).toBe('trim-start');
+    expect(findShortcut(key(']', { code: 'BracketRight' }))?.id).toBe('trim-end');
+    expect(findShortcut(key('Delete', { shiftKey: true }))?.id).toBe('ripple-delete');
+    expect(findShortcut(key('w'))).toBeUndefined();
+    expect(SHORTCUTS.some((s) => s.id === 'scene-tools' && s.group === 'preview')).toBe(true);
+    expect(SHORTCUTS.some((s) => s.id === 'swap-media')).toBe(true);
+  });
 });
