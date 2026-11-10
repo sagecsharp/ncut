@@ -232,6 +232,132 @@ function blockExtrudeOffsets(depthUnits: number, angle: number, dev: number): { 
   return c.list;
 }
 
+/* ---------- line geometry (pure) ---------- */
+
+export interface LineRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** index of the line it belongs to */
+  line: number;
+}
+
+export interface LineSpan {
+  /** left edge and width of the drawn line (without padding), relative to the block's center */
+  left: number;
+  width: number;
+}
+
+/** letters per line (code points, the same count the glyph layout uses) */
+export function lineLengths(lines: string[]): number[] {
+  return lines.map((l) => {
+    let n = 0;
+    for (const _ of l) n++;
+    return n;
+  });
+}
+
+/**
+ * where every line is drawn horizontally. `lineWidths` = the measured widths, `innerW` = the block without padding,
+ * `extra` = extra letter spacing in pixels (a spacing animation) which needs `letters` (letters per line).
+ */
+export function lineSpans(lineWidths: number[], letters: number[] | null, innerW: number, align: TextAlign, extra = 0): LineSpan[] {
+  return lineWidths.map((lw, i) => {
+    const width = extra !== 0 && letters ? lw + extra * Math.max(0, (letters[i] ?? 0) - 1) : lw;
+    const left = align === 'left' ? -innerW / 2 : align === 'right' ? innerW / 2 - width : -width / 2;
+    return { left, width };
+  });
+}
+
+/** thickness of an underline / strike as a fraction of the font size */
+export const TEXT_LINE_THICKNESS = 1 / 14;
+/** distance of the underline's middle below the middle of the line, and of the strike, as fractions of the font size */
+export const TEXT_UNDERLINE_OFFSET = 0.42;
+export const TEXT_STRIKE_OFFSET = 0.05;
+
+/**
+ * the rectangles of the underline / strike of every line. `top` = y of the first line's slot. lines without width get none.
+ */
+export function lineDecorations(
+  spans: LineSpan[],
+  lineHeight: number,
+  top: number,
+  fontSize: number,
+  underline: boolean,
+  strike: boolean,
+): LineRect[] {
+  const out: LineRect[] = [];
+  const t = fontSize * TEXT_LINE_THICKNESS;
+  for (let i = 0; i < spans.length; i++) {
+    const sp = spans[i]!;
+    if (!(sp.width > 0)) continue;
+    const cy = top + lineHeight * (i + 0.5);
+    if (strike) out.push({ x: sp.left, y: cy + fontSize * TEXT_STRIKE_OFFSET - t / 2, w: sp.width, h: t, line: i });
+    if (underline) out.push({ x: sp.left, y: cy + fontSize * TEXT_UNDERLINE_OFFSET - t / 2, w: sp.width, h: t, line: i });
+  }
+  return out;
+}
+
+/**
+ * one box per line, each as wide as its line plus the padding. neighbours touch (every box fills its line slot); the first
+ * box reaches `pad` above the text and the last `pad` below it, like the single block box does.
+ */
+export function lineBackgrounds(spans: LineSpan[], lineHeight: number, top: number, pad: number): LineRect[] {
+  const out: LineRect[] = [];
+  const last = spans.length - 1;
+  for (let i = 0; i <= last; i++) {
+    const sp = spans[i]!;
+    if (!(sp.width > 0)) continue;
+    const y0 = top + lineHeight * i - (i === 0 ? pad : 0);
+    const y1 = top + lineHeight * (i + 1) + (i === last ? pad : 0);
+    out.push({ x: sp.left - pad, y: y0, w: sp.width + pad * 2, h: y1 - y0, line: i });
+  }
+  return out;
+}
+
+/** how much of a line shows while its letters animate: the span of the visible letters and the strongest alpha */
+export interface LineVisibility {
+  x0: number;
+  x1: number;
+  alpha: number;
+  /** every letter of the line shows */
+  all: boolean;
+}
+
+/** per line: null = no letter shows */
+export function lineVisibility(
+  glyphs: ArrayLike<Pick<TextGlyph, 'ch' | 'x' | 'w' | 'line'>>,
+  alphas: ArrayLike<number>,
+  lineCount: number,
+): (LineVisibility | null)[] {
+  const out: (LineVisibility | null)[] = new Array<LineVisibility | null>(lineCount).fill(null);
+  const hidden: boolean[] = new Array<boolean>(lineCount).fill(false);
+  for (let i = 0; i < glyphs.length; i++) {
+    const g = glyphs[i]!;
+    if (g.ch.trim() === '') continue;
+    const a = alphas[i] ?? 1;
+    if (a <= 0.001) {
+      hidden[g.line] = true;
+      continue;
+    }
+    const cur = out[g.line];
+    const x0 = g.x - g.w / 2;
+    const x1 = g.x + g.w / 2;
+    if (!cur) out[g.line] = { x0, x1, alpha: a, all: true };
+    else {
+      cur.x0 = Math.min(cur.x0, x0);
+      cur.x1 = Math.max(cur.x1, x1);
+      cur.alpha = Math.max(cur.alpha, a);
+    }
+  }
+  for (let l = 0; l < lineCount; l++) {
+    const v = out[l];
+    if (v && hidden[l]) v.all = false;
+  }
+  return out;
+}
+
 /* ---------- gradient (pure) ---------- */
 
 /**
@@ -303,6 +429,19 @@ function wantFont(clip: TextClip): void {
   }, failed);
 }
 
+/**
+ * add to a cache keyed by text and drop the oldest entries past `max`: a text that changes every frame (a running
+ * counter that reaches here unresolved) cannot make the cache grow, and does not wipe the other clips' entries.
+ */
+function capSet<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
 const boxCache = new Map<string, TextBox>();
 /** clips are immutable: the box of the very same object only needs looking up once per font version */
 const boxByClip = new WeakMap<TextClip, { v: number; box: TextBox }>();
@@ -319,8 +458,7 @@ function lineEdges(ctx: Ctx, font: string, line: string): number[] {
     acc += ch;
     edges.push(ctx.measureText(acc).width);
   }
-  if (edgesCache.size > 600) edgesCache.clear();
-  edgesCache.set(key, edges);
+  capSet(edgesCache, key, edges, 600);
   return edges;
 }
 
@@ -374,8 +512,7 @@ export function measureText(clip: TextClip): TextBox {
     box.width = Math.max(1, cl.maxX - cl.minX + pad * 2);
     box.height = Math.max(1, cl.maxY - cl.minY + pad * 2);
   }
-  if (boxCache.size > 300) boxCache.clear();
-  boxCache.set(key, box);
+  capSet(boxCache, key, box, 300);
   boxByClip.set(clip, { v, box });
   return box;
 }
@@ -419,6 +556,9 @@ export function textSignature(clip: TextClip): string {
     clip.wrapWidth,
     clip.highlight ? JSON.stringify(clip.highlight) : '',
     clip.extrude ? JSON.stringify(clip.extrude) : '',
+    clip.underline ? 'u' : '',
+    clip.strike ? 's' : '',
+    clip.backgroundPerLine ? 'p' : '',
   ].join('|');
   sigCache.set(clip, { v, sig });
   return sig;
@@ -581,12 +721,30 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     ctx.globalAlpha *= block.alpha;
   }
 
+  const extra = animated ? block.spacing * fs : 0;
+  const innerW = m.width - m.pad * 2;
+  const innerH = m.height - m.pad * 2;
+  const top = -m.height / 2 + m.pad;
+  // underline / strike / per line boxes follow the straight lines (curved text keeps its single box and gets no lines)
+  const straight = m.curve === 0;
+  const wantLines = straight && (!!clip.underline || !!clip.strike);
+  const perLine = straight && !!clip.backgroundPerLine && !!clip.background;
+  const spans = wantLines || perLine ? lineSpans(m.lineWidths, extra !== 0 ? lineLengths(m.lines) : null, innerW, clip.align, extra) : null;
+
   if (clip.background) {
-    // curved text: the box behind it is the bounding box of the curved lines (the same box the selection uses)
     ctx.fillStyle = clip.background;
-    const r = Math.min(1, Math.max(0, clip.backgroundRadius ?? 0)) * Math.min(m.width, m.height) * 0.5;
-    roundedRect(ctx, -m.width / 2, -m.height / 2, m.width, m.height, r);
-    ctx.fill();
+    const rad = Math.min(1, Math.max(0, clip.backgroundRadius ?? 0));
+    if (perLine && spans) {
+      // one box per line, hugging the line (the caption look)
+      for (const b of lineBackgrounds(spans, m.lineHeight, top, m.pad)) {
+        roundedRect(ctx, b.x, b.y, b.w, b.h, rad * Math.min(b.w, b.h) * 0.5);
+        ctx.fill();
+      }
+    } else {
+      // curved text: the box behind it is the bounding box of the curved lines (the same box the selection uses)
+      roundedRect(ctx, -m.width / 2, -m.height / 2, m.width, m.height, rad * Math.min(m.width, m.height) * 0.5);
+      ctx.fill();
+    }
   }
 
   ctx.font = textFont(clip);
@@ -595,7 +753,6 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   ctx.miterLimit = 2;
 
   const units = animated ? textAnimUnits(clip) : null;
-  const extra = animated ? block.spacing * fs : 0;
   // letters are only drawn one by one when something needs it: spacing, a curve, a letter animation. a block animation
   // (pulse, wobble ...) moves the whole text, which stays on the cheap one fill per line path.
   const letterAnim = animated && glyphAnimActive(clip, local!, units!);
@@ -614,10 +771,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const states: GlyphState[] | null =
     layout && letterAnim ? layout.glyphs.map((g) => glyphState(clip, local!, g.index, count, g.word, layout.words, g.line, m.lines.length, units!)) : null;
 
-  const innerW = m.width - m.pad * 2;
-  const innerH = m.height - m.pad * 2;
   const lineX = clip.align === 'left' ? -innerW / 2 : clip.align === 'right' ? innerW / 2 : 0;
-  const top = -m.height / 2 + m.pad;
 
   const gradient = clip.gradient ?? null;
   // the transform of the whole block: letters that move on their own need the gradient mapped into their frame
@@ -800,5 +954,33 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
       ctx.fillStyle = base;
     } else ctx.fillText(text, x, y);
   }, true);
+
+  if (wantLines && spans) {
+    // underline / strike: plain bars in the fill, on top of the letters. while letters animate, a line shows over the
+    // span of its visible letters with their strongest alpha (so it grows in with typed / revealed letters).
+    const vis = layout && states ? lineVisibility(layout.glyphs, states.map((st) => st.alpha), m.lines.length) : null;
+    ctx.fillStyle = base;
+    const ga = ctx.globalAlpha;
+    for (const r of lineDecorations(spans, m.lineHeight, top, fs, !!clip.underline, !!clip.strike)) {
+      let x = r.x;
+      let w = r.w;
+      let a = 1;
+      if (vis) {
+        const v = vis[r.line];
+        if (!v) continue;
+        if (!v.all) {
+          const x0 = Math.max(x, v.x0);
+          const x1 = Math.min(x + w, v.x1);
+          x = x0;
+          w = x1 - x0;
+        }
+        a = v.alpha;
+      }
+      if (!(w > 0)) continue;
+      ctx.globalAlpha = ga * Math.min(1, a);
+      ctx.fillRect(x, r.y, w, r.h);
+    }
+    ctx.globalAlpha = ga;
+  }
   ctx.restore();
 }

@@ -56,6 +56,26 @@ describe('text presets', () => {
     expect(boxed?.background).toBeTruthy();
     expect(byId('caption-line').build(1, 1).highlight).toBeUndefined();
   });
+  it('has counter cards with a running number', () => {
+    for (const id of ['counter', 'percent', 'money', 'countdown']) {
+      const b = byId(id).build(1920, 1080);
+      expect(b.counter, id).toBeTruthy();
+      expect(b.text, id).toContain('{n}');
+    }
+    expect(byId('counter').build(1, 1).counter).toMatchObject({ from: 0, to: 100 });
+    expect(byId('percent').build(1, 1).text).toBe('{n}%');
+    const money = byId('money').build(1, 1);
+    expect(money.text).toBe('$ {n}');
+    expect(money.counter).toMatchObject({ from: 0, to: 10000, separator: true });
+    expect(byId('countdown').build(1, 1).counter).toMatchObject({ from: 10, to: 0, ease: 'linear' });
+  });
+  it('has a caption box with a box per line and an underlined title', () => {
+    const cap = byId('caption-box').build(1920, 1080);
+    expect(cap.backgroundPerLine).toBe(true);
+    expect(cap.backgroundRadius).toBeGreaterThan(0);
+    expect(cap.color).toBe('#ffffff');
+    expect(byId('underlined-title').build(1, 1).underline).toBe(true);
+  });
   it('has depth cards that use extrude', () => {
     for (const id of ['block', 'retro', 'long-shadow', 'sticker']) {
       const e = byId(id).build(1920, 1080).extrude;

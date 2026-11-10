@@ -1,6 +1,7 @@
 /** text cards of the text tab. pure data: no react, no canvas. */
 import { DEFAULT_TRANSFORM } from '../../types';
 import type { TextClip } from '../../types';
+import { DEFAULT_COUNTER } from '../../engine/counter';
 import { DEFAULT_TEXT_ANIM_IN, DEFAULT_TEXT_ANIM_LOOP, DEFAULT_TEXT_ANIM_OUT } from '../../engine/textAnim';
 
 export interface TextPreset {
@@ -499,7 +500,11 @@ export const TEXT_PRESETS: TextPreset[] = [
     weight: 700,
     boxed: true,
     align: 'center',
-    build: (w, h) => captionLook('caption box', 'a line of caption text', w, h, { box: true }),
+    build: (w, h) => ({
+      ...captionLook('caption box', 'a line of caption text', w, h, { box: true }),
+      backgroundPerLine: true,
+      backgroundRadius: 0.3,
+    }),
   },
   {
     id: 'karaoke',
@@ -529,6 +534,96 @@ export const TEXT_PRESETS: TextPreset[] = [
     build: (w, h) => ({
       ...captionLook('karaoke box', 'a box jumps from word to word', w, h, { box: false }),
       highlight: { color: '#000000', mode: 'word' as const, background: KARAOKE_COLOR },
+    }),
+  },
+  {
+    id: 'counter',
+    label: 'counter',
+    hint: 'counts from 0 to 100',
+    sample: '100',
+    previewSize: 26,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'counter',
+      text: '{n}',
+      fontSize: 200,
+      fontWeight: 700,
+      align: 'center',
+      counter: { ...DEFAULT_COUNTER, from: 0, to: 100 },
+    }),
+  },
+  {
+    id: 'percent',
+    label: 'percent',
+    hint: 'counts up with a % sign',
+    sample: '100%',
+    previewSize: 24,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'percent',
+      text: '{n}%',
+      fontSize: 180,
+      fontWeight: 700,
+      align: 'center',
+      counter: { ...DEFAULT_COUNTER, from: 0, to: 100 },
+    }),
+  },
+  {
+    id: 'money',
+    label: 'money',
+    hint: 'dollars with separators',
+    sample: '$ 10,000',
+    previewSize: 20,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'money',
+      text: '$ {n}',
+      fontSize: 150,
+      fontWeight: 700,
+      align: 'center',
+      counter: { ...DEFAULT_COUNTER, from: 0, to: 10000, separator: true },
+    }),
+  },
+  {
+    id: 'countdown',
+    label: 'countdown',
+    hint: 'counts down from 10, steady',
+    sample: '10',
+    previewSize: 26,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'countdown',
+      text: '{n}',
+      fontSize: 240,
+      fontWeight: 700,
+      align: 'center',
+      counter: { ...DEFAULT_COUNTER, from: 10, to: 0, ease: 'linear' as const },
+    }),
+  },
+  {
+    id: 'underlined-title',
+    label: 'underlined title',
+    hint: 'bold with a line under',
+    sample: 'underlined',
+    previewSize: 20,
+    weight: 700,
+    boxed: false,
+    align: 'center',
+    build: () => ({
+      name: 'underlined title',
+      text: 'underlined title',
+      fontSize: 110,
+      fontWeight: 700,
+      align: 'center',
+      underline: true,
     }),
   },
 ];
