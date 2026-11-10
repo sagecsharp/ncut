@@ -177,7 +177,9 @@ function isLocked(project: Project, trackId: string): boolean {
 }
 
 function nextTrackName(project: Project, kind: TrackKind): string {
-  const n = project.tracks.filter((t) => t.kind === kind).length + 1;
+  const used = new Set(project.tracks.map((t) => t.name));
+  let n = project.tracks.filter((t) => t.kind === kind).length + 1;
+  while (used.has(`${kind} ${n}`)) n++;
   return `${kind} ${n}`;
 }
 
@@ -418,11 +420,12 @@ export const useEditor = create<EditorState>()((set, get) => {
       mutate((p) => {
         const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? DEFAULT_TEXT_DURATION);
         const placed = resolvePlacement(p, 'video', duration, opts?.trackId, opts?.start);
-        const clip = createTextClip(placed.trackId, placed.start, { ...opts?.preset, duration });
+        const draft = createTextClip(placed.trackId, placed.start, { ...opts?.preset, duration });
         // never let a preset override identity/placement
-        clip.trackId = placed.trackId;
-        clip.start = placed.start;
-        clip.type = 'text';
+        draft.trackId = placed.trackId;
+        draft.start = placed.start;
+        draft.type = 'text';
+        const clip = clampFades(draft);
         id = clip.id;
         return { ...placed.project, clips: [...placed.project.clips, clip] };
       }, opts);
@@ -457,6 +460,16 @@ export const useEditor = create<EditorState>()((set, get) => {
         const transform = { ...clip.transform, ...patch };
         transform.opacity = clamp(transform.opacity, 0, 1);
         transform.scale = clamp(transform.scale, 0.01, 100);
+        const cur = clip.transform;
+        if (
+          transform.x === cur.x &&
+          transform.y === cur.y &&
+          transform.scale === cur.scale &&
+          transform.rotation === cur.rotation &&
+          transform.opacity === cur.opacity
+        ) {
+          return null;
+        }
         return replaceClip(p, { ...clip, transform });
       }, opts);
     },

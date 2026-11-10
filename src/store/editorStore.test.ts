@@ -292,8 +292,8 @@ describe('addText', () => {
     expect(c.trackId).toBe(v);
     expect(c.start).toBe(0);
   });
-  // BUG: preset fades are not clamped to the clip duration (updateClip does clamp them).
-  it.fails('clamps preset fades to the duration', () => {
+  // regression: preset fades are not clamped to the clip duration (updateClip does clamp them).
+  it('clamps preset fades to the duration', () => {
     fresh();
     const id = ed().addText({ duration: 2, preset: { fadeIn: 10 } });
     expect(clipOf(id).fadeIn).toBeLessThanOrEqual(2);
@@ -1042,8 +1042,8 @@ describe('track ops', () => {
     const ids = new Set([ed().addTrack('video'), ed().addTrack('video'), ed().addTrack('audio')]);
     expect(ids.size).toBe(3);
   });
-  // BUG: names are derived from the track count, so removing "video 1" and adding a track creates a second "video 2".
-  it.fails('new track names are unique', () => {
+  // regression: names are derived from the track count, so removing "video 1" and adding a track creates a second "video 2".
+  it('new track names are unique', () => {
     const { v } = fresh();
     ed().addTrack('video'); // video 2
     ed().removeTrack(v); // leaves only "video 2"
@@ -1141,9 +1141,9 @@ describe('updateClip / updateTransform / updateProject', () => {
     ed().updateTransform(au, { x: 1 });
     expect(proj()).toBe(before);
   });
-  // BUG: updateTransform with values identical to the current ones still builds a new project object
+  // regression: updateTransform with values identical to the current ones still builds a new project object
   // (updateClip / moveClips / trimClip detect no-ops). a gesture that sets the same value therefore leaves a useless undo step.
-  it.fails('updateTransform with unchanged values is a no-op', () => {
+  it('updateTransform with unchanged values is a no-op', () => {
     let a = '';
     load((v) => {
       const x = mkVideo(v, 0, 2);

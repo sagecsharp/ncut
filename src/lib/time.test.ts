@@ -75,11 +75,11 @@ describe('formatBytes', () => {
     expect(formatBytes(5 * 1024 ** 2)).toBe('5.0 MB');
     expect(formatBytes(1024 ** 3)).toBe('1.00 GB');
   });
-  // BUG: values just under a unit boundary round up to "1024.0 KB" instead of rolling over to "1.0 MB".
-  it.fails('rolls over at unit boundaries after rounding (kb -> mb)', () => {
+  // regression: values just under a unit boundary round up to "1024.0 KB" instead of rolling over to "1.0 MB".
+  it('rolls over at unit boundaries after rounding (kb -> mb)', () => {
     expect(formatBytes(1024 ** 2 - 1)).toBe('1.0 MB');
   });
-  it.fails('rolls over at unit boundaries after rounding (mb -> gb)', () => {
+  it('rolls over at unit boundaries after rounding (mb -> gb)', () => {
     expect(formatBytes(1024 ** 3 - 1)).toBe('1.00 GB');
   });
 });

@@ -43,7 +43,10 @@ export function formatSeconds(t: number): string {
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  // pick the unit after rounding so 1048575 reads "1.0 MB", not "1024.0 KB"
+  const kb = Math.round((n / 1024) * 10) / 10;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = Math.round((n / 1024 ** 2) * 10) / 10;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
