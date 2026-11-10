@@ -58,6 +58,8 @@
   top: 0;
   box-sizing: border-box;
   border: 1px solid var(--accent);
+  /* two tone: the contrast outline keeps the chrome visible over content of any brightness */
+  outline: 1px solid var(--on-accent);
   pointer-events: none;
   will-change: transform;
 }
@@ -76,6 +78,7 @@
   box-sizing: border-box;
   background: var(--surface-0);
   border: 1px solid var(--accent);
+  outline: 1px solid var(--on-accent);
   pointer-events: auto;
 }
 .preview-handle::after {
@@ -119,6 +122,7 @@
   width: 1px;
   height: 21px;
   background: var(--accent);
+  outline: 1px solid var(--on-accent);
   pointer-events: none;
 }
 
@@ -126,6 +130,7 @@
   position: absolute;
   display: none;
   background: var(--snap-line);
+  outline: 1px solid var(--on-accent);
   pointer-events: none;
 }
 .preview-guide-v {

@@ -22,6 +22,12 @@ const LOOKAHEAD = 1.5;
 const LINGER = 0.25;
 /** playing: only correct currentTime when the element drifts further than this */
 const DRIFT = 0.15;
+/** longest time the last picture is held while an element seeks or loads, so a stuck seek cannot freeze the canvas */
+const HOLD_MAX_MS = 500;
+/** how long a freshly created element may still be loading before it stops holding the picture */
+const LOAD_HOLD_MS = 1000;
+/** image bitmaps kept alive beyond the ones needed around the playhead */
+const IMAGE_LRU = 8;
 
 type RvfcElement = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: () => void) => number;
@@ -43,6 +49,13 @@ interface MediaEntry {
   gain: GainNode | null;
   node: MediaElementAudioSourceNode | null;
   lastGain: number;
+  createdAt: number;
+  /** performance.now() when the last seek was issued (0 = none) */
+  seekStart: number;
+  /** measured seek latency in seconds, used to aim drift corrections ahead of the clock */
+  seekCost: number;
+  /** no drift correction before this performance.now() (lets the element settle after a seek) */
+  holdUntil: number;
   cleanup: () => void;
 }
 
@@ -50,6 +63,7 @@ interface ImageEntry {
   source: DrawSource | null;
   loading: boolean;
   url: string | undefined;
+  lastUsed: number;
 }
 
 export class PreviewEngine {
@@ -67,6 +81,10 @@ export class PreviewEngine {
   private hasDrawn = false;
   private gen = 0;
   private disposed = false;
+  private holdSince = 0;
+  private drawQueued = false;
+  private imageTick = 0;
+  private dprOff: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -96,12 +114,19 @@ export class PreviewEngine {
         if (s.project === prev.project) return;
         if (s.project && prev.project && (s.project.width !== prev.project.width || s.project.height !== prev.project.height)) {
           this.applyBackingSize();
+          // bitmaps are decoded bounded by the project size: decode again at the new bound
+          this.clearImages();
         }
         if (s.project?.assets !== prev.project?.assets) this.pruneImages(s.project);
         this.sync();
-        this.invalidate();
+        // edits while paused draw in the same frame as the gesture that made them (the selection box moves
+        // synchronously); a raf would show the picture one frame late
+        if (usePlayback.getState().playing) this.invalidate();
+        else this.drawSoon();
       }),
     );
+    this.watchDpr();
+    this.unsubs.push(() => this.dprOff?.());
     // text clips drawn before their web font finished loading must be redrawn once it arrives
     if (typeof document !== 'undefined' && document.fonts) {
       const onFonts = () => this.invalidate();
@@ -121,6 +146,24 @@ export class PreviewEngine {
     this.canvas.style.height = `${cssH}px`;
     this.applyBackingSize();
     this.invalidate();
+  }
+
+  /** re-apply the backing size when the window moves to a display with another pixel ratio */
+  private watchDpr(): void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const arm = () => {
+      const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      const onChange = () => {
+        mq.removeEventListener('change', onChange);
+        if (this.disposed) return;
+        this.applyBackingSize();
+        this.invalidate();
+        arm();
+      };
+      mq.addEventListener('change', onChange);
+      this.dprOff = () => mq.removeEventListener('change', onChange);
+    };
+    arm();
   }
 
   /** backing store = css size x dpr, never more than the project resolution */
@@ -148,6 +191,18 @@ export class PreviewEngine {
     });
   }
 
+  /** coalesced draw in a microtask: runs right after the current callback, still inside the same frame */
+  private drawSoon(): void {
+    if (this.disposed) return;
+    this.dirty = true;
+    if (this.drawQueued) return;
+    this.drawQueued = true;
+    queueMicrotask(() => {
+      this.drawQueued = false;
+      if (this.dirty && !this.disposed) this.draw();
+    });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -167,29 +222,51 @@ export class PreviewEngine {
 
   /* ---------- drawing ---------- */
 
-  private draw(): void {
-    if (this.disposed) return;
+  /** returns true when a frame was painted */
+  private draw(): boolean {
+    if (this.disposed) return false;
     this.dirty = false;
     const project = useEditor.getState().project;
     const { time, playing } = usePlayback.getState();
     const { ctx, canvas } = this;
-    if (!project || canvas.width <= 0) return;
+    if (!project || canvas.width <= 0) return false;
 
-    // while scrubbing, keep the last picture until in-flight seeks land (no flash of background)
-    if (!playing && this.hasDrawn && this.anySeeking(project, time)) return;
+    // keep the last picture until in-flight seeks / loads land (no flash of background), but never for long
+    if (this.hasDrawn && this.anySeeking(project, time)) {
+      const now = performance.now();
+      if (this.holdSince === 0) this.holdSince = now;
+      if (now - this.holdSince < HOLD_MAX_MS) return false;
+    }
+    this.holdSince = 0;
 
     const k = canvas.width / project.width;
     ctx.setTransform(k, 0, 0, canvas.height / project.height, 0, 0);
     renderFrame(ctx, project, time, this.resolve);
     this.hasDrawn = true;
+    if (!playing) this.flushWants();
+    return true;
+  }
+
+  /** paused: issue the seeks that were deferred while a frame was waiting to be painted */
+  private flushWants(): void {
+    for (const entry of this.pool.values()) {
+      const w = entry.want;
+      if (w === null || entry.el.seeking) continue;
+      entry.want = null;
+      if (Math.abs(entry.el.currentTime - w) > 0.01) this.assignTime(entry, w);
+    }
   }
 
   private anySeeking(project: Project, time: number): boolean {
+    const now = performance.now();
     for (const clip of project.clips) {
       if (clip.type !== 'video') continue;
       if (time < clip.start || time >= clip.start + clip.duration) continue;
       const entry = this.pool.get(clip.id);
-      if (entry && !entry.failed && entry.el.seeking) return true;
+      if (!entry || entry.failed) continue;
+      const el = entry.el;
+      // a new element is not "seeking" yet but has nothing to show until its first frame loads
+      if (el.seeking || (el.readyState < 2 && now - entry.createdAt < LOAD_HOLD_MS)) return true;
     }
     return false;
   }
@@ -221,9 +298,10 @@ export class PreviewEngine {
       entry = undefined;
     }
     if (!entry) {
-      entry = { source: null, loading: false, url };
+      entry = { source: null, loading: false, url, lastUsed: 0 };
       this.images.set(assetId, entry);
     }
+    entry.lastUsed = ++this.imageTick;
     if (entry.source) return entry.source;
     if (!entry.loading && url) {
       entry.loading = true;
@@ -237,8 +315,24 @@ export class PreviewEngine {
     const blob = getAssetBlob(assetId);
     if (blob) {
       try {
-        const bmp = await createImageBitmap(blob);
-        source = { image: bmp, width: bmp.width, height: bmp.height };
+        const project = useEditor.getState().project;
+        const asset = project?.assets.find((a) => a.id === assetId);
+        const nw = asset?.width ?? 0;
+        const nh = asset?.height ?? 0;
+        // decode no larger than the preview can show (up to 2x the project for scaled-up clips)
+        const k = project && nw > 0 && nh > 0 ? (2 * Math.max(project.width, project.height)) / Math.max(nw, nh) : 1;
+        if (k < 1) {
+          const bmp = await createImageBitmap(blob, {
+            resizeWidth: Math.max(1, Math.round(nw * k)),
+            resizeHeight: Math.max(1, Math.round(nh * k)),
+            resizeQuality: 'high',
+          });
+          // report the natural size so clip boxes are unchanged
+          source = { image: bmp, width: nw, height: nh };
+        } else {
+          const bmp = await createImageBitmap(blob);
+          source = { image: bmp, width: bmp.width, height: bmp.height };
+        }
       } catch {
         source = null;
       }
@@ -270,6 +364,30 @@ export class PreviewEngine {
   private closeImage(entry: ImageEntry): void {
     if (entry.source && entry.source.image instanceof ImageBitmap) entry.source.image.close();
     entry.source = null;
+  }
+
+  private clearImages(): void {
+    for (const img of this.images.values()) this.closeImage(img);
+    this.images.clear();
+  }
+
+  /** keep only the bitmaps near the playhead plus a small lru; the rest is decoded again on demand */
+  private evictImages(project: Project, time: number): void {
+    if (this.images.size <= IMAGE_LRU) return;
+    const needed = new Set<string>();
+    for (const clip of project.clips) {
+      if (clip.type !== 'image') continue;
+      if (time >= clip.start - LOOKAHEAD && time < clip.start + clip.duration + LINGER) needed.add(clip.assetId);
+    }
+    const candidates = Array.from(this.images).filter(([id]) => !needed.has(id));
+    candidates.sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    let over = this.images.size - IMAGE_LRU;
+    for (const [id, entry] of candidates) {
+      if (over <= 0) break;
+      this.closeImage(entry);
+      this.images.delete(id);
+      over--;
+    }
   }
 
   private pruneImages(project: Project | null): void {
@@ -353,7 +471,6 @@ export class PreviewEngine {
     const { time, playing } = usePlayback.getState();
     this.gen++;
     if (project) {
-      const halfFrame = Math.max(0.01, 0.5 / (project.fps || 30));
       for (const clip of project.clips) {
         if (clip.type !== 'video' && clip.type !== 'audio') continue;
         const end = clip.start + clip.duration;
@@ -361,9 +478,10 @@ export class PreviewEngine {
         const entry = this.ensureEntry(clip);
         if (!entry) continue;
         entry.gen = this.gen;
-        this.syncEntry(entry, clip, project, time, playing, halfFrame, time >= clip.start && time < end);
+        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < end);
         this.setGain(entry, clip, project, time);
       }
+      this.evictImages(project, time);
     }
     for (const entry of Array.from(this.pool.values())) {
       if (entry.gen !== this.gen) this.destroyEntry(entry);
@@ -373,13 +491,14 @@ export class PreviewEngine {
   private syncEntry(
     entry: MediaEntry,
     clip: VideoClip | AudioClip,
-    _project: Project,
+    project: Project,
     time: number,
     playing: boolean,
-    halfFrame: number,
     active: boolean,
   ): void {
     const el = entry.el;
+    // seek tolerance: half a timeline frame, in source seconds (depends on the clip speed)
+    const halfFrame = Math.max(0.001, (0.5 / (project.fps || 30)) * clip.speed);
     if (entry.failed) return;
     const dur = Number.isFinite(el.duration) ? el.duration : Infinity;
     const toSource = (t: number) => clamp(t, 0, Math.max(0, dur - 0.001));
@@ -401,10 +520,18 @@ export class PreviewEngine {
 
     if (el.playbackRate !== clip.speed) el.playbackRate = clip.speed;
     if (el.paused) {
-      if (Math.abs(el.currentTime - target) > 0.05) this.seek(entry, target, 0.05);
-      void el.play().catch(() => undefined);
-    } else if (!el.seeking && Math.abs(el.currentTime - target) > DRIFT) {
-      this.seek(entry, target, DRIFT);
+      // play() on an ended element restarts it from 0: only play when it is not parked at the end
+      const off = Math.abs(el.currentTime - target) > 0.05;
+      if (off) this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost)), 0.05);
+      if (off || !el.ended) void el.play().catch(() => undefined);
+    } else if (
+      !el.seeking &&
+      performance.now() >= entry.holdUntil &&
+      // drift in timeline seconds, so the threshold does not depend on the clip speed
+      Math.abs(el.currentTime - target) / clip.speed > DRIFT
+    ) {
+      // aim ahead by the measured seek latency so the element lands on the clock instead of behind it
+      this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost)), 0.01);
     }
   }
 
@@ -420,8 +547,13 @@ export class PreviewEngine {
       return;
     }
     entry.want = null;
+    this.assignTime(entry, target);
+  }
+
+  private assignTime(entry: MediaEntry, target: number): void {
     try {
-      el.currentTime = target;
+      entry.el.currentTime = target;
+      entry.seekStart = performance.now();
     } catch {
       // metadata not available yet: the loadedmetadata handler re-syncs
     }
@@ -462,20 +594,33 @@ export class PreviewEngine {
       gain: null,
       node: null,
       lastGain: -1,
+      createdAt: performance.now(),
+      seekStart: 0,
+      seekCost: 0.1,
+      holdUntil: 0,
       cleanup: () => undefined,
     };
 
     const onSeeked = () => {
+      const now = performance.now();
+      if (entry.seekStart > 0) {
+        entry.seekCost = clamp((now - entry.seekStart) / 1000, 0, 1);
+        entry.seekStart = 0;
+      }
+      entry.holdUntil = now + 400;
       const w = entry.want;
       if (w !== null) {
+        if (!usePlayback.getState().playing) {
+          // scrubbing: paint the frame that just landed before chasing the newer target, otherwise a
+          // moving playhead replaces every landed frame and nothing is ever shown. draw() issues the
+          // deferred seek itself once it painted (or later, if another video is still seeking).
+          this.draw();
+          return;
+        }
         entry.want = null;
         if (Math.abs(el.currentTime - w) > 0.01) {
-          try {
-            el.currentTime = w;
-            return;
-          } catch {
-            // fall through and just redraw
-          }
+          this.assignTime(entry, w);
+          return;
         }
       }
       this.invalidate();

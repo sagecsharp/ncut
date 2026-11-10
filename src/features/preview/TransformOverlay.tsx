@@ -112,8 +112,8 @@ type Gesture =
       primary: string;
       items: Array<{ id: string; x: number; y: number }>;
     }
-  | { kind: 'scale'; pointerId: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean }
-  | { kind: 'rotate'; pointerId: number; id: string; cx: number; cy: number; a0: number; r0: number; started: boolean };
+  | { kind: 'scale'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean }
+  | { kind: 'rotate'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; a0: number; r0: number; started: boolean };
 
 interface PointerSnapshot {
   x: number;
@@ -214,6 +214,8 @@ export function TransformOverlay() {
     const px = (snap.x - origin.left) / f;
     const py = (snap.y - origin.top) / f;
     if (!g.started) {
+      // a plain click on a handle must not start a gesture (wipes redo, snaps the value)
+      if (Math.hypot(snap.x - g.startX, snap.y - g.startY) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
     }
@@ -253,6 +255,9 @@ export function TransformOverlay() {
     const project = store.project;
     if (!root || !project) return;
     e.preventDefault();
+    // preventDefault suppresses the focus change: drop focus from inputs so shortcuts work again
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) active.blur();
 
     // measure once, at gesture start
     const rect = root.getBoundingClientRect();
@@ -273,6 +278,8 @@ export function TransformOverlay() {
           gestureRef.current = {
             kind: 'scale',
             pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
             id: clip.id,
             cx: box.cx,
             cy: box.cy,
@@ -284,6 +291,8 @@ export function TransformOverlay() {
           gestureRef.current = {
             kind: 'rotate',
             pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
             id: clip.id,
             cx: box.cx,
             cy: box.cy,
