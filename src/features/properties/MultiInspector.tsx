@@ -1,5 +1,6 @@
 import { memo } from 'react';
-import { Copy, Trash2 } from 'lucide-react';
+import { useMemo } from 'react';
+import { Copy, Group, Trash2, Ungroup } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { useEditor } from '../../store/editorStore';
 import type { ActionOpts } from '../../store/editorStore';
@@ -8,6 +9,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { LookButtons } from './LookSection';
+import { ParentSelect } from './AttachSection';
+import { attachClips } from './attachActions';
+import { parentOptions } from './parentOptions';
 import { Pair, Row, Section, SliderRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 
@@ -125,6 +129,13 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
     }
   };
 
+  const clips = useEditor((s) => s.project?.clips);
+  const options = useMemo(() => (clips ? parentOptions({ clips }, ids) : []), [clips, ids]);
+  const parentValue = useMemo(() => {
+    const parents = new Set((clips ?? []).filter((c) => ids.includes(c.id) && isVisualClip(c)).map((c) => (isVisualClip(c) ? (c.parent ?? '') : '')));
+    return parents.size === 1 ? [...parents][0]! : null;
+  }, [clips, ids]);
+
   const source = useEditor((s) => {
     const c = s.project?.clips.find((k) => ids.includes(k.id) && isVisualClip(k));
     return c as VisualClip | undefined;
@@ -137,6 +148,13 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           <Row label="3d" title="put all selected visual clips in 3d space or back to flat">
             <Switch checked={sum.allThreeD} title="3d on or off for all selected visual clips" onChange={setThreeD} />
           </Row>
+          <ParentSelect
+            label="attach all to"
+            title="attach every selected visual clip to a clip or a camera. they keep their place on screen."
+            value={parentValue}
+            options={options}
+            onPick={(pid) => attachClips(ids, pid)}
+          />
           {source ? <LookButtons source={source} ids={ids} /> : null}
         </Section>
       ) : null}
@@ -191,6 +209,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 
 export function MultiInspector() {
   const ids = useEditor((s) => s.selection);
+  const anyGroup = useEditor((s) => !!s.project?.clips.some((c) => c.group && s.selection.includes(c.id)));
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
   const parts = (['video', 'image', 'audio', 'text', 'shape', 'effect', 'camera'] as const)
     .filter((k) => sum[k] > 0)
@@ -211,6 +230,16 @@ export function MultiInspector() {
             <Copy size={14} />
             duplicate
           </button>
+          <button type="button" className="btn btn-sm" title="group the selected clips so they move, copy and delete together" onClick={() => useEditor.getState().groupClips(ids)}>
+            <Group size={14} />
+            group
+          </button>
+          {anyGroup ? (
+            <button type="button" className="btn btn-sm" title="split the groups of the selected clips" onClick={() => useEditor.getState().ungroupClips(ids)}>
+              <Ungroup size={14} />
+              ungroup
+            </button>
+          ) : null}
           <button type="button" className="btn btn-sm btn-danger" title="delete selected clips" onClick={() => useEditor.getState().deleteClips(ids)}>
             <Trash2 size={14} />
             delete

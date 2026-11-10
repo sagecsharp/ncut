@@ -80,6 +80,33 @@ describe('look clipboard', () => {
     const patch = lookPatch(captureLook(image), 'image');
     expect(patch.motionIn).toBeNull();
   });
+  it('carries color, green screen and motion blur but not the parent', () => {
+    const rich: VisualClip = {
+      ...image,
+      parent: 'p',
+      adjust: { brightness: 0.2, contrast: 0, saturation: 0, hue: 0, temperature: 0 },
+      chromaKey: { color: '#00d000', tolerance: 0.3, softness: 0.1, spill: 0.5 },
+      motionBlur: { shutter: 0.5, samples: 8 },
+    };
+    const look = captureLook(rich);
+    expect(look.values.adjust).toEqual(rich.adjust);
+    expect(look.values.adjust).not.toBe(rich.adjust);
+    expect(look.values.chromaKey).toEqual(rich.chromaKey);
+    expect(look.values.motionBlur).toEqual(rich.motionBlur);
+    expect('parent' in look.values).toBe(false);
+    expect(lookPatch(look, 'video').chromaKey).toEqual(rich.chromaKey);
+    // no green screen on text and shapes, other fields still apply
+    const toText = lookPatch(look, 'text');
+    expect('chromaKey' in toText).toBe(false);
+    expect(toText.adjust).toEqual(rich.adjust);
+    expect('chromaKey' in lookPatch(look, 'shape')).toBe(false);
+  });
+  it('clears color fields the source did not have', () => {
+    const patch = lookPatch(captureLook(image), 'image');
+    expect(patch.adjust).toBeNull();
+    expect(patch.chromaKey).toBeNull();
+    expect(patch.motionBlur).toBeNull();
+  });
   it('keeps crop and radius off text targets', () => {
     const patch = lookPatch(captureLook(image), 'text');
     expect('crop' in patch).toBe(false);
