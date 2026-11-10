@@ -78,7 +78,10 @@ features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + p
                          textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line),
                          cascade.ts + cascadeActions.ts (a selection staggered in time, fly in / out keys),
                          pathMoves.ts + pathActions.ts (motion paths written as position keys)
-features/export/         ExportDialog + the offline renderer
+features/export/         ExportDialog + the offline renderer (exporter.ts) and what makes it fast: parallel.ts,
+                         segment.ts, exportWorker.ts, sources.ts, mediaCheck.ts (parts in workers), encoderSetup.ts
+                         (the gpu encoder above full hd), sink.ts (big files on disk), gifPlan.ts / gifPool.ts /
+                         gifWorker.ts (gif on workers). see "export" below
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
 ```
@@ -247,6 +250,42 @@ and imports it from its root component. prefix class names with the feature name
 to avoid collisions. do not edit `theme.css` / `base.css` from a feature: if a token or shared class is missing,
 add it locally and mention it in your report.
 
+## export (features/export/)
+
+`exportProject` in `exporter.ts` is the only entry. it picks one of three ways and every faster way falls back to the
+next one, so an export never fails because a fast path did not work (the dialog then says the file was made the
+slower way).
+
+- one thread (the plain path): render a frame with the engine on an OffscreenCanvas, hand it to the encoder, mux
+  with mediabunny. always there, used for short exports and as the last fallback.
+- in parts (`runParts`): `parallel.ts` cuts the frames into parts that start on a key frame of the finished file
+  (`planSegments`, `keyGroupOf`, `keyFrameIndex`: the same key frame rhythm as one thread, also at 23.976 / 29.97),
+  `SegmentPool` gives them to web workers (`exportWorker.ts`), each worker renders and encodes its part
+  (`segment.ts`, with a 24 frame run-in so the encoder is warm at the cut) and the main thread joins the packets in
+  order into the one file and mixes the sound. 3 workers up to 1080p, 2 above: more adds nothing, the limit is the
+  gpu process. the pool only runs `runAhead` parts ahead of the join and a joined part is released, so memory stays
+  flat. a worker that does not start is dropped, one that goes silent fails the pool (watchdog), then the plain
+  path takes over.
+- what may not run in a worker is found before any worker starts: `mediaCheck.ts` looks at the image files (magic
+  bytes) and asks the video decoder about each video file. workers are strict about media (`strictVideo`,
+  `strictImages`): a file they cannot read fails the part instead of leaving a black frame.
+- the gpu encoder (`encoderSetup.ts`): chromium on windows only offers the hardware h264 / hevc / av1 encoder up to a
+  frame rate per size (full hd up to 120 fps, bigger up to 30 fps) and silently encodes on the cpu above that. above
+  1920x1088 the parts tell the encoder a rate it takes (30 / 60 / 120), stamp the frames on that grid and scale the
+  bitrate so the bits per frame stay the same. the join writes the real times and raises the h264 level in the
+  track description and in the stream to the true one (`avcLevel`, `raiseAvcLevel`). such an export always goes
+  through parts, even as one part. at full hd and below the software encoder is as fast, so nothing changes there.
+- big files (`sink.ts`): an export expected to be 256 mb or more is written to the origin private file system
+  (folder `ncut-exports`) while it is made, the mp4 index still at the front (`fastStart: 'reserve'`). the result is
+  a blob backed by that file. a cancel or failure removes it, only the newest one is kept, leftovers go at start.
+- gif (`gifPlan.ts`, `gifPool.ts`, `gifWorker.ts`): without video clips up to 8 workers render, index and compress
+  their own frames (`parts`), with video the main thread draws and the workers index and compress (`pool`). the
+  bytes are the same as on one thread.
+- rules for changes here: the picture must stay identical to one thread (the 3d renderer has a run to run noise
+  of a level or two on a handful of pixels, nothing else may differ), the file must keep its frame count, key frame
+  rhythm, codec string and duration, and every new path needs its fallback. reference frames are only comparable
+  inside one electron process (gpu process state), so a/b both builds in the same run.
+
 ## desktop shell (electron/)
 
 the exe is the built web app (`dist/`) in one electron window. the only code in `src/` that knows about electron is
@@ -282,6 +321,12 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 - files the app serves: `rules.cacheControlFor` gives html `no-cache` and the content hashed files under `assets/`
   `public, max-age=31536000, immutable`. nothing else gets a cache header. the csp is sent with every html file.
 - files the app hands out (`<a download>` on a blob) become a save dialog through `will-download`.
+- full speed in the background: windows runs the processes of a minimized or covered window slower (power
+  throttling), measured 10 to 20 % on an export. while a window holds the keep awake blocker, `syncExportSpeed()` in
+  `main.cjs` starts `ncut-qos.exe` (`electron/qos.cs`, built by `scripts/build-qos.cjs` with the c# compiler that is
+  part of windows, shipped next to the app through `extraResources`) with the app's own process ids
+  (`rules.qosArgs`: digits only). it switches the throttling off for them and hands it back when the export ends.
+  without the helper everything works, only slower in the background.
 - packaging: `electron-builder` config in `package.json` (`build`): only `dist/`, `electron/` and `package.json` go
   into the asar, fuses turn off run-as-node / node options / inspect and turn on asar integrity.
 - testing the exe: start it with `--remote-debugging-port=9334 --user-data-dir=<temp folder>` and drive the page
@@ -292,3 +337,8 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, fx }` is available for testing.
 `fx` has the effect and transition registries plus `checkEffects()` / `checkTransitions()`, which compile
 every shader in the browser and return the ones that fail (an empty list = all good).
+
+`window.__ncut.bench` (`src/dev/bench.ts`, dev builds and `vite build --mode bench --outDir dist-bench`) makes test
+footage and projects, exports them with the options of `exportProject` and reports frames per second, the workers
+used, the encoder rate and whether the file went to disk (`export`, `fileCheck`, `golden`). start the desktop
+window on a bench build (`--dev-url=`) with `--remote-debugging-port` to measure the real thing.

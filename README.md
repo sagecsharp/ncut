@@ -17,6 +17,7 @@ a flat, monochrome video editor that runs entirely in your browser.
 - cascade a selection: start the clips one after the other (left to right, middle outwards, random ...) and let them fly in or out (scatter, rise, fall, zoom, spin, from the depth). made for a text split into letters
 - cut to the music: mark the beats of a song, then lay the selected clips in a row, fit them to the markers (every beat, every 2nd, every 4th) or cut a clip at every marker
 - export to mp4 or webm with webcodecs at up to 240 fps, gif, or audio only (wav / ogg), whole timeline or a range, with one click presets. no upload, no watermark. what you see in the preview is what gets exported
+- fast export: longer videos are rendered in parts by several workers at once and joined into one file, 1440p and 4k go to the graphics card's encoder at any frame rate, gifs are built on up to 8 workers, big files are written to disk while they are made instead of sitting in memory
 - start from an empty timeline or a template (3d title, 3d shapes, name tag, countdown, lyrics, numbers, snow title, carousel, rack focus, block title, tunnel, letter ring, orbit, letters fly in, timer)
 - everything stays on your machine: projects and media live in indexeddb. save a project as one `.ncut` file (project + media + the font files you imported for it) to back it up or move it to another computer. an export tells you when a font of the project is missing on this machine
 - monochrome, high contrast, flat ui in kode mono. follows your system: black at night, white by day. optional color tint in settings. no glow.
@@ -50,6 +51,8 @@ this builds into `release/`:
 
 what the desktop version does on top: exports and saved frames open a normal save dialog in the folder you used
 last, the window remembers its place, closing while an export runs asks first, `f11` is full screen.
+an export shows its progress on the taskbar button, keeps the pc awake and runs at full speed when the window is
+minimized or covered (windows slows background apps down otherwise). a double click on a `.ncut` file opens it.
 projects live in the app's own storage (`%APPDATA%\ncut`), separate from the browser version. use the
 project file (.ncut) to move a project between them.
 
@@ -65,6 +68,7 @@ the exe is not code signed, so windows smartscreen may ask before the first star
 - `npm run app:dev` desktop window on the running dev server (start `npm run dev` first)
 - `npm run exe` build the windows exe files into `release/`
 - `npm run icon` redraw `build/icon.png` and `build/icon.ico`
+- `npm run qos` build the small helper for full speed background exports (`build/bin/ncut-qos.exe`, part of `npm run exe`)
 
 ## shortcuts
 
