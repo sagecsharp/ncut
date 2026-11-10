@@ -4,6 +4,7 @@
  * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there.
  */
 import type { SceneFog, Shape3D } from '../../types';
+import { createCanvas } from '../../lib/canvas';
 import type { Mat4, Vec3 } from './math';
 import { mul } from './math';
 import { fogOn, writeFogUniforms } from './fog';
@@ -603,7 +604,7 @@ function getRenderer(channel: string): SceneRenderer | null {
   };
   let canvas: GLCanvas | null = null;
   if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(2, 2);
-  else if (typeof document !== 'undefined') canvas = document.createElement('canvas');
+  else if (typeof document !== 'undefined') canvas = createCanvas();
   const gl = canvas
     ? (canvas.getContext('webgl2', {
         alpha: true,

@@ -3,6 +3,9 @@
  * computer (queryLocalFonts) and font files the user imported (kept in indexeddb, database 'ncut-fonts').
  * the api below is the contract the renderer, the preview and the exporter use.
  * import-safe in node: nothing touches document / window / indexedDB at module load.
+ * also import-safe and usable in a dedicated worker (no document): the font set is then self.fonts, stylesheets are
+ * never imported there (the main thread sends the faces over: lib/fontKit.ts) and a family that was not installed is
+ * treated like a font of the computer (drawn by name, measured to see if it is there).
  */
 import type { Project } from '../types';
 import { canvasWidth, familyRenders } from './fontDetect';
@@ -157,8 +160,30 @@ const cssLoads = new Map<string, Promise<boolean>>();
 const ready = new Set<string>();
 const inflight = new Map<string, Promise<boolean>>();
 
+/** the FontFaceSet of the current global: document.fonts on the main thread, self.fonts in a worker, null without either */
+export function fontSet(): FontFaceSet | null {
+  if (typeof document !== 'undefined') return document.fonts ?? null;
+  if (typeof self !== 'undefined') return (self as unknown as { fonts?: FontFaceSet }).fonts ?? null;
+  return null;
+}
+
 function hasDocFonts(): boolean {
-  return typeof document !== 'undefined' && !!document.fonts;
+  return !!fontSet();
+}
+
+/** families whose faces were installed from a font kit (lib/fontKit.ts): ready for every weight / style, nothing to load */
+const kitFamilies = new Set<string>();
+
+/** tell the font code that these families have their faces in the font set now (installFontKit calls this). bumps fontsVersion. */
+export function markFontFamiliesInstalled(families: Iterable<string>): void {
+  let any = false;
+  for (const family of families) {
+    if (!family) continue;
+    kitFamilies.add(family);
+    for (const w of [400, 700]) for (const i of [0, 1]) ready.add(`${family}|${w}|${i}`);
+    any = true;
+  }
+  if (any) bump();
 }
 
 function descriptor(family: string, weight: number, italic: boolean): string {
@@ -198,6 +223,7 @@ function loadCss(b: Bundled, weight: number, italic: boolean): Promise<boolean> 
 export async function ensureFont(family: string, weight: number = 400, italic = false, text?: string): Promise<boolean> {
   try {
     if (!family || !hasDocFonts()) return true;
+    if (kitFamilies.has(family)) return true;
     const w = weight >= 600 ? 700 : 400;
     const id = `${family}|${w}|${italic ? 1 : 0}`;
     const customText = text !== undefined && text.trim() !== '';
@@ -217,17 +243,19 @@ export async function ensureFont(family: string, weight: number = 400, italic = 
 }
 
 async function run(family: string, weight: number, italic: boolean, text: string | undefined, id: string): Promise<boolean> {
-  let b = BUNDLED_BY_FAMILY.get(family);
+  // no document = a worker: there are no stylesheets to import, a bundled family that was not installed is a font of the computer
+  const stylesheets = typeof document !== 'undefined';
+  let b = stylesheets ? BUNDLED_BY_FAMILY.get(family) : undefined;
   if (!b && !importedFonts.has(family)) {
     await restoreImportedFonts(); // a project can name an imported font before the list was ever asked for
-    b = BUNDLED_BY_FAMILY.get(family);
+    b = stylesheets ? BUNDLED_BY_FAMILY.get(family) : undefined;
   }
   const cssOk = b ? await loadCss(b, weight, italic) : true;
   const desc = descriptor(family, weight, italic);
   const wasThere = safeCheck(desc, text ?? SAMPLE);
   let loaded = true;
   try {
-    await document.fonts.load(desc, text ?? SAMPLE);
+    await fontSet()!.load(desc, text ?? SAMPLE);
   } catch {
     loaded = false; // the font file could not be fetched / decoded: the canvas falls back
   }
@@ -247,10 +275,32 @@ async function run(family: string, weight: number, italic: boolean, text: string
 
 function safeCheck(desc: string, text: string): boolean {
   try {
-    return document.fonts.check(desc, text);
+    return fontSet()!.check(desc, text);
   } catch {
     return false;
   }
+}
+
+/** one font the project's text asks for: a family, a weight, a style and the text drawn with it. one entry per distinct combination. */
+export interface FontUse {
+  family: string;
+  weight: number;
+  italic: boolean;
+  text: string;
+}
+
+/** every distinct (family, weight, italic, text) of the project's text clips, in clip order. pure. */
+export function projectFontUses(project: Project): FontUse[] {
+  const out: FontUse[] = [];
+  const seen = new Set<string>();
+  for (const c of project.clips) {
+    if (c.type !== 'text') continue;
+    const key = `${c.fontFamily}|${c.fontWeight}|${c.italic}|${c.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ family: c.fontFamily, weight: c.fontWeight, italic: c.italic, text: c.text });
+  }
+  return out;
 }
 
 /**
@@ -261,14 +311,9 @@ export async function ensureProjectFonts(project: Project): Promise<string[]> {
   try {
     await restoreImportedFonts();
     const jobs: Promise<string | null>[] = [];
-    const seen = new Set<string>();
-    for (const c of project.clips) {
-      if (c.type !== 'text') continue;
-      const key = `${c.fontFamily}|${c.fontWeight}|${c.italic}|${c.text}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const family = c.fontFamily;
-      jobs.push(ensureFont(family, c.fontWeight, c.italic, c.text).then((ok) => (ok ? null : family)));
+    for (const u of projectFontUses(project)) {
+      const family = u.family;
+      jobs.push(ensureFont(family, u.weight, u.italic, u.text).then((ok) => (ok ? null : family)));
     }
     const failed = (await Promise.all(jobs)).filter((f): f is string => f !== null);
     return [...new Set(failed)];
@@ -420,8 +465,9 @@ async function registerImported(family: string, weight: number, italic: boolean,
   const face = new FontFace(family, bytes.slice(0), { weight: String(weight), style: italic ? 'italic' : 'normal' });
   await face.load();
   const old = faces.get(key);
-  if (old) document.fonts.delete(old.face);
-  document.fonts.add(face);
+  const set = fontSet()!;
+  if (old) set.delete(old.face);
+  set.add(face);
   // the file itself is kept: a project file takes it along, also when the database could not store it
   faces.set(key, { family, face, weight, italic, bytes });
   refreshImportedInfo(family);
@@ -435,7 +481,8 @@ const removedFamilies = new Set<string>();
 /** re-register the font files the user imported earlier. runs once, lazily. */
 export function restoreImportedFonts(): Promise<void> {
   if (restoring) return restoring;
-  if (!hasDocFonts() || typeof indexedDB === 'undefined') return Promise.resolve();
+  // a worker gets the imported faces through a font kit, it never reads the database
+  if (typeof document === 'undefined' || !hasDocFonts() || typeof indexedDB === 'undefined') return Promise.resolve();
   restoring = (async () => {
     try {
       const all = await dbRun<StoredFont[]>('readonly', (s) => s.getAll() as IDBRequest<StoredFont[]>);
@@ -506,7 +553,7 @@ export async function removeImportedFont(family: string): Promise<void> {
   const keys = [...faces.entries()].filter(([, e]) => e.family === family).map(([k]) => k);
   for (const k of keys) {
     const e = faces.get(k);
-    if (e && hasDocFonts()) document.fonts.delete(e.face);
+    if (e) fontSet()?.delete(e.face);
     faces.delete(k);
   }
   importedFonts.delete(family);
