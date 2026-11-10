@@ -191,9 +191,30 @@ describe('effects on one clip', () => {
     expect(clipOf<EffectClip>(made[0]!).target).toBe('x');
   });
 
-  it('deleting the target does not turn the effect into a layer over everything', () => {
+  it('deleting a clip takes the effects on it along, in one undo step', () => {
     open((a, b) => [fx(a, 'x'), image(b, 'x', 0, 2)]);
     ed().deleteClips(['x']);
+    expect(proj().clips).toHaveLength(0);
+    ed().undo();
+    expect(proj().clips.map((c) => c.id).sort()).toEqual(['fx', 'x']);
     expect(clipOf<EffectClip>('fx').target).toBe('x');
+  });
+
+  it('an effect on a locked track stays and does not turn into a layer over everything', () => {
+    const [a] = open((a2, b) => [fx(a2, 'x'), image(b, 'x', 0, 2)]);
+    ed().updateTrack(a, { locked: true });
+    ed().deleteClips(['x']);
+    expect(proj().clips.map((c) => c.id)).toEqual(['fx']);
+    expect(clipOf<EffectClip>('fx').target).toBe('x');
+  });
+
+  it('a split or a head trim keeps the length the look was spread over', () => {
+    open((a) => [{ ...fx(a, null), duration: 4 }]);
+    const made = ed().splitClips(1, ['fx']);
+    expect(clipOf<EffectClip>('fx').fullDuration).toBe(4);
+    expect(clipOf<EffectClip>(made[0]!).fullDuration).toBe(4);
+    ed().trimClip(made[0]!, 'start', 2);
+    expect(clipOf<EffectClip>(made[0]!).fullDuration).toBe(4);
+    expect(clipOf<EffectClip>(made[0]!).timeOffset).toBeCloseTo(2);
   });
 });

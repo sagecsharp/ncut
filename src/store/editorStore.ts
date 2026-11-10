@@ -140,7 +140,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
   camera: ['target'],
-  effect: ['timeOffset', 'target'],
+  effect: ['timeOffset', 'target', 'fullDuration'],
 };
 
 export interface ClipMove {
@@ -938,7 +938,10 @@ export const useEditor = create<EditorState>()((set, get) => {
             next.trimStart = Math.max(0, clip.trimStart + delta * clip.speed);
           }
           // an effect runs on time - start + timeOffset: keep what it shows at every frame that is left
-          if (next.type === 'effect' && clip.type === 'effect') next.timeOffset = (clip.timeOffset ?? 0) + delta;
+          if (next.type === 'effect' && clip.type === 'effect') {
+            next.timeOffset = (clip.timeOffset ?? 0) + delta;
+            next.fullDuration = clip.fullDuration ?? clip.duration;
+          }
           return replaceClip(p, clampFades(next));
         }
         let upper = Infinity;
@@ -1003,6 +1006,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           const leftDraft = { ...c, duration: time - c.start, fadeOut: 0 } as Record<string, unknown>;
           delete leftDraft.motionOut;
           delete leftDraft.animOut;
+          // an effect cut in two keeps the length its look was spread over (see EffectClip.fullDuration)
+          if (c.type === 'effect') leftDraft.fullDuration = c.fullDuration ?? c.duration;
           const left = clampFades(leftDraft as unknown as Clip);
           const rightDraft = { ...c } as Record<string, unknown>;
           delete rightDraft.transition;
@@ -1018,7 +1023,10 @@ export const useEditor = create<EditorState>()((set, get) => {
             keyframes: shiftKeyframes(c.keyframes, -(time - c.start)),
           } as Clip;
           if (isTimedClip(right) && isTimedClip(c)) right.trimStart = c.trimStart + (time - c.start) * c.speed;
-          if (right.type === 'effect' && c.type === 'effect') right.timeOffset = (c.timeOffset ?? 0) + (time - c.start);
+          if (right.type === 'effect' && c.type === 'effect') {
+            right.timeOffset = (c.timeOffset ?? 0) + (time - c.start);
+            right.fullDuration = c.fullDuration ?? c.duration;
+          }
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           if (c.group) {
             if (!rightGroups.has(c.group)) rightGroups.set(c.group, uid('grp'));
@@ -1054,6 +1062,14 @@ export const useEditor = create<EditorState>()((set, get) => {
         const doomed = p.clips.filter((c) => ids.includes(c.id) && !isLocked(p, c.trackId));
         if (doomed.length === 0) return null;
         const doomedIds = new Set(doomed.map((c) => c.id));
+        // effects that sit on a deleted clip go with it (they would stay behind as clips that do nothing).
+        // one on a locked track stays, pointing at nothing.
+        for (const c of p.clips) {
+          if (c.type === 'effect' && c.target && doomedIds.has(c.target) && !doomedIds.has(c.id) && !isLocked(p, c.trackId)) {
+            doomed.push(c);
+            doomedIds.add(c.id);
+          }
+        }
         let clips = unlinkRemoved(
           p.clips.filter((c) => !doomedIds.has(c.id)),
           doomedIds,

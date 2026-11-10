@@ -385,7 +385,7 @@ export function effectPassAt(raw: EffectClip, time: number): EffectPass | null {
   const clip = resolveClip(raw, time);
   const amount = clip.amount * fadeFactor(clip, time);
   if (!(amount > 0.001)) return null;
-  return { def, time: Math.max(0, time - clip.start + (raw.timeOffset ?? 0)), duration: clip.duration, amount, seed: clip.seed, params: clip.params };
+  return { def, time: Math.max(0, time - clip.start + (raw.timeOffset ?? 0)), duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params: clip.params };
 }
 
 type Channel = 'default' | 'export';

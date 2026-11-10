@@ -502,6 +502,12 @@ export interface EffectClip extends ClipBase {
    */
   timeOffset?: number;
   /**
+   * the length of the effect before it was split or trimmed at the head, in seconds. effects that
+   * spread a move over their whole length (whip) keep reading this, so the move carries on across a
+   * cut instead of being squeezed into each half. missing = the clip's own duration.
+   */
+  fullDuration?: number;
+  /**
    * id of ONE visual clip (video, image, text, shape) this effect is put on. null / missing = the
    * normal adjustment layer: everything under the effect's track. with a target the effect changes
    * only that clip's picture, wherever the two tracks are in the stack, while both clips are on
