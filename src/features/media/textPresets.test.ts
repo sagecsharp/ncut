@@ -80,6 +80,24 @@ describe('text presets', () => {
     expect(money.counter).toMatchObject({ from: 0, to: 10000, separator: true });
     expect(byId('countdown').build(1, 1).counter).toMatchObject({ from: 10, to: 0, ease: 'linear' });
   });
+  it('uses steady digits on every counter card', () => {
+    for (const id of ['counter', 'percent', 'money', 'countdown', 'timer', 'stopwatch']) {
+      expect(byId(id).build(1920, 1080).counter?.fixedWidth, id).toBe(true);
+    }
+  });
+  it('has a timer, a stopwatch and a sticker title', () => {
+    const timer = byId('timer').build(1, 1);
+    expect(timer.counter).toMatchObject({ from: 10, to: 0, format: 'time', ease: 'linear', decimals: 0 });
+    expect(timer.text).toContain('{n}');
+    const watch = byId('stopwatch').build(1, 1);
+    expect(watch.counter).toMatchObject({ from: 0, format: 'time', decimals: 1, ease: 'linear' });
+    expect(watch.counter!.to).toBeGreaterThan(watch.counter!.from);
+    const sticker = byId('sticker-title').build(1, 1);
+    expect(sticker.stroke!.width).toBeGreaterThan(0);
+    expect(sticker.stroke2!.width).toBeGreaterThan(0);
+    expect(sticker.stroke2!.color).not.toBe(sticker.stroke!.color);
+    expect(sticker.counter).toBeUndefined();
+  });
   it('has a caption box with a box per line and an underlined title', () => {
     const cap = byId('caption-box').build(1920, 1080);
     expect(cap.backgroundPerLine).toBe(true);

@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextClip } from '../lib/factory';
 import {
+  counterDigitFlags,
   curveLayout,
   EXTRUDE_MAX_STEPS,
+  fixedDigitEdges,
+  strokeWidths,
   drawText,
   extrudeOffsets,
   fontRetryDelay,
@@ -28,6 +31,7 @@ import {
 } from './text';
 import { textAnimActive, textAnimUnits } from './textAnim';
 import { ensureFont } from '../lib/fonts';
+import { resolveCounter } from './counter';
 
 vi.mock('../lib/fonts', () => ({ ensureFont: vi.fn(async () => true), fontsVersion: () => 0 }));
 
@@ -281,6 +285,8 @@ describe('textSignature', () => {
 /* ---------- drawing cost ---------- */
 
 const counts = { measure: 0 };
+/** every letter is 10 wide, except "1" (6) and "." (4): like a proportional font, so steady digits show */
+const charsWidth = (s: string): number => Array.from(s).reduce((w, ch) => w + (ch === '1' ? 6 : ch === '.' ? 4 : 10), 0);
 
 beforeAll(() => {
   // the measuring canvas: every letter is 10 wide, and every measureText call is counted
@@ -290,7 +296,7 @@ beforeAll(() => {
         font: '',
         measureText: (s: string) => {
           counts.measure++;
-          return { width: Array.from(s).length * 10 };
+          return { width: charsWidth(s) };
         },
       };
     }
@@ -457,14 +463,16 @@ describe('highlightIndex', () => {
 
 /** a context that records the fill color of every fillText and the rounded boxes */
 function recordCtx() {
-  const fills: { text: string; color: unknown }[] = [];
+  const fills: { text: string; color: unknown; x?: number }[] = [];
+  const strokes: { text: string; color: unknown; width: number }[] = [];
   const boxes: number[][] = [];
   const rects: number[][] = [];
   const state: Record<string, unknown> = {
     fillStyle: '#fff',
     getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
-    measureText: (s: string) => ({ width: Array.from(s).length * 10 }),
-    fillText: (text: string) => fills.push({ text, color: state.fillStyle }),
+    measureText: (s: string) => ({ width: charsWidth(s) }),
+    fillText: (text: string, x: number) => fills.push({ text, color: state.fillStyle, x }),
+    strokeText: (text: string) => strokes.push({ text, color: state.strokeStyle, width: state.lineWidth as number }),
     roundRect: (...a: number[]) => boxes.push(a),
     rect: (...a: number[]) => boxes.push(a),
     fillRect: (...a: number[]) => rects.push(a),
@@ -477,7 +485,7 @@ function recordCtx() {
     },
     has: (t, k: string) => k in t,
   });
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, boxes, rects };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, strokes, boxes, rects };
 }
 
 describe('karaoke drawing', () => {
@@ -740,5 +748,162 @@ describe('hollow text', () => {
   it('thin outline is fontSize / 30, at least 1', () => {
     expect(hollowEdgeWidth(300)).toBe(10);
     expect(hollowEdgeWidth(12)).toBe(1);
+  });
+});
+
+describe('second outline', () => {
+  const mk = (extra: Partial<Parameters<typeof createTextClip>[2]> = {}) =>
+    createTextClip('t', 0, { text: 'ab', fontFamily: 'Stroke2 A', fontSize: 100, color: '#ffffff', ...extra });
+  const s1 = { color: '#111111', width: 0.05 };
+  const s2 = { color: '#eeeeee', width: 0.04 };
+
+  it('line widths: the first outline plus twice its own', () => {
+    expect(strokeWidths(s1, null, false, 100)).toEqual({ inner: 10, outer: 10 });
+    expect(strokeWidths(s1, s2, false, 100)).toEqual({ inner: 10, outer: 18 });
+    // no first outline: just its own, measured from the letters (half is under the fill)
+    expect(strokeWidths(null, s2, false, 100)).toEqual({ inner: 0, outer: 8 });
+    // hollow: the first line is drawn at its real width, the second is a ring around that ring
+    expect(strokeWidths(s1, s2, true, 100)).toEqual({ inner: 5, outer: 13 });
+    expect(strokeWidths(null, s2, true, 300)).toEqual({ inner: 10, outer: 34 });
+    expect(strokeWidths(s1, { color: '#000', width: 0 }, false, 100)).toEqual({ inner: 10, outer: 10 });
+  });
+  it('widens the spill by its own width, and not without it', () => {
+    const plain = textSpill(mk({ stroke: s1 }), false);
+    expect(textSpill(mk({ stroke: s1, stroke2: s2 }), false)).toBeCloseTo(plain + 0.04, 9);
+    expect(textSpill(mk({ stroke: s1, stroke2: null }), false)).toBe(plain);
+    expect(textSpill(mk({ stroke2: s2 }), false)).toBeCloseTo(textSpill(mk(), false) + 0.04, 9);
+  });
+  it('is part of the signature', () => {
+    const a = mk({ stroke: s1 });
+    expect(textSignature(mk({ stroke: s1, stroke2: s2 }))).not.toBe(textSignature(a));
+    expect(textSignature(mk({ stroke: s1, stroke2: { ...s2, width: 0.06 } }))).not.toBe(textSignature(mk({ stroke: s1, stroke2: s2 })));
+    expect(textSignature(mk({ stroke: s1, stroke2: { ...s2, color: '#000000' } }))).not.toBe(textSignature(mk({ stroke: s1, stroke2: s2 })));
+    expect(textSignature(mk({ stroke: s1, stroke2: null }))).toBe(textSignature(a));
+  });
+  it('is drawn first, wide, under the first outline and the fill', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ stroke: s1, stroke2: s2 }));
+    expect(r.strokes.map((x) => [x.color, x.width])).toEqual([
+      ['#eeeeee', 18],
+      ['#111111', 10],
+    ]);
+  });
+  it('costs nothing without it', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ stroke: s1 }));
+    expect(r.strokes.map((x) => x.width)).toEqual([10]);
+    const n = recordCtx();
+    drawText(n.ctx, mk());
+    expect(n.strokes.length).toBe(0);
+    const z = recordCtx();
+    drawText(z.ctx, mk({ stroke: s1, stroke2: { color: '#000', width: 0 } }));
+    expect(z.strokes.length).toBe(1);
+  });
+  it('works alone, from the letters', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ stroke2: s2 }));
+    expect(r.strokes.map((x) => x.width)).toEqual([8]);
+  });
+  it('works for every letter of a per letter path', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ stroke: s1, stroke2: s2, letterSpacing: 0.1 }));
+    expect(r.strokes.filter((x) => x.color === '#eeeeee').length).toBe(2);
+    expect(r.strokes.filter((x) => x.color === '#111111').length).toBe(2);
+    expect(r.strokes[0]!.color).toBe('#eeeeee');
+  });
+  it('hollow: a ring around the ring, still no fill', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ hollow: true, stroke: s1, stroke2: s2 }));
+    expect(r.fills.length).toBe(0);
+    expect(r.strokes.map((x) => [x.color, x.width])).toEqual([
+      ['#eeeeee', 13],
+      ['#111111', 5],
+    ]);
+  });
+  it('the side follows the outer outline', () => {
+    const r = recordCtx();
+    const ex = { depth: 0.1, angle: 90, color: '#123456' };
+    drawText(r.ctx, mk({ stroke: s1, stroke2: s2, extrude: ex }));
+    const side = r.strokes.filter((x) => x.color === '#123456');
+    expect(side.length).toBe(10);
+    expect(side.every((x) => x.width === 18)).toBe(true);
+  });
+});
+
+describe('steady digits', () => {
+  const counter = { from: 0, to: 1000, decimals: 0, ease: 'linear' as const, fixedWidth: true };
+  const mk = (text: string, extra: Partial<Parameters<typeof createTextClip>[2]> = {}) =>
+    createTextClip('t', 0, { text, fontFamily: 'Steady A', fontSize: 100, duration: 10, counter, ...extra });
+  const at = (clip: ReturnType<typeof mk>, t: number) => resolveCounter(clip, t);
+  const ranges = (c: unknown) => (c as { digitRanges?: number[][] }).digitRanges;
+
+  it('flags only the digits of the number', () => {
+    expect(counterDigitFlags(['ab 12:3'], [[3, 7]], 7)).toEqual([[false, false, false, true, true, false, true]]);
+    expect(counterDigitFlags(['ab'], [[0, 2]], 2)).toBeNull();
+    expect(counterDigitFlags(['12'], undefined, 2)).toBeNull();
+    // the lines do not add up to the text: no flags rather than wrong ones
+    expect(counterDigitFlags(['12'], [[0, 2]], 5)).toBeNull();
+  });
+  it('follows the wrapping: one dropped separator between lines', () => {
+    // "n 12 nn 3" wrapped at the space into "n 12" / "nn 3": the number 12 is at 2..4, the 3 is plain text
+    expect(counterDigitFlags(['n 12', 'nn 3'], [[2, 4]], 9)).toEqual([
+      [false, false, true, true],
+      [false, false, false, false],
+    ]);
+    expect(
+      counterDigitFlags(['n 1', 'nn 2'], [[2, 3], [7, 8]], 8),
+    ).toEqual([
+      [false, false, true],
+      [false, false, false, true],
+    ]);
+  });
+  it('widens flagged letters to the cell and keeps the rest', () => {
+    // natural advances 6 4 10 6, flags on the first and the last
+    expect(fixedDigitEdges([0, 6, 10, 20, 26], [true, false, false, true], 10)).toEqual([0, 10, 14, 24, 34]);
+    expect(fixedDigitEdges([0], [], 10)).toEqual([0]);
+  });
+  it('leaves the marker only for steady digits, and never touches the stored clip', () => {
+    expect(ranges(at(mk('{n}'), 10))).toEqual([[0, 4]]);
+    const off = resolveCounter(mk('{n}', { counter: { ...counter, fixedWidth: false } }), 10);
+    expect(ranges(off)).toBeUndefined();
+    expect(ranges(at(mk('{n} / {n}'), 10))).toEqual([
+      [0, 4],
+      [7, 11],
+    ]);
+    expect(mk('{n}').counter).toEqual(counter);
+  });
+  it('the box does not change width while the number counts', () => {
+    const four = { ...counter, from: 1000, to: 9999 };
+    const w = (t: number) => measureText(at(mk('x {n}', { counter: four }), t)).width;
+    expect(w(0)).toBe(w(10));
+    expect(w(1.1)).toBe(w(9.9));
+    const loose = (t: number) => measureText(resolveCounter(mk('x {n}', { counter: { ...four, fixedWidth: false } }), t)).width;
+    expect(loose(0)).not.toBe(loose(10));
+  });
+  it('digits sit centered in equal cells, separators and the rest keep their advance', () => {
+    const r = recordCtx();
+    // 1.5 -> "1.5": cells of 10, 4 and 10, so 24 wide, centered
+    drawText(r.ctx, at(mk('{n}', { counter: { ...counter, from: 1.5, to: 1.5, decimals: 1 } }), 0));
+    expect(r.fills.map((f) => f.text)).toEqual(['1', '.', '5']);
+    expect(r.fills.map((f) => f.x)).toEqual([-12 + 5, -12 + 10 + 2, -12 + 14 + 5]);
+  });
+  it('lays out the digits one cell apart next to other text', () => {
+    const r = recordCtx();
+    drawText(r.ctx, at(mk('t {n}', { counter: { ...counter, from: 11, to: 11 } }), 0));
+    expect(r.fills.map((f) => f.text)).toEqual(['t', '1', '1']);
+    const xs = r.fills.map((f) => f.x!);
+    expect(xs[2]! - xs[1]!).toBe(10);
+  });
+  it('is part of the box cache key and the signature', () => {
+    const a = at(mk('{n}', { counter: { ...counter, from: 11, to: 11 } }), 0);
+    const b = resolveCounter(mk('{n}', { counter: { ...counter, from: 11, to: 11, fixedWidth: false } }), 0);
+    expect(measureText(a).width).not.toBe(measureText(b).width);
+    expect(textSignature(a)).not.toBe(textSignature(b));
+  });
+  it('a clip without a counter does not use any of it', () => {
+    const plain = createTextClip('t', 0, { text: '1111', fontFamily: 'Steady A', fontSize: 100 });
+    const box = measureText(plain);
+    expect(box.width).toBe(24 + 2 * box.pad);
+    expect(box.digits ?? null).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_COUNTER, counterText, counterValue, formatCounter, hasCounter, resolveCounter } from './counter';
+import { DEFAULT_COUNTER, counterText, digitRangesOf, counterValue, formatCounter, hasCounter, resolveCounter } from './counter';
 import type { TextCounter } from '../types';
 
 const c = (o: Partial<TextCounter> = {}): TextCounter => ({ from: 0, to: 100, decimals: 0, ease: 'linear', hold: 0, ...o });
@@ -112,5 +112,94 @@ describe('counterText / resolveCounter', () => {
   it('has a sane default', () => {
     expect(DEFAULT_COUNTER.decimals).toBe(0);
     expect(DEFAULT_COUNTER.to).toBe(100);
+  });
+});
+
+describe('time format', () => {
+  const t = (v: number, o: Partial<TextCounter> = {}) => formatCounter(v, { decimals: 0, format: 'time', from: 0, to: 100, ...o });
+  it('writes m:ss and h:mm:ss', () => {
+    expect(t(0)).toBe('0:00');
+    expect(t(5)).toBe('0:05');
+    expect(t(59)).toBe('0:59');
+    expect(t(60)).toBe('1:00');
+    expect(t(90)).toBe('1:30');
+    expect(t(600)).toBe('10:00');
+    expect(t(3599)).toBe('59:59');
+    expect(t(3600)).toBe('1:00:00');
+    expect(t(3661)).toBe('1:01:01');
+    expect(t(36000 + 61)).toBe('10:01:01');
+  });
+  it('writes decimals as fractions of a second', () => {
+    expect(t(5.3, { decimals: 1 })).toBe('0:05.3');
+    expect(t(65.25, { decimals: 2 })).toBe('1:05.25');
+    expect(t(0.05, { decimals: 2 })).toBe('0:00.05');
+    expect(t(3600.5, { decimals: 1 })).toBe('1:00:00.5');
+    expect(t(7, { decimals: 1 })).toBe('0:07.0');
+  });
+  it('puts a minus in front of negative times, never -0:00', () => {
+    expect(t(-5)).toBe('-0:05');
+    expect(t(-65, { decimals: 1 })).toBe('-1:05.0');
+    expect(t(-0)).toBe('0:00');
+    expect(t(-0.0000001, { from: 5, to: 0 })).toBe('0:00');
+  });
+  it('counting up floors: a stopwatch never shows a second before it is there', () => {
+    expect(t(9.99)).toBe('0:09');
+    expect(t(9.99, { decimals: 1 })).toBe('0:09.9');
+    expect(t(59.999)).toBe('0:59');
+    expect(t(8.9999999999)).toBe('0:09');
+  });
+  it('counting down rounds up: 0:00 only when the value is 0', () => {
+    const d = { from: 10, to: 0 };
+    expect(t(10, d)).toBe('0:10');
+    expect(t(9.5, d)).toBe('0:10');
+    expect(t(9.0000000001, d)).toBe('0:09');
+    expect(t(8.9999999999, d)).toBe('0:09');
+    expect(t(0.4, d)).toBe('0:01');
+    expect(t(0, d)).toBe('0:00');
+    expect(t(0.54, { ...d, decimals: 1 })).toBe('0:00.6');
+  });
+  it('ignores the separator and keeps the number format as it was', () => {
+    expect(t(3661, { separator: true })).toBe('1:01:01');
+    expect(formatCounter(1234.5, { decimals: 1, separator: true, format: 'number' })).toBe('1,234.5');
+    expect(formatCounter(1234.5, { decimals: 1, separator: true })).toBe('1,234.5');
+  });
+  it('survives bad values', () => {
+    expect(t(Number.NaN)).toBe('0:00');
+    expect(t(Infinity)).toMatch(/^\d+:/);
+  });
+  it('a 10 second count down with a linear ease reads 0:10, 0:09 after a second, 0:00 only at the end', () => {
+    const clip = { text: '{n}', start: 0, duration: 10, counter: { from: 10, to: 0, decimals: 0, ease: 'linear' as const, format: 'time' as const } };
+    expect(counterText(clip, 0)).toBe('0:10');
+    expect(counterText(clip, 0.5)).toBe('0:10');
+    expect(counterText(clip, 1)).toBe('0:09');
+    expect(counterText(clip, 1.01)).toBe('0:09');
+    expect(counterText(clip, 5)).toBe('0:05');
+    expect(counterText(clip, 9)).toBe('0:01');
+    expect(counterText(clip, 9.99)).toBe('0:01');
+    expect(counterText(clip, 10)).toBe('0:00');
+    let prev = 10;
+    for (let f = 0; f < 300; f++) {
+      const sec = Number(counterText(clip, f / 30).split(':')[1]);
+      expect(sec).toBeLessThanOrEqual(prev);
+      expect(sec).toBeGreaterThan(0);
+      prev = sec;
+    }
+  });
+  it('a count up reads 0:00 at the start and the end value at the end', () => {
+    const clip = { text: 'time {n}', start: 2, duration: 4, counter: { from: 0, to: 90, decimals: 0, ease: 'linear' as const, format: 'time' as const } };
+    expect(counterText(clip, 2)).toBe('time 0:00');
+    expect(counterText(clip, 6)).toBe('time 1:30');
+  });
+});
+
+describe('digitRangesOf', () => {
+  it('finds the number in the resolved text, counting letters', () => {
+    expect(digitRangesOf('{n}', '1,234')).toEqual([[0, 5]]);
+    expect(digitRangesOf('$ {n}', '10')).toEqual([[2, 4]]);
+    expect(digitRangesOf('{n} of {n}!', '5')).toEqual([
+      [0, 1],
+      [5, 6],
+    ]);
+    expect(digitRangesOf('no token', '42')).toEqual([[0, 2]]);
   });
 });

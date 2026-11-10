@@ -4,7 +4,8 @@
  * shared by the 2d frame renderer and the 3d text textures.
  */
 import { ensureFont, fontsVersion } from '../lib/fonts';
-import type { TextAlign, TextClip, TextGradient } from '../types';
+import type { TextAlign, TextClip, TextGradient, TextStroke } from '../types';
+import type { CounterMark, DigitRange } from './counter';
 import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
 
 export const TEXT_LINE_HEIGHT = 1.25;
@@ -73,6 +74,8 @@ export interface TextBox {
   glyphCache: { glyphs: TextGlyph[]; words: number } | null;
   /** prefix widths of every line (see lineEdges), filled the first time they are needed */
   edges: number[][] | null;
+  /** steady digits: per line, which letters are counter digits that take the same width. null / missing = none. */
+  digits?: boolean[][] | null;
 }
 
 /* ---------- wrapping (pure) ---------- */
@@ -241,6 +244,80 @@ export function sideOverlap(copies: number, depthPx: number, fontSizePx: number)
 /** line width of the outline of hollow letters without an outline of their own, in block units */
 export function hollowEdgeWidth(fontSize: number): number {
   return Math.max(1, fontSize / 30);
+}
+
+/**
+ * line widths of the outlines, in block units (the context's line width: half of it is hidden under the fill).
+ * `inner` = the first outline (hollow letters have no fill, so their line is drawn at its real width and a hollow
+ * text without an outline gets the thin one), `outer` = the line that reaches around everything: the first outline's
+ * width plus twice the second outline's own. the side of the letters and the shadow follow `outer`.
+ * hollow + stroke2: the second line is a ring around the ring, it also grows into the hole by its own width (the hole
+ * stays a hole, just smaller); the first outline is drawn on top of it.
+ */
+export function strokeWidths(
+  stroke: TextStroke | null | undefined,
+  stroke2: TextStroke | null | undefined,
+  hollow: boolean,
+  fontSize: number,
+): { inner: number; outer: number } {
+  const s = stroke && stroke.width > 0 ? stroke : null;
+  const inner = hollow ? (s ? s.width * fontSize : hollowEdgeWidth(fontSize)) : s ? s.width * fontSize * 2 : 0;
+  const outer = stroke2 && stroke2.width > 0 ? inner + stroke2.width * fontSize * 2 : inner;
+  return { inner, outer };
+}
+
+/* ---------- steady digits (pure) ---------- */
+
+function cpCount(s: string): number {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+}
+
+/**
+ * which letters of the wrapped lines are digits of the counter's number. `ranges` are code point ranges of the whole
+ * text; wrapping drops one separator (a line break or a space) between neighbouring lines, so a line starts one letter
+ * after the previous one ended. null when no letter qualifies or the lines do not add up to the text.
+ */
+export function counterDigitFlags(lines: string[], ranges: readonly DigitRange[] | undefined, textLength: number): boolean[][] | null {
+  if (!ranges || ranges.length === 0) return null;
+  const chars = lines.map((l) => Array.from(l));
+  let total = Math.max(0, chars.length - 1);
+  for (const c of chars) total += c.length;
+  if (total !== textLength) return null;
+  const out: boolean[][] = [];
+  let any = false;
+  let pos = 0;
+  for (const c of chars) {
+    const flags = new Array<boolean>(c.length).fill(false);
+    for (let i = 0; i < c.length; i++) {
+      const ch = c[i]!;
+      if (ch < '0' || ch > '9') continue;
+      const at = pos + i;
+      for (const r of ranges) {
+        if (at >= r[0] && at < r[1]) {
+          flags[i] = true;
+          any = true;
+          break;
+        }
+      }
+    }
+    out.push(flags);
+    pos += c.length + 1;
+  }
+  return any ? out : null;
+}
+
+/** prefix widths where every flagged letter takes `cell` and the others keep their natural advance */
+export function fixedDigitEdges(natural: number[], flags: readonly boolean[], cell: number): number[] {
+  const out: number[] = [0];
+  for (let i = 0; i + 1 < natural.length; i++) out.push(out[i]! + (flags[i] ? cell : natural[i + 1]! - natural[i]!));
+  return out;
+}
+
+/** the digit marker of a resolved counter clip, if there is one */
+function digitRangesOf(clip: TextClip): readonly DigitRange[] | undefined {
+  return (clip as TextClip & CounterMark).digitRanges;
 }
 
 const extrudeCache = { depth: -1, angle: 0, dev: 0, list: [] as { dx: number; dy: number }[] };
@@ -485,6 +562,49 @@ function lineEdges(ctx: Ctx, font: string, line: string): number[] {
   return edges;
 }
 
+const digitCellCache = new Map<string, number>();
+/** advance of the widest digit 0..9 of a font. measured once per font (and fonts version). the font must be set on ctx. */
+function digitCell(ctx: Ctx, font: string): number {
+  const key = `${fontsVersion()}|${font}`;
+  const hit = digitCellCache.get(key);
+  if (hit !== undefined) return hit;
+  let cell = 0;
+  for (let d = 0; d < 10; d++) cell = Math.max(cell, ctx.measureText(String(d)).width);
+  capSet(digitCellCache, key, cell, 100);
+  return cell;
+}
+
+const widestCache = new Map<string, string>();
+/** the digit character with the largest advance in a font (what a steady digit is measured as) */
+function widestDigit(ctx: Ctx, font: string): string {
+  const key = `${fontsVersion()}|${font}`;
+  const hit = widestCache.get(key);
+  if (hit !== undefined) return hit;
+  let best = '0';
+  let w = -1;
+  for (let d = 0; d < 10; d++) {
+    const x = ctx.measureText(String(d)).width;
+    if (x > w) {
+      w = x;
+      best = String(d);
+    }
+  }
+  capSet(widestCache, key, best, 100);
+  return best;
+}
+
+const fixedEdgesCache = new Map<string, number[]>();
+/** lineEdges, with the flagged letters (counter digits) widened to the font's widest digit */
+function lineEdgesFor(ctx: Ctx, font: string, line: string, flags: readonly boolean[] | null): number[] {
+  if (!flags) return lineEdges(ctx, font, line);
+  const key = `${fontsVersion()}|${font}|${line}|${flags.map((f) => (f ? 1 : 0)).join('')}`;
+  const hit = fixedEdgesCache.get(key);
+  if (hit) return hit;
+  const edges = fixedDigitEdges(lineEdges(ctx, font, line), flags, digitCell(ctx, font));
+  capSet(fixedEdgesCache, key, edges, 600);
+  return edges;
+}
+
 /** unscaled size of a text clip's box (text + padding) and its lines */
 export function measureText(clip: TextClip): TextBox {
   const v = fontsVersion();
@@ -500,7 +620,10 @@ export function measureText(clip: TextClip): TextBox {
   const wrap = clip.wrapWidth !== undefined && clip.wrapWidth > 0 ? clip.wrapWidth : 0;
   const rawCurve = clip.curve ?? 0;
   const curve = Math.abs(rawCurve) >= 0.01 ? Math.max(-360, Math.min(360, rawCurve)) : 0;
-  const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${clip.align}|${text}`;
+  const ranges = digitRangesOf(clip);
+  // steady digits only apply when the drawn text has the same letters as the resolved one (capitals can change a length)
+  const fixedRanges = ranges && ranges.length > 0 && cpCount(text) === cpCount(clip.text) ? ranges : undefined;
+  const key = `${v}|${font}|${spacing}|${lineHeight}|${pad}|${wrap}|${curve}|${clip.align}|${text}${fixedRanges ? '|d' + fixedRanges.map((r) => r[0] + '-' + r[1]).join(',') : ''}`;
   const hit = boxCache.get(key);
   if (hit) {
     boxByClip.set(clip, { v, box: hit });
@@ -508,8 +631,20 @@ export function measureText(clip: TextClip): TextBox {
   }
   const ctx = getMeasureCtx();
   ctx.font = font;
-  const lines = wrapText(text, wrap, (s) => ctx.measureText(s).width, spacing);
-  const lineWidths = lines.map((l) => spacedWidth((s) => ctx.measureText(s).width, l, spacing));
+  // steady digits: wrap as if every digit had the widest digit's width, so the breaks do not move while it counts
+  let wrapMeasure: Measure = (s) => ctx.measureText(s).width;
+  if (fixedRanges) {
+    const wide = widestDigit(ctx, font);
+    wrapMeasure = (s) => ctx.measureText(s.replace(/[0-9]/g, wide)).width;
+  }
+  const lines = wrapText(text, wrap, wrapMeasure, spacing);
+  const digits = fixedRanges ? counterDigitFlags(lines, fixedRanges, cpCount(text)) : null;
+  const lineWidths = lines.map((l, i) => {
+    const flags = digits?.[i];
+    if (!flags || !flags.includes(true)) return spacedWidth((s) => ctx.measureText(s).width, l, spacing);
+    const e = lineEdgesFor(ctx, font, l, flags);
+    return e[e.length - 1]! + spacing * Math.max(0, e.length - 2);
+  });
   let max = 0;
   for (const w of lineWidths) max = Math.max(max, w);
   const box: TextBox = {
@@ -526,9 +661,11 @@ export function measureText(clip: TextClip): TextBox {
     curveCy: 0,
     glyphCache: null,
     edges: null,
+    digits,
   };
+  if (digits) box.edges = lines.map((l, i) => lineEdgesFor(ctx, font, l, digits[i] ?? null));
   if (curve !== 0) {
-    const edges = (box.edges = lines.map((l) => lineEdges(ctx, font, l)));
+    const edges = (box.edges ??= lines.map((l, i) => lineEdgesFor(ctx, font, l, digits?.[i] ?? null)));
     const cl = curveLayout(edges, spacing, lineHeight, curve, clip.align, box.curveRef);
     box.curveCx = (cl.minX + cl.maxX) / 2;
     box.curveCy = (cl.minY + cl.maxY) / 2;
@@ -544,6 +681,7 @@ export function measureText(clip: TextClip): TextBox {
 export function textSpill(clip: TextClip, animated: boolean): number {
   let s = 0.05;
   if (clip.stroke) s += clip.stroke.width;
+  if (clip.stroke2 && clip.stroke2.width > 0) s += clip.stroke2.width; // the second outline reaches its own width past the first
   if (clip.shadow) s += clip.shadow.distance + clip.shadow.blur * 2;
   if (animated) s += 1.5;
   if (clip.extrude && clip.extrude.depth > 0) s += Math.min(1, clip.extrude.depth); // the side reaches this far in any direction
@@ -571,6 +709,7 @@ export function textSignature(clip: TextClip): string {
     clip.lineHeight,
     clip.uppercase,
     JSON.stringify(clip.stroke ?? 0),
+    clip.stroke2 ? JSON.stringify(clip.stroke2) : '',
     JSON.stringify(clip.shadow ?? 0),
     clip.backgroundRadius,
     clip.backgroundPadding,
@@ -583,6 +722,7 @@ export function textSignature(clip: TextClip): string {
     clip.strike ? 's' : '',
     clip.hollow ? 'h' : '',
     clip.backgroundPerLine ? 'p' : '',
+    digitRangesOf(clip) ? 'd' + digitRangesOf(clip)!.map((r) => r[0] + '-' + r[1]).join(',') : '',
   ].join('|');
   sigCache.set(clip, { v, sig });
   return sig;
@@ -658,7 +798,7 @@ function layoutGlyphs(ctx: Ctx, clip: TextClip, m: TextBox, extraSpacing: number
   const innerW = m.width - m.pad * 2;
   const top = -m.height / 2 + m.pad;
   const spacing = m.spacing + extraSpacing;
-  const edgesOf = (m.edges ??= m.lines.map((l) => lineEdges(ctx, font, l)));
+  const edgesOf = (m.edges ??= m.lines.map((l, i) => lineEdgesFor(ctx, font, l, m.digits?.[i] ?? null)));
   const curved = m.curve !== 0 ? curveLayout(edgesOf, spacing, m.lineHeight, m.curve, clip.align, m.curveRef) : null;
   let cg = 0;
   let index = 0;
@@ -782,7 +922,8 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   const letterAnim = animated && glyphAnimActive(clip, local!, units!);
   // karaoke needs the letters one by one too, but only while there is a time to light words at
   const hl = local !== undefined && clip.highlight ? clip.highlight : null;
-  const perGlyph = letterAnim || extra !== 0 || m.spacing !== 0 || m.curve !== 0 || hl !== null;
+  // steady digits are laid out in cells, which a whole line fill cannot do
+  const perGlyph = letterAnim || extra !== 0 || m.spacing !== 0 || m.curve !== 0 || hl !== null || !!m.digits;
   let layout: { glyphs: TextGlyph[]; words: number } | null = null;
   if (perGlyph) {
     if (extra !== 0) layout = layoutGlyphs(ctx, clip, m, extra);
@@ -853,10 +994,12 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   };
 
   const stroke = clip.stroke && clip.stroke.width > 0 ? clip.stroke : null;
+  const stroke2 = clip.stroke2 && clip.stroke2.width > 0 ? clip.stroke2 : null;
   const hollow = !!clip.hollow;
   // half of the line is hidden under the fill. hollow letters have no fill: the line is drawn at its real width.
-  const strokeW = hollow ? (stroke ? stroke.width * fs : hollowEdgeWidth(fs)) : stroke ? stroke.width * fs * 2 : 0;
-  const outlined = !!stroke || hollow;
+  // outerW = the line of the second outline (the widest one), which the shadow and the side follow.
+  const { inner: strokeW, outer: outerW } = strokeWidths(stroke, stroke2, hollow, fs);
+  const outlined = !!stroke || !!stroke2 || hollow;
 
   if (hl && hl.background && layout && litWord >= 0 && m.curve === 0) {
     // the box behind the current word sits under every letter pass (shadow, outline, fill)
@@ -917,7 +1060,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     ctx.globalAlpha *= Math.min(1, shadow.opacity);
     ctx.fillStyle = '#000';
     ctx.strokeStyle = '#000';
-    ctx.lineWidth = strokeW;
+    ctx.lineWidth = outerW;
     // with a side, the shadow belongs to its far end: it is cast by the farthest copy only
     const far = offs && offs.length > 0 ? offs[0]! : null;
     each((text, x, y, _st, moved) => {
@@ -936,7 +1079,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     // the side: flat copies from the far end to the face, under the outline and the fill
     ctx.fillStyle = ext.color;
     ctx.strokeStyle = ext.color;
-    ctx.lineWidth = strokeW;
+    ctx.lineWidth = outerW;
     // a letter or block that is see-through would get a nearly opaque side from the stacked copies: each copy gets
     // the alpha that makes the whole stack composite to the wanted one (stackAlpha)
     const stepLen = Math.hypot(offs[offs.length - 1]!.dx, offs[offs.length - 1]!.dy);
@@ -962,6 +1105,12 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
 
   if (hollow) {
     // hollow: nothing is filled, the outline is the letter. its color: the outline's own, else the fill (gradient included).
+    if (stroke2) {
+      // the second outline: a wider ring under the first one, so it shows on both sides of it
+      ctx.strokeStyle = stroke2.color;
+      ctx.lineWidth = outerW;
+      each((text, x, y) => ctx.strokeText(text, x, y), true);
+    }
     ctx.lineWidth = strokeW;
     const edge: string | CanvasGradient = stroke ? stroke.color : base;
     each((text, x, y, st, moved, glyph) => {
@@ -979,6 +1128,12 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
       ctx.strokeText(text, x, y);
     }, true);
   } else {
+  if (stroke2) {
+    // under the first outline and the fill, around the first outline
+    ctx.strokeStyle = stroke2.color;
+    ctx.lineWidth = outerW;
+    each((text, x, y) => ctx.strokeText(text, x, y), true);
+  }
   if (stroke) {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = strokeW;

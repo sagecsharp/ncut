@@ -20,6 +20,7 @@ import { defaultSecondColor } from './shapeLogic';
 const actions = () => useEditor.getState();
 
 const DEFAULT_STROKE: TextStroke = { color: '#000000', width: 0.08 };
+const DEFAULT_STROKE2: TextStroke = { color: '#ffffff', width: 0.06 };
 const DEFAULT_HIGHLIGHT: TextHighlight = { color: '#ffe14d', mode: 'fill' };
 const DEFAULT_HIGHLIGHT_BOX = '#000000';
 const DEFAULT_EXTRUDE: TextExtrude = { depth: 0.2, angle: 135, color: '#555555' };
@@ -60,7 +61,8 @@ function Pct({
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
-  const { stroke, shadow, gradient, highlight, extrude, counter } = clip;
+  const { stroke, stroke2, shadow, gradient, highlight, extrude, counter } = clip;
+  const isTime = counter?.format === 'time';
   const setCounter = (patch: Partial<TextCounter>) => {
     if (counter) actions().updateClip(id, { counter: { ...counter, ...patch } }, liveOpts());
   };
@@ -69,6 +71,9 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
   };
   const setStroke = (patch: Partial<TextStroke>) => {
     if (stroke) actions().updateClip(id, { stroke: { ...stroke, ...patch } }, liveOpts());
+  };
+  const setStroke2 = (patch: Partial<TextStroke>) => {
+    if (stroke2) actions().updateClip(id, { stroke2: { ...stroke2, ...patch } }, liveOpts());
   };
   const setHighlight = (patch: Partial<TextHighlight>) => {
     if (highlight) actions().updateClip(id, { highlight: { ...highlight, ...patch } }, liveOpts());
@@ -112,6 +117,28 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {stroke ? (
         <Pct label="width" title="outline width (% of the font size)" value={stroke.width} min={1} max={50} onChange={(v) => setStroke({ width: v })} />
+      ) : null}
+      {stroke || stroke2 || clip.hollow ? (
+        <>
+          <Row label="2nd outline" title="another line around the first outline, like a sticker">
+            <Switch
+              checked={!!stroke2}
+              title="second outline on or off"
+              onChange={(v) => actions().updateClip(id, { stroke2: v ? { ...DEFAULT_STROKE2 } : null })}
+            />
+            {stroke2 ? <ColorField title="second outline color" value={stroke2.color} onChange={(c) => setStroke2({ color: c })} /> : null}
+          </Row>
+          {stroke2 ? (
+            <Pct
+              label="width"
+              title="second outline width, outside the first one (% of the font size)"
+              value={stroke2.width}
+              min={1}
+              max={50}
+              onChange={(v) => setStroke2({ width: v })}
+            />
+          ) : null}
+        </>
       ) : null}
       <Row label="hollow" title="only the outline shows">
         <Switch checked={!!clip.hollow} title="only the outline shows" onChange={(v) => actions().updateClip(id, { hollow: v })} />
@@ -247,7 +274,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {counter ? (
         <>
-          <Row label="from" title="the number at the start">
+          <Row label="from" title={isTime ? 'seconds at the start' : 'the number at the start'}>
             <NumberField
               className="props-grow"
               title="counter start number"
@@ -259,7 +286,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
               onChange={(v) => setCounter({ from: v })}
             />
           </Row>
-          <Row label="to" title="the number at the end">
+          <Row label="to" title={isTime ? 'seconds at the end' : 'the number at the end'}>
             <NumberField
               className="props-grow"
               title="counter end number"
@@ -271,7 +298,17 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
               onChange={(v) => setCounter({ to: v })}
             />
           </Row>
-          <Row label="decimals" title="digits after the point (0 to 4)">
+          <SelectRow
+            label="show as"
+            title="a plain number, or a time (the numbers are seconds: 90 reads 1:30)"
+            value={counter.format ?? 'number'}
+            options={[
+              ['number', 'number'],
+              ['time', 'time'],
+            ]}
+            onChange={(v) => setCounter({ format: v === 'time' ? 'time' : 'number' })}
+          />
+          <Row label="decimals" title={isTime ? 'digits after the seconds (0 to 4)' : 'digits after the point (0 to 4)'}>
             <NumberField
               className="props-grow"
               title="counter decimals (0 to 4)"
@@ -283,12 +320,17 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
               onChange={(v) => setCounter({ decimals: Math.min(4, Math.max(0, Math.round(v))) })}
             />
           </Row>
-          <Row label="1,000" title="group the digits in threes">
-            <Switch
-              checked={!!counter.separator}
-              title="thousands separator on or off"
-              onChange={(v) => actions().updateClip(id, { counter: { ...counter, separator: v } })}
-            />
+          {isTime ? null : (
+            <Row label="1,000" title="group the digits in threes">
+              <Switch
+                checked={!!counter.separator}
+                title="thousands separator on or off"
+                onChange={(v) => actions().updateClip(id, { counter: { ...counter, separator: v } })}
+              />
+            </Row>
+          )}
+          <Row label="steady digits" title="every digit takes the same width, so the text around the number does not jiggle">
+            <Switch checked={!!counter.fixedWidth} title="steady digits on or off" onChange={(v) => setCounter({ fixedWidth: v })} />
           </Row>
           <SelectRow
             label="pace"
