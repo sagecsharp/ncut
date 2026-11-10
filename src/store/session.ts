@@ -10,8 +10,8 @@ import { getTemplate } from '../lib/templates';
 import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
-import { deleteProject as dbDeleteProject, getMediaBlob, loadProject, putMediaBlob, saveProject } from '../storage/db';
-import { capturePoster, copyPoster, deletePoster, savePoster } from '../storage/posters';
+import { deleteProject as dbDeleteProject, getMediaBlob, listProjects, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
 import { useEditor } from './editorStore';
 import { resetPlayback } from './playback';
@@ -87,7 +87,18 @@ function snapPoster(): void {
   const canvas = document.querySelector<HTMLCanvasElement>('canvas.preview-canvas');
   if (!canvas) return;
   const poster = capturePoster(canvas);
-  if (poster) savePoster(project.id, poster);
+  if (!poster || savePoster(project.id, poster)) return;
+  // it did not fit: the old poster no longer matches the project, so it goes
+  const id = project.id;
+  deletePoster(id);
+  if (!isPoster(poster)) return;
+  // storage may be full of posters of deleted projects: drop those and try once more
+  void listProjects()
+    .then((list) => {
+      pruneOrphanPosters([id, ...list.map((p) => p.id)]);
+      savePoster(id, poster);
+    })
+    .catch(() => {});
 }
 
 /** save and go back to the projects screen */
