@@ -247,8 +247,14 @@ async function run(family: string, weight: number, italic: boolean, text: string
   const stylesheets = typeof document !== 'undefined';
   let b = stylesheets ? BUNDLED_BY_FAMILY.get(family) : undefined;
   if (!b && !importedFonts.has(family)) {
-    await restoreImportedFonts(); // a project can name an imported font before the list was ever asked for
-    b = stylesheets ? BUNDLED_BY_FAMILY.get(family) : undefined;
+    if (SYSTEM_FONTS.includes(family)) {
+      // an imported font never takes a system family's name (importFontFile renames it, addFontFiles skips it), so
+      // there is nothing to wait for: the text draws in the font of the computer. the restore still starts.
+      void restoreImportedFonts();
+    } else {
+      await restoreImportedFonts(); // a project can name an imported font before the list was ever asked for
+      b = stylesheets ? BUNDLED_BY_FAMILY.get(family) : undefined;
+    }
   }
   const cssOk = b ? await loadCss(b, weight, italic) : true;
   const desc = descriptor(family, weight, italic);
@@ -460,10 +466,16 @@ function refreshImportedInfo(family: string): void {
   else importedFonts.set(family, { family, category: 'imported', weights: [...weights].sort((a, b) => a - b), italic });
 }
 
-async function registerImported(family: string, weight: number, italic: boolean, bytes: ArrayBuffer): Promise<void> {
-  const key = faceKey(family, weight, italic);
-  const face = new FontFace(family, bytes.slice(0), { weight: String(weight), style: italic ? 'italic' : 'normal' });
+/** decode one face. nothing is registered yet. FontFace takes its own copy of the bytes, so they are passed as they are. */
+async function loadFace(family: string, weight: number, italic: boolean, bytes: ArrayBuffer): Promise<FontFace> {
+  const face = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal' });
   await face.load();
+  return face;
+}
+
+/** put a decoded face into the document and the lists */
+function commitFace(family: string, weight: number, italic: boolean, bytes: ArrayBuffer, face: FontFace): void {
+  const key = faceKey(family, weight, italic);
   const old = faces.get(key);
   const set = fontSet()!;
   if (old) set.delete(old.face);
@@ -472,6 +484,10 @@ async function registerImported(family: string, weight: number, italic: boolean,
   faces.set(key, { family, face, weight, italic, bytes });
   refreshImportedInfo(family);
   for (const w of [400, 700]) for (const i of [0, 1]) ready.add(`${family}|${w}|${i}`);
+}
+
+async function registerImported(family: string, weight: number, italic: boolean, bytes: ArrayBuffer): Promise<void> {
+  commitFace(family, weight, italic, bytes, await loadFace(family, weight, italic, bytes));
 }
 
 let restoring: Promise<void> | null = null;
@@ -487,16 +503,24 @@ export function restoreImportedFonts(): Promise<void> {
     try {
       const all = await dbRun<StoredFont[]>('readonly', (s) => s.getAll() as IDBRequest<StoredFont[]>);
       let any = false;
-      for (const f of all) {
-        if (faces.has(f.key)) continue; // imported this session before the restore finished
-        if (removedFamilies.has(f.family)) continue; // removed while this loop was running: it must not come back
-        try {
-          await registerImported(f.family, f.weight ?? 400, !!f.italic, f.bytes);
-          any = true;
-        } catch {
-          /* a broken file stays in the database, it just is not offered */
-        }
-      }
+      // the faces decode at the same time; they are put into the document one after the other, in stored order
+      const loaded = await Promise.all(
+        all.map(async (f) => {
+          if (faces.has(f.key)) return null; // imported this session before the restore finished
+          if (removedFamilies.has(f.family)) return null; // removed while this restore was running: it must not come back
+          try {
+            return await loadFace(f.family, f.weight ?? 400, !!f.italic, f.bytes);
+          } catch {
+            return null; /* a broken file stays in the database, it just is not offered */
+          }
+        }),
+      );
+      all.forEach((f, i) => {
+        const face = loaded[i];
+        if (!face || faces.has(f.key) || removedFamilies.has(f.family)) return;
+        commitFace(f.family, f.weight ?? 400, !!f.italic, f.bytes, face);
+        any = true;
+      });
       if (any) {
         invalidateList();
         bump();
