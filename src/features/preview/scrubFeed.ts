@@ -50,6 +50,8 @@ export class ScrubFeed {
   private disposed = false;
   private resting = false;
   private lastTell = 0;
+  /** the engine was told about the frame held now */
+  private told = true;
   private restTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(blob: Blob, onFrame: () => void) {
@@ -77,8 +79,15 @@ export class ScrubFeed {
     const cur = this.cur;
     if (!cur || this.state !== 'ready' || this.disposed) return null;
     const canvas = cur.canvas;
-    // another size than the element's picture (odd pixel shapes): the two would not line up
-    if (canvas.width !== width || canvas.height !== height) return null;
+    // another size than the element's picture (odd pixel shapes): the two would not line up. the feed can never
+    // be drawn for this file, so it gets out of the element's way for good
+    if (canvas.width !== width || canvas.height !== height) {
+      if (width > 0 && height > 0) {
+        this.state = 'off';
+        void this.run();
+      }
+      return null;
+    }
     const held = this.held();
     if (!held || !feedIsNearer(held, shown, target)) return null;
     if (!this.source || this.source.image !== canvas) this.source = { image: canvas, width, height };
@@ -218,6 +227,7 @@ export class ScrubFeed {
         if (this.ahead && startsBy(this.ahead.timestamp, target)) {
           this.cur = this.ahead;
           this.ahead = null;
+          this.told = true;
           this.onFrame();
           continue;
         }
@@ -233,6 +243,12 @@ export class ScrubFeed {
           if (this.target !== target || this.resting) continue;
         }
         const step = feedStep(held, this.gen !== null, target, this.backward, key);
+        if (step === 'have' && !this.told) {
+          // the wanted frame came in between two tells
+          this.told = true;
+          this.lastTell = performance.now();
+          this.onFrame();
+        }
         if (step === 'have' || step === 'idle') break;
         let fresh = false;
         if (step === 'restart') {
@@ -270,14 +286,17 @@ export class ScrubFeed {
         // past the wanted time: it lies in the frame held so far (or in a gap after it), this one waits its turn
         if (this.cur && !fresh && !startsBy(next.value.timestamp, target) && next.value.timestamp > this.cur.timestamp) {
           this.ahead = next.value;
+          this.told = true;
           this.onFrame();
           continue;
         }
         this.cur = next.value;
         const now = performance.now();
         const wanted = this.target;
-        const there = wanted !== null && frameDistance(next.value.timestamp, next.value.duration, wanted) === 0;
-        if (there || now - this.lastTell >= TELL_EVERY_MS) {
+        const span = this.held();
+        const there = wanted !== null && span !== null && frameDistance(span.start, span.length, wanted) === 0;
+        this.told = there || now - this.lastTell >= TELL_EVERY_MS;
+        if (this.told) {
           this.lastTell = now;
           this.onFrame();
         }

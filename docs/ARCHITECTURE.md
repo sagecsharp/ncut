@@ -236,7 +236,7 @@ scrubbing, dragging clips and zooming, with dozens of clips.
    on the way are shown as they come). the engine draws the feed's frame only while it is nearer to the wanted
    time than the frame the element shows (`scrubPlan.feedIsNearer`, the element's frame is known from
    requestVideoFrameCallback), and while the feed leads the element does not seek at all: it goes to the playhead
-   once, `SETTLE_MS` after the last move, so the resting picture is the element's as before (checked: the same
+   once, `SETTLE_MS` (60 ms) after the last move, so the resting picture is the element's as before (checked: the same
    pixels as a plain jump to that time). moving backwards, see-through and hdr video, files whose first frame is
    not at 0 and files the decoder cannot read stay with the element alone. the feed gives its decoder and
    canvases back after 3 s without a move and when playback starts.

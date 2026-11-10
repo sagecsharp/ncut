@@ -87,7 +87,10 @@ export function feedStep(
 export function feedIsNearer(cur: { start: number; length: number }, shown: number, target: number): boolean {
   if (!Number.isFinite(shown) || !Number.isFinite(target)) return false;
   const mine = frameDistance(cur.start, cur.length, target);
-  const theirs = frameDistance(shown, cur.length, target);
+  // the element's frame is taken to be as long as the feed's. the last frame of the file never ends: that only
+  // holds for the element when it shows that very frame, any other frame of it has an ordinary length
+  const same = Math.abs(shown - cur.start) <= SAME;
+  const theirs = frameDistance(shown, Number.isFinite(cur.length) || same ? cur.length : NO_LENGTH, target);
   return mine + SAME < theirs;
 }
 

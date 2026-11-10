@@ -115,6 +115,13 @@ describe('feedIsNearer', () => {
     expect(feedIsNearer(frame(298), 280 * F, 300 * F)).toBe(true);
     expect(feedIsNearer(frame(280), 298 * F, 300 * F)).toBe(false);
   });
+  it('is at the end of the file, where the last frame stands for every later time', () => {
+    const last = { start: 59.98, length: Number.POSITIVE_INFINITY };
+    // the element still shows a frame from a second ago
+    expect(feedIsNearer(last, 58.9, 60.4)).toBe(true);
+    // the element shows the last frame too
+    expect(feedIsNearer(last, 59.98, 60.4)).toBe(false);
+  });
   it('is not without a known element frame or wanted time', () => {
     expect(feedIsNearer(frame(300), Number.NaN, 5)).toBe(false);
     expect(feedIsNearer(frame(300), 4, Number.NaN)).toBe(false);

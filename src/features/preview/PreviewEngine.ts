@@ -45,7 +45,7 @@ const HOLD_MAX_MS = 500;
 /** how long a freshly created element may still be loading before it stops holding the picture */
 const LOAD_HOLD_MS = 1000;
 /** a drag that the scrub feed serves: the element seeks to the playhead once it rested this long */
-const SETTLE_MS = 80;
+const SETTLE_MS = 60;
 /** image bitmaps kept alive beyond the ones needed around the playhead */
 const IMAGE_LRU = 8;
 /** the eviction pass runs again when the playhead moved this far (seconds), or the project / image count changed */
@@ -151,6 +151,8 @@ export class PreviewEngine {
   private imageTick = 0;
   private dprOff: (() => void) | null = null;
   private lineColor: LineColor | null = null;
+  /** a still is being saved: only the elements' own frames are drawn, not the scrub feeds' */
+  private elementsOnly = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -343,6 +345,12 @@ export class PreviewEngine {
   async frameBlob(): Promise<Blob | null> {
     const project = useEditor.getState().project;
     if (this.disposed || !project || typeof OffscreenCanvas === 'undefined') return null;
+    // a drag that the scrub feed served: the elements go to the playhead now instead of when the drag has rested
+    for (const entry of this.pool.values()) {
+      if (!entry.settle) continue;
+      this.dropSettle(entry);
+      if (!entry.failed && Number.isFinite(entry.target)) this.seek(entry, entry.target, entry.tol);
+    }
     // a video that is still landing on this frame would be captured one frame behind: wait for it, but not for long
     const waitStart = performance.now();
     while (this.anySeeking(project, usePlayback.getState().time, false, true) && performance.now() - waitStart < HOLD_MAX_MS) {
@@ -353,7 +361,12 @@ export class PreviewEngine {
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return null;
     try {
-      renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
+      this.elementsOnly = true;
+      try {
+        renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
+      } finally {
+        this.elementsOnly = false;
+      }
       return await canvas.convertToBlob({ type: 'image/png' });
     } finally {
       // an OffscreenCanvas draws on the export channel: give back its full size canvases and gl contexts,
@@ -554,7 +567,7 @@ export class PreviewEngine {
    */
   private scrubSource(entry: MediaEntry): DrawSource | null {
     const feed = entry.feed;
-    if (!feed || entry.kind !== 'video' || !Number.isFinite(entry.target) || !Number.isFinite(entry.shown)) return null;
+    if (!feed || this.elementsOnly || entry.kind !== 'video' || !Number.isFinite(entry.target) || !Number.isFinite(entry.shown)) return null;
     if (usePlayback.getState().playing) return null;
     const v = entry.el as HTMLVideoElement;
     return feed.nearer(entry.target, entry.shown, v.videoWidth, v.videoHeight);
@@ -860,8 +873,9 @@ export class PreviewEngine {
       if (!el.paused) el.pause();
       entry.target = target;
       entry.tol = halfFrame;
-      // the element is still on its way to an older time (or waits for the drag to rest): a drag it cannot keep up with
-      if (entry.kind === 'video' && (el.seeking || entry.settle !== 0)) {
+      // the element is still on its way to an older time (or waits for the drag to rest): a drag it cannot keep up
+      // with. only when the element says which frame it shows: without that the feed's frames are never drawn
+      if (entry.kind === 'video' && Number.isFinite(entry.shown) && (el.seeking || entry.settle !== 0)) {
         this.feedWant(entry, target);
         if (entry.feed?.leads(target)) {
           // the feed brings the pictures. the element would start every seek at a key frame and take the decoder
