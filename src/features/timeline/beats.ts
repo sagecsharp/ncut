@@ -81,6 +81,60 @@ function fold(env: Float32Array, period: number, bins: Float32Array): { score: n
   return { score: best, phase: (pos / b) * period };
 }
 
+/** how far (seconds) a beat may move to reach a hit */
+export const SNAP_SECONDS = 0.035;
+/** a hit must be this many times stronger than the average onset around it to attract a beat */
+const SNAP_CONTRAST = 3;
+
+/**
+ * second pass: every grid position (buckets) moves to the strongest onset within +- SNAP_SECONDS, but only
+ * when that onset is clearly above the local average and not already taken by the previous beat. the
+ * position inside the bucket comes from the three bins around the peak (same convention as the fold).
+ */
+export function snapToOnsets(env: ArrayLike<number>, grid: readonly number[], period: number, peaksPerSecond: number): number[] {
+  const n = env.length;
+  const win = SNAP_SECONDS * peaksPerSecond;
+  const half = Math.max(1, Math.round(period / 2));
+  const cum = new Float64Array(n + 1);
+  let envMax = 0;
+  for (let i = 0; i < n; i++) {
+    cum[i + 1] = cum[i]! + env[i]!;
+    if (env[i]! > envMax) envMax = env[i]!;
+  }
+  const out: number[] = [];
+  let prev = -Infinity;
+  for (const g of grid) {
+    let pos = g;
+    const lo = Math.max(1, Math.ceil(g - win));
+    const hi = Math.min(n - 2, Math.floor(g + win));
+    let bestI = -1;
+    let bestV = 0;
+    for (let i = lo; i <= hi; i++) {
+      const v = env[i]!;
+      if (v > bestV) {
+        bestV = v;
+        bestI = i;
+      }
+    }
+    if (bestI >= 0 && bestV >= envMax * 0.15) {
+      const a = Math.max(0, bestI - half);
+      const b = Math.min(n, bestI + half + 1);
+      const mean = (cum[b]! - cum[a]!) / (b - a);
+      if (bestV >= SNAP_CONTRAST * mean) {
+        const l = env[bestI - 1]!;
+        const r = env[bestI + 1]!;
+        const tot = l + bestV + r;
+        const cand = bestI + 0.5 + (tot > 0 ? (r - l) / tot : 0);
+        if (cand - prev > period * 0.5) pos = cand;
+      }
+    }
+    if (pos <= prev) pos = g;
+    prev = pos;
+    out.push(pos);
+  }
+  return out;
+}
+
 /** find the beats in a peak array (peaksPerSecond buckets per second). O(n x lags) with small constants. */
 export function detectBeats(peaks: ArrayLike<number>, peaksPerSecond: number): BeatResult {
   const n = peaks.length;
@@ -173,11 +227,13 @@ export function detectBeats(peaks: ArrayLike<number>, peaksPerSecond: number): B
   }
   const startT = Math.max(0, first - period * 0.5);
   const endT = Math.min(n, last + period * 0.5);
-  const beats: number[] = [];
+  const grid: number[] = [];
   let k = Math.ceil((startT - phase) / period);
   for (let t = phase + k * period; t <= endT; t = phase + ++k * period) {
-    if (t >= 0) beats.push(t / peaksPerSecond);
+    if (t >= 0) grid.push(t);
   }
+  // second pass: swung or drifting material lands on the hits (the grid is the fallback)
+  const beats = snapToOnsets(env, grid, period, peaksPerSecond).map((t) => t / peaksPerSecond);
   const bpm = (60 * peaksPerSecond) / period;
   if (beats.length < 2) return none('no steady beat', bpm, confidence);
   return { beats, bpm, confidence, reason: 'ok' };

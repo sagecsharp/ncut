@@ -26,8 +26,13 @@ export function clipHasSound(project: Project | null | undefined, clip: Clip): b
   return !!project?.assets.find((a) => a.id === clip.assetId)?.hasAudio;
 }
 
-/** beats of a clip in timeline seconds (all of them), or the reason there are none */
-async function clipBeats(clip: Clip) {
+type ClipBeats = { ok: true; beats: number[]; bpm: number } | { ok: false; reason: string } | null;
+
+/**
+ * beats of a clip in timeline seconds (all of them), or the reason there are none.
+ * null = the clip is gone, has another asset or the open project changed while we waited: do nothing.
+ */
+async function clipBeats(clip: Clip, projectId: string): Promise<ClipBeats> {
   if (clip.type !== 'audio' && clip.type !== 'video') return null;
   const listening = setTimeout(() => useUi.getState().toast('listening...'), 400);
   let wf;
@@ -36,25 +41,31 @@ async function clipBeats(clip: Clip) {
   } finally {
     clearTimeout(listening);
   }
-  if (!wf) return { beats: [] as number[], bpm: 0, ok: false };
+  // the clip may have moved (or be gone) while we waited: read it again
+  const proj = useEditor.getState().project;
+  if (!proj || proj.id !== projectId) return null;
+  const now = proj.clips.find((c) => c.id === clip.id);
+  if (!now || (now.type !== 'audio' && now.type !== 'video') || now.assetId !== clip.assetId) return null;
+  if (!wf) return { ok: false, reason: 'could not read the audio' };
   const r = detectBeats(wf.peaks, wf.peaksPerSecond);
-  if (r.reason !== 'ok') return { beats: [] as number[], bpm: r.bpm, ok: false };
-  // the clip may have moved while we waited: read it again
-  const now = useEditor.getState().project?.clips.find((c) => c.id === clip.id);
-  const c = now && (now.type === 'audio' || now.type === 'video') ? now : clip;
-  if (c.type !== 'audio' && c.type !== 'video') return null;
-  return { beats: beatsInClip(r.beats, c), bpm: r.bpm, ok: true };
+  if (r.reason !== 'ok') return { ok: false, reason: r.reason === 'no steady beat' ? 'no steady beat found' : r.reason };
+  return { ok: true, beats: beatsInClip(r.beats, now), bpm: r.bpm };
 }
 
 /** put a marker on the beats of a clip. one undo step. */
 export async function markBeats(clipId: string, density: BeatDensity = 1): Promise<void> {
   const st0 = useEditor.getState();
   const clip = st0.project?.clips.find((c) => c.id === clipId);
-  if (!clip || !clipHasSound(st0.project, clip)) return;
-  const fps = st0.project?.fps ?? 30;
-  const res = await clipBeats(clip);
-  if (!res || !res.ok || res.beats.length === 0) {
-    useUi.getState().toast('no steady beat found');
+  if (!st0.project || !clip || !clipHasSound(st0.project, clip)) return;
+  const fps = st0.project.fps ?? 30;
+  const res = await clipBeats(clip, st0.project.id);
+  if (!res) return;
+  if (!res.ok) {
+    useUi.getState().toast(res.reason);
+    return;
+  }
+  if (res.beats.length === 0) {
+    useUi.getState().toast('no beats inside this clip');
     return;
   }
   const st = useEditor.getState();
@@ -63,7 +74,8 @@ export async function markBeats(clipId: string, density: BeatDensity = 1): Promi
   const wanted = thinBeats(res.beats, density);
   const fresh: { time: number; name: string }[] = [];
   wanted.forEach((time, i) => {
-    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(i + 1) });
+    // named by the place in the full beat list, so "every beat" after "every 4th" does not repeat names
+    if (!existing.some((m) => Math.abs(m.time - time) <= tol)) fresh.push({ time, name: String(i * density + 1) });
   });
   if (fresh.length === 0) {
     useUi.getState().toast('the beats are already marked');
@@ -80,16 +92,17 @@ export async function markBeats(clipId: string, density: BeatDensity = 1): Promi
 export async function clearBeatMarkers(clipId: string): Promise<void> {
   const st0 = useEditor.getState();
   const clip = st0.project?.clips.find((c) => c.id === clipId);
-  if (!clip || !clipHasSound(st0.project, clip)) return;
-  const fps = st0.project?.fps ?? 30;
-  const res = await clipBeats(clip);
+  if (!st0.project || !clip || !clipHasSound(st0.project, clip)) return;
+  const fps = st0.project.fps ?? 30;
+  const res = await clipBeats(clip, st0.project.id);
+  if (!res) return;
   const st = useEditor.getState();
   const markers = st.project?.markers ?? [];
   const mine = made.get(clipId);
   const tol = 0.5 / fps;
   const doomed = markers.filter(
     (m) =>
-      mine?.has(m.id) || (!!res?.ok && /^\d+$/.test(m.name) && res.beats.some((b) => Math.abs(b - m.time) <= tol)),
+      mine?.has(m.id) || (res.ok && /^\d+$/.test(m.name) && res.beats.some((b) => Math.abs(b - m.time) <= tol)),
   );
   if (doomed.length === 0) {
     useUi.getState().toast('no beat markers here');

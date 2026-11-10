@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { beatsInClip, detectBeats, thinBeats } from './beats';
+import { beatsInClip, detectBeats, snapToOnsets, thinBeats } from './beats';
 
 const PPS = 50;
 
@@ -135,5 +135,33 @@ describe('thinBeats', () => {
     expect(thinBeats([1, 2, 3, 4, 5, 6, 7], 2)).toEqual([1, 3, 5, 7]);
     expect(thinBeats([1, 2, 3, 4, 5, 6, 7], 4)).toEqual([1, 5]);
     expect(thinBeats([1, 2, 3], 1)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('onset snapping', () => {
+  it('lands on hits that wander +-25 ms around the grid', () => {
+    const pps = 200;
+    const seconds = 40;
+    const n = seconds * pps;
+    const rand = rng(11);
+    const peaks = new Float32Array(n);
+    const hits: number[] = [];
+    for (let t = 0.5; t < seconds - 0.5; t += 0.5) {
+      const tj = t + (rand() * 2 - 1) * 0.025;
+      hits.push(tj);
+      const i = Math.floor(tj * pps);
+      peaks[i] = 1;
+      peaks[i + 1] = 0.5;
+    }
+    const r = detectBeats(peaks, pps);
+    expect(r.reason).toBe('ok');
+    expect(r.beats.length).toBeGreaterThan(70);
+    expect(maxErr(r.beats, hits)).toBeLessThan(0.012);
+  });
+
+  it('keeps the grid where there is no clear hit', () => {
+    const env = new Float32Array(100);
+    for (let i = 0; i < 100; i++) env[i] = 0.1;
+    expect(snapToOnsets(env, [20, 60], 40, 50)).toEqual([20, 60]);
   });
 });
