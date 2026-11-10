@@ -27,6 +27,8 @@ import { neededClipsAt, releaseRenderResources, renderFrame } from '../../engine
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
+import { buildPalette, createGifEncoder, gifDelayCs, indexFrame } from '../../lib/gif';
+import { gifExportFps, gifSizeWarning, paletteSampleFrames, sampleSize } from './gifPlan';
 import { type TimeRange, clampRange, frameTime, rangeFrameCount } from './range';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, createAudioMixer, sliceAudioBuffer } from './audioMix';
@@ -35,10 +37,15 @@ import type { AudioMixer } from './audioMix';
 export type VideoContainer = 'mp4' | 'webm';
 /** wav / ogg are audio only files (no picture) */
 export type AudioContainer = 'wav' | 'ogg';
-export type ExportContainer = VideoContainer | AudioContainer;
+/** gif is a picture only file (no audio), made by lib/gif.ts instead of webcodecs */
+export type ImageContainer = 'gif';
+export type ExportContainer = VideoContainer | AudioContainer | ImageContainer;
 
 export function isAudioContainer(c: ExportContainer): c is AudioContainer {
   return c === 'wav' || c === 'ogg';
+}
+export function isGifContainer(c: ExportContainer): c is ImageContainer {
+  return c === 'gif';
 }
 export type ExportQuality = 'low' | 'medium' | 'high';
 
@@ -54,7 +61,7 @@ export interface ExportOptions {
 }
 
 export interface ExportProgress {
-  phase: 'audio' | 'video' | 'finalizing';
+  phase: 'audio' | 'palette' | 'video' | 'finalizing';
   /** 0..1 over the whole export */
   progress: number;
   frame: number;
@@ -77,6 +84,7 @@ const AUDIO_CODECS: Record<ExportContainer, AudioCodec[]> = {
   webm: ['opus'],
   wav: ['pcm-s16'],
   ogg: ['opus', 'vorbis'],
+  gif: [],
 };
 
 export const CODEC_LABEL: Record<string, string> = {
@@ -272,26 +280,37 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   if (!range) throw new Error('the range is empty, pick a start before the end');
   if (signal?.aborted) throw abortError();
   if (isAudioContainer(options.container)) return exportAudioOnly(project, options.container, range, hooks);
-  if (typeof VideoEncoder === 'undefined') {
+  const isGif = options.container === 'gif';
+  if (!isGif && typeof VideoEncoder === 'undefined') {
     throw new Error('this browser has no webcodecs support, try a recent chrome or edge');
   }
   // the file is the range only: its time 0 is the range start. `duration` is its length.
   const rangeStart = range.start;
   const duration = range.end - range.start;
 
-  const fps = options.fps > 0 ? options.fps : project.fps;
+  const wantedFps = options.fps > 0 ? options.fps : project.fps;
+  // a gif cannot go faster than 50 fps (delays are whole 1/100 s, below 2 browsers play it slow)
+  const fps = isGif ? gifExportFps(wantedFps) : wantedFps;
   const { width, height } = outputSize(project, options.scale);
   const totalFrames = rangeFrameCount(range, fps);
   const container = options.container;
 
-  const plan = await planExport({ container, width, height, fps, quality: options.quality }, signal);
-  if (!plan) {
-    throw new Error(
-      `this browser cannot encode ${container} at ${width}x${height} and ${fps} fps, try a lower frame rate, a smaller resolution or the other format`,
-    );
+  let videoCodec: VideoCodec = 'avc';
+  let videoQuality = QUALITY_MEDIUM;
+  if (container !== 'gif') {
+    const plan = await planExport({ container, width, height, fps, quality: options.quality }, signal);
+    if (!plan) {
+      throw new Error(
+        `this browser cannot encode ${container} at ${width}x${height} and ${fps} fps, try a lower frame rate, a smaller resolution or the other format`,
+      );
+    }
+    videoCodec = plan.codec;
+    videoQuality = new Quality({ bitrate: plan.bitrate });
+  } else {
+    if (wantedFps > fps) onWarning?.(`gif plays at most ${fps} fps, exported at ${fps} fps`);
+    const big = gifSizeWarning(width, height, totalFrames);
+    if (big) onWarning?.(big);
   }
-  const videoCodec = plan.codec;
-  const videoQuality = new Quality({ bitrate: plan.bitrate });
 
   let lastReport = 0;
   const report = (phase: ExportProgress['phase'], progress: number, frame: number, force = true) => {
@@ -348,7 +367,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
 
   try {
     // ---- audio (mixed in chunks while the video renders) ----
-    if (options.includeAudio) {
+    if (options.includeAudio && !isGif) {
       report('audio', 0, 0);
       await yieldToUi();
       const m = createAudioMixer(project, duration, signal, onWarning, rangeStart);
@@ -369,7 +388,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     }
     if (signal?.aborted) throw abortError();
 
-    // ---- inputs for visible video / image clips ----
+    // ---- inputs for visible video / image clips (a gif export opens them twice: palette pass, encode pass) ----
+    const openSources = async () => {
     // clips a transition shows at the very first frame without the clip playing there (it ended before the range, or starts later)
     const neededAtStart = new Set(neededClipsAt(project, rangeStart).map((c) => c.id));
     const hiddenTrack = new Set(project.tracks.filter((t) => t.kind !== 'video' || t.hidden).map((t) => t.id));
@@ -446,43 +466,11 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       }
     }
 
-    // ---- output ----
-    const format =
-      container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat();
-    const target = new BufferTarget();
-    output = new Output({ format, target });
-
-    const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) throw new Error('2d canvas is not available');
-    ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
-
-    const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
-    output.addVideoTrack(videoSource, { frameRate: fps });
-    let pump: ReturnType<typeof createAudioPump> | null = null;
-    if (mixer && audioCodec) {
-      const audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
-      output.addAudioTrack(audioSource);
-      pump = createAudioPump(mixer, audioSource);
-    }
-    await output.start();
-
-    // audio is fed in 1 s slices (mixed 30 s at a time), a little ahead of the video, so the muxer interleaves
-    const feedAudio = async (untilSeconds: number) => {
-      await pump?.to(untilSeconds);
     };
 
-    lastYield = performance.now();
-    // every time below comes from the integer frame index (i / fps), nothing is accumulated
-    const frameDur = 1 / fps;
-    for (let i = 0; i < totalFrames; i++) {
-      if (signal?.aborted) throw abortError();
-      // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
-      const t = frameTime(rangeStart, i, fps);
-
-      // advance decoders of the video clips visible in this frame. a clip that a transition shows
-      // before it starts gets its first frame early; one shown after it ended holds its last frame.
-      const visible = neededClipsAt(project, t);
+    // advance the decoders of the video clips visible at time t. a clip that a transition shows
+    // before it starts gets its first frame early; one shown after it ended holds its last frame.
+    const advanceFeeds = async (t: number, visible: readonly Project['clips'][number][]) => {
       for (const clip of visible) {
         if (clip.type !== 'video') continue;
         const feed = feeds.get(clip.id);
@@ -513,11 +501,10 @@ export async function exportProject(project: Project, options: ExportOptions, ho
           onWarning?.(`video "${clip.name}" stopped decoding, its last frame is held`);
         }
       }
+    };
 
-      renderFrame(ctx, project, t, resolver);
-      await videoSource.add(i / fps, frameDur);
-
-      // free the decoder + canvas of video clips that just played their last frame
+    // free the decoder + canvas of video clips that just played their last frame
+    const freeFeeds = async (i: number, visible: readonly Project['clips'][number][]) => {
       const nextT = frameTime(rangeStart, i + 1, fps);
       const neededNext = neededClipsAt(project, nextT);
       for (const clip of visible) {
@@ -540,6 +527,117 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         feed.current = null;
         feeds.delete(clip.id);
       }
+    };
+
+    // one step of the frame loop: advance the decoders for frame i, draw, then free finished ones.
+    // advance + free run for every frame (decoders are sequential), draw only does the wanted work.
+    const stepFrame = async (i: number, draw: (t: number) => Promise<void> | void) => {
+      // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
+      const t = frameTime(rangeStart, i, fps);
+      const visible = neededClipsAt(project, t);
+      await advanceFeeds(t, visible);
+      await draw(t);
+      await freeFeeds(i, visible);
+    };
+
+    // ---- gif: pass 1 samples a few small frames for one global palette, pass 2 encodes every frame ----
+    const exportGifFrames = async (): Promise<Blob> => {
+      const sampleFrames = new Set(paletteSampleFrames(totalFrames));
+      const small = sampleSize(width, height);
+      const sc = new OffscreenCanvas(small.width, small.height);
+      const sctx = sc.getContext('2d', { alpha: false, willReadFrequently: true });
+      if (!sctx) throw new Error('2d canvas is not available');
+      sctx.setTransform(small.width / project.width, 0, 0, small.height / project.height, 0, 0);
+      const samples = new Uint8Array(sampleFrames.size * small.width * small.height * 4);
+      let filled = 0;
+
+      await openSources();
+      lastYield = performance.now();
+      for (let i = 0; i < totalFrames; i++) {
+        if (signal?.aborted) throw abortError();
+        const wanted = sampleFrames.has(i);
+        await stepFrame(i, (t) => {
+          if (!wanted) return;
+          renderFrame(sctx, project, t, resolver);
+          samples.set(sctx.getImageData(0, 0, small.width, small.height).data, filled);
+          filled += small.width * small.height * 4;
+        });
+        report('palette', 0.02 + 0.18 * ((i + 1) / totalFrames), 0, false);
+        if (performance.now() - lastYield > 14) await yieldToUi();
+      }
+      const palette = buildPalette(samples.subarray(0, filled), 256);
+      sc.width = 0;
+      sc.height = 0;
+      await dispose();
+      releaseRenderResources('export');
+      if (signal?.aborted) throw abortError();
+
+      await openSources();
+      const gifCanvas = new OffscreenCanvas(width, height);
+      const gctx = gifCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+      if (!gctx) throw new Error('2d canvas is not available');
+      gctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+      const encoder = createGifEncoder({ width, height, palette, loop: 0 });
+      let indices: Uint8Array | undefined;
+      lastYield = performance.now();
+      for (let i = 0; i < totalFrames; i++) {
+        if (signal?.aborted) throw abortError();
+        await stepFrame(i, (t) => {
+          renderFrame(gctx, project, t, resolver);
+          const data = gctx.getImageData(0, 0, width, height).data;
+          indices = indexFrame(data, width, palette, true, indices);
+          encoder.addFrame(indices, gifDelayCs(i, fps));
+        });
+        report('video', 0.2 + 0.78 * ((i + 1) / totalFrames), i + 1, false);
+        if (performance.now() - lastYield > 14) await yieldToUi();
+      }
+      if (signal?.aborted) throw abortError();
+      report('finalizing', 0.99, totalFrames);
+      await yieldToUi();
+      const blob = new Blob(encoder.finishParts() as BlobPart[], { type: 'image/gif' });
+      report('finalizing', 1, totalFrames);
+      return blob;
+    };
+
+    // ---- output ----
+    if (container === 'gif') {
+      return await exportGifFrames();
+    }
+    await openSources();
+    const format =
+      container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat();
+    const target = new BufferTarget();
+    output = new Output({ format, target });
+
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) throw new Error('2d canvas is not available');
+    ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+
+    const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
+    output.addVideoTrack(videoSource, { frameRate: fps });
+    let pump: ReturnType<typeof createAudioPump> | null = null;
+    if (mixer && audioCodec) {
+      const audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
+      output.addAudioTrack(audioSource);
+      pump = createAudioPump(mixer, audioSource);
+    }
+    await output.start();
+
+    // audio is fed in 1 s slices (mixed 30 s at a time), a little ahead of the video, so the muxer interleaves
+    const feedAudio = async (untilSeconds: number) => {
+      await pump?.to(untilSeconds);
+    };
+
+    lastYield = performance.now();
+    // every time below comes from the integer frame index (i / fps), nothing is accumulated
+    const frameDur = 1 / fps;
+    for (let i = 0; i < totalFrames; i++) {
+      if (signal?.aborted) throw abortError();
+      await stepFrame(i, async (t) => {
+        renderFrame(ctx, project, t, resolver);
+        await videoSource.add(i / fps, frameDur);
+      });
       await feedAudio(i / fps + 1.5);
 
       report('video', 0.05 + 0.9 * ((i + 1) / totalFrames), i + 1, false);

@@ -6,10 +6,19 @@ import { usePlayback } from '../../store/playback';
 import { FPS_OPTIONS } from '../../lib/factory';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
-import { CODEC_LABEL, exportProject, isAudioContainer, outputSize, planExport } from './exporter';
+import { CODEC_LABEL, exportProject, isAudioContainer, isGifContainer, outputSize, planExport } from './exporter';
 import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality, VideoContainer } from './exporter';
 import { markerRange, rangeFrameCount, resolveRange } from './range';
 import type { RangeMode } from './range';
+import {
+  GIF_DEFAULT_FPS,
+  GIF_DEFAULT_SCALE,
+  GIF_FPS_OPTIONS,
+  estimateGifBytes,
+  gifExportFps,
+  gifFpsNote,
+  gifSizeWarning,
+} from './gifPlan';
 import { loadExportSettings, saveExportSettings } from './settings';
 import './export.css';
 
@@ -59,8 +68,15 @@ function formatClock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** frame rate + resolution are remembered apart for gif and for video */
+type PrefGroup = 'gif' | 'video';
+function groupOf(c: ExportContainer): PrefGroup | null {
+  return c === 'gif' ? 'gif' : c === 'mp4' || c === 'webm' ? 'video' : null;
+}
+
 const PHASE_TEXT: Record<ExportProgress['phase'], string> = {
   audio: 'mixing audio',
+  palette: 'choosing colors',
   video: 'rendering frames',
   finalizing: 'finalizing file',
 };
@@ -79,7 +95,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   // the last used choices come back (the dialog mounts fresh every time it opens)
   const [saved] = useState(loadExportSettings);
   const [container, setContainer] = useState<ExportContainer>(saved.container ?? 'mp4');
-  const [scale, setScale] = useState(saved.scale ?? 1);
+  const [scale, setScale] = useState(saved.container === 'gif' ? (saved.gif?.scale ?? GIF_DEFAULT_SCALE) : (saved.scale ?? 1));
   const [fps, setFps] = useState(30);
   const [quality, setQuality] = useState<ExportQuality>(saved.quality ?? 'medium');
   const [includeAudio, setIncludeAudio] = useState(true);
@@ -93,6 +109,12 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [error, setError] = useState('');
 
+  // frame rate + resolution of the group (gif / video) that is not showing right now
+  const groupRef = useRef<PrefGroup>(groupOf(saved.container ?? 'mp4') ?? 'video');
+  const stashRef = useRef<Record<PrefGroup, { fps?: number; scale?: number }>>({
+    gif: { fps: saved.gif?.fps ?? GIF_DEFAULT_FPS, scale: saved.gif?.scale ?? GIF_DEFAULT_SCALE },
+    video: { fps: saved.fps, scale: saved.scale ?? 1 },
+  });
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const lastUiRef = useRef(0);
@@ -115,7 +137,9 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     if (!open) return;
     setPhase('setup');
     setFileName(sanitizeName(projectName));
-    setFps(saved.fps !== undefined && (FPS_OPTIONS as readonly number[]).includes(saved.fps) ? saved.fps : projectFps);
+    const first = groupOf(container) ?? groupRef.current;
+    if (first === 'gif') setFps(saved.gif?.fps ?? GIF_DEFAULT_FPS);
+    else setFps(saved.fps !== undefined && (FPS_OPTIONS as readonly number[]).includes(saved.fps) ? saved.fps : projectFps);
     setProgress(null);
     setDone(null);
     setError('');
@@ -127,7 +151,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
 
   // ask the browser what it can encode for the chosen size + fps + quality (debounced, cancelled by the next change)
   useEffect(() => {
-    if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container)) return;
+    if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container) || isGifContainer(container)) return;
     const videoContainer: VideoContainer = container;
     const size = outputSize({ width: projectW, height: projectH }, scale);
     setPlans(PROBING);
@@ -171,11 +195,30 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     return () => window.clearInterval(id);
   }, [phase]);
 
+  const isGif = container === 'gif';
   const fpsChoices = useMemo(() => {
-    const set = new Set<number>(FPS_OPTIONS);
-    set.add(projectFps);
+    const set = new Set<number>(isGif ? GIF_FPS_OPTIONS : FPS_OPTIONS);
+    if (isGif) set.add(Math.min(50, fps));
+    else set.add(projectFps);
     return [...set].sort((a, b) => a - b);
-  }, [projectFps]);
+  }, [projectFps, isGif, fps]);
+
+  // switching between gif and video swaps the frame rate + resolution, so neither overwrites the other
+  const changeContainer = useCallback(
+    (next: ExportContainer) => {
+      const to = groupOf(next);
+      const from = groupRef.current;
+      if (to && to !== from) {
+        stashRef.current[from] = { fps, scale };
+        const got = stashRef.current[to];
+        setFps(got.fps ?? (to === 'gif' ? GIF_DEFAULT_FPS : projectFps));
+        setScale(got.scale ?? (to === 'gif' ? GIF_DEFAULT_SCALE : 1));
+        groupRef.current = to;
+      }
+      setContainer(next);
+    },
+    [fps, scale, projectFps],
+  );
 
   const projectLength = project ? projectDuration(project) : 0;
   const markers = project?.markers;
@@ -191,7 +234,9 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const audioOnly = isAudioContainer(container);
   const empty = !project || projectLength <= 0;
   const duration = range ? range.end - range.start : 0;
-  const totalFrames = range ? rangeFrameCount(range, fps) : 0;
+  // a gif cannot play faster than 50 fps
+  const effFps = isGif ? gifExportFps(fps) : fps;
+  const totalFrames = range ? rangeFrameCount(range, effFps) : 0;
 
   const triggerDownload = useCallback((url: string, name: string) => {
     const a = document.createElement('a');
@@ -219,7 +264,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     try {
       const blob = await exportProject(
         project,
-        { container, scale, fps, quality, includeAudio: includeAudio || audioOnly, range },
+        { container, scale, fps: effFps, quality, includeAudio: !isGif && (includeAudio || audioOnly), range },
         {
           signal: ac.signal,
           onWarning: (m) => {
@@ -252,7 +297,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
     }
-  }, [project, phase, range, totalFrames, audioOnly, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
+  }, [project, phase, range, totalFrames, audioOnly, isGif, effFps, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
 
   const cancel = useCallback(() => abortRef.current?.abort(), []);
 
@@ -266,11 +311,13 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   let body;
   let footer;
   if (phase === 'setup') {
-    // audio only files need no video encoder and no plan
-    const plan = audioOnly ? undefined : plans[container as VideoContainer];
+    // audio only files and gifs need no video encoder and no plan
+    const plan = container === 'mp4' || container === 'webm' ? plans[container] : undefined;
     const other: VideoContainer = container === 'mp4' ? 'webm' : 'mp4';
-    const probing = !audioOnly && plan === undefined;
-    const noEncoder = !audioOnly && typeof VideoEncoder === 'undefined';
+    const needsEncoder = !audioOnly && !isGif;
+    const probing = needsEncoder && plan === undefined;
+    const noEncoder = needsEncoder && typeof VideoEncoder === 'undefined';
+    const gifWarn = isGif && range ? gifSizeWarning(size.width, size.height, totalFrames) : '';
     let note = '';
     if (noEncoder) note = 'this browser cannot encode video, try a recent chrome or edge';
     else if (!empty && !range) note = 'the range is empty, the start must be before the end';
@@ -301,11 +348,12 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               className="select"
               value={container}
               title="container format"
-              onChange={(e) => setContainer(e.target.value as ExportContainer)}
+              onChange={(e) => changeContainer(e.target.value as ExportContainer)}
             >
               <optgroup label="video">
                 <option value="mp4">mp4</option>
                 <option value="webm">webm</option>
+                <option value="gif">gif (animated)</option>
               </optgroup>
               <optgroup label="audio only">
                 <option value="wav">wav</option>
@@ -387,7 +435,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             </select>
           </label>
           )}
-          {!audioOnly && (
+          {!audioOnly && !isGif && (
           <label className="field">
             <span className="field-label">quality</span>
             <select
@@ -405,7 +453,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           </label>
           )}
         </div>
-        {!audioOnly && (
+        {!audioOnly && !isGif && (
           <label className="field-row export-check" title="mix all audible clips into the file">
             <input
               type="checkbox"
@@ -423,7 +471,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               ? 'nothing to export in this range'
               : audioOnly
                 ? `${formatDuration(duration)} (${duration.toFixed(2)}s) of audio, from ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s`
-                : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${fps} fps${
+                : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${effFps} fps${
                     mode === 'all' ? '' : `, from ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s`
                   }`}
         </div>
@@ -432,12 +480,20 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             ? container === 'wav'
               ? 'uncompressed 16 bit stereo, 48 khz'
               : 'opus audio in an ogg file'
-            : probing
-              ? 'checking encoders...'
-              : plan
-                ? `codec ${CODEC_LABEL[plan.codec] ?? plan.codec}, about ${formatBitrate(plan.bitrate)}`
-                : ''}
+            : isGif
+              ? range
+                ? `256 colors, no sound, loops forever, about ${formatBytes(estimateGifBytes(size.width, size.height, totalFrames))}`
+                : ''
+              : probing
+                ? 'checking encoders...'
+                : plan
+                  ? `codec ${CODEC_LABEL[plan.codec] ?? plan.codec}, about ${formatBitrate(plan.bitrate)}${
+                      range ? `, about ${formatBytes((plan.bitrate * duration) / 8)} without audio` : ''
+                    }`
+                  : ''}
         </div>
+        {isGif && gifFpsNote(fps) ? <div className="export-note">{gifFpsNote(fps)}</div> : null}
+        {gifWarn ? <div className="export-note">{gifWarn}</div> : null}
         {note ? <div className="export-note is-error">{note}</div> : null}
       </>
     );
@@ -449,7 +505,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
         <button
           className="btn btn-primary"
           onClick={start}
-          disabled={empty || !range || (!audioOnly && !plan)}
+          disabled={empty || !range || (needsEncoder && !plan)}
           title="render the project to a file"
         >
           export
