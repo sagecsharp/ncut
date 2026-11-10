@@ -141,7 +141,6 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
             min={0}
             max={200}
             suffix="%"
-            disabled={!!clip.threeD}
             onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'shutter', v / 100) }, true)}
           />
           <SliderRow
@@ -150,13 +149,12 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
             value={clip.motionBlur.samples}
             min={2}
             max={32}
-            disabled={!!clip.threeD}
             onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'samples', v) }, true)}
           />
         </>
       ) : null}
       <div className="props-hint">
-        blurs how the clip moves (keyframes, motions). for 3d clips use the motion blur effect instead
+        blurs how the clip moves (keyframes, motions), in 2d and in 3d. a camera move is blurred by the motion blur effect
       </div>
     </Section>
   );

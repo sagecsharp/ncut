@@ -622,7 +622,7 @@ export const useEditor = create<EditorState>()((set, get) => {
     addText(opts) {
       let id = '';
       mutate((p) => {
-        const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? DEFAULT_TEXT_DURATION);
+        const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? opts?.preset?.duration ?? DEFAULT_TEXT_DURATION);
         const placed = resolvePlacement(p, 'video', duration, opts?.trackId, opts?.start);
         const draft = createTextClip(placed.trackId, placed.start, { ...opts?.preset, duration });
         // never let a preset override identity/placement

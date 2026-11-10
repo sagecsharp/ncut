@@ -7,6 +7,7 @@ import { deleteAsset, importFiles } from '../../media/importer';
 import { getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { withFollowerMoves } from '../timeline/followMoves';
 import { freezeFileName, freezeSourceTime, pickFreezeTarget, planFreeze, shiftMoves, stillClipFrom } from './freezePlan';
 
 /** default length of the still, seconds */
@@ -120,7 +121,8 @@ export async function freezeFrame(): Promise<string | null> {
   live.pushHistory();
   if (plan.split) useEditor.getState().splitClips(time, [liveClip.id], skip);
   const afterSplit = useEditor.getState().project!;
-  const moves = shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION);
+  // the clips that make room for the still take the effects put on them along
+  const moves = withFollowerMoves(afterSplit.clips, afterSplit.tracks, shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION));
   const moved = moves.length === 0 || useEditor.getState().moveClips(moves, skip);
   if (moved) {
     const clip = stillClipFrom(liveClip, resolveClip(liveClip, time).transform, still.id, plan.stillStart, FREEZE_DURATION);

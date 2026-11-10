@@ -262,7 +262,7 @@ interface Spatial {
    * inherited. null / missing / unknown id / a loop = no parent. the exact rules are in engine/parent.ts.
    */
   parent?: string | null;
-  /** 2d clips only (a 3d clip is blurred by a motion blur effect layer). null / missing = off. */
+  /** blurs the clip's own moves (keyframes, motions, parents), 2d and 3d. a camera move is not part of it: that is what the motion blur effect layer is for. null / missing = off. */
   motionBlur?: ClipMotionBlur | null;
   adjust?: ClipAdjust | null;
   chromaKey?: ChromaKey | null;

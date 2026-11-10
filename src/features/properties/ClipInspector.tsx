@@ -7,6 +7,7 @@ import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
+import { applyFollowerSpans } from '../timeline/followApply';
 import { followerSpans, withFollowerMoves } from '../timeline/followMoves';
 import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
@@ -49,6 +50,18 @@ function trimWithEffects(id: string, end: number): void {
       actions().trimClip(r.id, 'end', r.start + r.duration, opts);
     }
   }
+}
+
+/** change the speed of a clip (which changes its length); effects put on it get the same new span, one undo step */
+function setSpeedWithEffects(id: string, speed: number, live: boolean): void {
+  const before = useEditor.getState().project;
+  let opts = live ? liveOpts() : undefined;
+  if (!opts) {
+    actions().pushHistory();
+    opts = { skipHistory: true };
+  }
+  actions().setClipSpeed(id, speed, opts);
+  applyFollowerSpans(before, id, opts);
 }
 
 /* ---------- clip ---------- */
@@ -210,7 +223,7 @@ const SpeedSection = memo(function SpeedSection({ id, speed }: { id: string; spe
           step={0.05}
           precision={2}
           onStart={beginEdit}
-          onChange={(v) => actions().setClipSpeed(id, v, liveOpts())}
+          onChange={(v) => setSpeedWithEffects(id, v, true)}
         />
       </Row>
       <div className="props-buttons">
@@ -220,7 +233,9 @@ const SpeedSection = memo(function SpeedSection({ id, speed }: { id: string; spe
             type="button"
             className={`btn btn-sm${Math.abs(speed - p) < 0.001 ? ' btn-primary' : ''}`}
             title={`set speed to ${p}x`}
-            onClick={() => actions().setClipSpeed(id, p)}
+            onClick={() => {
+              if (Math.abs(speed - p) >= 0.001) setSpeedWithEffects(id, p, false);
+            }}
           >
             {p}x
           </button>

@@ -14,6 +14,7 @@ import { openPalette } from './paletteStore';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, ungroupIdsNow } from '../timeline/actions';
+import { applyFollowerSpans } from '../timeline/followApply';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
 
@@ -215,7 +216,12 @@ function trimToPlayhead(edge: 'start' | 'end'): void {
     return;
   }
   useEditor.getState().pushHistory();
-  for (const c of targets) trimClip(c.id, edge, time, { skipHistory: true });
+  const skip = { skipHistory: true };
+  for (const c of targets) {
+    trimClip(c.id, edge, time, skip);
+    // effects put on the clip are trimmed with it, like when the edge is dragged
+    applyFollowerSpans(project, c.id, skip);
+  }
 }
 
 function deleteSelection(ripple: boolean): void {
