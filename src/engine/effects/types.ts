@@ -56,6 +56,22 @@ export interface EffectParam {
   default: number;
   /** shown after the value: '%', 'x', 'deg', 'hz', 's', 'px' */
   unit?: string;
+  /**
+   * a choice instead of a slider: the value is an index into these labels (0, 1, 2...).
+   * min = 0, max = options.length - 1, step = 1. the inspector shows a select.
+   */
+  options?: string[];
+}
+
+/**
+ * a temporal effect looks at the picture below it at several moments instead of one (motion blur,
+ * echo). the frame renderer draws the layers below once per sample and blends them by weight.
+ */
+export interface TemporalSample {
+  /** seconds relative to the frame time */
+  offset: number;
+  /** relative weight (normalized by the renderer) */
+  weight: number;
 }
 
 export interface EffectDef {
@@ -71,6 +87,12 @@ export interface EffectDef {
   glsl: string;
   /** clip-local time in seconds that shows the effect well (for the still thumbnail). default 1. */
   posterTime?: number;
+  /**
+   * temporal effects only: the moments to blend for one frame. when present the frame renderer blends
+   * the layers below at these times and `glsl` is only used for the effects tab thumbnail.
+   * `quality` is 1 for export and lower for the live preview (use fewer samples).
+   */
+  temporal?: (params: Record<string, number>, amount: number, fps: number, quality: number) => TemporalSample[];
 }
 
 /** one effect to run on a frame */

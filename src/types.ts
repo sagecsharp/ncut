@@ -99,6 +99,20 @@ interface ClipBase {
   keyframes?: Keyframes;
 }
 
+/** what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face. */
+export type Shape3D = 'plane' | 'box' | 'sphere' | 'cylinder';
+
+/**
+ * a transition INTO a clip from whatever was on its track right before it (or from nothing).
+ * it is centered on the clip's start: half of `duration` before the cut, half after.
+ * `id` is a transition in engine/transitions/registry.
+ */
+export interface Transition {
+  id: string;
+  /** seconds, whole length */
+  duration: number;
+}
+
 /** shared by the clips that draw a picture (video, image, text) */
 interface Spatial {
   transform: Transform;
@@ -108,6 +122,12 @@ interface Spatial {
    */
   threeD?: boolean;
   lookAt?: LookAt;
+  /** 3d only. missing = 'plane'. */
+  shape?: Shape3D;
+  /** 3d only, box / cylinder: thickness in project pixels at scale 1. missing = the clip's height. */
+  shapeDepth?: number;
+  /** transition into this clip. null / missing = a plain cut. */
+  transition?: Transition | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -138,6 +158,36 @@ export interface AudioClip extends ClipBase {
 
 export type TextAlign = 'left' | 'center' | 'right';
 
+/** outline around the letters */
+export interface TextStroke {
+  color: string;
+  /** thickness as a fraction of the font size (0.05 = thin, 0.2 = heavy) */
+  width: number;
+}
+
+/** flat drop shadow behind the letters */
+export interface TextShadow {
+  color: string;
+  /** 0..1 */
+  opacity: number;
+  /** softness as a fraction of the font size. 0 = a hard copy. */
+  blur: number;
+  /** offset as a fraction of the font size */
+  distance: number;
+  /** degrees, direction the shadow falls. 0 = right, 90 = down. */
+  angle: number;
+}
+
+/**
+ * a text animation. `id` is an animation in engine/textAnim.
+ * in / out: `duration` = how long the entrance / exit takes (seconds).
+ * loop: `duration` = seconds per cycle.
+ */
+export interface TextAnim {
+  id: string;
+  duration: number;
+}
+
 export interface TextClip extends ClipBase, Spatial {
   type: 'text';
   text: string;
@@ -150,6 +200,23 @@ export interface TextClip extends ClipBase, Spatial {
   /** css color for a box behind the text, or null for none */
   background: string | null;
   align: TextAlign;
+  /* ---- optional style. missing = the plain look. ---- */
+  /** extra space between letters as a fraction of the font size (0 = normal) */
+  letterSpacing?: number;
+  /** line height as a multiple of the font size. missing = 1.25 */
+  lineHeight?: number;
+  /** draw the text in capitals */
+  uppercase?: boolean;
+  stroke?: TextStroke | null;
+  shadow?: TextShadow | null;
+  /** corner roundness of the background box, 0..1 (1 = pill) */
+  backgroundRadius?: number;
+  /** space between the text and the edge of its box as a fraction of the font size. missing = 0.3 */
+  backgroundPadding?: number;
+  /* ---- animation ---- */
+  animIn?: TextAnim | null;
+  animOut?: TextAnim | null;
+  animLoop?: TextAnim | null;
 }
 
 /**

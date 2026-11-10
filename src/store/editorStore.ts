@@ -88,10 +88,23 @@ export type ClipPatch = Partial<Omit<VideoClip, LockedKeys>> &
   Partial<Omit<CameraClip, LockedKeys>>;
 
 /** fields that may be missing on a stored clip but can still be set through updateClip */
+const SPATIAL_KEYS = ['threeD', 'lookAt', 'shape', 'shapeDepth', 'transition'] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
-  video: ['threeD', 'lookAt'],
-  image: ['threeD', 'lookAt'],
-  text: ['threeD', 'lookAt'],
+  video: SPATIAL_KEYS,
+  image: SPATIAL_KEYS,
+  text: [
+    ...SPATIAL_KEYS,
+    'letterSpacing',
+    'lineHeight',
+    'uppercase',
+    'stroke',
+    'shadow',
+    'backgroundRadius',
+    'backgroundPadding',
+    'animIn',
+    'animOut',
+    'animLoop',
+  ],
 };
 
 export interface ClipMove {

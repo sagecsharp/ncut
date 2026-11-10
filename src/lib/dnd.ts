@@ -10,7 +10,11 @@ export const DND_MIME = 'application/x-ncut';
 export type DragPayload =
   | { kind: 'asset'; assetId: string }
   | { kind: 'text'; preset?: Partial<TextClip> }
-  | { kind: 'effect'; effect: string };
+  | { kind: 'effect'; effect: string }
+  /** dropped on a visual clip: becomes that clip's transition (types.ts Transition) */
+  | { kind: 'transition'; transition: string }
+  /** dropped on the timeline: adds a camera clip */
+  | { kind: 'camera' };
 
 let current: DragPayload | null = null;
 

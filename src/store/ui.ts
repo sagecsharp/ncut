@@ -10,9 +10,14 @@ export interface Toast {
   message: string;
 }
 
+/** 'output' = what gets exported. 'scene' = the 3d world seen from a free editor camera. */
+export type PreviewMode = 'output' | 'scene';
+
 export interface UiState {
   dialog: DialogName | null;
   toasts: Toast[];
+  previewMode: PreviewMode;
+  setPreviewMode(mode: PreviewMode): void;
   openDialog(name: DialogName): void;
   closeDialog(): void;
   /** show a short message bottom-center. auto-dismisses. */
@@ -23,6 +28,10 @@ export interface UiState {
 export const useUi = create<UiState>()((set, get) => ({
   dialog: null,
   toasts: [],
+  previewMode: 'output',
+  setPreviewMode(mode) {
+    if (get().previewMode !== mode) set({ previewMode: mode });
+  },
   openDialog(name) {
     set({ dialog: name });
   },
