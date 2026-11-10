@@ -1,3 +1,12 @@
+.export-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.export-presets .btn.is-active {
+  border-color: var(--text);
+  color: var(--text);
+}
 .export-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -4,6 +4,8 @@ import { Dialog } from '../../components/ui/Dialog';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { FPS_OPTIONS } from '../../lib/factory';
+import { EXPORT_PRESETS, matchingPreset, presetChoices } from './presets';
+import type { ExportPreset } from './presets';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { CODEC_LABEL, exportProject, isAudioContainer, isGifContainer, outputSize, planExport } from './exporter';
@@ -220,6 +222,25 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     [fps, scale, projectFps],
   );
 
+  // a preset fills in format / quality / frame rate / size in one click. everything stays editable.
+  const applyPreset = useCallback(
+    (preset: ExportPreset) => {
+      const c = presetChoices(preset, projectFps);
+      const to = groupOf(c.container);
+      const from = groupRef.current;
+      if (to && to !== from) {
+        stashRef.current[from] = { fps, scale };
+        groupRef.current = to;
+      }
+      setContainer(c.container);
+      setQuality(c.quality);
+      setFps(c.fps);
+      setScale(c.scale);
+    },
+    [fps, scale, projectFps],
+  );
+  const activePreset = matchingPreset({ container, quality, fps, scale }, projectFps);
+
   const projectLength = project ? projectDuration(project) : 0;
   const markers = project?.markers;
   const hasMarkerRange = markerRange(markers) !== null;
@@ -340,6 +361,20 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
         </label>
         <div className="export-summary" title="the file that will be saved">
           saves as <span className="mono">{outName}</span>
+        </div>
+        <div className="export-presets" role="group" aria-label="quick choices">
+          {EXPORT_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className={`btn btn-sm${activePreset === p.id ? ' is-active' : ''}`}
+              aria-pressed={activePreset === p.id}
+              title={p.title}
+              onClick={() => applyPreset(p)}
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
         <div className="export-grid">
           <label className="field">
