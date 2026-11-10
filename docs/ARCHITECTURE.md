@@ -70,7 +70,10 @@ features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizm
                          sceneHelpers.ts (focus plane, floor grid, readouts)
 features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
                          frame with the camera, floor), FocusSection (depth of field), splitLayout.ts + splitActions.ts
-                         (split screen: the canvas cut into cells, every selected clip fitted into one)
+                         (split screen: the canvas cut into cells, every selected clip fitted into one),
+                         repeat.ts + repeatActions.ts (a row of copies, each a step further), keyTools.ts +
+                         keyActions.ts + keyClipboard.ts (reverse / fit / repeat / wiggle / copy a whole animation),
+                         textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line)
 features/export/         ExportDialog + the offline renderer
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
@@ -171,6 +174,10 @@ numbers at draw time (effects get a per-clip `seed`).
 - every action records an undo step unless called with `{ skipHistory: true }`.
   for a drag / slider scrub: call `pushHistory()` once when the gesture really starts, then pass
   `skipHistory: true` on every update. one gesture = one undo step.
+- `pushHistory()` only opens the step: it is written with the first `skipHistory` change that follows, so a
+  gesture that changes nothing leaves undo and redo exactly as they were. to take back a half done gesture
+  (escape during a drag, a plan that failed) call `rollback()`, never `undo()`: it only removes what was
+  written since the last `pushHistory()`. undo and redo bring back the selection the step was made with.
 - ids that point at other clips (`parent`, `lookTarget`, a camera's target, `group`) are kept right by the
   store: delete unlinks, duplicate and paste relink to the copies, `updateClip` refuses a parent loop.
   read them through `lib/links.ts`, which also guards against loops in old data.
