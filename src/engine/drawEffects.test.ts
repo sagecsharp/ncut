@@ -342,3 +342,52 @@ describe('temporalReach', () => {
     expect(temporalReach(p, 2)).toBeNull();
   });
 });
+
+describe('effects on one clip', () => {
+  const tracks = [track('top', 'video'), track('mid', 'video'), track('bot', 'video')];
+
+  it('a targeted effect is not an adjustment layer and does not stop the picture', () => {
+    const a = video('bot', 0, 5);
+    const b = image('mid', 0, 5);
+    const fx = effect('top', 0, 5, { target: a.id });
+    const p = project([a, b, fx], tracks);
+    const ctx = new FakeCtx({ width: 1920, height: 1080 });
+    expect(() => renderFrame(asCtx(ctx), p, 1, (clip) => mkSource(clip.id))).not.toThrow();
+    // no webgl scratch canvas in node: the targeted clip is drawn plain, in its place in the stack
+    expect(ctx.drawn).toEqual([a.id, b.id]);
+    expect(ctx.open).toBe(0);
+  });
+
+  it('a targeted effect with an unknown target or in a lone track draws nothing extra', () => {
+    const a = video('bot', 0, 5);
+    const fx = effect('top', 0, 5, { target: 'nope' });
+    const p = project([a, fx], tracks);
+    const ctx = new FakeCtx({ width: 1920, height: 1080 });
+    renderFrame(asCtx(ctx), p, 1, (clip) => mkSource(clip.id));
+    expect(ctx.drawn).toEqual([a.id]);
+  });
+
+  it('does not resolve a source for the effect clip', () => {
+    const a = video('bot', 0, 5);
+    const fx = effect('top', 0, 5, { target: a.id });
+    const p = project([a, fx], tracks);
+    const seen: string[] = [];
+    renderFrame(asCtx(new FakeCtx({ width: 1920, height: 1080 })), p, 1, (clip) => {
+      seen.push(clip.id);
+      return mkSource('x');
+    });
+    expect(seen).toEqual([a.id]);
+  });
+
+  it('a targeted temporal effect adds no temporal reach', () => {
+    const temporal = EFFECTS.find((e) => e.temporal);
+    if (!temporal) return;
+    const a = video('bot', 0, 5);
+    const params: Record<string, number> = {};
+    const adj = effect('top', 0, 5, { effect: temporal.id, params });
+    const p1 = project([a, adj], tracks);
+    expect(temporalReach(p1, 1)).not.toBeNull();
+    const p2 = project([a, { ...adj, target: a.id }], tracks);
+    expect(temporalReach(p2, 1)).toBeNull();
+  });
+});

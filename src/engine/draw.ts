@@ -9,7 +9,10 @@ import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Proj
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
+import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
+import { type TargetIndex, effectsOnClip, isTargetedEffect, targetIndex } from './clipFx';
+import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
@@ -252,10 +255,26 @@ function clipsOnTrack(project: Project, trackId: string): readonly Clip[] {
   return hit.map.get(trackId) ?? EMPTY_CLIPS;
 }
 
-/** a clip with its keyframes and its ready-made motions applied at a time */
-function resolveVisual<T extends VisualClip>(raw: T, time: number, project: Project): T {
+/**
+ * text clips whose counter number was written into their text (see resolveVisual). the 3d texture cache reads this:
+ * a text that changes every frame must not get a new cached gl texture every frame.
+ */
+const counterTexts = new WeakSet<object>();
+
+/**
+ * a clip with its keyframes and its ready-made motions applied at a time, and (text) its counter number written
+ * into the text. `counterTime` = the time the counter reads when it is not `time` (the sub-times of a motion blur
+ * draw the number of the real frame: only the placement is blurred, not the picture).
+ */
+function resolveVisual<T extends VisualClip>(raw: T, time: number, project: Project, counterTime = time): T {
   const r = resolveClip(raw, time);
-  return hasClipMotion(raw) ? applyClipMotion(r, time, project) : r;
+  const m = hasClipMotion(raw) ? applyClipMotion(r, time, project) : r;
+  if (m.type === 'text' && m.counter) {
+    const c = resolveCounter(m as TextClip, counterTime);
+    counterTexts.add(c);
+    return c as unknown as T;
+  }
+  return m;
 }
 
 /** visual clips under a time in paint order (bottom layer first). skips hidden tracks. */
@@ -490,7 +509,10 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
   c.translate(w / 2, h / 2);
   c.scale(q, q);
   drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined);
-  const entry: TextTexture = { sig, canvas, key: animated ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin };
+  // a counter text changes all the time: no cache key (the gl side uploads it every frame and keeps no copy),
+  // so the changing numbers cannot fill the texture cache. the 2d canvas here is replaced per clip id as before.
+  const live = animated || counterTexts.has(clip);
+  const entry: TextTexture = { sig, canvas, key: live ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin };
   textTextures.delete(clip.id);
   textTextures.set(clip.id, entry);
   if (textTextures.size > 64) {
@@ -891,6 +913,8 @@ function paintItemsAt(project: Project, time: number, above: number): PaintItem[
     let span: TransitionSpan | null = null;
     for (const clip of clipsOnTrack(project, track.id)) {
       if (clip.type === 'effect') {
+        // an effect with a target is not an adjustment layer: it is run on its clip, see paintWithFx
+        if (isTargetedEffect(clip)) continue;
         if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
         continue;
       }
@@ -914,6 +938,8 @@ interface Env {
   quality: number;
   /** how many temporal effects deep this pass is */
   depth: number;
+  /** the effects that sit on one clip, null when the project has none (the old path, nothing extra runs) */
+  fx: TargetIndex | null;
 }
 
 /** temporal effects nested deeper than this are ignored (each level multiplies the work) */
@@ -948,7 +974,7 @@ export function temporalReach(project: Project, time: number, quality = 1): { ba
   for (const track of project.tracks) {
     if (track.kind !== 'video' || track.hidden) continue;
     for (const clip of project.clips) {
-      if (clip.type !== 'effect' || clip.trackId !== track.id) continue;
+      if (clip.type !== 'effect' || clip.trackId !== track.id || clip.target) continue;
       if (time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
       const samples = temporalSamples(clip, time, project.fps || 30, quality);
       if (!samples) continue;
@@ -1080,11 +1106,25 @@ function samePose(a: Transform, aa: number, b: Transform, ba: number): boolean {
 function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true): boolean {
   const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
   if (times.length < 2) return false;
+  // 'trail' / 'ghost' choose their own moments and weights; 'even' (or no style) keeps the old times and equal shares
+  let weights: number[] | null = null;
+  let over = false;
+  const style = raw.motionBlur?.style;
+  if (style === 'trail' || style === 'ghost') {
+    const plan = blurPlan(style, times.length, Math.min(2, raw.motionBlur!.shutter) / (project.fps || 30));
+    times.length = 0;
+    weights = [];
+    over = plan.over;
+    for (const sm of plan.samples) {
+      times.push(time + sm.offset);
+      weights.push(sm.weight);
+    }
+  }
   const end = Math.max(raw.start, clipEnd(raw) - 1e-4);
   // a copy never comes from outside the clip (it would fade the first frames)
   for (let i = 0; i < times.length; i++) times[i] = Math.min(end, Math.max(raw.start, times[i]!));
   const pose = (t: number) => {
-    const c = resolveVisual(raw, t, project);
+    const c = resolveVisual(raw, t, project, time);
     return { c, a: c.transform.opacity * fadeFactor(c, t), w: worldTransformOf(project, c, t) };
   };
   const first = pose(times[0]!);
@@ -1104,8 +1144,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    acc.ctx.globalAlpha = share;
-    acc.ctx.globalCompositeOperation = 'lighter';
+    acc.ctx.globalAlpha = weights ? weights[i]! : share;
+    acc.ctx.globalCompositeOperation = over ? 'source-over' : 'lighter';
     acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
     acc.ctx.restore();
   }
@@ -1118,8 +1158,69 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   return true;
 }
 
-/** draw one clip by itself (2d or 3d) at a time, e.g. onto a transition layer. false when nothing was drawn. */
-function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false): boolean {
+/**
+ * the passes of the effects that sit on a clip at the frame time (EffectClip.target), in run order, or null when
+ * there are none (the clip is drawn the old way). temporal effects (motion blur, echo, frame blend, strobe) on one
+ * clip are not supported: effectPassAt gives no pass for them, so they do nothing.
+ */
+function clipFxPasses(project: Project, env: Env, clipId: string, frameTime: number): EffectPass[] | null {
+  if (!env.fx) return null;
+  const list = effectsOnClip(env.fx, project, clipId, frameTime);
+  if (!list) return null;
+  let passes: EffectPass[] | null = null;
+  for (const e of list) {
+    const pass = effectPassAt(e, frameTime);
+    if (pass) (passes ??= []).push(pass);
+  }
+  return passes;
+}
+
+/**
+ * draw ONE clip with effects on it. `draw` paints the clip alone (nothing else of the frame) into a transparent
+ * scratch canvas of the frame's size and transform, so the effect sees the clip where it is on screen. the passes run
+ * on that picture, then the result is laid over `ctx` with `op` (the clip's blend mode, null = normal).
+ * the clip's opacity, fades and per-clip motion blur are part of the picture `draw` makes (so the effect gets the
+ * clip as it would have been drawn); the blend mode is applied at the end.
+ * alpha: the effects framework forces the output alpha to 1, so the result is cut back to the alpha of the
+ * un-effected picture ('source-in' with it as the destination): a text clip with a glitch is still text on a
+ * see-through background. effects that move pixels outside the clip's old outline (shake, zoom, blur halos) get
+ * cut at that outline. a simple honest rule: the clip's own shape stays the shape.
+ * false = could not (no scratch canvas): nothing was drawn, the caller draws the clip plain.
+ */
+function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: GlobalCompositeOperation | null, env: Env, draw: (target: Ctx) => void): boolean {
+  const canvas = ctx.canvas as AnyCanvas | undefined;
+  const pic = scratchFor(ctx, env.channel, 'fxPic');
+  if (!canvas || !pic) return false;
+  clearScratch(pic);
+  draw(pic.ctx);
+  const out = renderEffects(pic.canvas, pic.canvas.width, pic.canvas.height, passes, {
+    projectWidth: project.width,
+    projectHeight: project.height,
+    channel: env.channel,
+  });
+  if (out) {
+    pic.ctx.save();
+    pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    pic.ctx.globalAlpha = 1;
+    pic.ctx.globalCompositeOperation = 'source-in';
+    pic.ctx.drawImage(out, 0, 0, pic.canvas.width, pic.canvas.height);
+    pic.ctx.restore();
+  }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = op ?? 'source-over';
+  ctx.drawImage(pic.canvas, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  return true;
+}
+
+/**
+ * draw one clip by itself (2d or 3d) at a time, e.g. onto a transition layer. false when nothing was drawn.
+ * `frameTime` is the time of the frame (a frozen side of a transition is drawn at another time): the effects that sit
+ * on the clip are looked up at the frame time.
+ */
+function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false, frameTime = time): boolean {
   // a frozen side of a transition sits on its edge frame: its entrance / exit would hold it at nothing, so only the loop runs
   const clip = frozen && (raw.motionIn || raw.motionOut) ? resolveVisual({ ...raw, motionIn: null, motionOut: null }, time, project) : resolveVisual(raw, time, project);
   const alpha = clip.transform.opacity * fadeFactor(clip, time);
@@ -1129,12 +1230,18 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
     if (!source) return false;
   }
-  if (clip.threeD) draw3d(ctx, project, [{ clip, source, alpha, time }], rig(), env.channel);
-  else {
+  const passes = clipFxPasses(project, env, raw.id, frameTime);
+  if (clip.threeD) {
+    const run = (c: Ctx) => draw3d(c, project, [{ clip, source, alpha, time }], rig(), env.channel);
+    if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
+  } else {
     const pic = prepareFlat(project, clip, source, time, env.channel);
     // the motion blur of a clip inside a transition (a frozen side has no entrance / exit to blur)
     const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
-    if (!(raw.motionBlur && paintBlurred(ctx, project, blurRaw, pic, time, env, false))) paintFlat(ctx, project, clip, pic, alpha, time, false);
+    const run = (c: Ctx) => {
+      if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
+    };
+    if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
   }
   return true;
 }
@@ -1157,16 +1264,16 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   if (!def || !canvas || !lb) {
     // no canvas to blend on: a plain cut
     const natural = span.from && time < span.to.start ? span.from : span.to;
-    paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig, natural === span.to ? timeB !== time : timeA !== time);
+    paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig, natural === span.to ? timeB !== time : timeA !== time, time);
     return;
   }
   let hasA = false;
   if (la && span.from) {
     clearScratch(la);
-    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time);
+    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time, time);
   }
   clearScratch(lb);
-  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time);
+  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time, time);
   const p = easeTransition((time - span.start) / Math.max(1e-6, span.end - span.start));
   const out = renderTransition(hasA && la ? la.canvas : null, hasB ? lb.canvas : null, def, p, canvas.width, canvas.height, {
     projectWidth: project.width,
@@ -1292,8 +1399,18 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
       if (!source) continue;
     }
+    const passes = clipFxPasses(project, env, raw.id, time);
     if (clip.threeD) {
       const bop = blendOp(clip.blend);
+      if (passes) {
+        // a 3d clip with effects on it is a run of its own (like a blended one): its picture is rendered alone, the
+        // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
+        flush3d();
+        const layer: Layer3D = { clip, source, alpha, time };
+        if (paintWithFx(ctx, project, passes, bop, env, (c) => draw3d(c, project, [layer], getRig(), env.channel))) continue;
+        draw3d(ctx, project, [layer], getRig(), env.channel, NO_LINES, bop ?? 'source-over');
+        continue;
+      }
       if (bop) {
         // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
         // depth-test against the 3d clips around it.
@@ -1306,6 +1423,12 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     }
     flush3d();
     const pic = prepareFlat(project, clip, source, time, env.channel);
+    if (passes) {
+      const run = (c: Ctx) => {
+        if (!(raw.motionBlur && paintBlurred(c, project, raw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
+      };
+      if (paintWithFx(ctx, project, passes, blendOp(clip.blend), env, run)) continue;
+    }
     if (raw.motionBlur && paintBlurred(ctx, project, raw, pic, time, env)) continue;
     paintFlat(ctx, project, clip, pic, alpha, time);
   }
@@ -1320,7 +1443,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
  */
 export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: SourceResolver, opts: RenderOptions = {}): void {
   const quality = Math.min(1, Math.max(0.1, opts.quality ?? 1));
-  paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0 }, -1);
+  paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0, fx: targetIndex(project) }, -1);
 }
 
 /**

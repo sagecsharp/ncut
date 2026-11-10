@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTextClip } from '../lib/factory';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
@@ -762,5 +763,38 @@ describe('parents in the renderer', () => {
     const rig = { eye: [960, 540, -1500] } as unknown as Parameters<typeof planeFor>[2];
     const plane = planeFor(p, { clip: kid, source: mkSource('a', 1080, 1080), alpha: 1, time: 1 }, rig)!;
     expect([plane.model[12], plane.model[13], plane.model[14]]).toEqual([1070, 540, 50]);
+  });
+});
+
+describe('counter text in the renderer', () => {
+  beforeAll(() => {
+    class FakeOffscreen {
+      getContext() {
+        return { font: '', measureText: (t: string) => ({ width: Array.from(t).length * 10 }) };
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreen);
+  });
+  afterAll(() => vi.unstubAllGlobals());
+
+  const tracks = [track('top', 'video')];
+  const drawnTexts = (ctx: FakeCtx) => ctx.ops('fillText').map((c) => c.args[0]);
+
+  it('draws the number of the frame time in place of {n}', () => {
+    const t = createTextClip('top', 0, { text: 'got {n}%', duration: 2, counter: { from: 0, to: 100, decimals: 0, separator: false, ease: 'linear', hold: 0 } });
+    const p = project([t], tracks);
+    const a = new FakeCtx();
+    renderFrame(asCtx(a), p, 1, () => null);
+    expect(drawnTexts(a).join('')).toContain('got 50%');
+    const b = new FakeCtx();
+    renderFrame(asCtx(b), p, 0.5, () => null);
+    expect(drawnTexts(b).join('')).toContain('got 25%');
+  });
+
+  it('a text without a counter is drawn as it is', () => {
+    const t = createTextClip('top', 0, { text: 'got {n}%', duration: 2 });
+    const a = new FakeCtx();
+    renderFrame(asCtx(a), project([t], tracks), 1, () => null);
+    expect(drawnTexts(a).join('')).toContain('got {n}%');
   });
 });
