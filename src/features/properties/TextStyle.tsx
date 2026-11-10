@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
 import {
@@ -16,6 +16,8 @@ import { ColorField, Row, Section, SelectRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
 import { defaultSecondColor } from './shapeLogic';
+import { SPLIT_MODES, splitPlans, splitReason, splitText } from './textSplitActions';
+import { textSignature } from '../../engine/text';
 
 const actions = () => useEditor.getState();
 
@@ -84,6 +86,11 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
   const setShadow = (patch: Partial<TextShadow>) => {
     if (shadow) actions().updateClip(id, { shadow: { ...shadow, ...patch } }, liveOpts());
   };
+
+  // what each split mode would make. only the layout of the text matters, so it follows the text signature
+  const sig = textSignature(clip);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const plans = useMemo(() => splitPlans(clip), [sig]);
 
   return (
     <Section id="text-style" title="text style">
@@ -422,6 +429,27 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
           </Row>
         </>
       ) : null}
+
+      <Row label="split into" title="turn the text into one text clip per letter, word or line, each where it is now">
+        <div className="props-seg">
+          {SPLIT_MODES.map((mode) => {
+            const reason = splitReason(plans?.[mode]);
+            return (
+              <button
+                key={mode}
+                type="button"
+                className="btn btn-sm"
+                disabled={reason !== null}
+                title={reason ?? `split into ${mode}: one text clip each, grouped`}
+                aria-label={`split into ${mode}`}
+                onClick={() => splitText(id, mode)}
+              >
+                {mode}
+              </button>
+            );
+          })}
+        </div>
+      </Row>
     </Section>
   );
 });
