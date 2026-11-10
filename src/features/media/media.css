@@ -300,6 +300,7 @@
   border-color: var(--accent);
 }
 .media-fx-thumb {
+  position: relative;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: var(--radius-sm);
@@ -310,6 +311,33 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+/* the favorite star: hidden until the card is hovered / focused, always shown when it is on */
+.media-fav {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+.media-fx-card:hover .media-fav,
+.media-fx-card:focus-within .media-fav,
+.media-fav.is-on {
+  opacity: 1;
+}
+.media-fav:hover,
+.media-fav.is-on {
+  color: var(--text);
 }
 .media-fx-name {
   overflow: hidden;

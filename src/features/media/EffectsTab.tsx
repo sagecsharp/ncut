@@ -8,6 +8,8 @@ import { EFFECTS } from '../../engine/effects/registry';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import type { EffectDef } from '../../engine/effects/types';
 import { effectMatchesQuery, groupEffects } from './effectGroups';
+import { FavoriteStar } from './FavoriteStar';
+import { pickFavorites, useFavorites } from './favorites';
 import { effectsSupported, renderEffects } from '../../engine/effects/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -217,6 +219,7 @@ const EffectCard = memo(function EffectCard({ def }: { def: EffectDef }) {
           width={THUMB_W}
           height={THUMB_H}
         />
+        <FavoriteStar kind="effects" id={def.id} name={def.name} />
       </div>
       <div className="media-fx-name">{def.name}</div>
     </div>
@@ -278,6 +281,8 @@ export function EffectsTab() {
   }, [q]);
   const cameraShown = !q || 'camera'.includes(q) || '3d'.includes(q);
   const shown = groups.reduce((n, g) => n + g.items.length, 0);
+  const starred = useFavorites((s) => s.effects);
+  const favorites = useMemo(() => pickFavorites(starred, EFFECTS, (e) => effectMatchesQuery(e, q)), [starred, q]);
 
   if (!supported) {
     return (
@@ -308,6 +313,16 @@ export function EffectsTab() {
         </div>
       </div>
       <div className="media-scroll">
+        {favorites.length > 0 ? (
+          <section className="media-fx-group">
+            <h3 className="media-fx-heading">favorites</h3>
+            <div className="media-grid">
+              {favorites.map((def) => (
+                <EffectCard key={def.id} def={def} />
+              ))}
+            </div>
+          </section>
+        ) : null}
         {cameraShown ? (
           <section className="media-fx-group">
             <h3 className="media-fx-heading">3d</h3>

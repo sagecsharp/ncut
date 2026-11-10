@@ -9,6 +9,8 @@ import type { VisualClip } from '../../types';
 import { TRANSITIONS, TRANSITION_CATEGORIES } from '../../engine/transitions/registry';
 import type { TransitionDef } from '../../engine/transitions/registry';
 import { transitionFor } from './transitionApply';
+import { FavoriteStar } from './FavoriteStar';
+import { pickFavorites, useFavorites } from './favorites';
 import { renderTransition } from '../../engine/transitions/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
 
@@ -223,6 +225,7 @@ const TransitionCard = memo(function TransitionCard({ def }: { def: TransitionDe
           width={THUMB_W}
           height={THUMB_H}
         />
+        <FavoriteStar kind="transitions" id={def.id} name={def.name} />
       </div>
       <div className="media-fx-name">{def.name}</div>
     </div>
@@ -249,6 +252,8 @@ export function TransitionsTab() {
       })).filter((g) => g.items.length > 0),
     [q],
   );
+  const starred = useFavorites((s) => s.transitions);
+  const favorites = useMemo(() => pickFavorites(starred, TRANSITIONS, (t) => !q || t.name.toLowerCase().includes(q)), [starred, q]);
 
   return (
     <div className="media-tab">
@@ -266,6 +271,16 @@ export function TransitionsTab() {
         <div className="media-fx-hint">a transition blends into a clip from the one before it</div>
       </div>
       <div className="media-scroll">
+        {favorites.length > 0 ? (
+          <section className="media-fx-group">
+            <h3 className="media-fx-heading">favorites</h3>
+            <div className="media-grid">
+              {favorites.map((def) => (
+                <TransitionCard key={def.id} def={def} />
+              ))}
+            </div>
+          </section>
+        ) : null}
         {groups.length === 0 ? (
           <div className="empty">nothing matches</div>
         ) : (
