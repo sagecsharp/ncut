@@ -106,10 +106,14 @@ interface ClipBase {
   group?: string;
 }
 
-/** what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face. */
-export type Shape3D = 'plane' | 'box' | 'sphere' | 'cylinder' | 'cone' | 'pyramid' | 'torus';
+/**
+ * what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face.
+ * capsule = a tube with round ends. prism / hexagon / star / heart = that outline pushed back along z
+ * (thickness = shapeDepth): the picture on the front and the back face, a side all around.
+ */
+export type Shape3D = 'plane' | 'box' | 'sphere' | 'cylinder' | 'cone' | 'pyramid' | 'torus' | 'capsule' | 'prism' | 'hexagon' | 'star' | 'heart';
 
-export const SHAPES_3D: Shape3D[] = ['plane', 'box', 'sphere', 'cylinder', 'cone', 'pyramid', 'torus'];
+export const SHAPES_3D: Shape3D[] = ['plane', 'box', 'sphere', 'cylinder', 'cone', 'pyramid', 'torus', 'capsule', 'prism', 'hexagon', 'star', 'heart'];
 
 /**
  * a transition INTO a clip from whatever was on its track right before it (or from nothing).
@@ -242,7 +246,7 @@ interface Spatial {
   lookTarget?: string | null;
   /** 3d only. missing = 'plane'. */
   shape?: Shape3D;
-  /** 3d only, box / cylinder: thickness in project pixels at scale 1. missing = the clip's height. */
+  /** 3d only, box / cylinder / capsule / prism / hexagon / star / heart: thickness in project pixels at scale 1. missing = the clip's height. */
   shapeDepth?: number;
   /** transition into this clip. null / missing = a plain cut. */
   transition?: Transition | null;
@@ -392,6 +396,8 @@ export interface TextCounter {
 /**
  * a solid side for the letters: the text is repeated behind itself along a direction, like block
  * letters or a long hard shadow. drawn under the fill and the outline. see engine/text.ts.
+ * on a 3d text clip (threeD) the side is real depth: the letters are stacked back along z by depth x font
+ * size, so they show a side whenever the clip or the camera turns. angle is not used there.
  */
 export interface TextExtrude {
   /** how far the side reaches, as a fraction of the font size. 0..1 */

@@ -78,6 +78,11 @@ const SHAPE_NAMES: Record<Shape3D, string> = {
   cone: 'cone',
   pyramid: 'pyramid',
   torus: 'ring',
+  capsule: 'capsule',
+  prism: 'prism',
+  hexagon: 'hexagon',
+  star: 'star',
+  heart: 'heart',
 };
 const SHAPES: [Shape3D, string][] = SHAPES_3D.map((s) => [s, SHAPE_NAMES[s]]);
 

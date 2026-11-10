@@ -111,10 +111,10 @@ describe('shape meshes', () => {
   });
 
   it('unknown ids fall back to the plane', () => {
-    expect(knownShape('hexagon')).toBe('plane');
+    expect(knownShape('teapot')).toBe('plane');
     expect(knownShape(undefined)).toBe('plane');
     expect(knownShape('torus')).toBe('torus');
-    expect(shapeMesh('hexagon')).toBe(shapeMesh('plane'));
+    expect(shapeMesh('teapot')).toBe(shapeMesh('plane'));
     expect(shapeMesh(undefined)).toBe(shapeMesh('plane'));
   });
 
