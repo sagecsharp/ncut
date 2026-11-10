@@ -486,3 +486,32 @@
   width: auto;
   max-width: 84px;
 }
+
+/* ---------- zoom and pan of the output view ---------- */
+
+.preview-zoom {
+  min-width: 52px;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  flex-shrink: 0;
+  font-size: var(--font-size-sm);
+}
+.preview-zoom-menu {
+  position: fixed;
+  min-width: 96px;
+}
+.preview-stage.is-pan-ready,
+.preview-stage.is-pan-ready .preview-overlay {
+  cursor: grab;
+}
+.preview-stage.is-panning,
+.preview-stage.is-panning .preview-overlay {
+  cursor: grabbing;
+}
+
+/* scene view: dashed line from a clip to the clip it keeps looking at */
+.scene-look-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 8 3;
+}

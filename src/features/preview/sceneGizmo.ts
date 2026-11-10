@@ -3,7 +3,7 @@
  * screen space and turning a pointer angle into a property value. no dom, tested in node.
  */
 import type { ClipBox } from '../../engine/draw';
-import { DEG, type Vec3, cross, dot, mul, normalize, rotationX, rotationY, transformPoint } from '../../engine/scene3d/math';
+import { DEG, type Mat4, type Vec3, cross, dot, mul, normalize, rotationX, rotationY, transformPoint } from '../../engine/scene3d/math';
 import { clipModelMatrix } from '../../engine/scene3d/model';
 import type { LookAt, Transform } from '../../types';
 
@@ -25,13 +25,16 @@ function dir(m: Float32Array, x: number, y: number, z: number): Vec3 {
  * world axes the three rings turn around. rotation is applied turn first, then tilt inside it, then roll inside
  * both (see clipModelMatrix), so like a gimbal each ring follows the ones outside it: turn is the world y axis (or
  * the billboard's), tilt the x axis after the turn, roll the plane's normal.
+ * for a clip attached to a parent pass the parent's matrix (engine/parent parentModelMatrix) and the clip's own
+ * x / y / z: the rings then sit in the parent's frame, like the renderer places the clip.
  */
-export function ringAxes(box: ClipBox, t: Partial<Transform>, lookAt: LookAt | undefined, eye: Vec3): [Vec3, Vec3, Vec3] {
+export function ringAxes(box: ClipBox, t: Partial<Transform>, lookAt: LookAt | undefined, eye: Vec3, parent?: Mat4 | null): [Vec3, Vec3, Vec3] {
   const base = clipModelMatrix(
     { cx: box.cx, cy: box.cy, width: 1, height: 1, rotation: 0 },
-    { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: t.z ?? 0 },
+    { x: parent ? (t.x ?? 0) : 0, y: parent ? (t.y ?? 0) : 0, scale: 1, rotation: 0, opacity: 1, z: t.z ?? 0 },
     lookAt,
     eye,
+    parent,
   );
   const withY = mul(base, rotationY(-(t.rotY ?? 0) * DEG));
   const withX = mul(withY, rotationX(-(t.rotX ?? 0) * DEG));

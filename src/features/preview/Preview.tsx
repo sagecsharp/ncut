@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpRight, Camera, Focus, Grid3x3, Image as ImageIcon, Scan } from 'lucide-react';
+import { ArrowUpRight, Camera, Focus, Grid3x3, ImageDown, Scan } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
@@ -13,12 +13,16 @@ import { useSceneTool, TOOL_KEYS } from './sceneTool';
 import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
 import { localDelta, withoutRidingChildren } from './attached';
 import { GuidesOverlay } from './GuidesOverlay';
+import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { useGuides } from './guides';
 import { frameFileName, movableClipsAt, nudgeDelta } from './nudge';
 import { PreviewEngine } from './PreviewEngine';
 import { QUALITIES, parseQuality, usePreviewQuality } from './quality';
+import { setPan, stepView, usePreviewView, viewMetrics } from './previewView';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
+import { ZoomControl } from './ZoomControl';
+import { accumulateWheel, clampPan, fitScale, percentLabel, resolveScale, wheelPixels } from './zoomMath';
 import './preview.css';
 
 const VIEW_BUTTONS: ReadonlyArray<{ label: string; title: string; run: () => void }> = [
@@ -42,6 +46,10 @@ export function Preview() {
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<PreviewEngine | null>(null);
+  const spaceRef = useRef({ hover: false, down: false, used: false });
+  const panRef = useRef<{ pointerId: number; x: number; y: number; panX: number; panY: number } | null>(null);
+  const panNext = useRef<{ x: number; y: number } | null>(null);
+  const panRaf = useRef(0);
   const [fullscreen, setFullscreen] = useState(false);
   const mode = useUi((s) => s.previewMode);
   const setMode = useUi((s) => s.setPreviewMode);
@@ -65,12 +73,33 @@ export function Preview() {
     const layout = () => {
       const project = useEditor.getState().project;
       if (!project || stageW <= 0 || stageH <= 0) return;
-      const k = Math.min(stageW / project.width, stageH / project.height);
+      // the canvas' css box: the fitted size, or the zoomed size moved by the pan. the overlays measure this box,
+      // so zoom and pan reach them without further wiring. the scene view always shows the whole picture.
+      const fit = fitScale(stageW, stageH, project.width, project.height);
+      viewMetrics.stageW = stageW;
+      viewMetrics.stageH = stageH;
+      viewMetrics.fit = fit;
+      const view = usePreviewView.getState();
+      const zoom = useUi.getState().previewMode === 'output' ? view.zoom : 'fit';
+      const k = resolveScale(zoom, fit);
       const w = Math.max(1, Math.floor(project.width * k));
       const h = Math.max(1, Math.floor(project.height * k));
+      const pan = zoom === 'fit' ? { panX: 0, panY: 0 } : clampPan(view.panX, view.panY, w, h, stageW, stageH);
       frame.style.width = `${w}px`;
       frame.style.height = `${h}px`;
+      frame.style.transform = pan.panX === 0 && pan.panY === 0 ? '' : `translate3d(${pan.panX}px, ${pan.panY}px, 0)`;
+      // magnified pixels stay crisp instead of smearing
+      canvas.style.imageRendering = k >= 2 ? 'pixelated' : '';
       engine.resize(w, h);
+      // the zoom control shows the scale; a pan the new panel size no longer allows is pulled back
+      // (the layout runs again with the same numbers and stops)
+      const patch: { scale?: number; panX?: number; panY?: number } = {};
+      if (percentLabel(view.scale) !== percentLabel(k)) patch.scale = k;
+      if (zoom !== 'fit' && (pan.panX !== view.panX || pan.panY !== view.panY)) {
+        patch.panX = pan.panX;
+        patch.panY = pan.panY;
+      }
+      if (Object.keys(patch).length > 0) usePreviewView.setState(patch);
     };
 
     const ro = new ResizeObserver((entries) => {
@@ -87,11 +116,85 @@ export function Preview() {
       if (!p.project || s.project.width !== p.project.width || s.project.height !== p.project.height) layout();
     });
 
+    const unView = usePreviewView.subscribe((s, p) => {
+      if (s.zoom !== p.zoom || s.panX !== p.panX || s.panY !== p.panY) layout();
+    });
+    const unMode = useUi.subscribe((s, p) => {
+      if (s.previewMode !== p.previewMode) layout();
+    });
+
     return () => {
       ro.disconnect();
       unsub();
+      unView();
+      unMode();
       engine.dispose();
       engineRef.current = null;
+    };
+  }, []);
+
+  // ctrl / meta + wheel zooms around the pointer, space (held) + drag or the middle button pans
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let acc = 0;
+    let lastWheel = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || useUi.getState().previewMode !== 'output') return;
+      const frame = frameRef.current;
+      if (!frame) return;
+      // also stops the browser from zooming the whole page
+      e.preventDefault();
+      if (e.timeStamp - lastWheel > 250) acc = 0;
+      lastWheel = e.timeStamp;
+      const r = accumulateWheel(acc, wheelPixels(e.deltaY, e.deltaMode));
+      acc = r.acc;
+      if (r.step === 0) return;
+      const fr = frame.getBoundingClientRect();
+      stepView(r.step === -1 ? 1 : -1, e.clientX - (fr.left + fr.width / 2), e.clientY - (fr.top + fr.height / 2));
+    };
+    stage.addEventListener('wheel', onWheel, { passive: false });
+
+    // space pans while the picture is zoomed in and the pointer is over it. the global shortcut would toggle play
+    // on the key press, so this swallows the press and does the toggle itself on release when nothing was dragged
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !spaceRef.current.hover || useUi.getState().previewMode !== 'output') return;
+      if (usePreviewView.getState().zoom === 'fit' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const t = e.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName))) return;
+      if (useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop')) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.repeat || spaceRef.current.down) return;
+      spaceRef.current.down = true;
+      spaceRef.current.used = false;
+      stage.classList.add('is-pan-ready');
+    };
+    const releaseSpace = (toggle: boolean) => {
+      const sp = spaceRef.current;
+      if (!sp.down) return;
+      sp.down = false;
+      stage.classList.remove('is-pan-ready');
+      if (toggle && !sp.used) usePlayback.getState().toggle();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !spaceRef.current.down) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      releaseSpace(true);
+    };
+    const onBlur = () => releaseSpace(false);
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      stage.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      window.removeEventListener('blur', onBlur);
+      cancelAnimationFrame(panRaf.current);
+      if (panRef.current) endPreviewGesture();
+      panRef.current = null;
     };
   }, []);
 
@@ -112,6 +215,8 @@ export function Preview() {
     const engine = engineRef.current;
     const project = useEditor.getState().project;
     if (!engine || !project) return;
+    // the frame is the one at the playhead: stop first so it cannot move on while the picture renders
+    usePlayback.getState().pause();
     const time = usePlayback.getState().time;
     void engine
       .frameBlob()
@@ -133,6 +238,47 @@ export function Preview() {
   // so the arrow keys can nudge the selected clip
   const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button === 0) e.currentTarget.focus({ preventScroll: true });
+  };
+
+  // middle button, or space held + left button: move the zoomed picture. runs before the overlay sees the press.
+  const onStagePanDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (useUi.getState().previewMode !== 'output' || panRef.current) return;
+    const sp = spaceRef.current;
+    const viaSpace = e.button === 0 && sp.down;
+    if (e.button !== 1 && !viaSpace) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (viaSpace) sp.used = true;
+    const v = usePreviewView.getState();
+    panRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, panX: v.panX, panY: v.panY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget.classList.add('is-panning');
+    beginPreviewGesture();
+  };
+  const onStagePanMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const g = panRef.current;
+    if (!g || g.pointerId !== e.pointerId) return;
+    panNext.current = { x: e.clientX, y: e.clientY };
+    if (panRaf.current) return;
+    panRaf.current = requestAnimationFrame(() => {
+      panRaf.current = 0;
+      const to = panNext.current;
+      const cur = panRef.current;
+      panNext.current = null;
+      if (to && cur) setPan(cur.panX + to.x - cur.x, cur.panY + to.y - cur.y);
+    });
+  };
+  const onStagePanEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const g = panRef.current;
+    if (!g || g.pointerId !== e.pointerId) return;
+    cancelAnimationFrame(panRaf.current);
+    panRaf.current = 0;
+    if (e.type === 'pointerup') setPan(g.panX + e.clientX - g.x, g.panY + e.clientY - g.y);
+    panRef.current = null;
+    panNext.current = null;
+    e.currentTarget.classList.remove('is-panning');
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    endPreviewGesture();
   };
 
   // arrows nudge the selected visual clips by 1 px (shift = 10) through setClipValue, so keyframes are honoured.
@@ -243,8 +389,9 @@ export function Preview() {
         >
           <Grid3x3 size={14} />
         </button>
-        <button className="icon-btn" title="save frame as png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
-          <ImageIcon size={14} />
+        {mode === 'output' && <ZoomControl />}
+        <button className="icon-btn" title="save this frame as a png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
+          <ImageDown size={14} />
         </button>
         <select
           className="select input-sm preview-quality"
@@ -279,6 +426,16 @@ export function Preview() {
         className="preview-stage"
         tabIndex={0}
         onPointerDown={onStagePointerDown}
+        onPointerDownCapture={onStagePanDown}
+        onPointerMove={onStagePanMove}
+        onPointerUp={onStagePanEnd}
+        onPointerCancel={onStagePanEnd}
+        onPointerEnter={() => {
+          spaceRef.current.hover = true;
+        }}
+        onPointerLeave={() => {
+          spaceRef.current.hover = false;
+        }}
         onKeyDown={onStageKeyDown}
         onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         <div ref={frameRef} className="preview-frame">
