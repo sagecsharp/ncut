@@ -6,6 +6,8 @@ import { hasKeyframes } from '../../lib/anim';
 import { FontPicker } from '../fonts/FontPicker';
 import { formatTimecode } from '../../lib/time';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
+import type { ClipMove } from '../../store/editorStore';
+import { followerSpans, withFollowerMoves } from '../timeline/followMoves';
 import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
@@ -29,6 +31,25 @@ import { beginEdit, liveOpts } from './edit';
 import { coverScale } from './shapeLogic';
 
 const actions = () => useEditor.getState();
+
+/** change the length of a clip; effects put on it get the same new span (one undo step, like the drag) */
+function trimWithEffects(id: string, end: number): void {
+  const opts = liveOpts();
+  const before = useEditor.getState().project;
+  actions().trimClip(id, 'end', end, opts);
+  const after = useEditor.getState().project;
+  const clip = after?.clips.find((c) => c.id === id);
+  if (!before || !after || !clip || !isVisualClip(clip)) return;
+  for (const r of followerSpans(before.clips, before.tracks, id, { start: clip.start, duration: clip.duration })) {
+    const now = useEditor.getState().project?.clips.find((c) => c.id === r.id);
+    if (!now) continue;
+    if (Math.abs(now.start - r.start) > 1e-6) actions().trimClip(r.id, 'start', r.start, opts);
+    const moved = useEditor.getState().project?.clips.find((c) => c.id === r.id);
+    if (moved && Math.abs(moved.start + moved.duration - (r.start + r.duration)) > 1e-6) {
+      actions().trimClip(r.id, 'end', r.start + r.duration, opts);
+    }
+  }
+}
 
 /* ---------- clip ---------- */
 
@@ -72,7 +93,10 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             onStart={beginEdit}
             onChange={(v) => {
               // a rejected move leaves the store untouched, so the field falls back to the real value
-              actions().moveClips([{ id, trackId, start: v }], liveOpts());
+              // effects put on this clip go with it, in the same call (one undo step)
+              const st = useEditor.getState();
+              const moves: ClipMove[] = [{ id, trackId, start: v }];
+              actions().moveClips(st.project ? withFollowerMoves(st.project.clips, st.project.tracks, moves) : moves, liveOpts());
             }}
           />
           <NumberField
@@ -84,7 +108,7 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
             step={0.05}
             precision={2}
             onStart={beginEdit}
-            onChange={(v) => actions().trimClip(id, 'end', start + v, liveOpts())}
+            onChange={(v) => trimWithEffects(id, start + v)}
           />
         </Pair>
       </Row>
