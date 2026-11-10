@@ -30,6 +30,24 @@ export function parentOptions(project: Pick<Project, 'clips'>, ids: readonly str
   const cands = project.clips.filter(
     (c) => canBeParent(c) && !ids.includes(c.id) && !ids.some((id) => wouldCycle(project, id, c.id)),
   );
+  return labelOptions(cands, from);
+}
+
+/**
+ * the clips a 3d clip can face ("look at a clip"): visual clips and cameras except the clip itself.
+ * a loop does not matter here (facing a clip never moves it). same labels and order as parentOptions.
+ */
+export function lookTargetOptions(project: Pick<Project, 'clips'>, id: string): ParentOption[] {
+  const from = project.clips.filter((c) => c.id === id && isVisualClip(c));
+  if (from.length === 0) return [];
+  return labelOptions(
+    project.clips.filter((c) => canBeParent(c) && c.id !== id),
+    from,
+  );
+}
+
+/** labels (name, + type when repeated, + number) and the overlap-first order shared by the clip pickers */
+function labelOptions(cands: Clip[], from: Clip[]): ParentOption[] {
   const names = cands.map(baseName);
   const count = new Map<string, number>();
   for (const n of names) count.set(n, (count.get(n) ?? 0) + 1);

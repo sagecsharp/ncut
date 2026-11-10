@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
 import {
   CLIP_MOTIONS_IN,
@@ -11,6 +11,7 @@ import {
 import type { ClipAnim, VisualClip } from '../../types';
 import { Row, Section, SliderRow, Switch } from './controls';
 import { DEFAULT_MOTION_BLUR, setBlurValue } from './colorLogic';
+import { visibleMotions } from './motionLogic';
 import { beginEdit, patchClip } from './edit';
 
 interface AnimRowProps {
@@ -64,13 +65,17 @@ export function MotionRow({ label, title, list, value, defaultDuration, duration
 
 export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { clip: VisualClip }) {
   const id = clip.id;
+  const threeD = !!clip.threeD;
+  const listIn = useMemo(() => visibleMotions(CLIP_MOTIONS_IN, threeD, clip.motionIn?.id), [threeD, clip.motionIn?.id]);
+  const listOut = useMemo(() => visibleMotions(CLIP_MOTIONS_OUT, threeD, clip.motionOut?.id), [threeD, clip.motionOut?.id]);
+  const listLoop = useMemo(() => visibleMotions(CLIP_MOTIONS_LOOP, threeD, clip.motionLoop?.id), [threeD, clip.motionLoop?.id]);
   const set = (key: 'motionIn' | 'motionOut' | 'motionLoop') => (next: ClipAnim | null, live: boolean) => patchClip(id, { [key]: next }, live);
   return (
     <Section id="motion" title={clip.type === 'text' ? 'clip motion' : 'motion'}>
       <MotionRow
         label="in"
         title="how the clip appears"
-        list={CLIP_MOTIONS_IN}
+        list={listIn}
         value={clip.motionIn}
         defaultDuration={DEFAULT_CLIP_MOTION_IN}
         durationTitle="how long the entrance takes (seconds)"
@@ -79,7 +84,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
       <MotionRow
         label="out"
         title="how the clip leaves"
-        list={CLIP_MOTIONS_OUT}
+        list={listOut}
         value={clip.motionOut}
         defaultDuration={DEFAULT_CLIP_MOTION_OUT}
         durationTitle="how long the exit takes (seconds)"
@@ -88,7 +93,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
       <MotionRow
         label="loop"
         title="a motion that repeats while the clip is on screen"
-        list={CLIP_MOTIONS_LOOP}
+        list={listLoop}
         value={clip.motionLoop}
         defaultDuration={DEFAULT_CLIP_MOTION_LOOP}
         durationTitle="seconds per cycle"

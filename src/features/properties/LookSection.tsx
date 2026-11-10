@@ -24,7 +24,7 @@ export function LookButtons({ source, ids }: { source: VisualClip; ids: string[]
       <button
         type="button"
         className="btn btn-sm"
-        title="copy blend, crop, corners, opacity, motion, color, green screen, transition and text style"
+        title="copy blend, crop, corners, opacity, motion, color, green screen, mask, transition and text style"
         onClick={() => {
           copyLook(source);
           useUi.getState().toast('look copied');

@@ -7,6 +7,7 @@ import { useEditor } from '../../store/editorStore';
 import type { Project } from '../../types';
 import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, even, liveOpts } from './edit';
+import { FogSection } from './FogSection';
 
 const ProjectSettings = memo(function ProjectSettings({
   name,
@@ -159,6 +160,7 @@ export function ProjectInspector() {
           fps={project.fps}
           background={project.background}
         />
+        <FogSection fog={project.fog} background={project.background} />
         <ProjectStats
           clips={project.clips}
           trackCount={project.tracks.length}
