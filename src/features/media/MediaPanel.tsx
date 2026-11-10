@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { ArrowLeftRight, Film, Image as ImageIcon, Music, Plus, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Plus, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -13,11 +13,13 @@ import { formatBytes, formatDuration } from '../../lib/time';
 import { EffectsTab } from './EffectsTab';
 import { TransitionsTab } from './TransitionsTab';
 import { ShapesTab } from './ShapesTab';
+import { LayersTab } from './LayersTab';
+import { CaptionTools } from './captions/CaptionTools';
 import { TEXT_PRESETS } from './textPresets';
 import type { TextPreset } from './textPresets';
 import './media.css';
 
-type Tab = 'media' | 'text' | 'shapes' | 'effects' | 'transitions';
+type Tab = 'media' | 'layers' | 'text' | 'shapes' | 'effects' | 'transitions';
 type Filter = 'all' | MediaKind;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -416,6 +418,7 @@ const TextCard = memo(function TextCard({ preset }: { preset: TextPreset }) {
 function TextTab() {
   return (
     <div className="media-text-tab">
+      <CaptionTools />
       {TEXT_PRESETS.map((p) => (
         <TextCard key={p.id} preset={p} />
       ))}
@@ -427,6 +430,7 @@ function TextTab() {
 
 const TABS: { id: Tab; label: string; tip: string; icon: LucideIcon }[] = [
   { id: 'media', label: 'media', tip: 'imported files', icon: Film },
+  { id: 'layers', label: 'layers', tip: 'everything on screen right now', icon: Layers },
   { id: 'text', label: 'text', tip: 'text presets', icon: Type },
   { id: 'shapes', label: 'shapes', tip: 'shapes and backgrounds', icon: Shapes },
   { id: 'effects', label: 'effects', tip: 'effects for the timeline', icon: Sparkles },
@@ -455,6 +459,8 @@ export function MediaPanel() {
       </div>
       {tab === 'media' ? (
         <MediaTab />
+      ) : tab === 'layers' ? (
+        <LayersTab />
       ) : tab === 'text' ? (
         <TextTab />
       ) : tab === 'shapes' ? (
