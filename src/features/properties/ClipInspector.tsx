@@ -459,7 +459,7 @@ export function ClipInspector({ id }: { id: string }) {
             background={clip.background}
           />
         ) : null}
-        {clip.type !== 'audio' && clip.type !== 'effect' ? (
+        {clip.type !== 'audio' && clip.type !== 'effect' && clip.type !== 'camera' ? (
           <TransformSection id={clip.id} transform={clip.transform} mediaW={asset?.width ?? 0} mediaH={asset?.height ?? 0} />
         ) : null}
         {hasAudio && (clip.type === 'video' || clip.type === 'audio') ? (

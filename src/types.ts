@@ -24,7 +24,7 @@ export interface MediaAsset {
 }
 
 /**
- * 'video' tracks hold video, image, text and effect clips (anything visual).
+ * 'video' tracks hold video, image, text, effect and camera clips (anything visual).
  * 'audio' tracks hold audio clips only.
  * in project.tracks, index 0 is the TOP row of the timeline and the TOP visual layer.
  * all video tracks come before all audio tracks.
@@ -57,7 +57,32 @@ export interface Transform {
   scale: number;
   rotation: number;
   opacity: number;
+  /** 3d only (clip.threeD). depth in project pixels: + is away from the viewer, 0 = the canvas plane. */
+  z?: number;
+  /** 3d only. degrees. tilt: + leans the top edge away. */
+  rotX?: number;
+  /** 3d only. degrees. turn: + faces the plane to the right (its right edge moves away). */
+  rotY?: number;
 }
+
+/**
+ * 3d: 'camera' keeps the plane facing the camera position (a billboard), 'cameraY' does the same but
+ * stays upright (only turns left / right). rotation / tilt / turn are applied on top.
+ */
+export type LookAt = 'none' | 'camera' | 'cameraY';
+
+export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'hold' | 'back' | 'bounce' | 'elastic';
+
+export interface Keyframe {
+  /** clip-local seconds (0 = the clip's start) */
+  t: number;
+  v: number;
+  /** how the value travels from this key to the next one */
+  ease: Easing;
+}
+
+/** animated properties of a clip: property name -> keys sorted by time. see lib/anim.ts. */
+export type Keyframes = Record<string, Keyframe[]>;
 
 interface ClipBase {
   id: string;
@@ -70,9 +95,22 @@ interface ClipBase {
   /** seconds of fade at the head/tail. affects opacity for visuals and gain for audio. */
   fadeIn: number;
   fadeOut: number;
+  /** keyframe animation. a property listed here ignores its static value. see lib/anim.ts. */
+  keyframes?: Keyframes;
 }
 
-export interface VideoClip extends ClipBase {
+/** shared by the clips that draw a picture (video, image, text) */
+interface Spatial {
+  transform: Transform;
+  /**
+   * true = the clip is a plane in 3d space seen through the camera (transform.z / rotX / rotY apply,
+   * planes hide and cut through each other by depth). false / missing = a flat 2d layer.
+   */
+  threeD?: boolean;
+  lookAt?: LookAt;
+}
+
+export interface VideoClip extends ClipBase, Spatial {
   type: 'video';
   assetId: string;
   /** offset into the source where this clip begins (source seconds) */
@@ -82,13 +120,11 @@ export interface VideoClip extends ClipBase {
   /** 0..2 linear gain */
   volume: number;
   muted: boolean;
-  transform: Transform;
 }
 
-export interface ImageClip extends ClipBase {
+export interface ImageClip extends ClipBase, Spatial {
   type: 'image';
   assetId: string;
-  transform: Transform;
 }
 
 export interface AudioClip extends ClipBase {
@@ -102,7 +138,7 @@ export interface AudioClip extends ClipBase {
 
 export type TextAlign = 'left' | 'center' | 'right';
 
-export interface TextClip extends ClipBase {
+export interface TextClip extends ClipBase, Spatial {
   type: 'text';
   text: string;
   fontFamily: string;
@@ -114,7 +150,6 @@ export interface TextClip extends ClipBase {
   /** css color for a box behind the text, or null for none */
   background: string | null;
   align: TextAlign;
-  transform: Transform;
 }
 
 /**
@@ -134,7 +169,26 @@ export interface EffectClip extends ClipBase {
   seed: number;
 }
 
-export type Clip = VideoClip | ImageClip | AudioClip | TextClip | EffectClip;
+/**
+ * the 3d camera for its time range. lives on a video track; when several are active the one on the
+ * highest track wins. without a camera clip the home camera is used (straight on, the canvas plane
+ * fills the frame). every value is an offset from that home pose and can be keyframed.
+ */
+export interface CameraClip extends ClipBase {
+  type: 'camera';
+  /** position offset in project pixels: +x right, +y down, +z forward (toward the scene) */
+  x: number;
+  y: number;
+  z: number;
+  /** degrees. pan + looks right, tilt + looks up, roll + turns clockwise. */
+  pan: number;
+  tilt: number;
+  roll: number;
+  /** vertical field of view in degrees (home = 50). smaller zooms in. */
+  fov: number;
+}
+
+export type Clip = VideoClip | ImageClip | AudioClip | TextClip | EffectClip | CameraClip;
 export type ClipType = Clip['type'];
 export type VisualClip = VideoClip | ImageClip | TextClip;
 export type MediaClip = VideoClip | ImageClip | AudioClip;
@@ -178,6 +232,9 @@ export const MAX_SPEED = 4;
 
 export function isVisualClip(c: Clip): c is VisualClip {
   return c.type === 'video' || c.type === 'image' || c.type === 'text';
+}
+export function isCameraClip(c: Clip): c is CameraClip {
+  return c.type === 'camera';
 }
 export function isEffectClip(c: Clip): c is EffectClip {
   return c.type === 'effect';

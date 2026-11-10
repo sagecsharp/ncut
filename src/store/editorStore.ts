@@ -16,7 +16,9 @@ import { useMemo } from 'react';
 import { create } from 'zustand';
 import type {
   AudioClip,
+  CameraClip,
   Clip,
+  Easing,
   EffectClip,
   ImageClip,
   MediaAsset,
@@ -29,15 +31,30 @@ import type {
 } from '../types';
 import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip, trackKindForClip } from '../types';
 import {
+  DEFAULT_CAMERA_DURATION,
   DEFAULT_EFFECT_DURATION,
   DEFAULT_TEXT_DURATION,
   MAX_FPS,
+  createCameraClip,
   createClipFromAsset,
   createEffectClip,
   createTextClip,
   createTrack,
 } from '../lib/factory';
 import { getEffect } from '../engine/effects/registry';
+import {
+  KEY_EPS,
+  animProps,
+  baseValue,
+  isAnimated,
+  keyIndexAt,
+  shiftKeyframes,
+  valueAt,
+  withKeyAt,
+  withValueAt,
+  withoutKeyAt,
+  withoutKeys,
+} from '../lib/anim';
 import { uid } from '../lib/id';
 import { clamp } from '../lib/time';
 import {
@@ -67,7 +84,15 @@ export type ClipPatch = Partial<Omit<VideoClip, LockedKeys>> &
   Partial<Omit<ImageClip, LockedKeys>> &
   Partial<Omit<AudioClip, LockedKeys>> &
   Partial<Omit<TextClip, LockedKeys>> &
-  Partial<Omit<EffectClip, LockedKeys>>;
+  Partial<Omit<EffectClip, LockedKeys>> &
+  Partial<Omit<CameraClip, LockedKeys>>;
+
+/** fields that may be missing on a stored clip but can still be set through updateClip */
+const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
+  video: ['threeD', 'lookAt'],
+  image: ['threeD', 'lookAt'],
+  text: ['threeD', 'lookAt'],
+};
 
 export interface ClipMove {
   id: string;
@@ -136,6 +161,28 @@ export interface EditorState {
    * returns the new clip id, or null when the effect id is unknown.
    */
   addEffect(effect: string, opts?: ActionOpts & { trackId?: string; start?: number; duration?: number }): string | null;
+  /**
+   * add a camera clip (see CameraClip). same placement as addEffect: the top video track when it has
+   * room, else a new top track. returns the new clip id.
+   */
+  addCamera(opts?: ActionOpts & { trackId?: string; start?: number; duration?: number }): string;
+  /**
+   * set an animatable property (see lib/anim.ts for the names: x y scale rotation opacity z rotX rotY
+   * volume amount p.<key> pan tilt roll fov) the way an editor expects: when the property has
+   * keyframes the value goes into a key at `time` (timeline seconds), otherwise into the static field.
+   * values are clamped to the property's range.
+   */
+  setClipValue(id: string, prop: string, time: number, value: number, opts?: ActionOpts): void;
+  /** add a key holding the current value at `time`, or remove the key that is already there */
+  toggleKeyframe(id: string, prop: string, time: number, opts?: ActionOpts): void;
+  /** add or update a key at `time`. value defaults to the current value there. */
+  setKeyframe(id: string, prop: string, time: number, value?: number, ease?: Easing, opts?: ActionOpts): void;
+  /** remove the key at `time` (within tolerance seconds). the last key leaves the value it had. */
+  removeKeyframe(id: string, prop: string, time: number, tolerance?: number, opts?: ActionOpts): void;
+  /** move the key(s) at fromTime to toTime. prop null = every property that has a key there. */
+  moveKeyframe(id: string, prop: string | null, fromTime: number, toTime: number, tolerance?: number, opts?: ActionOpts): void;
+  /** remove every key of one property (or of all when prop is omitted). values freeze as they are at `time`. */
+  clearKeyframes(id: string, time: number, prop?: string, opts?: ActionOpts): void;
   /** set one parameter of an effect clip (clamped to the param range). */
   setEffectParam(id: string, key: string, value: number, opts?: ActionOpts): void;
   /** patch editable fields (name, volume, transform, text props, effect amount, fades...). */
@@ -257,6 +304,26 @@ function hasOverlapOnTracks(project: Project, trackIds: Iterable<string>): boole
     }
   }
   return false;
+}
+
+/** clamp a value to an animatable property's range. null when the clip has no such property. */
+function clampProp(clip: Clip, prop: string, value: number): number | null {
+  if (prop.startsWith('p.')) {
+    if (clip.type !== 'effect') return null;
+    const param = getEffect(clip.effect)?.params.find((q) => q.key === prop.slice(2));
+    return param ? clamp(value, param.min, param.max) : null;
+  }
+  const info = animProps(clip).find((a) => a.prop === prop);
+  if (!info) return null;
+  return clamp(value, info.min ?? -Infinity, info.max ?? Infinity);
+}
+
+/** the value a property has when nothing is stored for it (effect params fall back to the effect default) */
+function propDefault(clip: Clip, prop: string): number | undefined {
+  if (clip.type === 'effect' && prop.startsWith('p.')) {
+    return getEffect(clip.effect)?.params.find((q) => q.key === prop.slice(2))?.default;
+  }
+  return baseValue(clip, prop);
 }
 
 function pruneSelection(project: Project | null, selection: string[]): string[] {
@@ -487,6 +554,107 @@ export const useEditor = create<EditorState>()((set, get) => {
       if (id) set({ selection: [id] });
       return id;
     },
+    addCamera(opts) {
+      let id = '';
+      mutate((p) => {
+        const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? DEFAULT_CAMERA_DURATION);
+        let placed: { project: Project; trackId: string; start: number };
+        const wanted = opts?.trackId ? p.tracks.find((t) => t.id === opts.trackId) : undefined;
+        if (wanted && wanted.kind === 'video' && !wanted.locked) {
+          placed = resolvePlacement(p, 'video', duration, wanted.id, opts?.start);
+        } else {
+          const s = Math.max(0, opts?.start ?? 0);
+          const top = p.tracks[0];
+          if (top && top.kind === 'video' && !top.locked && isRangeFree(p, top.id, s, duration)) {
+            placed = { project: p, trackId: top.id, start: s };
+          } else {
+            const made = withNewTrack(p, 'video', 0);
+            placed = { project: made.project, trackId: made.track.id, start: s };
+          }
+        }
+        const clip = createCameraClip(placed.trackId, placed.start, { duration });
+        id = clip.id;
+        return { ...placed.project, clips: [...placed.project.clips, clip] };
+      }, opts);
+      if (id) set({ selection: [id] });
+      return id;
+    },
+    setClipValue(id, prop, time, value, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || isLocked(p, clip.trackId) || !Number.isFinite(value)) return null;
+        if (baseValue(clip, prop) === undefined && !prop.startsWith('p.')) return null;
+        const v = clampProp(clip, prop, value);
+        if (v === null) return null;
+        if (valueAt(clip, prop, time) === v && (!isAnimated(clip, prop) || keyIndexAt(clip.keyframes![prop]!, time - clip.start) >= 0)) {
+          return null;
+        }
+        return replaceClip(p, withValueAt(clip, prop, time, v));
+      }, opts);
+    },
+    toggleKeyframe(id, prop, time, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || isLocked(p, clip.trackId)) return null;
+        const keys = clip.keyframes?.[prop];
+        const tol = 0.5 / p.fps;
+        if (keys && keyIndexAt(keys, time - clip.start, tol) >= 0) return replaceClip(p, withoutKeyAt(clip, prop, time, tol));
+        const v = valueAt(clip, prop, time) ?? propDefault(clip, prop);
+        if (v === undefined) return null;
+        return replaceClip(p, withKeyAt(clip, prop, time, v));
+      }, opts);
+    },
+    setKeyframe(id, prop, time, value, ease, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || isLocked(p, clip.trackId)) return null;
+        let v = value ?? valueAt(clip, prop, time) ?? propDefault(clip, prop);
+        if (v === undefined || !Number.isFinite(v)) return null;
+        const c = clampProp(clip, prop, v);
+        if (c === null) return null;
+        v = c;
+        return replaceClip(p, withKeyAt(clip, prop, time, v, ease));
+      }, opts);
+    },
+    removeKeyframe(id, prop, time, tolerance, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || isLocked(p, clip.trackId)) return null;
+        const next = withoutKeyAt(clip, prop, time, tolerance ?? 0.5 / p.fps);
+        return next === clip ? null : replaceClip(p, next);
+      }, opts);
+    },
+    moveKeyframe(id, prop, fromTime, toTime, tolerance, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || !clip.keyframes || isLocked(p, clip.trackId)) return null;
+        const tol = tolerance ?? 0.5 / p.fps;
+        const from = fromTime - clip.start;
+        const to = clamp(toTime - clip.start, 0, clip.duration);
+        if (Math.abs(to - from) < KEY_EPS) return null;
+        let changed = false;
+        const kf = { ...clip.keyframes };
+        for (const [name, keys] of Object.entries(kf)) {
+          if (prop !== null && name !== prop) continue;
+          const at = keyIndexAt(keys, from, tol);
+          if (at < 0) continue;
+          const moved = { ...keys[at]!, t: to };
+          // a key already sitting at the target is replaced
+          const rest = keys.filter((k, i) => i !== at && Math.abs(k.t - to) > KEY_EPS);
+          kf[name] = [...rest, moved].sort((a, b) => a.t - b.t);
+          changed = true;
+        }
+        return changed ? replaceClip(p, { ...clip, keyframes: kf }) : null;
+      }, opts);
+    },
+    clearKeyframes(id, time, prop, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || !clip.keyframes || isLocked(p, clip.trackId)) return null;
+        const next = withoutKeys(clip, time, prop);
+        return replaceClip(p, next);
+      }, opts);
+    },
     setEffectParam(id, key, value, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
@@ -507,7 +675,9 @@ export const useEditor = create<EditorState>()((set, get) => {
         let changed = false;
         for (const [key, value] of Object.entries(patch)) {
           if (value === undefined) continue;
-          if (!(key in clip)) continue; // field does not exist on this clip type
+          // field does not exist on this clip type
+          if (!(key in clip) && !OPTIONAL_CLIP_KEYS[clip.type]?.includes(key)) continue;
+          if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
           if (next[key] !== value) {
             next[key] = value;
@@ -533,7 +703,10 @@ export const useEditor = create<EditorState>()((set, get) => {
           transform.y === cur.y &&
           transform.scale === cur.scale &&
           transform.rotation === cur.rotation &&
-          transform.opacity === cur.opacity
+          transform.opacity === cur.opacity &&
+          (transform.z ?? 0) === (cur.z ?? 0) &&
+          (transform.rotX ?? 0) === (cur.rotX ?? 0) &&
+          (transform.rotY ?? 0) === (cur.rotY ?? 0)
         ) {
           return null;
         }
@@ -586,7 +759,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           const newStart = clamp(time, lower, Math.max(lower, upper));
           if (Math.abs(newStart - clip.start) < 1e-9) return null;
           const delta = newStart - clip.start;
-          const next = { ...clip, start: newStart, duration: end - newStart } as Clip;
+          // keys stay where they are on the timeline when the head is trimmed
+          const next = { ...clip, start: newStart, duration: end - newStart, keyframes: shiftKeyframes(clip.keyframes, -delta) } as Clip;
           if (isTimedClip(next) && isTimedClip(clip)) {
             next.trimStart = Math.max(0, clip.trimStart + delta * clip.speed);
           }
@@ -638,7 +812,15 @@ export const useEditor = create<EditorState>()((set, get) => {
             continue;
           }
           const left = clampFades({ ...c, duration: time - c.start, fadeOut: 0 } as Clip);
-          const right = { ...c, id: uid('clp'), start: time, duration: clipEnd(c) - time, fadeIn: 0 } as Clip;
+          const right = {
+            ...c,
+            id: uid('clp'),
+            start: time,
+            duration: clipEnd(c) - time,
+            fadeIn: 0,
+            // both halves keep every key so the motion continues unbroken across the cut
+            keyframes: shiftKeyframes(c.keyframes, -(time - c.start)),
+          } as Clip;
           if (isTimedClip(right) && isTimedClip(c)) right.trimStart = c.trimStart + (time - c.start) * c.speed;
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           created.push(right.id);

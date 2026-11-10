@@ -1,4 +1,4 @@
-import type { AudioClip, EffectClip, ImageClip, MediaAsset, Project, TextClip, Track, TrackKind, VideoClip } from '../types';
+import type { AudioClip, CameraClip, EffectClip, ImageClip, MediaAsset, Project, TextClip, Track, TrackKind, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { uid } from './id';
 
@@ -25,6 +25,7 @@ export const MAX_FPS = 240;
 export const DEFAULT_IMAGE_DURATION = 5;
 export const DEFAULT_TEXT_DURATION = 4;
 export const DEFAULT_EFFECT_DURATION = 3;
+export const DEFAULT_CAMERA_DURATION = 5;
 
 export const FONT_FAMILIES = [
   'Kode Mono',
@@ -146,6 +147,28 @@ export function createEffectClip(
     amount: 1,
     params: {},
     seed: Math.floor(Math.random() * 1000),
+    ...overrides,
+  };
+}
+
+/** a camera clip at the home pose (changes nothing until it is moved) */
+export function createCameraClip(trackId: string, start: number, overrides: Partial<CameraClip> = {}): CameraClip {
+  return {
+    id: uid('clp'),
+    type: 'camera',
+    trackId,
+    start,
+    duration: DEFAULT_CAMERA_DURATION,
+    name: 'camera',
+    fadeIn: 0,
+    fadeOut: 0,
+    x: 0,
+    y: 0,
+    z: 0,
+    pan: 0,
+    tilt: 0,
+    roll: 0,
+    fov: 50,
     ...overrides,
   };
 }

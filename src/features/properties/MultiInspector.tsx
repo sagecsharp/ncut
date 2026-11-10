@@ -47,7 +47,7 @@ function summarize(ids: string[]): Summary {
   let first = true;
   for (const c of p.clips) {
     if (!set.has(c.id)) continue;
-    out[c.type] += 1;
+    if (c.type !== 'camera') out[c.type] += 1;
     out.minDuration = Math.min(out.minDuration, c.duration);
     if (first) {
       out.fadeIn = c.fadeIn;
