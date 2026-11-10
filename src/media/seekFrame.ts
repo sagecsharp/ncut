@@ -9,10 +9,13 @@
 
 interface FrameCallbackVideo {
   requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
 }
 
 /** how long to wait for the new frame after 'seeked' before drawing anyway (a seek onto the frame already shown presents nothing new) */
 export const FRAME_WAIT_MS = 250;
+/** a presented frame counts as the frame of the seek when its media time is this close to the target, seconds */
+export const FRAME_NEAR_S = 0.25;
 /** the pause used when the browser has no requestVideoFrameCallback */
 export const FRAME_PAUSE_MS = 80;
 
@@ -26,16 +29,26 @@ export function frameWaitPlan(hasCallback: boolean): { waitMs: number; useCallba
  * itself takes longer than `timeoutMs`. never rejects.
  */
 export function seekFrame(v: HTMLVideoElement, t: number, timeoutMs: number): Promise<boolean> {
+  // already on that position with a picture: nothing will be presented, and nothing has to be
+  if (Math.abs(v.currentTime - t) < 1e-3 && v.readyState >= 2 && !v.seeking) return Promise.resolve(true);
   return new Promise((resolve) => {
     let settled = false;
     let presented = false;
     let seeked = false;
     let waitTimer: ReturnType<typeof setTimeout> | null = null;
+    let handle: number | null = null;
     const finish = (ok: boolean): void => {
       if (settled) return;
       settled = true;
       clearTimeout(seekTimer);
       if (waitTimer) clearTimeout(waitTimer);
+      if (handle !== null) {
+        try {
+          (v as unknown as FrameCallbackVideo).cancelVideoFrameCallback?.(handle);
+        } catch {
+          /* nothing to cancel */
+        }
+      }
       v.removeEventListener('seeked', onSeeked);
       v.removeEventListener('error', onError);
       resolve(ok);
@@ -52,17 +65,25 @@ export function seekFrame(v: HTMLVideoElement, t: number, timeoutMs: number): Pr
     const onError = (): void => finish(false);
     v.addEventListener('seeked', onSeeked);
     v.addEventListener('error', onError);
-    if (plan.useCallback) {
+    const onFrame = (_now: number, meta?: { mediaTime: number }): void => {
+      if (settled) return;
+      // a frame from before the seek can still be on its way (the first frame after loading): not the one we want
+      if (meta && typeof meta.mediaTime === 'number' && Math.abs(meta.mediaTime - t) > FRAME_NEAR_S) {
+        ask();
+        return;
+      }
+      presented = true;
+      if (seeked) finish(true);
+    };
+    const ask = (): void => {
       try {
-        // asked for before the seek, so the first frame it reports is the one the seek brings
-        rvfc!.call(v, () => {
-          presented = true;
-          if (seeked) finish(true);
-        });
+        handle = rvfc!.call(v, onFrame);
       } catch {
         /* the timed wait after 'seeked' covers it */
       }
-    }
+    };
+    // asked for before the seek, so the frame the seek brings is never missed
+    if (plan.useCallback) ask();
     try {
       v.currentTime = t;
     } catch {

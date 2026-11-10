@@ -9,7 +9,17 @@ import { seekFrame } from '../../media/seekFrame';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { withFollowerMoves } from '../timeline/followMoves';
-import { freezeEffectCopies, freezeFileName, freezeHandover, freezeSourceTime, pickFreezeTarget, planFreeze, shiftMoves, stillClipFrom } from './freezePlan';
+import {
+  effectShiftMoves,
+  freezeEffectCopies,
+  freezeFileName,
+  freezeHandover,
+  freezeSourceTime,
+  pickFreezeTarget,
+  planFreeze,
+  shiftMoves,
+  stillClipFrom,
+} from './freezePlan';
 
 /** default length of the still, seconds */
 export const FREEZE_DURATION = 2;
@@ -117,11 +127,17 @@ export async function freezeFrame(): Promise<string | null> {
   const skip = { skipHistory: true };
   let newId: string | null = null;
   live.pushHistory();
-  if (plan.split) useEditor.getState().splitClips(time, [liveClip.id], skip);
+  // a cut the store refuses (too close to an edge, a lock) would leave the video whole under the still
+  const cut = plan.split ? useEditor.getState().splitClips(time, [liveClip.id], skip) : [];
+  const splitOk = !plan.split || cut.length > 0;
   const afterSplit = useEditor.getState().project!;
   // the clips that make room for the still take the effects put on them along
   const moves = withFollowerMoves(afterSplit.clips, afterSplit.tracks, shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION));
-  const moved = moves.length === 0 || useEditor.getState().moveClips(moves, skip);
+  // also the effects that do not cover their clip exactly (the usual rule only moves the ones that do)
+  const extra = effectShiftMoves(afterSplit.clips, afterSplit.tracks, moves, plan.shiftFrom, FREEZE_DURATION);
+  let moved = splitOk && (moves.length === 0 || useEditor.getState().moveClips([...moves, ...extra], skip));
+  // no room for those on their tracks: they stay behind rather than the freeze failing
+  if (splitOk && !moved && extra.length > 0) moved = useEditor.getState().moveClips(moves, skip);
   if (moved) {
     const handover = freezeHandover(liveClip, plan);
     const clip = stillClipFrom(liveClip, resolveClip(liveClip, time).transform, still.id, plan.stillStart, FREEZE_DURATION, handover);

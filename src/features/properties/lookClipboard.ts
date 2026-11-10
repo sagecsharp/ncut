@@ -98,6 +98,21 @@ export function useLookClipboard(): LookData | null {
   );
 }
 
+/**
+ * a pasted karaoke style must not restart the run on a clip that a cut left in the middle of it: the target's own
+ * offset / fullDuration (see TextHighlight) stay with the target.
+ */
+export function keepRun(patch: Record<string, unknown>, target: VisualClip): Record<string, unknown> {
+  const hl = patch.highlight as Record<string, unknown> | null | undefined;
+  if (!hl || target.type !== 'text' || !target.highlight) return patch;
+  const { offset, fullDuration } = target.highlight;
+  if (offset === undefined && fullDuration === undefined) return patch;
+  const next: Record<string, unknown> = { ...hl };
+  if (offset !== undefined) next.offset = offset;
+  if (fullDuration !== undefined) next.fullDuration = fullDuration;
+  return { ...patch, highlight: next };
+}
+
 /** paste the copied look on clips as ONE undo step */
 export function pasteLook(ids: string[]): number {
   const look = current;
@@ -108,7 +123,7 @@ export function pasteLook(ids: string[]): number {
   if (targets.length === 0) return 0;
   st.pushHistory();
   for (const c of targets) {
-    st.updateClip(c.id, lookPatch(look, c.type) as ClipPatch, { skipHistory: true });
+    st.updateClip(c.id, keepRun(lookPatch(look, c.type), c) as ClipPatch, { skipHistory: true });
     st.updateTransform(c.id, { opacity: look.opacity }, { skipHistory: true });
   }
   return targets.length;

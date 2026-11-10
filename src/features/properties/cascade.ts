@@ -5,7 +5,7 @@
  */
 import { animProps, baseValue, evalKeys, valueAt } from '../../lib/anim';
 import type { Clip, Easing, Keyframe, Keyframes, VisualClip } from '../../types';
-import { MIN_CLIP_DURATION, isTimedClip } from '../../types';
+import { MIN_CLIP_DURATION, isTimedClip, isVisualClip } from '../../types';
 import { hash01, MIN_GAP } from './keyTools';
 
 export type CascadeOrder = 'layer' | 'left' | 'right' | 'top' | 'center' | 'edges' | 'random';
@@ -53,12 +53,15 @@ export function orderClips<T extends Clip>(
   if (order === 'layer' || base.length < 2) return base;
   // the middle of the clip: where it rests. its start (or end) may be the far end of a fly in / out
   const mid = (c: T) => c.start + c.duration / 2;
-  const pos = new Map(base.map((c) => [c.id, where?.(c, mid(c)) ?? { x: valueAt(c, 'x', mid(c)) ?? 0, y: valueAt(c, 'y', mid(c)) ?? 0 }]));
+  // only clips that are somewhere on the canvas take part in the position orders. a sound (or an effect, a camera)
+  // has no place: it goes first, in layer order, and does not pull the middle of the selection toward 0, 0
+  const placed = order === 'random' ? base : base.filter((c) => isVisualClip(c));
+  const pos = new Map(placed.map((c) => [c.id, where?.(c, mid(c)) ?? { x: valueAt(c, 'x', mid(c)) ?? 0, y: valueAt(c, 'y', mid(c)) ?? 0 }]));
   const key = new Map<string, number>();
-  if (order === 'left') for (const c of base) key.set(c.id, pos.get(c.id)!.x);
-  else if (order === 'right') for (const c of base) key.set(c.id, -pos.get(c.id)!.x);
-  else if (order === 'top') for (const c of base) key.set(c.id, pos.get(c.id)!.y);
-  else if (order === 'random') for (const c of base) key.set(c.id, hash01(seed, hashString(c.id)));
+  if (order === 'left') for (const c of placed) key.set(c.id, pos.get(c.id)!.x);
+  else if (order === 'right') for (const c of placed) key.set(c.id, -pos.get(c.id)!.x);
+  else if (order === 'top') for (const c of placed) key.set(c.id, pos.get(c.id)!.y);
+  else if (order === 'random') for (const c of placed) key.set(c.id, hash01(seed, hashString(c.id)));
   else {
     // the middle of the selection = the middle of the box around the positions
     let x0 = Infinity;
@@ -74,14 +77,17 @@ export function orderClips<T extends Clip>(
     const cx = (x0 + x1) / 2;
     const cy = (y0 + y1) / 2;
     const sign = order === 'center' ? 1 : -1;
-    for (const c of base) {
+    for (const c of placed) {
       const p = pos.get(c.id)!;
       key.set(c.id, sign * Math.hypot(p.x - cx, p.y - cy));
     }
   }
   // Array.prototype.sort is stable: equal keys keep the layer order of `base`
   return base.sort((a, b) => {
-    const d = key.get(a.id)! - key.get(b.id)!;
+    const ka = key.get(a.id);
+    const kb = key.get(b.id);
+    if (ka === undefined || kb === undefined) return ka === kb ? 0 : ka === undefined ? -1 : 1;
+    const d = ka - kb;
     return Math.abs(d) < EPS ? 0 : d;
   });
 }
@@ -120,9 +126,11 @@ export interface StaggerOpts {
 }
 
 /**
- * the sound of a video: an audio clip grouped with a picture clip that has the same start (the lengths may
+ * the sound of a video: an audio clip grouped with a video clip that has the same start (the lengths may
  * differ: a picture whose tail was trimmed still has its sound). it is no member of the cascade, it goes where
- * its picture goes. follower id -> its picture. when a group has several pictures at that start, an audio
+ * its picture goes. follower id -> its picture. texts, shapes, effects and cameras never get a sound (music
+ * grouped with letters stays a member of its own); one lone still grouped with a sound does (a picture with a
+ * voice over). when a group has several videos at that start, an audio
  * goes to the one with the same asset (an extracted audio keeps the asset of its video), then the same
  * trimStart and speed, and two audios of different assets never share a picture while another is free.
  */
@@ -141,7 +149,9 @@ export function soundOf(clips: readonly Clip[]): Map<string, Clip> {
   // first the audios that have a picture of their own asset
   for (const c of clips) {
     if (c.type !== 'audio' || !c.group) continue;
-    const cands = clips.filter((o) => o.type !== 'audio' && o.group === c.group && Math.abs(o.start - c.start) < EPS);
+    const mates = clips.filter((o) => o.type !== 'audio' && o.group === c.group && Math.abs(o.start - c.start) < EPS);
+    let cands: Clip[] = mates.filter((o) => o.type === 'video');
+    if (cands.length === 0 && mates.length === 1 && mates[0]!.type === 'image') cands = mates;
     if (cands.length === 0) continue;
     const own = cands.filter((o) => 'assetId' in o && o.assetId === c.assetId);
     if (own.length === 0) {
@@ -296,18 +306,21 @@ interface Span {
 }
 
 /**
- * the shape one key list has after a fly on this side: the first key at 0 easing out (in), or the last key
- * at the end with an ease in key before it (out). returns the span of the two keys, or null.
+ * the shape one key list has after a fly on this side: the first key at 0 (or before it) easing out (in), or the
+ * last key at the end (or behind it) with an ease in key before it (out). returns the span of the two keys, or null.
  */
 function flyShape(keys: readonly Keyframe[] | undefined, incoming: boolean, len: number): Span | null {
   if (!keys || keys.length < 2) return null;
   if (incoming) {
     const k0 = keys[0]!;
-    return Math.abs(k0.t) <= EPS && k0.ease === 'ease-out' ? { a: 0, b: keys[1]!.t } : null;
+    const k1 = keys[1]!;
+    // a head trim or a split leaves the far key before the clip starts: the same fly while its rest key is inside
+    return k0.t <= EPS && k1.t > EPS && k0.ease === 'ease-out' ? { a: k0.t, b: k1.t } : null;
   }
   const k0 = keys[keys.length - 2]!;
   const k1 = keys[keys.length - 1]!;
-  return Math.abs(k1.t - len) <= EPS && k0.ease === 'ease-in' ? { a: k0.t, b: len } : null;
+  // a tail trim or a split leaves the far key behind the end
+  return k1.t >= len - EPS && k0.t < len - EPS && k0.ease === 'ease-in' ? { a: k0.t, b: k1.t } : null;
 }
 
 /**
@@ -376,7 +389,9 @@ export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyO
   const same = flyOf(clip, incoming, len);
   const other = flyOf(clip, !incoming, len);
   // the other fly touches this one when its inner key is inside or at the edge of the new span
-  const touches = !!other && (incoming ? other.a <= d + MIN_GAP : other.b >= len - d - MIN_GAP);
+  // (also when the fly that is replaced reached it: the two share their rest key)
+  const shared = !!other && !!same && (incoming ? Math.abs(same.b - other.a) <= MIN_GAP : Math.abs(same.a - other.b) <= MIN_GAP);
+  const touches = !!other && (shared || (incoming ? other.a <= d + MIN_GAP : other.b >= len - d - MIN_GAP));
   const overlaps = !!other && (incoming ? other.a < d - MIN_GAP : other.b > len - d + MIN_GAP);
   const half = len / 2;
   // keys of the other fly that move to the middle of the clip so both flies fit
@@ -387,10 +402,14 @@ export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyO
     for (const prop of FLY_PROPS) {
       const keys = clip.keyframes?.[prop];
       if (!keys || !propFly(keys, !incoming, len, other)) continue;
-      const list = keys.slice();
-      const at = incoming ? list.length - 2 : 1;
-      list[at] = { ...list[at]!, t: half };
-      retimed.set(prop, list);
+      const at = incoming ? keys.length - 2 : 1;
+      const inner = keys[at]!;
+      // keys between the old and the new place of the inner key would end up inside that fly: they go, like in any rewritten span
+      const between = (k: Keyframe) => (incoming ? k.t >= half - MIN_GAP && k.t < inner.t : k.t > inner.t && k.t <= half + MIN_GAP);
+      retimed.set(
+        prop,
+        keys.filter((k) => k === inner || !between(k)).map((k) => (k === inner ? { ...k, t: half } : k)),
+      );
     }
   }
   const lo = incoming ? 0 : len - d;
@@ -401,7 +420,15 @@ export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyO
   // the span that is rewritten on a property: the new fly, widened to an earlier fly on this side
   const zone = (prop: string): Span => {
     const old = oldOf(prop);
-    return old ? { a: Math.min(lo, old.a), b: Math.max(hi, old.b) } : { a: lo, b: hi };
+    const z = old ? { a: Math.min(lo, old.a), b: Math.max(hi, old.b) } : { a: lo, b: hi };
+    // never into a fly of the other side: its inner key (the rest key the two may share) stays where it is,
+    // so a shorter fly here does not make the other one longer
+    const o = other && !overlaps ? propFly(clip.keyframes?.[prop], !incoming, len, other) : null;
+    if (o) {
+      if (incoming) z.b = Math.min(z.b, Math.max(hi, o.a - 2 * MIN_GAP));
+      else z.a = Math.max(z.a, Math.min(lo, o.b + 2 * MIN_GAP));
+    }
+    return z;
   };
   // the time the clip is at rest (the far end from the fly, behind an earlier fly)
   const seamOf = (prop: string): number => (incoming ? zone(prop).b : zone(prop).a);

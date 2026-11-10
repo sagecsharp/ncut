@@ -16,6 +16,8 @@ const MAGIC = 'NCUT1\n';
 const VERSION = 1;
 /** a header larger than this is not one of ours (it only holds the project json) */
 const MAX_HEADER_BYTES = 64 * 1024 * 1024;
+/** more faces than this in one file is not a project of ours */
+const MAX_FONT_FACES = 512;
 
 interface MediaEntry {
   assetId: string;
@@ -130,26 +132,27 @@ export async function unpackProject(file: Blob): Promise<UnpackedProject> {
   const media = new Map<string, Blob>();
   let offset = headerStart + headerLen;
   for (const entry of header.media) {
-    if (!entry || typeof entry.assetId !== 'string' || !(entry.size >= 0) || offset + entry.size > file.size) {
+    if (!entry || typeof entry.assetId !== 'string' || typeof entry.size !== 'number' || !(entry.size >= 0) || offset + entry.size > file.size) {
       throw new Error('the project file is damaged');
     }
     media.set(entry.assetId, file.slice(offset, offset + entry.size, entry.mime || ''));
     offset += entry.size;
   }
   const fonts: UnpackedFont[] = [];
-  if (header.fonts !== undefined) {
-    if (!Array.isArray(header.fonts)) throw new Error('the project file is damaged');
+  // fonts are an extra: a cut off or odd fonts section gives the faces read so far, the project still opens
+  if (Array.isArray(header.fonts)) {
     for (const entry of header.fonts) {
+      if (fonts.length >= MAX_FONT_FACES) break;
       if (
         !entry ||
         typeof entry.family !== 'string' ||
         entry.family === '' ||
         entry.family.length > MAX_FAMILY_LEN ||
         typeof entry.size !== 'number' ||
-        !(entry.size >= 0) ||
+        !(entry.size > 0) ||
         offset + entry.size > file.size
       ) {
-        throw new Error('the project file is damaged');
+        break;
       }
       fonts.push({ family: entry.family, weight: clampWeight(entry.weight), italic: entry.italic === true, blob: file.slice(offset, offset + entry.size) });
       offset += entry.size;

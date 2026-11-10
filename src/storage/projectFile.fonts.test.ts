@@ -40,18 +40,47 @@ describe('project file fonts', () => {
     expect(out.fonts).toEqual([]);
   });
 
-  it('a damaged font entry throws the plain message', async () => {
+  it('a damaged fonts section never costs the project: it opens without those faces', async () => {
     const project = createProject('p');
     const bad = [
       { family: 'Foo', weight: 400, italic: false, size: 999 },
       { family: 5, weight: 400, italic: false, size: 0 },
       { family: 'x'.repeat(500), weight: 400, italic: false, size: 0 },
       { family: 'Foo', weight: 400, italic: false, size: -1 },
+      { family: 'Foo', weight: 400, italic: false, size: '3' },
     ];
     for (const f of bad) {
-      await expect(unpackProject(header({ version: 1, project, media: [], fonts: [f] }))).rejects.toThrow('the project file is damaged');
+      const out = await unpackProject(header({ version: 1, project, media: [], fonts: [f] }));
+      expect(out.project.name).toBe('p');
+      expect(out.fonts).toEqual([]);
     }
-    await expect(unpackProject(header({ version: 1, project, media: [], fonts: 'no' }))).rejects.toThrow('the project file is damaged');
+    expect((await unpackProject(header({ version: 1, project, media: [], fonts: 'no' }))).fonts).toEqual([]);
+  });
+
+  it('a file cut off inside the fonts keeps the faces before the cut', async () => {
+    const project = createProject('p');
+    project.assets.push(asset('ast_a', 'image/png'));
+    const media = new Map<string, Blob>([['ast_a', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })]]);
+    const whole = packProject(project, media, [
+      { family: 'A', weight: 400, italic: false, bytes: bytes(1, 2, 3, 4) },
+      { family: 'B', weight: 400, italic: false, bytes: bytes(5, 6, 7, 8) },
+    ]);
+    const out = await unpackProject(whole.slice(0, whole.size - 2));
+    expect(await raw(out.media.get('ast_a')!)).toEqual([1, 2, 3]);
+    expect(out.fonts.map((f) => f.family)).toEqual(['A']);
+    expect(await raw(out.fonts[0]!.blob)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('a media entry with a size of the wrong type is still a damaged file', async () => {
+    const project = createProject('p');
+    await expect(unpackProject(header({ version: 1, project, media: [{ assetId: 'a', size: '5', mime: '' }] }))).rejects.toThrow('the project file is damaged');
+  });
+
+  it('no more than 512 faces are read', async () => {
+    const project = createProject('p');
+    const many = Array.from({ length: 600 }, (_, i) => ({ family: 'F' + i, weight: 400, italic: false, bytes: bytes(1) }));
+    const out = await unpackProject(packProject(project, new Map(), many));
+    expect(out.fonts.length).toBe(512);
   });
 
   it('clamps a wild weight', async () => {

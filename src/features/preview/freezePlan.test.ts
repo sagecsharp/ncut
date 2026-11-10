@@ -65,8 +65,15 @@ describe('planFreeze', () => {
   it('does not split within one frame of the end', () => {
     expect(planFreeze(clip, 5.99, 30)).toEqual({ split: false, stillStart: 6, shiftFrom: 6 });
   });
-  it('splits exactly one frame in', () => {
-    expect(planFreeze(clip, 2 + 1 / 30, 30).split).toBe(true);
+  it('splits exactly one frame in (when a frame is longer than the shortest piece a split may leave)', () => {
+    expect(planFreeze(clip, 2.1, 10).split).toBe(true);
+  });
+  it('closer to an edge than the shortest piece a split may leave is the head / tail case', () => {
+    // 0.04 s in at 30 fps is more than a frame, but the store refuses a cut that leaves under 0.05 s
+    expect(planFreeze(clip, 2.04, 30)).toEqual({ split: false, stillStart: 2, shiftFrom: 2 });
+    expect(planFreeze(clip, 5.96, 30)).toEqual({ split: false, stillStart: 6, shiftFrom: 6 });
+    expect(planFreeze(clip, 2.04, 60)).toEqual({ split: false, stillStart: 2, shiftFrom: 2 });
+    expect(planFreeze(clip, 2.06, 30).split).toBe(true);
   });
 });
 

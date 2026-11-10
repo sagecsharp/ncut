@@ -4,7 +4,7 @@ import { FRAME_PAUSE_MS, FRAME_WAIT_MS, frameWaitPlan, seekFrame } from './seekF
 /** a video element reduced to what seekFrame touches */
 function fakeVideo(withCallback: boolean) {
   const listeners = new Map<string, Set<() => void>>();
-  let frameCb: (() => void) | null = null;
+  let frameCb: ((now: number, meta?: { mediaTime: number }) => void) | null = null;
   const v = {
     time: 0,
     throwOnSeek: false,
@@ -25,23 +25,23 @@ function fakeVideo(withCallback: boolean) {
     fire(name: string) {
       for (const cb of [...(listeners.get(name) ?? [])]) cb();
     },
-    present() {
+    present(mediaTime?: number) {
       const cb = frameCb;
       frameCb = null;
-      cb?.();
+      cb?.(0, mediaTime === undefined ? undefined : { mediaTime });
     },
     count(name: string) {
       return listeners.get(name)?.size ?? 0;
     },
   } as Record<string, unknown> & {
     fire(n: string): void;
-    present(): void;
+    present(mediaTime?: number): void;
     count(n: string): number;
     throwOnSeek: boolean;
     time: number;
   };
   if (withCallback) {
-    v.requestVideoFrameCallback = (cb: () => void) => {
+    v.requestVideoFrameCallback = (cb: (now: number, meta?: { mediaTime: number }) => void) => {
       frameCb = cb;
       return 1;
     };
@@ -125,6 +125,18 @@ describe('seekFrame', () => {
     const rc = run(c);
     await vi.advanceTimersByTimeAsync(0);
     expect(rc()).toBe(false);
+  });
+
+  it('a frame from before the seek does not count, the next one does', async () => {
+    const v = fakeVideo(true);
+    const result = run(v, 1.5);
+    v.present(0); // the first frame after loading, still on its way
+    v.fire('seeked');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(result()).toBeNull();
+    v.present(1.5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result()).toBe(true);
   });
 
   it('settles once: a late frame or event after the end changes nothing', async () => {

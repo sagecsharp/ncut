@@ -3,6 +3,7 @@ import { resolveClip } from '../../lib/anim';
 import { clipEnd, fadeFactor } from '../../lib/timelineOps';
 import { formatTimecode } from '../../lib/time';
 import type { Clip, ClipAnim, EffectClip, ImageClip, Project, Transition, VideoClip } from '../../types';
+import { MIN_CLIP_DURATION } from '../../types';
 
 export interface FreezePlan {
   /** split the video clip at the playhead first */
@@ -39,9 +40,35 @@ export function pickFreezeTarget(project: Project, selection: readonly string[],
 export function planFreeze(clip: Pick<Clip, 'start' | 'duration'>, time: number, fps: number): FreezePlan {
   const frame = 1 / Math.max(1, fps);
   const end = clipEnd(clip);
-  if (time - clip.start < frame - EPS) return { split: false, stillStart: clip.start, shiftFrom: clip.start };
-  if (end - time < frame - EPS) return { split: false, stillStart: end, shiftFrom: end };
+  // within a frame of an edge, or closer than the shortest piece a split may leave (the store refuses that cut):
+  // the still goes before / after the whole clip
+  const near = (d: number): boolean => d < frame - EPS || d < MIN_CLIP_DURATION + EPS;
+  if (near(time - clip.start)) return { split: false, stillStart: clip.start, shiftFrom: clip.start };
+  if (near(end - time)) return { split: false, stillStart: end, shiftFrom: end };
   return { split: true, stillStart: time, shiftFrom: time };
+}
+
+/**
+ * effects put on clips that move, which the usual "an effect follows its clip" rule misses because they do not
+ * cover the clip exactly (trimmed shorter, or only the part after a cut): they start at or after `from`, so they
+ * go right by `by` with their clip. effects on locked tracks stay.
+ */
+export function effectShiftMoves(
+  clips: readonly Clip[],
+  tracks: readonly { id: string; locked?: boolean }[],
+  moves: readonly TrackMove[],
+  from: number,
+  by: number,
+): TrackMove[] {
+  const moving = new Set(moves.map((m) => m.id));
+  const locked = new Set(tracks.filter((t) => t.locked).map((t) => t.id));
+  const out: TrackMove[] = [];
+  for (const c of clips) {
+    if (c.type !== 'effect' || !c.target || !moving.has(c.target) || moving.has(c.id)) continue;
+    if (c.start < from - EPS || locked.has(c.trackId)) continue;
+    out.push({ id: c.id, trackId: c.trackId, start: c.start + by });
+  }
+  return out;
 }
 
 export interface TrackMove {
@@ -84,6 +111,8 @@ export function freezeFileName(clipName: string, time: number, fps: number): str
  * motionIn) belongs to whatever comes first now, so the still takes it and the video loses it.
  * tail (the still goes after the video): the exit (fadeOut, motionOut) goes the same way.
  * a split in the middle needs nothing: the store already keeps the entrance on the left half and the exit on the right.
+ * a fade or a transition that is longer than the still is shortened to the still by the store (the picture never
+ * dips at the seam; the fade just runs a little faster).
  * the clip after the tail keeps its own transition: it now crosses from the still, which holds the last frame
  * of the video, so the picture stays the same as before.
  */

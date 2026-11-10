@@ -354,7 +354,11 @@ async function filmstripElement(
         for (const f of frames) f.close();
         return null;
       }
-      await seekTo(v, t);
+      // a seek that fails leaves the picture of the frame before: no strip is better than a wrong one
+      if (!(await seekTo(v, t))) {
+        for (const f of frames) f.close();
+        return null;
+      }
       ctx.drawImage(v, 0, 0, w, h);
       frames.push(await createImageBitmap(c));
       await nextTask();

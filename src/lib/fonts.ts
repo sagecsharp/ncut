@@ -397,7 +397,7 @@ async function dbRun<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDB
 }
 
 /** every registered face, by faceKey */
-const faces = new Map<string, { family: string; face: FontFace }>();
+const faces = new Map<string, { family: string; face: FontFace; weight: number; italic: boolean; bytes: ArrayBuffer }>();
 
 /** one picker entry per family, summed up from its faces */
 function refreshImportedInfo(family: string): void {
@@ -420,7 +420,8 @@ async function registerImported(family: string, weight: number, italic: boolean,
   const old = faces.get(key);
   if (old) document.fonts.delete(old.face);
   document.fonts.add(face);
-  faces.set(key, { family, face });
+  // the file itself is kept: a project file takes it along, also when the database could not store it
+  faces.set(key, { family, face, weight, italic, bytes });
   refreshImportedInfo(family);
   for (const w of [400, 700]) for (const i of [0, 1]) ready.add(`${family}|${w}|${i}`);
 }
@@ -524,17 +525,17 @@ export interface FontFile {
   bytes: ArrayBuffer;
 }
 
-/** every stored face of these families (for packing into a .ncut file). [] without storage. never rejects. */
+/** every imported face of these families (for packing into a .ncut file), read from the registered faces. never rejects. */
 export async function importedFontFiles(families: Iterable<string>): Promise<FontFile[]> {
   try {
     const want = new Set(families);
     if (want.size === 0) return [];
+    // every stored face is registered by now, and so is a face that only lives in this session (storage full)
     await restoreImportedFonts();
-    const all = await dbRun<StoredFont[]>('readonly', (s) => s.getAll() as IDBRequest<StoredFont[]>);
     const out: FontFile[] = [];
-    for (const f of all) {
+    for (const f of faces.values()) {
       if (!want.has(f.family) || !f.bytes) continue;
-      out.push({ family: f.family, weight: f.weight ?? 400, italic: !!f.italic, bytes: f.bytes });
+      out.push({ family: f.family, weight: f.weight, italic: f.italic, bytes: f.bytes });
     }
     return out;
   } catch {
