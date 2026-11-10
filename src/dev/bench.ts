@@ -7,6 +7,7 @@
  * - `golden`  stores frames in indexeddb ('ncut-bench') and compares later builds against them, so a
  *             speedup can prove that it did not change a single pixel
  */
+import { ALL_FORMATS, BlobSource, CanvasSink, EncodedPacketSink, Input } from 'mediabunny';
 import type { Clip, MediaAsset, Project, VideoClip } from '../types';
 import { CANVAS_PRESETS, createClipFromAsset, createEffectClip, createProject, createTextClip, createTrack } from '../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../lib/templates';
@@ -199,16 +200,21 @@ async function render(project: Project, o: RenderOptions = {}) {
   return summary(times);
 }
 
-/** run the real exporter and report its stage times. the file is thrown away. */
+/** the file of the last bench export (for checks on the file itself) */
+let lastBlob: Blob | null = null;
+
+/** run the real exporter and report its stage times. the file is kept only until the next run. */
 async function exportRun(project: Project, o: Partial<ExportOptions> = {}) {
   let stats: ExportStats | null = null;
   const warnings: string[] = [];
+  let fallback: string | null = null;
   const t0 = performance.now();
   const blob = await exportProject(
     project,
     { container: 'mp4', scale: 1, fps: project.fps, quality: 'high', includeAudio: false, ...o },
-    { onStats: (s) => (stats = s), onWarning: (w) => warnings.push(w) },
+    { onStats: (s) => (stats = s), onWarning: (w) => warnings.push(w), onFallback: (reason) => (fallback = reason) },
   );
+  lastBlob = blob;
   const ms = performance.now() - t0;
   const s = stats as ExportStats | null;
   const r = (v: number) => Math.round(v);
@@ -217,9 +223,107 @@ async function exportRun(project: Project, o: Partial<ExportOptions> = {}) {
     bytes: blob.size,
     type: blob.type,
     framesPerSecond: s ? Math.round((s.frames / ms) * 1000 * 10) / 10 : 0,
-    stats: s ? { ...s, setupMs: r(s.setupMs), decodeMs: r(s.decodeMs), renderMs: r(s.renderMs), encodeMs: r(s.encodeMs), audioMs: r(s.audioMs), finalizeMs: r(s.finalizeMs), totalMs: r(s.totalMs) } : null,
+    stats: s ? { ...s, setupMs: r(s.setupMs), decodeMs: r(s.decodeMs), renderMs: r(s.renderMs), encodeMs: r(s.encodeMs), audioMs: r(s.audioMs), muxMs: r(s.muxMs), finalizeMs: r(s.finalizeMs), totalMs: r(s.totalMs) } : null,
     warnings,
+    fallback,
   };
+}
+
+// ---------- the exported file itself ----------
+
+interface FileCheckOptions extends Partial<ExportOptions> {
+  /** frames whose decoded picture is compared with what was drawn */
+  at: number[];
+}
+
+/**
+ * export, then read the file back: how many frames, where the key frames are, whether the times are the frame grid,
+ * and how close the decoded frames are to the frames that went into the encoder (psnr over rgb, in db).
+ */
+async function fileCheck(project: Project, o: FileCheckOptions) {
+  const { at, ...opts } = o;
+  const drawn = new Map<number, Uint8ClampedArray>();
+  let fallback: string | null = null;
+  let stats: ExportStats | null = null;
+  const options: ExportOptions = { container: 'mp4', scale: 1, fps: project.fps, quality: 'high', includeAudio: false, ...opts };
+  const blob = await exportProject(project, options, {
+    captureFrames: at,
+    onFrame: (i, picture) => drawn.set(i, readPixels(picture)),
+    onFallback: (reason) => (fallback = reason),
+    onStats: (s) => (stats = s),
+  });
+  const fps = options.fps > 0 ? options.fps : project.fps;
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) throw new Error('the file has no video track');
+    const config = await track.getDecoderConfig();
+    const packets = new EncodedPacketSink(track);
+    let frames = 0;
+    let offGrid = 0;
+    let outOfOrder = 0;
+    let last = -1;
+    const keys: number[] = [];
+    for await (const p of packets.packets(undefined, undefined, { metadataOnly: true })) {
+      const index = p.timestamp * fps;
+      if (Math.abs(index - Math.round(index)) > 0.01) offGrid++;
+      if (Math.round(index) !== last + 1) outOfOrder++;
+      last = Math.round(index);
+      if (p.type === 'key') keys.push(last);
+      frames++;
+    }
+    let widest = 0;
+    for (let k = 1; k < keys.length; k++) widest = Math.max(widest, keys[k]! - keys[k - 1]!);
+    const audio = await input.getPrimaryAudioTrack();
+    let audioPackets = 0;
+    if (audio) for await (const p of new EncodedPacketSink(audio).packets(undefined, undefined, { metadataOnly: true })) audioPackets += p ? 1 : 0;
+    // decoded pictures against the drawn ones
+    const sink = new CanvasSink(track, { poolSize: 1 });
+    const psnr: number[] = [];
+    let k = 0;
+    const want = at.filter((i) => drawn.has(i)).sort((a, b) => a - b);
+    for await (const got of sink.canvasesAtTimestamps(want.map((i) => i / fps))) {
+      const i = want[k++]!;
+      if (!got) continue;
+      const a = drawn.get(i)!;
+      const b = readPixels(got.canvas as OffscreenCanvas);
+      if (a.length !== b.length) {
+        psnr.push(0);
+        continue;
+      }
+      let sum = 0;
+      for (let p = 0; p < a.length; p += 4) {
+        const dr = a[p]! - b[p]!;
+        const dg = a[p + 1]! - b[p + 1]!;
+        const db = a[p + 2]! - b[p + 2]!;
+        sum += dr * dr + dg * dg + db * db;
+      }
+      const mse = sum / ((a.length / 4) * 3);
+      psnr.push(mse === 0 ? 99 : Math.round(10 * Math.log10((255 * 255) / mse) * 100) / 100);
+    }
+    const s = stats as ExportStats | null;
+    return {
+      workers: s?.workers ?? 0,
+      fallback,
+      bytes: blob.size,
+      frames,
+      expected: s?.frames ?? 0,
+      offGrid,
+      outOfOrder,
+      keyFrames: keys.length,
+      widestKeyGap: widest,
+      firstKeys: keys.slice(0, 8),
+      codec: config?.codec ?? '',
+      colorSpace: config?.colorSpace ? JSON.stringify(config.colorSpace) : '',
+      duration: Math.round((await input.computeDuration()) * 1000) / 1000,
+      audioPackets,
+      psnrMin: psnr.length ? Math.min(...psnr) : 0,
+      psnrMean: psnr.length ? Math.round((psnr.reduce((x, y) => x + y, 0) / psnr.length) * 100) / 100 : 0,
+      psnr,
+    };
+  } finally {
+    input.dispose();
+  }
 }
 
 // ---------- golden frames ----------
@@ -227,7 +331,7 @@ async function exportRun(project: Project, o: Partial<ExportOptions> = {}) {
 interface Golden {
   width: number;
   height: number;
-  frames: { key: string; data: Uint8ClampedArray }[];
+  frames: { key: string; data: Uint8ClampedArray; index?: number }[];
 }
 
 function db(): Promise<IDBDatabase> {
@@ -273,7 +377,7 @@ async function dbKeys(): Promise<string[]> {
 }
 
 /** copy a (gpu) canvas into a cpu one and read it there */
-function readPixels(src: OffscreenCanvas): Uint8ClampedArray {
+function readPixels(src: OffscreenCanvas | ImageBitmap): Uint8ClampedArray {
   const c = new OffscreenCanvas(src.width, src.height);
   const x = c.getContext('2d', { willReadFrequently: true })!;
   x.drawImage(src, 0, 0);
@@ -286,6 +390,12 @@ interface FrameSet {
   scale?: number;
   /** render through the exporter (needed when the project has video clips) */
   viaExport?: boolean;
+  /** with viaExport: parts rendered at once (default 1 = the plain way on this thread, the reference) */
+  workers?: number;
+  /** with viaExport and workers > 1: the parts on this thread instead of in web workers */
+  partsOnMain?: boolean;
+  /** with viaExport: the part of the timeline to export (frame indices count from its start) */
+  range?: { start: number; end: number };
 }
 
 async function grab(project: Project, set: FrameSet): Promise<Golden> {
@@ -296,15 +406,21 @@ async function grab(project: Project, set: FrameSet): Promise<Golden> {
     let size = { width: 0, height: 0 };
     await exportProject(
       project,
-      { container: 'mp4', scale, fps: project.fps, quality: 'low', includeAudio: false },
+      { container: 'mp4', scale, fps: project.fps, quality: 'low', includeAudio: false, workers: set.workers ?? 1, partsOnMain: set.partsOnMain, range: set.range },
       {
+        captureFrames: set.at,
+        onFallback: (reason) => {
+          throw new Error(`the export fell back to one thread: ${reason}`);
+        },
         onFrame: (i, canvas) => {
           if (!want.has(i)) return;
           size = { width: canvas.width, height: canvas.height };
-          frames.push({ key: `f${i}`, data: readPixels(canvas) });
+          frames.push({ key: `f${i}`, data: readPixels(canvas), index: i });
         },
       },
     );
+    // parts finish in any order
+    frames.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     return { ...size, frames };
   }
   await ensureProjectFonts(project);
@@ -378,6 +494,10 @@ const golden = {
   async noise(project: Project, set: FrameSet) {
     return compare(await grab(project, set), await grab(project, set));
   },
+  /** the same frames rendered two ways now (for example { workers: 1 } against { workers: 3 }) */
+  async cross(project: Project, set: FrameSet, other: Partial<FrameSet>) {
+    return compare(await grab(project, set), await grab(project, { ...set, ...other }));
+  },
   keys: dbKeys,
 };
 
@@ -388,5 +508,7 @@ export const bench = {
   videoProject,
   render,
   export: exportRun,
+  lastBlob: () => lastBlob,
+  fileCheck,
   golden,
 };
