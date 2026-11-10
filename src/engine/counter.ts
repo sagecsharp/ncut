@@ -49,3 +49,13 @@ export function counterText(clip: Pick<TextClip, 'text' | 'counter' | 'start' | 
   const n = formatCounter(counterValue(counter, time - clip.start, clip.duration), counter);
   return clip.text.includes(COUNTER_TOKEN) ? clip.text.split(COUNTER_TOKEN).join(n) : n;
 }
+
+/**
+ * the clip as it is drawn at a time: the counter's number written into \`text\` and the counter taken off,
+ * so everything after this (layout, caches, signatures, overlays) just sees a plain text clip.
+ * a clip without a counter is returned as it is (the same object, no copy).
+ */
+export function resolveCounter<T extends Pick<TextClip, 'text' | 'counter' | 'start' | 'duration'>>(clip: T, time: number): T {
+  if (!clip.counter) return clip;
+  return { ...clip, text: counterText(clip, time), counter: null };
+}
