@@ -5,6 +5,7 @@
 import { resolveClip } from '../../lib/anim';
 import { deleteAsset, importFiles } from '../../media/importer';
 import { getAssetUrl } from '../../media/registry';
+import { seekFrame } from '../../media/seekFrame';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { withFollowerMoves } from '../timeline/followMoves';
@@ -45,11 +46,8 @@ async function grabSourceFrame(url: string, sourceTime: number): Promise<Blob | 
     const loaded = once(v, 'loadeddata', GRAB_TIMEOUT_MS);
     v.src = url;
     await loaded;
-    if (Math.abs(v.currentTime - sourceTime) > 1e-3) {
-      const seeked = once(v, 'seeked', GRAB_TIMEOUT_MS);
-      v.currentTime = sourceTime;
-      await seeked;
-    }
+    // wait for the picture of that moment, not only for 'seeked': drawn too early the still shows the frame before the seek
+    if (Math.abs(v.currentTime - sourceTime) > 1e-3 && !(await seekFrame(v, sourceTime, GRAB_TIMEOUT_MS))) return null;
     const w = v.videoWidth;
     const h = v.videoHeight;
     if (w <= 0 || h <= 0) return null;

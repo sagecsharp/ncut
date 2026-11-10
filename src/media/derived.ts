@@ -9,6 +9,7 @@ import { ALL_FORMATS, AudioSampleSink, BlobSource, CanvasSink, Input } from 'med
 import type { MediaAsset } from '../types';
 import { useEditor } from '../store/editorStore';
 import { getAssetBlob, getAssetUrl } from './registry';
+import { seekFrame } from './seekFrame';
 
 export interface WaveformData {
   /** how many peaks describe one second of audio */
@@ -144,21 +145,9 @@ function closeVideoElement(v: HTMLVideoElement): void {
   v.load();
 }
 
+/** seek and wait for the picture of the new position (not just the 'seeked' event, see seekFrame) */
 function seekTo(v: HTMLVideoElement, t: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, SEEK_TIMEOUT_MS, false);
-    function done(ok: boolean) {
-      clearTimeout(timer);
-      v.removeEventListener('seeked', onSeeked);
-      v.removeEventListener('error', onError);
-      resolve(ok);
-    }
-    const onSeeked = () => done(true);
-    const onError = () => done(false);
-    v.addEventListener('seeked', onSeeked);
-    v.addEventListener('error', onError);
-    v.currentTime = t;
-  });
+  return seekFrame(v, t, SEEK_TIMEOUT_MS);
 }
 
 /* ---------- thumbnails ---------- */
