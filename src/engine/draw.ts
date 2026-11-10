@@ -686,7 +686,7 @@ function temporalSamples(raw: EffectClip, time: number, fps: number, quality: nu
     const v = clip.params[p.key];
     params[p.key] = typeof v === 'number' && Number.isFinite(v) ? v : p.default;
   }
-  const samples = def.temporal(params, Math.min(1, amount), fps, quality).filter((sm) => sm.weight > 0);
+  const samples = def.temporal(params, Math.min(1, amount), fps, quality, time).filter((sm) => sm.weight > 0);
   if (samples.length < 2) return null;
   return pruneSamples(samples);
 }

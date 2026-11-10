@@ -5,7 +5,7 @@
  * import-safe in node: nothing touches document / window / indexedDB at module load.
  */
 import type { Project } from '../types';
-import { faceKey, readFontMeta } from '../features/fonts/fontMeta';
+import { faceKey, readFontMeta } from './fontMeta';
 
 export type FontCategory = 'sans' | 'serif' | 'display' | 'handwriting' | 'mono' | 'system' | 'local' | 'imported';
 
