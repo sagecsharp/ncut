@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { getEffect } from '../../engine/effects/registry';
 import { animProps } from '../../lib/anim';
 import type { Clip, Keyframe, Keyframes } from '../../types';
 import { keySpan } from './keyTools';
@@ -25,11 +26,14 @@ export function captureKeys(kf: Keyframes | undefined): KeyClip | null {
  */
 export function placeKeys(copied: KeyClip, clip: Clip, at: number): Keyframes {
   const allowed = new Set(animProps(clip).map((p) => p.prop));
+  // an effect's own settings are keyed as p.<name>: they fit when the effect has that setting
+  const params = clip.type === 'effect' ? new Set((getEffect(clip.effect)?.params ?? []).map((q) => 'p.' + q.key)) : null;
   const t0 = Math.min(Math.max(at, 0), clip.duration);
   const out: Keyframes = {};
   for (const prop of Object.keys(copied)) {
-    if (!allowed.has(prop)) continue;
-    const keys: Keyframe[] = copied[prop]!.map((k) => ({ t: t0 + k.t, v: k.v, ease: k.ease }));
+    if (!allowed.has(prop) && !params?.has(prop)) continue;
+    // keys that would land after the clip's end are left out: nobody would ever see them
+    const keys: Keyframe[] = copied[prop]!.map((k) => ({ t: t0 + k.t, v: k.v, ease: k.ease })).filter((k) => k.t <= clip.duration + 1e-6);
     if (keys.length > 0) out[prop] = keys;
   }
   return out;

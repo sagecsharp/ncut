@@ -25,6 +25,11 @@ export function repeatClip(id: string, opts: Partial<RepeatOptions>): string[] {
     ui.toast('this clip is on a locked track: unlock it to make copies');
     return [];
   }
+  // the stagger sits on the frame grid like every clip: whole frames, at least one when there is a delay
+  const rawDelay = Number.isFinite(opts.delay) ? Math.max(0, opts.delay!) : 0;
+  const fps = p.fps > 0 ? p.fps : 30;
+  const delay = rawDelay > 0 ? Math.max(1, Math.round(rawDelay * fps)) / fps : 0;
+  opts = { ...opts, delay };
   const plan = repeatPlan(clip, { ...DEFAULT_REPEAT, ...opts });
   if (plan.length === 0) {
     ui.toast('set copies to 2 or more');
@@ -51,7 +56,9 @@ export function repeatClip(id: string, opts: Partial<RepeatOptions>): string[] {
   }
   if (ids.length === 0) return [];
   const all = [id, ...ids];
-  useEditor.getState().groupClips(all, skip);
+  // a clip that already belongs to a group stays with it: the copies join (the group is made again with them)
+  const mates = clip.group ? p.clips.filter((c) => c.group === clip.group && c.id !== id).map((c) => c.id) : [];
+  useEditor.getState().groupClips([...all, ...mates], skip);
   useEditor.getState().select(all);
   ui.toast(ids.length === 1 ? '1 copy' : `${ids.length} copies`);
   return ids;

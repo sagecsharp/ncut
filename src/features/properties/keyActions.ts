@@ -5,7 +5,7 @@ import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import type { Clip, Keyframe, Keyframes } from '../../types';
 import { captureKeys, getKeyClip, placeKeys, setKeyClip } from './keyClipboard';
-import { fitKeys, repeatKeys, reverseKeys, wiggleKeys } from './keyTools';
+import { fitKeys, repeatKeys, repeatTooBig, reverseKeys, wiggleKeys } from './keyTools';
 
 const toast = (msg: string, kind?: 'info' | 'error') => useUi.getState().toast(msg, kind);
 
@@ -76,7 +76,7 @@ function transform(id: string, label: string, fn: (kf: Keyframes, clip: Clip) =>
 }
 
 export function reverseKeysAction(id: string): void {
-  transform(id, 'keyframes reversed', (kf) => reverseKeys(kf));
+  transform(id, 'keyframes reversed', (kf, clip) => reverseKeys(kf, clip.duration));
 }
 
 export function fitKeysAction(id: string): void {
@@ -84,6 +84,11 @@ export function fitKeysAction(id: string): void {
 }
 
 export function repeatKeysAction(id: string, pingPong: boolean): void {
+  const kf = useEditor.getState().project?.clips.find((c) => c.id === id)?.keyframes;
+  if (kf && repeatTooBig(kf, 2)) {
+    toast('too many keyframes to repeat again', 'info');
+    return;
+  }
   transform(id, pingPong ? 'keyframes repeated, ping pong' : 'keyframes repeated x2', (kf) => repeatKeys(kf, 2, pingPong));
 }
 
@@ -106,6 +111,8 @@ export function wiggleProps(clip: Clip): WiggleChoice[] {
 /** a sensible starting amount for a property (in its own unit) */
 export function wiggleDefault(clip: Clip, prop: string): number {
   const info = animProps(clip).find((a) => a.prop === prop);
+  // scale is a factor around 1: a tenth is a visible shake, more would collapse the clip
+  if (prop === 'scale') return 0.1;
   if (info?.unit === 'px') return 20;
   if (info?.unit === 'deg') return 5;
   if (info && info.max !== undefined && info.min !== undefined) return Math.round((info.max - info.min) * 10) / 100;
@@ -149,12 +156,25 @@ export function pasteKeysAction(id: string): void {
     return;
   }
   const at = usePlayback.getState().time - clip.start;
+  if (at < -1e-6 || at > clip.duration + 1e-6) {
+    toast('move the playhead onto the clip first: the keys start there', 'info');
+    return;
+  }
   const placed = placeKeys(copied, clip, at);
   const n = Object.values(placed).reduce((s, k) => s + k.length, 0);
   if (n === 0) {
     toast('nothing to paste here', 'info');
     return;
   }
-  writeKeys(clip, placed);
+  // the pasted keys replace what lay in their own time span, older keys before and after it stay
+  const merged: Keyframes = {};
+  for (const prop of Object.keys(placed)) {
+    const fresh = placed[prop]!;
+    const lo = fresh[0]!.t;
+    const hi = fresh[fresh.length - 1]!.t;
+    const old = (clip.keyframes?.[prop] ?? []).filter((k) => k.t < lo - 1e-6 || k.t > hi + 1e-6);
+    merged[prop] = [...old, ...fresh].sort((a, b) => a.t - b.t);
+  }
+  writeKeys(clip, merged);
   toast(`${n} keys pasted`);
 }

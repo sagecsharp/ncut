@@ -11,6 +11,8 @@ const GAP_TOL = 1e-9;
 /** wiggle never makes more keys than this */
 export const MAX_WIGGLE_KEYS = 240;
 const MAX_REPEAT = 64;
+/** most keys one property may have after a repeat */
+export const MAX_KEYS_PER_PROP = 240;
 
 /** the ease that plays the same curve backwards (exact for linear / smooth / in / out, best effort for the rest) */
 export function mirrorEase(e: Easing): Easing {
@@ -55,11 +57,16 @@ export function keySpan(kf: Keyframes): { lo: number; hi: number } | null {
   return lo <= hi ? { lo, hi } : null;
 }
 
-/** play the animation backwards inside its own time span */
-export function reverseKeys(kf: Keyframes): Keyframes {
+/**
+ * play the animation backwards inside its own time span. with `duration` (the clip's length) and keys that lie
+ * outside the clip (a split half keeps the keys of the part that was cut away), the mirror is the clip itself:
+ * what is visible plays backwards, not what was cut off.
+ */
+export function reverseKeys(kf: Keyframes, duration?: number): Keyframes {
   const span = keySpan(kf);
   if (!span) return {};
-  const sum = span.lo + span.hi;
+  const outside = duration !== undefined && duration > 0 && (span.lo < -GAP_TOL || span.hi > duration + GAP_TOL);
+  const sum = outside ? duration : span.lo + span.hi;
   return mapProps(kf, (keys) => {
     const n = keys.length;
     const out: Keyframe[] = [];
@@ -104,6 +111,8 @@ export function repeatKeys(kf: Keyframes, times: number, pingPong: boolean): Key
   const { lo, hi } = span;
   const len = hi - lo;
   return mapProps(kf, (keys) => {
+    // one key is a value, not a pattern; and a property never grows past the cap (it stays as it is)
+    if (keys.length < 2 || (keys.length + 1) * n > MAX_KEYS_PER_PROP) return keys;
     const out: Keyframe[] = [];
     for (let pass = 0; pass < n; pass++) {
       const flip = pingPong && pass % 2 === 1;
@@ -125,10 +134,24 @@ export function repeatKeys(kf: Keyframes, times: number, pingPong: boolean): Key
           else last.t = Math.max(park, cur.length > 1 ? cur[cur.length - 2]!.t + MIN_GAP : park);
         }
       }
+      // a jump made by an earlier repeat (two keys 1 ms apart) must stay a jump: squeezing it would merge the
+      // two keys and lose the peak. the earlier key of such a pair steps back to keep the gap.
+      for (let j = cur.length - 1; j >= 1; j--) {
+        const b = cur[j]!;
+        const a = cur[j - 1]!;
+        if (b.t - a.t < MIN_GAP - GAP_TOL) a.t = b.t - MIN_GAP;
+      }
       out.push(...cur);
     }
+    out.sort((a, b) => a.t - b.t);
     return out;
   });
+}
+
+/** true when repeating would push a property past the key cap (repeatKeys then leaves that property alone) */
+export function repeatTooBig(kf: Keyframes, times: number): boolean {
+  const n = Math.min(MAX_REPEAT, Math.floor(times));
+  return Object.values(kf).some((keys) => keys.length >= 2 && (keys.length + 1) * n > MAX_KEYS_PER_PROP);
 }
 
 export interface WiggleOptions {
