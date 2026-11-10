@@ -1,13 +1,13 @@
 # ncut
 
-a flat, dark video editor that runs entirely in your browser.
+a flat, monochrome video editor that runs entirely in your browser.
 
 - multi-track timeline: video, image, text and audio clips. move, trim, split, ripple delete, duplicate, copy/paste, snapping, undo/redo
 - real-time preview on a canvas, with on-canvas move / scale / rotate
 - text overlays, fades, per-clip volume, speed and opacity
 - export to mp4 or webm with webcodecs, no upload, no watermark
 - everything stays on your machine: projects and media live in indexeddb
-- linux mint inspired dark theme. flat. no glow.
+- monochrome, high contrast, flat ui in kode mono. follows your system: black at night, white by day. optional color tint in settings. no glow.
 - a small fps counter in the corner so you can see how the editor is performing
 
 ## run it

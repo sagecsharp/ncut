@@ -16,6 +16,7 @@ lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, 
 lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/perf.ts              frame-time monitor behind the fps counter
+lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
 store/playback.ts        usePlayback: the master clock (time, playing, loop, volume)
 store/ui.ts              useUi: open dialog, toasts
@@ -25,7 +26,7 @@ media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
 engine/draw.ts           renderFrame(ctx, project, time, resolver) + getClipBox, hitTestBox, measureText
-components/ui/           Dialog, NumberField, Toasts, FpsCounter
+components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts
@@ -87,15 +88,22 @@ scrubbing, dragging clips and zooming, with dozens of clips.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
    observer, object url, raf and ImageBitmap you create.
 
-## visual rules (linux mint dark, flat)
+## visual rules (monochrome, high contrast, flat)
 
+- the ui is monochrome: neutral grays, white accent on the black theme and black accent on the white theme.
+  `lib/appearance.ts` sets `data-theme="dark|light"` on `<html>` (auto follows the system) and an optional
+  tint (`--tint-h`, `--tint-s`) that every token in `styles/theme.css` mixes in. the user controls both in settings.
+- every color must work in BOTH themes and with any tint. colors only through the tokens in `styles/theme.css`:
+  never hardcode hex/rgb/oklch values in component css or inline styles. the only non-gray tokens are
+  `--danger`, `--warn` (destructive actions, the fps health dot).
 - no glow of any kind: no `box-shadow`, `text-shadow`, `filter: blur/drop-shadow`, `backdrop-filter`.
 - no gradients. solid fills only. depth = surface tokens + 1px borders.
-- colors only through the tokens in `styles/theme.css`. do not hardcode hex values in component css
-  (clip fills use `--clip-video/-image/-audio/-text`). the one accent is mint green `--accent`.
-- small radii (`--radius`), compact 28px controls, 13px text, lowercase ui copy. no emojis.
+- canvases that draw with token colors read them through a resolver that is invalidated on the
+  `ncut:appearance` window event (see `features/timeline/view.ts` cssVar) and redraw.
+- the font is kode mono everywhere (`--font`, bundled via @fontsource/kode-mono). it is monospace and wide:
+  labels must truncate with ellipsis instead of overflowing. 12px base text, compact 28px controls, small radii, lowercase copy, no emojis.
 - reuse the classes from `styles/base.css` and the components in `components/ui/` before writing new control styles.
-- icons: `lucide-react`, 14-16px, `strokeWidth` default. check an icon exists in the installed version before using it.
+- icons: `lucide-react`, 14-16px. check an icon exists in the installed version before using it.
 - every interactive control has a `title` (tooltip) and works with the keyboard. focus ring = the global 1px accent outline.
 
 ## feature css
