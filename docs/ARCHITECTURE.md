@@ -18,7 +18,8 @@ lib/factory.ts           createProject, createClipFromAsset, createTextClip, CAN
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
 lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
-lib/links.ts             ids that point at other clips: parent (attach), look target, groups. cycle checks, relinking copies
+lib/links.ts             ids that point at other clips: parent (attach), look target, camera target, the clip an effect
+                         sits on, groups. cycle checks, relinking copies and split halves
 lib/subtitles.ts         .srt / .vtt parsing and writing, splitting a text into caption sized cues
 lib/templates.ts         starter timelines for the new project dialog
 lib/gif.ts               dependency-free gif encoder (palette, dithering, lzw)
@@ -26,7 +27,7 @@ lib/fonts.ts             font catalog: bundled (lazy css imports), system, local
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
-store/playback.ts        usePlayback: the master clock (time, playing, loop, volume)
+store/playback.ts        usePlayback: the master clock (time, playing, loop, volume, speed, rate + shuttle)
 store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
@@ -38,18 +39,21 @@ media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media 
 engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + renderSceneView, getClipBox, hitTestBox
 engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
 engine/textAnim.ts       the per-letter text animations (in / out / loop)
+engine/counter.ts        running numbers in text clips (counterValue, counterText, resolveCounter)
 engine/shape.ts          shape clips (rect, ellipse, polygon, star ...)
 engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), some only for 3d clips
 engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
 engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel)
 engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
+engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target), cached per clips array
+engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
 engine/effects/          effect registry + defs (glsl) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
 engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
-features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts
+features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k)
 features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools
 features/fonts/          FontPicker
 features/timeline/       Timeline
@@ -110,6 +114,21 @@ numbers at draw time (effects get a per-clip `seed`).
   ('clip' + `lookTarget`). it is applied last, in the world.
 - fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
 - groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
+- an effect on one clip (`EffectClip.target`): the effect is skipped by the adjustment layer walk. when its
+  target is drawn, that clip is painted alone into a scratch canvas, the effects run on it, the result is
+  cut back to the clip's own outline and laid into the stack with the clip's blend mode. the two tracks can
+  be anywhere in the stack. a 3d target is drawn as a run of its own. temporal effects with a target do nothing.
+- per-clip motion blur kinds (`clip.motionBlur.style`): 'even' averages the open shutter, 'trail' keeps the
+  clip sharp and leaves a tail fading into the past, 'ghost' draws a few separate copies behind it.
+- running numbers (`TextClip.counter`): `resolveVisual` writes the number into the text right after the
+  keyframes (`resolveCounter`), so layout, caches and overlays see a plain text clip. ui code that measures
+  a text clip does the same (`features/preview/attached.ts` `resolveShown`).
+- playback speed: the clock advances by `dt * rate` (`store/playback.ts`). the frame renderer never sees
+  the rate. the preview's media elements follow it (playbackRate forward, pause + seek backwards, audio
+  muted backwards and above 4x). the export ignores it.
+- `releaseRenderResources(channel)` frees everything a channel holds (scratch canvases, clip look, masks,
+  the 3d renderer, effect and transition runners). the export calls it when it ends; everything is rebuilt
+  on the next use.
 
 ## store rules
 
