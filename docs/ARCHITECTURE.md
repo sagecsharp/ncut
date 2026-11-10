@@ -18,6 +18,10 @@ lib/factory.ts           createProject, createClipFromAsset, createTextClip, CAN
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
 lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
+lib/links.ts             ids that point at other clips: parent (attach), look target, groups. cycle checks, relinking copies
+lib/subtitles.ts         .srt / .vtt parsing and writing, splitting a text into caption sized cues
+lib/templates.ts         starter timelines for the new project dialog
+lib/gif.ts               dependency-free gif encoder (palette, dithering, lzw)
 lib/fonts.ts             font catalog: bundled (lazy css imports), system, local and imported fonts
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
@@ -26,6 +30,8 @@ store/playback.ts        usePlayback: the master clock (time, playing, loop, vol
 store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
+storage/projectFile.ts   one .ncut file = project + media
+storage/posters.ts       small pictures of the preview for the project cards (localStorage)
 media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
@@ -33,7 +39,10 @@ engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + rende
 engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
 engine/textAnim.ts       the per-letter text animations (in / out / loop)
 engine/shape.ts          shape clips (rect, ellipse, polygon, star ...)
-engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop)
+engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), some only for 3d clips
+engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
+engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel)
+engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
 engine/effects/          effect registry + defs (glsl) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
 engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer
@@ -41,7 +50,7 @@ components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSett
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts
-features/media/          MediaPanel (media, text, shapes, effects, transitions tabs)
+features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools
 features/fonts/          FontPicker
 features/timeline/       Timeline
 features/preview/        Preview
@@ -85,6 +94,22 @@ numbers at draw time (effects get a per-clip `seed`).
   camera sees the canvas plane exactly filling the frame, so a flat 3d clip at z = 0 looks identical to
   a 2d clip. a camera clip stores offsets from that home pose.
 - text is laid out per glyph (`engine/text.ts`); 3d text goes through a cached texture.
+- attached clips: `clip.parent` is the id of another clip (or a camera). the renderer draws a child at its
+  world pose (`engine/parent.ts` `worldTransform`): the parent's pose after keyframes and motions, at the
+  time clamped into the parent's range, composed down the chain. a parent does not have to be visible.
+  a camera parent pins a 3d clip to the lens (a hud). when ui code attaches or detaches a clip it writes
+  the transform from `reparentTransform` in the same undo step so the clip stays where it is on screen.
+  drags convert pointer deltas with `worldDeltaToLocal`.
+- a clip's picture goes through, in this order: the clip look (`clip.adjust`, `clip.chromaKey`), the mask
+  (`clip.mask`), then crop / corners / placement / blend. both helpers return a canvas that is only valid
+  until the next call on the same channel ('preview' or 'export'), so cache keys for textures include
+  `clipLookSignature` and `maskSignature`.
+- per-clip motion blur (`clip.motionBlur`): a 2d clip is painted several times at sub-frame times and
+  averaged. only its placement is sampled, the picture stays the one of the frame.
+- look at: a 3d clip can turn toward the camera (`lookAt` 'camera' / 'cameraY') or toward another clip
+  ('clip' + `lookTarget`). it is applied last, in the world.
+- fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
+- groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
 
 ## store rules
 
@@ -92,6 +117,9 @@ numbers at draw time (effects get a per-clip `seed`).
 - every action records an undo step unless called with `{ skipHistory: true }`.
   for a drag / slider scrub: call `pushHistory()` once when the gesture really starts, then pass
   `skipHistory: true` on every update. one gesture = one undo step.
+- ids that point at other clips (`parent`, `lookTarget`, a camera's target, `group`) are kept right by the
+  store: delete unlinks, duplicate and paste relink to the copies, `updateClip` refuses a parent loop.
+  read them through `lib/links.ts`, which also guards against loops in old data.
 - placement goes through `moveClips` / `trimClip` / `setClipSpeed` / `insertAsset` / `addText`.
   `updateClip` ignores `start`, `duration`, `trackId`, `trimStart`, `speed`.
 - zustand v5: a selector must return a stable reference. `useEditor(s => s.project.clips.filter(...))`
