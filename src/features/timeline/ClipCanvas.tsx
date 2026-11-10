@@ -200,7 +200,12 @@ function drawFilm(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: num
     const frame = film.frames[nearestIndex(film.times, t)];
     if (!frame) continue;
     const x0 = Math.round(x);
-    ctx.drawImage(frame, x0, 0, Math.round(x + tileW) - x0 + 1, h);
+    if (frame.width === 0 || frame.height === 0) continue;
+    try {
+      ctx.drawImage(frame, x0, 0, Math.round(x + tileW) - x0 + 1, h);
+    } catch {
+      // a closed bitmap must never break the timeline
+    }
   }
 }
 

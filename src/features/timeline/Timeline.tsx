@@ -5,6 +5,8 @@ import { clamp } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
+import { isTypingTarget } from '../shell/useShortcuts';
 import { ClipMenu } from './ClipMenu';
 import { PlayheadLine } from './Playhead';
 import { Ruler } from './Ruler';
@@ -55,11 +57,6 @@ function wheelDelta(e: WheelEvent, el: HTMLElement, value: number): number {
   if (e.deltaMode === 1) return value * 16;
   if (e.deltaMode === 2) return value * el.clientHeight;
   return value;
-}
-
-function isTypingTarget(t: EventTarget | null): boolean {
-  if (!(t instanceof HTMLElement)) return false;
-  return t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
 }
 
 function TimelineInner() {
@@ -190,7 +187,8 @@ function TimelineInner() {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== 'z' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (isTypingTarget(e.target)) return;
+      if (e.defaultPrevented || isTypingTarget(e.target)) return;
+      if (useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop')) return;
       e.preventDefault();
       fit();
     };
@@ -268,7 +266,9 @@ function TimelineInner() {
               <div className="timeline-overlay">
                 <PlayheadLine scrollerRef={scrollerRef} />
                 <div ref={overlays.refSnap} className="timeline-snap" hidden />
-                <div ref={overlays.refGhost} className="timeline-ghost" hidden />
+                <div ref={overlays.refGhost} className="timeline-ghost" hidden>
+                  <span className="timeline-ghost-label" />
+                </div>
                 <div ref={overlays.refMarquee} className="timeline-marquee" hidden />
               </div>
             </div>

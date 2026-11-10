@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { VolumeX } from 'lucide-react';
+import { Sparkles, VolumeX } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
 import { ClipCanvas } from './ClipCanvas';
 import { CLIP_INSET } from './layout';
@@ -22,7 +22,12 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
   const h = laneH - CLIP_INSET * 2;
   const handleW = Math.round(Math.min(7, Math.max(2, w / 3)));
   const muted = (clip.type === 'video' || clip.type === 'audio') && clip.muted;
-  const label = clip.type === 'text' ? clip.text.replace(/\s+/g, ' ') : clip.name;
+  let label = clip.type === 'text' ? clip.text.replace(/\s+/g, ' ') : clip.name;
+  const isEffect = clip.type === 'effect';
+  if (clip.type === 'effect' && w >= 96) {
+    const pct = Math.round(clip.amount * 100);
+    if (pct !== 100) label = `${label} ${pct}%`;
+  }
   const fadeIn = clip.fadeIn * zoom;
   const fadeOut = clip.fadeOut * zoom;
 
@@ -37,6 +42,7 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
       {fadeOut > 1 ? <div className="timeline-fade is-out" style={{ width: Math.min(fadeOut, w) }} /> : null}
       <div className="timeline-clip-label">
         {muted ? <VolumeX size={11} aria-label="muted" /> : null}
+        {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         <span className="timeline-clip-name">{label}</span>
       </div>
       <div className="timeline-trim is-start" data-trim="start" style={{ width: handleW }} />
