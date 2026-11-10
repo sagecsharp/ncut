@@ -8,13 +8,21 @@
  * - while paused we draw only when something changed (one rAF), never a permanent loop.
  */
 import type { AudioClip, Clip, ImageClip, Project, VideoClip } from '../../types';
-import { renderFrame } from '../../engine/draw';
+import { renderFrame, renderSceneView } from '../../engine/draw';
 import type { DrawSource } from '../../engine/draw';
+import { valueAt } from '../../lib/anim';
+import { onFontsChanged } from '../../lib/fonts';
+import { APPEARANCE_EVENT } from '../../lib/appearance';
 import { fadeFactor, sourceTimeAt } from '../../lib/timelineOps';
 import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
+import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
+
+type LineColor = [number, number, number, number];
+const FALLBACK_LINE: LineColor = [1, 1, 1, 0.6];
 
 /** seconds before a clip starts that its element is created and pre-positioned */
 const LOOKAHEAD = 1.5;
@@ -92,6 +100,7 @@ export class PreviewEngine {
   private drawQueued = false;
   private imageTick = 0;
   private dprOff: (() => void) | null = null;
+  private lineColor: LineColor | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -134,6 +143,31 @@ export class PreviewEngine {
         else this.drawSoon();
       }),
     );
+    // scene view: mode switch and the free camera redraw the canvas
+    this.unsubs.push(
+      useUi.subscribe((s, prev) => {
+        if (s.previewMode === prev.previewMode) return;
+        this.invalidate();
+      }),
+    );
+    this.unsubs.push(
+      useSceneCamera.subscribe(() => {
+        if (useUi.getState().previewMode !== 'scene') return;
+        if (usePlayback.getState().playing) this.invalidate();
+        else this.drawSoon();
+      }),
+    );
+    // helper lines of the scene view use the theme's text color: read once per theme change
+    if (typeof window !== 'undefined') {
+      const onTheme = () => {
+        this.lineColor = null;
+        this.invalidate();
+      };
+      window.addEventListener(APPEARANCE_EVENT, onTheme);
+      this.unsubs.push(() => window.removeEventListener(APPEARANCE_EVENT, onTheme));
+    }
+    // a font that finished loading changes how text measures and draws
+    this.unsubs.push(onFontsChanged(() => this.invalidate()));
     this.watchDpr();
     this.unsubs.push(() => this.dprOff?.());
     // text clips drawn before their web font finished loading must be redrawn once it arrives
@@ -250,10 +284,45 @@ export class PreviewEngine {
 
     const k = canvas.width / project.width;
     ctx.setTransform(k, 0, 0, canvas.height / project.height, 0, 0);
-    renderFrame(ctx, project, time, this.resolve);
+    if (useUi.getState().previewMode === 'scene') {
+      const cam = toCamera3D(currentOrbit(project), project);
+      renderSceneView(ctx, project, time, this.resolve, cam, this.sceneLineColor());
+    } else {
+      renderFrame(ctx, project, time, this.resolve);
+    }
     this.hasDrawn = true;
     if (!playing) this.flushWants();
     return true;
+  }
+
+  /** the theme's text color as straight rgba 0..1 (cached until the theme changes) */
+  private sceneLineColor(): LineColor {
+    if (this.lineColor) return this.lineColor;
+    let out = FALLBACK_LINE;
+    try {
+      const host = this.canvas.parentElement ?? document.body;
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--text)';
+      probe.style.display = 'none';
+      host.appendChild(probe);
+      const css = getComputedStyle(probe).color;
+      host.removeChild(probe);
+      // let a 1x1 canvas turn any css color syntax (oklch ...) into rgb
+      const c = document.createElement('canvas');
+      c.width = 1;
+      c.height = 1;
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      if (cx && css) {
+        cx.fillStyle = css;
+        cx.fillRect(0, 0, 1, 1);
+        const d = cx.getImageData(0, 0, 1, 1).data;
+        out = [d[0]! / 255, d[1]! / 255, d[2]! / 255, 0.6];
+      }
+    } catch {
+      out = FALLBACK_LINE;
+    }
+    this.lineColor = out;
+    return out;
   }
 
   /** paused: issue the seeks that were deferred while a frame was waiting to be painted */
@@ -464,7 +533,8 @@ export class PreviewEngine {
     const { volume, muted } = usePlayback.getState();
     const track = project.tracks.find((t) => t.id === clip.trackId);
     const silent = clip.muted || !track || track.muted || muted;
-    const g = silent ? 0 : clip.volume * fadeFactor(clip, time) * volume;
+    // volume may be keyframed
+    const g = silent ? 0 : (valueAt(clip, 'volume', time) ?? clip.volume) * fadeFactor(clip, time) * volume;
     if (Math.abs(g - entry.lastGain) < 1e-4) return;
     entry.lastGain = g;
     if (entry.gain) entry.gain.gain.value = g;
