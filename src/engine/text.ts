@@ -220,6 +220,29 @@ export function extrudeOffsets(depthPx: number, angleDeg: number, cap = EXTRUDE_
   return out;
 }
 
+/**
+ * the alpha each of `copies` stacked copies needs so that together they composite to `alpha`:
+ * 1 - (1 - a')^copies = alpha. exact where all the copies overlap, an approximation at the edges of the side.
+ */
+export function stackAlpha(alpha: number, copies: number): number {
+  if (!(alpha < 1)) return 1;
+  if (!(alpha > 0)) return 0;
+  if (!(copies > 1)) return alpha;
+  return 1 - Math.pow(1 - alpha, 1 / copies);
+}
+
+/** most copies of a side that cover one point inside a stem of a letter: stem width / distance between two copies (stem ~ 0.15 em) */
+export function sideOverlap(copies: number, depthPx: number, fontSizePx: number): number {
+  if (copies <= 1 || !(depthPx > 0)) return 1;
+  const step = depthPx / copies;
+  return Math.min(copies, Math.max(1, Math.round((fontSizePx * 0.15) / step)));
+}
+
+/** line width of the outline of hollow letters without an outline of their own, in block units */
+export function hollowEdgeWidth(fontSize: number): number {
+  return Math.max(1, fontSize / 30);
+}
+
 const extrudeCache = { depth: -1, angle: 0, dev: 0, list: [] as { dx: number; dy: number }[] };
 /** extrudeOffsets in the units of the block (not device pixels), the last result is kept */
 function blockExtrudeOffsets(depthUnits: number, angle: number, dev: number): { dx: number; dy: number }[] {
@@ -558,6 +581,7 @@ export function textSignature(clip: TextClip): string {
     clip.extrude ? JSON.stringify(clip.extrude) : '',
     clip.underline ? 'u' : '',
     clip.strike ? 's' : '',
+    clip.hollow ? 'h' : '',
     clip.backgroundPerLine ? 'p' : '',
   ].join('|');
   sigCache.set(clip, { v, sig });
@@ -829,7 +853,10 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
   };
 
   const stroke = clip.stroke && clip.stroke.width > 0 ? clip.stroke : null;
-  const strokeW = stroke ? stroke.width * fs * 2 : 0; // half of the line is hidden under the fill
+  const hollow = !!clip.hollow;
+  // half of the line is hidden under the fill. hollow letters have no fill: the line is drawn at its real width.
+  const strokeW = hollow ? (stroke ? stroke.width * fs : hollowEdgeWidth(fs)) : stroke ? stroke.width * fs * 2 : 0;
+  const outlined = !!stroke || hollow;
 
   if (hl && hl.background && layout && litWord >= 0 && m.curve === 0) {
     // the box behind the current word sits under every letter pass (shadow, outline, fill)
@@ -899,8 +926,8 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
         x += far.dx * bax + far.dy * bbx;
         y += far.dx * bay + far.dy * bby;
       }
-      if (stroke) ctx.strokeText(text, x, y);
-      ctx.fillText(text, x, y);
+      if (outlined) ctx.strokeText(text, x, y);
+      if (!hollow) ctx.fillText(text, x, y);
     }, false);
     ctx.restore();
   }
@@ -910,26 +937,54 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
     ctx.fillStyle = ext.color;
     ctx.strokeStyle = ext.color;
     ctx.lineWidth = strokeW;
+    // a letter or block that is see-through would get a nearly opaque side from the stacked copies: each copy gets
+    // the alpha that makes the whole stack composite to the wanted one (stackAlpha)
+    const stepLen = Math.hypot(offs[offs.length - 1]!.dx, offs[offs.length - 1]!.dy);
+    const overlap = sideOverlap(offs.length, stepLen * offs.length, fs);
+    // hollow letters: the side is a swept outline, so the face stays see-through (filled copies would cover it)
     each((text, x, y, _st, moved) => {
       setBasis(moved);
+      const ga = ctx.globalAlpha;
+      if (ga < 1 && overlap > 1) ctx.globalAlpha = stackAlpha(ga, overlap);
       for (let k = 0; k < offs.length; k++) {
         const o = offs[k]!;
         const px = x + o.dx * bax + o.dy * bbx;
         const py = y + o.dx * bay + o.dy * bby;
-        if (stroke) ctx.strokeText(text, px, py);
-        ctx.fillText(text, px, py);
+        if (outlined) ctx.strokeText(text, px, py);
+        if (!hollow) ctx.fillText(text, px, py);
       }
+      ctx.globalAlpha = ga;
     }, true);
   }
 
+  const blockGrad = gradient ? blockGradient(ctx, gradient, innerW, innerH) : null;
+  const base: string | CanvasGradient = blockGrad ?? clip.color;
+
+  if (hollow) {
+    // hollow: nothing is filled, the outline is the letter. its color: the outline's own, else the fill (gradient included).
+    ctx.lineWidth = strokeW;
+    const edge: string | CanvasGradient = stroke ? stroke.color : base;
+    each((text, x, y, st, moved, glyph) => {
+      let style: string | CanvasGradient = edge;
+      if (hl && glyph && wordLit(hl.mode, glyph.word, litWord)) style = hl.color;
+      else if (st && st.hue !== undefined) style = hueColor(st.hue);
+      else if (!stroke && gradient && moved && blockGrad && blockT) {
+        const [x0, y0, x1, y1] = gradientLine(gradient.angle, innerW, innerH);
+        const here = ctx.getTransform();
+        const [lx0, ly0] = remapPoint(blockT, here, x0, y0);
+        const [lx1, ly1] = remapPoint(blockT, here, x1, y1);
+        style = makeGradient(ctx, gradient, lx0, ly0, lx1, ly1) ?? edge;
+      }
+      ctx.strokeStyle = style;
+      ctx.strokeText(text, x, y);
+    }, true);
+  } else {
   if (stroke) {
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = strokeW;
     each((text, x, y) => ctx.strokeText(text, x, y), true);
   }
 
-  const blockGrad = gradient ? blockGradient(ctx, gradient, innerW, innerH) : null;
-  const base: string | CanvasGradient = blockGrad ?? clip.color;
   ctx.fillStyle = base;
   each((text, x, y, st, moved, glyph) => {
     if (hl && glyph && wordLit(hl.mode, glyph.word, litWord)) {
@@ -954,6 +1009,7 @@ export function drawText(ctx: Ctx, clip: TextClip, local?: number): void {
       ctx.fillStyle = base;
     } else ctx.fillText(text, x, y);
   }, true);
+  }
 
   if (wantLines && spans) {
     // underline / strike: plain bars in the fill, on top of the letters. while letters animate, a line shows over the

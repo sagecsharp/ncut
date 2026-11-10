@@ -7,8 +7,11 @@ import {
   TEXT_ANIMS_LOOP,
   TEXT_ANIMS_OUT,
   blockState,
+  centerIndex,
+  elasticOut,
   glyphState,
   scrambleChar,
+  shuffledIndex,
   textAnimUnits,
   type GlyphState,
 } from './textAnim';
@@ -30,8 +33,8 @@ function all(clip: TextClip, local: number, i = 0, n = 1): GlyphState[] {
 }
 const plain = (s: GlyphState) => ({ ...s });
 
-const NEW_IN = ['blur', 'scramble', 'flip', 'wave-in', 'glitch', 'expand', 'swing', 'bounce'];
-const NEW_LOOP = ['glitch', 'typing', 'neon', 'heartbeat', 'spin', 'colors', 'flicker'];
+const NEW_IN = ['blur', 'scramble', 'flip', 'wave-in', 'glitch', 'expand', 'swing', 'bounce', 'split-flap', 'elastic', 'random', 'unfold'];
+const NEW_LOOP = ['glitch', 'typing', 'neon', 'heartbeat', 'spin', 'colors', 'flicker', 'tilt', 'breathe'];
 
 describe('animation lists', () => {
   it('keeps the old ids first and in order, then the new ones', () => {
@@ -181,6 +184,74 @@ describe('entrances and exits', () => {
       return s;
     };
     expect(spread(0.02)).toBeGreaterThan(spread(0.98));
+  });
+});
+
+describe('split flap, elastic, random, unfold', () => {
+  it('shuffledIndex and centerIndex are permutations', () => {
+    for (let n = 1; n <= 40; n++) {
+      const a = Array.from({ length: n }, (_, i) => shuffledIndex(i, n)).sort((x, y) => x - y);
+      const b = Array.from({ length: n }, (_, i) => centerIndex(i, n)).sort((x, y) => x - y);
+      const want = Array.from({ length: n }, (_, i) => i);
+      expect(a, `shuffle ${n}`).toEqual(want);
+      expect(b, `center ${n}`).toEqual(want);
+    }
+  });
+
+  it('shuffle is not left to right, center starts in the middle', () => {
+    expect(Array.from({ length: 8 }, (_, i) => shuffledIndex(i, 8))).not.toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(centerIndex(2, 5)).toBe(0);
+    expect(centerIndex(0, 5)).toBeGreaterThan(centerIndex(1, 5));
+    expect(centerIndex(4, 5)).toBeGreaterThan(centerIndex(3, 5));
+  });
+
+  it('random reveals letters out of order, unfold from the middle', () => {
+    const n = 9;
+    // the letter that starts second is not the one next to the first
+    const order = [...Array(n).keys()].sort((a, b) => shuffledIndex(a, n) - shuffledIndex(b, n));
+    expect(order[0]).toBe(0);
+    expect(order[1]).not.toBe(1);
+    const unf = withIn('unfold');
+    const mid = letter(unf, 0.3, 4, n);
+    const edge = letter(unf, 0.3, 0, n);
+    expect(mid.sx).toBeGreaterThan(edge.sx);
+  });
+
+  it('split flap passes through zero height and lands upright', () => {
+    const clip = withIn('split-flap');
+    let min = 1;
+    for (let k = 1; k < 100; k++) min = Math.min(min, letter(clip, k / 100, 0, 1).sy);
+    expect(min).toBeLessThan(0.1);
+    expect(letter(clip, 1, 0, 1)).toBe(REST);
+  });
+
+  it('elastic overshoots and settles', () => {
+    expect(elasticOut(0)).toBe(0);
+    expect(elasticOut(1)).toBe(1);
+    let max = 0;
+    for (let k = 1; k < 100; k++) max = Math.max(max, elasticOut(k / 100));
+    expect(max).toBeGreaterThan(1.05);
+    expect(letter(withIn('elastic'), 0.2, 0, 1).sx).toBeGreaterThan(1);
+  });
+});
+
+describe('tilt and breathe loops', () => {
+  it('tilt rocks letters and keeps their base in place', () => {
+    const st = letter(withLoop('tilt'), 0.5, 2, 6);
+    expect(st.rot).not.toBe(0);
+    // turning about the foot (0.4 below the middle) = turning about the middle + this shift
+    expect(st.dx).toBeCloseTo(Math.sin(st.rot) * 0.4, 9);
+    expect(st.dy).toBeCloseTo((1 - Math.cos(st.rot)) * 0.4, 9);
+  });
+
+  it('breathe spreads letters away from the middle and back', () => {
+    const clip = withLoop('breathe');
+    const left = letter(clip, 0.5, 0, 7);
+    const right = letter(clip, 0.5, 6, 7);
+    const mid = letter(clip, 0.5, 3, 7);
+    expect(left.dx).toBeCloseTo(-right.dx, 9);
+    expect(left.dx).not.toBe(0);
+    expect(Math.abs(mid.dx)).toBeLessThan(1e-9);
   });
 });
 

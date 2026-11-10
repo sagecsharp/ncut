@@ -1,5 +1,4 @@
 import { memo } from 'react';
-import { Strikethrough, Underline } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
 import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
 import {
@@ -62,8 +61,6 @@ function Pct({
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
   const { stroke, shadow, gradient, highlight, extrude, counter } = clip;
-  const underline = !!clip.underline;
-  const strike = !!clip.strike;
   const setCounter = (patch: Partial<TextCounter>) => {
     if (counter) actions().updateClip(id, { counter: { ...counter, ...patch } }, liveOpts());
   };
@@ -105,31 +102,6 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         <Switch checked={!!clip.uppercase} title="capitals on or off" onChange={(v) => actions().updateClip(id, { uppercase: v })} />
       </Row>
 
-      <Row label="lines" title="a line under or through every line of text">
-        <div className="props-seg">
-          <button
-            type="button"
-            className={`icon-btn${underline ? ' is-active' : ''}`}
-            title="underline"
-            aria-label="underline"
-            aria-pressed={underline}
-            onClick={() => actions().updateClip(id, { underline: !underline })}
-          >
-            <Underline size={14} />
-          </button>
-          <button
-            type="button"
-            className={`icon-btn${strike ? ' is-active' : ''}`}
-            title="strikethrough"
-            aria-label="strikethrough"
-            aria-pressed={strike}
-            onClick={() => actions().updateClip(id, { strike: !strike })}
-          >
-            <Strikethrough size={14} />
-          </button>
-        </div>
-      </Row>
-
       <Row label="outline" title="a line around the letters">
         <Switch
           checked={!!stroke}
@@ -141,6 +113,9 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       {stroke ? (
         <Pct label="width" title="outline width (% of the font size)" value={stroke.width} min={1} max={50} onChange={(v) => setStroke({ width: v })} />
       ) : null}
+      <Row label="hollow" title="only the outline shows">
+        <Switch checked={!!clip.hollow} title="only the outline shows" onChange={(v) => actions().updateClip(id, { hollow: v })} />
+      </Row>
 
       <Row label="shadow" title="a shadow behind the letters">
         <Switch

@@ -35,6 +35,10 @@ export const TEXT_ANIMS_IN: TextAnimInfo[] = [
   { id: 'expand', name: 'expand' },
   { id: 'swing', name: 'swing' },
   { id: 'bounce', name: 'bounce' },
+  { id: 'split-flap', name: 'split flap' },
+  { id: 'elastic', name: 'elastic' },
+  { id: 'random', name: 'random' },
+  { id: 'unfold', name: 'unfold' },
 ];
 
 export const TEXT_ANIMS_OUT: TextAnimInfo[] = TEXT_ANIMS_IN;
@@ -57,6 +61,8 @@ export const TEXT_ANIMS_LOOP: TextAnimInfo[] = [
   { id: 'spin', name: 'spin' },
   { id: 'colors', name: 'colors' },
   { id: 'flicker', name: 'flicker' },
+  { id: 'tilt', name: 'tilt' },
+  { id: 'breathe', name: 'breathe' },
 ];
 
 export const DEFAULT_TEXT_ANIM_IN = 0.6;
@@ -104,6 +110,8 @@ interface EnterSpec {
   unit: Unit;
   /** share of the whole duration one unit needs. 1 = everything together. 0 = one after the other, no overlap. */
   span: number;
+  /** char units only: which place in the line a letter starts at (default: its own index), e.g. shuffled or from the center */
+  order?: (i: number, n: number) => number;
   /** u: 0 = gone, 1 = at rest. t = clip-local seconds. i = index of the unit (0 for the block). write into st. */
   apply(st: GlyphState, u: number, t: number, i: number): void;
 }
@@ -143,6 +151,32 @@ function twoBounce(u: number): number {
     return 0.07 * 4 * v * (1 - v);
   }
   return 0;
+}
+
+function gcd(a: number, b: number): number {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
+/** a fixed shuffle of 0..n-1 (every index shows up once), no allocation. i is the letter, the result its place in the order. */
+export function shuffledIndex(i: number, n: number): number {
+  if (n <= 2) return i;
+  let k = Math.max(2, Math.round(n * 0.618));
+  while (gcd(k, n) !== 1) k++;
+  return (i * k) % n;
+}
+
+/** the place of letter i of n when counting from the middle of the line outward (the two neighbours of the middle come next) */
+export function centerIndex(i: number, n: number): number {
+  const mid = (n - 1) / 2;
+  return Math.max(0, Math.round(2 * Math.abs(i - mid) - 1 + (i < mid ? 0 : 1)));
+}
+
+/** springy ease: overshoots 1 and settles. 0 at 0, 1 at 1. */
+export function elasticOut(u: number): number {
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  return Math.pow(2, -10 * u) * Math.sin(((u * 10 - 0.75) * (2 * Math.PI)) / 3) + 1;
 }
 
 const SCRAMBLE_LOWER = 'abcdefghijklmnopqrstuvwxyz';
@@ -360,6 +394,50 @@ const ENTER_MORE: Record<string, EnterSpec> = {
 };
 Object.assign(ENTER, ENTER_MORE);
 
+const ENTER_BOARD: Record<string, EnterSpec> = {
+  'split-flap': {
+    unit: 'char',
+    span: 0.5,
+    apply: (st, u) => {
+      // a departure board: the letter flips over a horizontal axis one and a half times (sy runs through 0 twice)
+      st.sy *= Math.abs(Math.cos(easeOut(u) * Math.PI * 3));
+      st.alpha *= Math.min(1, u * 6);
+    },
+  },
+  elastic: {
+    unit: 'char',
+    span: 0.4,
+    apply: (st, u) => {
+      const s = Math.max(0, elasticOut(u));
+      st.sx *= s;
+      st.sy *= s;
+      st.alpha *= Math.min(1, u * 6);
+    },
+  },
+  random: {
+    unit: 'char',
+    span: 0.1,
+    order: shuffledIndex,
+    apply: (st, u) => {
+      const s = 0.6 + 0.4 * easeOut(u);
+      st.sx *= s;
+      st.sy *= s;
+      st.alpha *= Math.min(1, u * 4);
+    },
+  },
+  unfold: {
+    unit: 'char',
+    span: 0.5,
+    order: centerIndex,
+    apply: (st, u) => {
+      // opens like a fan: wide letters grow out of a thin edge
+      st.sx *= easeOut(u);
+      st.alpha *= Math.min(1, u * 4);
+    },
+  },
+};
+Object.assign(ENTER, ENTER_BOARD);
+
 const LOOP: Record<string, LoopSpec> = {
   wave: {
     unit: 'char',
@@ -494,6 +572,27 @@ const LOOP: Record<string, LoopSpec> = {
   },
 };
 
+const LOOP_MORE: Record<string, LoopSpec> = {
+  tilt: {
+    unit: 'char',
+    apply: (st, ph, i) => {
+      // letters rock around their base: turning the letter around its middle plus the shift of a turn around its foot
+      const a = Math.sin(ph - i * 0.5) * 0.2;
+      st.rot += a;
+      st.dx += Math.sin(a) * 0.4;
+      st.dy += (1 - Math.cos(a)) * 0.4;
+    },
+  },
+  breathe: {
+    unit: 'char',
+    apply: (st, ph, i, _cycles, n) => {
+      // the letter spacing swells and shrinks around the middle of the text
+      st.dx += Math.sin(ph) * (i - (n - 1) / 2) * 0.05;
+    },
+  },
+};
+Object.assign(LOOP, LOOP_MORE);
+
 /** the animations of a clip looked up once per frame */
 export interface TextAnimUnits {
   enter: EnterSpec | null;
@@ -558,12 +657,13 @@ export function glyphState(
   units: TextAnimUnits,
 ): GlyphState {
   let st: GlyphState | null = null;
-  const pick = (unit: Unit): [number, number] => (unit === 'word' ? [word, words] : unit === 'line' ? [line, lines] : [index, count]);
+  const pick = (unit: Unit, order?: (i: number, n: number) => number): [number, number] =>
+    unit === 'word' ? [word, words] : unit === 'line' ? [line, lines] : [order ? order(index, count) : index, count];
   const { enter, exit, loop } = units;
   if (enter && enter.unit !== 'block') {
     const p = inProgress(clip, local);
     if (p < 1) {
-      const [i, n] = pick(enter.unit);
+      const [i, n] = pick(enter.unit, enter.order);
       const u = stagger(p, i, n, enter.span);
       if (u < 1) enter.apply((st ??= fresh()), u, local, i);
     }
@@ -571,7 +671,7 @@ export function glyphState(
   if (exit && exit.unit !== 'block') {
     const p = outProgress(clip, local);
     if (p < 1) {
-      const [i, n] = pick(exit.unit);
+      const [i, n] = pick(exit.unit, exit.order);
       const u = stagger(p, i, n, exit.span);
       if (u < 1) exit.apply((st ??= fresh()), u, local, i);
     }
