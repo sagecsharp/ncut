@@ -18,7 +18,7 @@ import { transitionHolds } from '../../lib/transitions';
 import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
-import { usePlayback } from '../../store/playback';
+import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
 import { backingSize, usePreviewQuality } from './quality';
@@ -76,6 +76,8 @@ interface MediaEntry {
   seekCost: number;
   /** no drift correction before this performance.now() (lets the element settle after a seek) */
   holdUntil: number;
+  /** the clock runs backwards / too fast for audio: this element stays silent */
+  rateMute: boolean;
   cleanup: () => void;
 }
 
@@ -126,6 +128,8 @@ export class PreviewEngine {
           this.invalidate();
           return;
         }
+        // shuttle key / speed menu while playing: every active element follows at once
+        if (s.rate !== prev.rate && s.playing) this.sync();
         if (s.volume !== prev.volume || s.muted !== prev.muted) this.applyGains();
         if (s.time !== prev.time) {
           this.sync();
@@ -590,7 +594,7 @@ export class PreviewEngine {
   private setGain(entry: MediaEntry, clip: VideoClip | AudioClip, project: Project, time: number): void {
     const { volume, muted } = usePlayback.getState();
     const track = project.tracks.find((t) => t.id === clip.trackId);
-    const silent = clip.muted || !track || track.muted || muted;
+    const silent = entry.rateMute || clip.muted || !track || track.muted || muted;
     // volume may be keyframed
     const g = silent ? 0 : (valueAt(clip, 'volume', time) ?? clip.volume) * fadeFactor(clip, time) * volume;
     if (Math.abs(g - entry.lastGain) < 1e-4) return;
@@ -605,7 +609,7 @@ export class PreviewEngine {
   private sync(): void {
     if (this.disposed) return;
     const project = useEditor.getState().project;
-    const { time, playing } = usePlayback.getState();
+    const { time, playing, rate } = usePlayback.getState();
     this.gen++;
     if (project) {
       const holds = transitionHolds(project);
@@ -620,7 +624,7 @@ export class PreviewEngine {
         const entry = this.ensureEntry(clip);
         if (!entry) continue;
         entry.gen = this.gen;
-        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < end);
+        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < end, rate);
         this.setGain(entry, clip, project, time);
       }
       this.evictImages(project, time);
@@ -637,8 +641,10 @@ export class PreviewEngine {
     time: number,
     playing: boolean,
     active: boolean,
+    rate: number,
   ): void {
     const el = entry.el;
+    entry.rateMute = false;
     // seek tolerance: half a timeline frame, in source seconds (depends on the clip speed)
     const halfFrame = Math.max(0.001, (0.5 / (project.fps || 30)) * clip.speed);
     if (entry.failed) return;
@@ -662,20 +668,33 @@ export class PreviewEngine {
       return;
     }
 
-    if (el.playbackRate !== clip.speed) el.playbackRate = clip.speed;
+    // rate 1 is the plain path. other rates: the element plays at clip speed * rate, or (backwards, or a rate
+    // browsers refuse) it stays paused and is seeked to the clock like a scrub. audio is silent in that case,
+    // and above 4x forward (it would only be a squeal)
+    let pr = clip.speed;
+    if (rate !== 1) {
+      pr = mediaPlaybackRate(clip.speed, rate);
+      entry.rateMute = pr === 0 || !rateAudible(rate);
+      if (pr === 0) {
+        if (!el.paused) el.pause();
+        this.seek(entry, target, halfFrame);
+        return;
+      }
+    }
+    if (el.playbackRate !== pr) el.playbackRate = pr;
     if (el.paused) {
       // play() on an ended element restarts it from 0: only play when it is not parked at the end
       const off = Math.abs(el.currentTime - target) > 0.05;
-      if (off) this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost)), 0.05);
+      if (off) this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost * rate)), 0.05);
       if (off || !el.ended) void el.play().catch(() => undefined);
     } else if (
       !el.seeking &&
       performance.now() >= entry.holdUntil &&
-      // drift in timeline seconds, so the threshold does not depend on the clip speed
+      // drift in timeline seconds (the target follows the clock), so the threshold depends on neither clip speed nor rate
       Math.abs(el.currentTime - target) / clip.speed > DRIFT
     ) {
       // aim ahead by the measured seek latency so the element lands on the clock instead of behind it
-      this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost)), 0.01);
+      this.seek(entry, toSource(sourceTimeAt(clip, time + entry.seekCost * rate)), 0.01);
     }
   }
 
@@ -743,6 +762,7 @@ export class PreviewEngine {
       seekStart: 0,
       seekCost: 0.1,
       holdUntil: 0,
+      rateMute: false,
       cleanup: () => undefined,
     };
 

@@ -50,32 +50,73 @@ function duration(): number {
   return p ? projectDuration(p) : 0;
 }
 
+/** the shuttle ladder: 1x, 2x, 4x, 8x, then it stays */
+export const SHUTTLE_STEPS: readonly number[] = [1, 2, 4, 8];
+
+/**
+ * the rate after a j / l press. paused or going the other way: 1x that way. going that way already: the next
+ * rung of the ladder above the current speed (so 1.5x goes to 2x, 0.5x goes to 1x), 8x stays 8x.
+ */
+export function nextShuttleRate(rate: number, playing: boolean, dir: 1 | -1): number {
+  if (!playing || Math.sign(rate) !== dir) return dir;
+  const mag = Math.abs(rate);
+  for (const step of SHUTTLE_STEPS) if (step > mag + 1e-9) return dir * step;
+  return dir * SHUTTLE_STEPS[SHUTTLE_STEPS.length - 1]!;
+}
+
+/**
+ * move the clock by dt real seconds at `rate`. at either end it wraps (loop) or stops there.
+ * pure: the tick uses it and the tests drive it directly.
+ */
+export function advanceClock(time: number, dt: number, rate: number, end: number, loop: boolean): { time: number; ended: boolean } {
+  const t = time + dt * rate;
+  if (rate > 0 && t >= end) {
+    if (loop && end > 0) return { time: t % end, ended: false };
+    return { time: end, ended: true };
+  }
+  if (rate < 0 && t <= 0) {
+    if (loop && end > 0) return { time: end + (t % end), ended: false };
+    return { time: 0, ended: true };
+  }
+  return { time: t, ended: false };
+}
+
+/** smallest / largest playbackRate browsers accept without erroring or muting the element */
+export const MEDIA_RATE_MIN = 0.0625;
+export const MEDIA_RATE_MAX = 16;
+
+/**
+ * the playbackRate an element gets for a clip of `clipSpeed` under the clock rate `rate`, or 0 when the
+ * element cannot follow by playing (backwards, or outside what browsers accept): then it is paused and seeked.
+ */
+export function mediaPlaybackRate(clipSpeed: number, rate: number): number {
+  if (rate <= 0) return 0;
+  const r = clipSpeed * rate;
+  return r >= MEDIA_RATE_MIN && r <= MEDIA_RATE_MAX ? r : 0;
+}
+
+/** audio is heard up to 4x forward, silent above that (and always silent backwards) */
+export function rateAudible(rate: number): boolean {
+  return rate > 0 && rate <= 4;
+}
+
 let raf = 0;
 let lastTick = 0;
+/** true while a j / l shuttle owns the rate (so setSpeed leaves it alone) */
+let shuttling = false;
 
 function tick(now: number): void {
   const state = usePlayback.getState();
   if (!state.playing) return;
-  const dt = Math.min(0.25, (now - lastTick) / 1000);
+  const dt = Math.min(0.25, Math.max(0, (now - lastTick) / 1000));
   lastTick = now;
-  const end = duration();
-  let t = state.time + dt * state.rate;
-  if (t >= end) {
-    if (state.loop && end > 0) {
-      t = 0;
-    } else {
-      usePlayback.setState({ time: end, playing: false, rate: state.speed });
-      return;
-    }
-  } else if (t <= 0 && state.rate < 0) {
-    if (state.loop && end > 0) {
-      t = end;
-    } else {
-      usePlayback.setState({ time: 0, playing: false, rate: state.speed });
-      return;
-    }
+  const next = advanceClock(state.time, dt, state.rate, duration(), state.loop);
+  if (next.ended) {
+    shuttling = false;
+    usePlayback.setState({ time: next.time, playing: false, rate: state.speed });
+    return;
   }
-  usePlayback.setState({ time: t });
+  usePlayback.setState({ time: next.time });
   raf = requestAnimationFrame(tick);
 }
 
@@ -91,6 +132,7 @@ export const usePlayback = create<PlaybackState>()((set, get) => ({
   play() {
     if (get().playing) {
       // space while shuttling: back to plain forward play
+      shuttling = false;
       if (get().rate !== get().speed) set({ rate: get().speed });
       return;
     }
@@ -98,6 +140,7 @@ export const usePlayback = create<PlaybackState>()((set, get) => ({
     if (end <= 0) return;
     // restart from the top when sitting at the end
     const time = get().time >= end - 1e-3 ? 0 : get().time;
+    shuttling = false;
     set({ playing: true, time, rate: get().speed });
     lastTick = performance.now();
     cancelAnimationFrame(raf);
@@ -106,6 +149,7 @@ export const usePlayback = create<PlaybackState>()((set, get) => ({
   pause() {
     if (!get().playing) return;
     cancelAnimationFrame(raf);
+    shuttling = false;
     set({ playing: false, rate: get().speed });
   },
   toggle() {
@@ -126,23 +170,19 @@ export const usePlayback = create<PlaybackState>()((set, get) => ({
   },
   setSpeed(speed) {
     const next = clamp(Number.isFinite(speed) && speed > 0 ? speed : 1, 0.25, 4);
-    const s = get();
     // a shuttle in progress keeps its own rate
-    set(s.rate === s.speed ? { speed: next, rate: next } : { speed: next });
+    set(shuttling ? { speed: next } : { speed: next, rate: next });
   },
   shuttle(dir) {
     const s = get();
     const end = duration();
     if (end <= 0) return;
-    const same = s.playing && Math.sign(s.rate) === dir && s.rate !== s.speed;
-    const sameForward = s.playing && dir === 1 && s.rate > 0;
-    let mag = 1;
-    if (same || sameForward) mag = Math.min(8, Math.max(1, Math.abs(s.rate)) * 2);
     let time = s.time;
     // nothing to play in that direction from the very end: start from the other end
     if (dir === 1 && time >= end - 1e-3) time = 0;
     if (dir === -1 && time <= 1e-3) time = end;
-    set({ playing: true, rate: dir * mag, time });
+    shuttling = true;
+    set({ playing: true, rate: nextShuttleRate(s.rate, s.playing, dir), time });
     if (!s.playing) {
       lastTick = performance.now();
       cancelAnimationFrame(raf);
@@ -167,6 +207,7 @@ if (typeof document !== 'undefined') {
 /** stop + rewind. called when a project is opened or closed. */
 export function resetPlayback(): void {
   cancelAnimationFrame(raf);
+  shuttling = false;
   usePlayback.setState({ time: 0, playing: false, rate: usePlayback.getState().speed });
 }
 
