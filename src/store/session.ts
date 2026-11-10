@@ -11,6 +11,7 @@ import { uid } from '../lib/id';
 import { releaseAllDerived } from '../media/derived';
 import { loadProjectMedia, releaseAllAssets } from '../media/registry';
 import { deleteProject as dbDeleteProject, getMediaBlob, loadProject, putMediaBlob, saveProject } from '../storage/db';
+import { capturePoster, copyPoster, deletePoster, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
 import { useEditor } from './editorStore';
 import { resetPlayback } from './playback';
@@ -75,8 +76,23 @@ export async function createAndOpenProject(name?: string, preset?: CanvasPreset,
   return project;
 }
 
+/**
+ * keep a small picture of the preview for the project's card. only in the output view (the scene view
+ * shows helper lines) and only when the preview canvas is on screen.
+ */
+function snapPoster(): void {
+  const project = useEditor.getState().project;
+  if (!project || useUi.getState().previewMode !== 'output') return;
+  if (typeof document === 'undefined') return;
+  const canvas = document.querySelector<HTMLCanvasElement>('canvas.preview-canvas');
+  if (!canvas) return;
+  const poster = capturePoster(canvas);
+  if (poster) savePoster(project.id, poster);
+}
+
 /** save and go back to the projects screen */
 export async function closeProject(): Promise<void> {
+  snapPoster();
   await flushAutosave();
   resetPlayback();
   useEditor.getState().closeProject();
@@ -108,6 +124,7 @@ export async function duplicateProject(id: string): Promise<string | null> {
     if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
   }
   await saveProject(copy);
+  copyPoster(id, copy.id);
   return copy.id;
 }
 
@@ -160,6 +177,7 @@ export async function renameStoredProject(id: string, name: string): Promise<voi
 export async function deleteStoredProject(id: string): Promise<void> {
   if (useEditor.getState().project?.id === id) await closeProject();
   await dbDeleteProject(id);
+  deletePoster(id);
 }
 
 /* ---------- autosave ---------- */
@@ -231,6 +249,8 @@ export function startAutosave(): void {
     if (dirty) void persist(dirty);
   });
   window.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') void flushAutosave();
+    if (document.visibilityState !== 'hidden') return;
+    snapPoster();
+    void flushAutosave();
   });
 }

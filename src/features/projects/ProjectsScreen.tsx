@@ -18,6 +18,7 @@ import {
 } from '../../store/session';
 import { useUi } from '../../store/ui';
 import { listProjects } from '../../storage/db';
+import { loadPoster } from '../../storage/posters';
 import { PROJECT_FILE_EXT } from '../../storage/projectFile';
 import './projects.css';
 
@@ -97,6 +98,8 @@ const ProjectCard = memo(function ProjectCard({
 
   const scale = Math.min(MAX_PREVIEW_W / project.width, MAX_PREVIEW_H / project.height);
   const frameStyle = { width: Math.round(project.width * scale), height: Math.round(project.height * scale) };
+  // the poster is taken when the project is closed, which also bumps updatedAt
+  const poster = useMemo(() => loadPoster(project.id), [project.id, project.updatedAt]);
   const id = project.id;
 
   const onCardKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -134,7 +137,9 @@ const ProjectCard = memo(function ProjectCard({
       onKeyDown={onCardKey}
     >
       <div className="projects-preview">
-        <div className="projects-frame" style={frameStyle} />
+        <div className="projects-frame" style={frameStyle}>
+          {poster ? <img className="projects-poster" src={poster} alt="" draggable={false} /> : null}
+        </div>
         {busy ? <span className="projects-busy">opening...</span> : null}
       </div>
       <div className="projects-info">
