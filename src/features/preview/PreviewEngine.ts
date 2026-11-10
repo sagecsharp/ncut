@@ -859,6 +859,8 @@ export class PreviewEngine {
 
     if (!active) {
       this.dropSettle(entry);
+      // the playhead is not on this clip: its feed gives its decoders and kept frames back now, not after its timer
+      entry.feed?.rest();
       // lookahead (or just ended): keep it parked on its first frame, silent
       if (!el.paused) el.pause();
       const park = toSource(clip.trimStart);

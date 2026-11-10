@@ -265,6 +265,7 @@
   cursor: grab;
   touch-action: none;
   contain: layout paint;
+  content-visibility: auto;
 }
 .timeline-clip.is-image {
   background: var(--clip-image);

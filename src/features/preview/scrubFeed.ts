@@ -244,7 +244,8 @@ export class ScrubFeed {
     this.speed = 0;
     this.dropFill();
     // nothing open: nothing to give back
-    if (!this.gen && !this.cur && !this.decoder && this.canvases.size === 0 && this.bitmaps.size === 0) return;
+    // (a loop that is running may be about to open a decoder: it has to come by and give it back)
+    if (!this.running && !this.gen && !this.cur && !this.decoder && this.canvases.size === 0 && this.bitmaps.size === 0) return;
     this.resting = true;
     void this.run();
   }
@@ -409,13 +410,17 @@ export class ScrubFeed {
    */
   private async stepBack(target: number): Promise<boolean> {
     if (this.backDead || this.backRun < BACK_AFTER || performance.now() < this.backOffUntil) return false;
-    const i = coverIndex(this.back, target);
+    let i = coverIndex(this.back, target);
     if (i < 0) return this.fill(target, true);
     // the forward decoder stands somewhere else: it must not go on from there under a kept frame
     if (this.gen) {
       await this.closeGen();
       if (this.disposed) return false;
       if (this.resting || this.target !== target) return true;
+      // a render in between may have dropped the kept frames (nearer: another size than the element's picture)
+      if (this.backDead) return false;
+      i = coverIndex(this.back, target);
+      if (i < 0) return true;
     }
     this.misses = 0;
     this.show(i);
