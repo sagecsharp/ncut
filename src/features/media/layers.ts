@@ -4,7 +4,7 @@
  */
 import type { Clip, ClipType, Project } from '../../types';
 import { isCameraClip, isVisualClip } from '../../types';
-import { MAX_PARENT_DEPTH, canBeParent, parentOf, wouldCycle } from '../../lib/links';
+import { MAX_PARENT_DEPTH, canBeParent, indexClips, parentOfIn, wouldCycle } from '../../lib/links';
 
 export type LayersMode = 'now' | 'all';
 
@@ -47,9 +47,9 @@ function clipName(clip: Clip): string {
 }
 
 /** name of the clip a clip faces, or null (lookAt is not 'clip', no target, unknown or not a picture) */
-export function lookTargetName(project: Pick<Project, 'clips'>, clip: Clip): string | null {
+export function lookTargetName(project: Pick<Project, 'clips'>, clip: Clip, index?: ReadonlyMap<string, Clip>): string | null {
   if (!isVisualClip(clip) || clip.lookAt !== 'clip' || !clip.lookTarget || clip.lookTarget === clip.id) return null;
-  const target = project.clips.find((c) => c.id === clip.lookTarget);
+  const target = index ? index.get(clip.lookTarget) : project.clips.find((c) => c.id === clip.lookTarget);
   return target && isVisualClip(target) ? clipName(target) : null;
 }
 
@@ -58,24 +58,30 @@ function isLayerClip(clip: Clip): boolean {
   return isVisualClip(clip) || isCameraClip(clip) || clip.type === 'effect';
 }
 
+/** the layer clips that are listed at this time (or all of them), in project order */
+export function layerFilter(clips: readonly Clip[], time: number, mode: LayersMode): Clip[] {
+  return clips.filter((c) => isLayerClip(c) && (mode === 'all' || (time >= c.start - EPS && time < c.start + c.duration - EPS)));
+}
+
 /** the layer clips of a project in draw order (track index, then start), top row first */
 export function layerClips(project: Pick<Project, 'tracks' | 'clips'>, time: number, mode: LayersMode): Clip[] {
   const trackIndex = new Map<string, number>();
   project.tracks.forEach((t, i) => trackIndex.set(t.id, i));
-  return project.clips
-    .filter((c) => isLayerClip(c) && (mode === 'all' || (time >= c.start - EPS && time < c.start + c.duration - EPS)))
+  return layerFilter(project.clips, time, mode)
     .sort((a, b) => (trackIndex.get(a.trackId) ?? 1e9) - (trackIndex.get(b.trackId) ?? 1e9) || a.start - b.start);
 }
 
-export function buildLayerTree(project: Project, time: number, mode: LayersMode): LayerNode[] {
+export function buildLayerTree(project: Pick<Project, 'tracks' | 'clips'>, time: number, mode: LayersMode): LayerNode[] {
   const list = layerClips(project, time, mode);
+  // one id index for the parent and look target lookups instead of a linear find per clip
+  const index = indexClips(project.clips);
   const inList = new Set(list.map((c) => c.id));
   const trackOf = new Map(project.tracks.map((t) => [t.id, t]));
   const children = new Map<string, Clip[]>();
   const rootAttach = new Map<string, string>();
   const roots: Clip[] = [];
   for (const c of list) {
-    const p = parentOf(project, c);
+    const p = parentOfIn(index, c);
     if (p && inList.has(p.id)) {
       const arr = children.get(p.id);
       if (arr) arr.push(c);
@@ -111,7 +117,7 @@ export function buildLayerTree(project: Project, time: number, mode: LayersMode)
         trackId: cur.clip.trackId,
         firstOfTrack: false,
         masked: isVisualClip(cur.clip) && !!cur.clip.mask,
-        looksAt: lookTargetName(project, cur.clip),
+        looksAt: lookTargetName(project, cur.clip, index),
         canRename: cur.clip.type !== 'text',
       });
       for (let i = kids.length - 1; i >= 0; i--) stack.push({ clip: kids[i]!, depth: cur.depth + 1, attachedTo: null });

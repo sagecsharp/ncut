@@ -55,16 +55,19 @@ export function indexClips(clips: readonly Clip[]): Map<string, Clip> {
   return index;
 }
 
+/** parentOf over an id index (indexClips) instead of a linear find */
+export function parentOfIn(index: ReadonlyMap<string, Clip>, clip: Clip): Clip | null {
+  const id = parentId(clip);
+  if (!id || id === clip.id) return null;
+  const parent = index.get(id);
+  return parent && canBeParent(parent) ? parent : null;
+}
+
 /** parentChain over an id index instead of a linear find per hop (same chain) */
 export function parentChainIn(index: ReadonlyMap<string, Clip>, clip: Clip): Clip[] {
   const chain: Clip[] = [];
   const seen = new Set<string>([clip.id]);
-  const up = (c: Clip): Clip | null => {
-    const id = parentId(c);
-    if (!id || id === c.id) return null;
-    const parent = index.get(id);
-    return parent && canBeParent(parent) ? parent : null;
-  };
+  const up = (c: Clip): Clip | null => parentOfIn(index, c);
   let cur: Clip | null = up(clip);
   while (cur && !seen.has(cur.id) && chain.length < MAX_PARENT_DEPTH) {
     chain.push(cur);

@@ -6,10 +6,12 @@ import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { attachClips } from '../properties/attachActions';
-import { expandGroups, parentOf } from '../../lib/links';
+import { expandGroups } from '../../lib/links';
 import { isCameraClip, isVisualClip } from '../../types';
 import type { ClipType, Project } from '../../types';
-import { buildLayerTree, canAttach } from './layers';
+import { canAttach } from './layers';
+import { createLayerView } from './layerView';
+import type { LayerView } from './layerView';
 import type { LayerNode, LayersMode } from './layers';
 
 const TYPE_ICON: Record<ClipType, LucideIcon> = {
@@ -21,6 +23,8 @@ const TYPE_ICON: Record<ClipType, LucideIcon> = {
   effect: Sparkles,
   camera: Camera,
 };
+
+const NO_VIEW: LayerView = { nodes: [], attachedNames: new Map() };
 
 const MIME = 'application/x-ncut-layer';
 /** while playing the outline refreshes at most this often */
@@ -207,10 +211,12 @@ const LayerRow = memo(function LayerRow(p: RowProps) {
 });
 
 export function LayersTab() {
-  const project = useEditor((s) => s.project);
+  // only what the outline reads: a marker or asset edit does not re-render the tab
+  const clips = useEditor((s) => s.project?.clips);
+  const tracks = useEditor((s) => s.project?.tracks);
   const selection = useEditor((s) => s.selection);
   const [mode, setMode] = useState<LayersMode>('now');
-  const fps = project?.fps ?? 30;
+  const fps = useEditor((s) => s.project?.fps ?? 30);
   const [frame, setFrame] = useState(() => Math.floor(usePlayback.getState().time * fps + 1e-6));
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -238,19 +244,12 @@ export function LayersTab() {
   }, [fps]);
 
   const keyFrame = mode === 'all' ? 0 : frame;
-  const nodes = useMemo(() => (project ? buildLayerTree(project, keyFrame / fps, mode) : []), [project, mode, keyFrame, fps]);
+  // the rows are kept between edits: nothing is rebuilt when only clips the outline does not read changed (see layerView.ts)
+  const viewOf = useMemo(() => createLayerView(), []);
+  const view = useMemo(() => (clips && tracks ? viewOf({ clips, tracks }, keyFrame / fps, mode) : NO_VIEW), [viewOf, clips, tracks, mode, keyFrame, fps]);
+  const nodes = view.nodes;
   // id -> name of the clip it is attached to (for the link icon of nested rows too)
-  const attachedNames = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!project) return m;
-    const byId = new Map(project.clips.map((c) => [c.id, c]));
-    for (const n of nodes) {
-      const c = byId.get(n.id);
-      const par = c ? parentOf(project, c) : null;
-      if (par) m.set(n.id, par.type === 'text' ? par.text.replace(/\s+/g, ' ').trim() || par.name : par.name || par.type);
-    }
-    return m;
-  }, [project, nodes]);
+  const attachedNames = view.attachedNames;
   const selected = useMemo(() => new Set(selection), [selection]);
 
   const dragAttached = !!dragId && attachedNames.has(dragId);
