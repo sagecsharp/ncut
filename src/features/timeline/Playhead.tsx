@@ -15,6 +15,7 @@ function usePlayheadTransform(ref: RefObject<HTMLElement | null>, offset: number
     const el = ref.current;
     if (!el) return;
     let lastX = NaN;
+    let seenProject = useEditor.getState().project;
     const place = (): number => {
       const exact = usePlayback.getState().time * useEditor.getState().zoom;
       const x = Math.round(exact);
@@ -27,10 +28,13 @@ function usePlayheadTransform(ref: RefObject<HTMLElement | null>, offset: number
     place();
     const unsubTime = usePlayback.subscribe((s, p) => {
       if (s.time === p.time) return;
+      // an edit that shortens the project clamps time: move the playhead but do not follow it
+      const fromEdit = useEditor.getState().project !== seenProject;
       const exact = place();
-      onTimeRef.current?.(exact, s.playing);
+      if (!fromEdit) onTimeRef.current?.(exact, s.playing);
     });
     const unsubZoom = useEditor.subscribe((s, p) => {
+      seenProject = s.project;
       if (s.zoom !== p.zoom) place();
     });
     return () => {

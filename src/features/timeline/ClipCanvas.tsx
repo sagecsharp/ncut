@@ -3,7 +3,7 @@ import type { AudioClip, MediaAsset, VideoClip } from '../../types';
 import { getFilmstrip, getWaveform } from '../../media/derived';
 import type { WaveformData } from '../../media/derived';
 import { CLIP_LABEL_H } from './layout';
-import { cssVar, subscribeView, view } from './view';
+import { cssVar, getAppearanceGen, subscribeView, view } from './view';
 
 interface Film {
   times: number[];
@@ -59,16 +59,20 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
   const rawCount = Math.ceil(((clip.duration * zoom) / tileW) * (Math.max(asset.duration, 0.1) / sourceSpan));
   const count = Math.min(96, Math.max(8, Math.ceil(rawCount / 8) * 8));
 
+  const mounted = useRef(false);
   useEffect(() => {
     if (!wantFilm) return;
     let cancelled = false;
+    // first request after mount is immediate (the strip is usually cached); later count changes debounce
+    const delay = mounted.current ? 150 : 0;
+    mounted.current = true;
     const timer = window.setTimeout(() => {
       getFilmstrip(asset.id, count, innerH)
         .then((res) => {
           if (!cancelled && res && res.frames.length > 0) setFilm(res);
         })
         .catch(() => undefined);
-    }, 150);
+    }, delay);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -94,6 +98,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
     let raf = 0;
     let force = true;
     let drawn: { a: number; b: number } | null = null;
+    let drawnGen = getAppearanceGen();
 
     const release = () => {
       if (!drawn) return;
@@ -112,6 +117,10 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       if (ve < -MARGIN || vs > clipW + MARGIN || clipW <= 0) {
         release();
         return;
+      }
+      if (drawnGen !== getAppearanceGen()) {
+        drawnGen = getAppearanceGen();
+        force = true;
       }
       const needA = Math.max(0, vs);
       const needB = Math.min(clipW, ve);
@@ -154,7 +163,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       check: schedule,
     };
     const unsub = subscribeView(schedule);
-    schedule();
+    draw();
     return () => {
       unsub();
       api.current = null;
@@ -206,7 +215,7 @@ function drawWave(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: num
   const half = stripH / 2 - 1;
   if (isVideo) {
     ctx.globalAlpha = 0.5;
-    ctx.fillStyle = cssVar('--surface-0');
+    ctx.fillStyle = cssVar('--clip-audio');
     ctx.fillRect(a, y0, b - a, stripH);
   }
   ctx.globalAlpha = isVideo ? 0.7 : 0.8;
