@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import type { AudioClip, MediaAsset, VideoClip } from '../../types';
 import { getFilmstrip, getWaveform } from '../../media/derived';
 import type { WaveformData } from '../../media/derived';
+import { clipNearView } from './clipWindow';
 import { CLIP_LABEL_H } from './layout';
 import { cssVar, getAppearanceGen, subscribeView, view } from './view';
 
@@ -47,6 +48,10 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
   const [film, setFilm] = useState<Film | null>(null);
   const [wave, setWave] = useState<WaveformData | null>(null);
   const api = useRef<{ invalidate(): void; check(): void } | null>(null);
+  // the data (filmstrip, waveform) is only asked for once the clip has come within the window + margin of
+  // the viewport. once true it stays true: a request is never cancelled
+  const [near, setNear] = useState(() => clipNearView(clip.start, clip.duration, zoom, view.scrollLeft, view.width));
+  const nearRef = useRef(near);
   const latest = useRef({ clip, asset, zoom, innerH, film, wave });
   latest.current = { clip, asset, zoom, innerH, film, wave };
 
@@ -61,7 +66,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
 
   const mounted = useRef(false);
   useEffect(() => {
-    if (!wantFilm) return;
+    if (!wantFilm || !near) return;
     let cancelled = false;
     // first request after mount is immediate (the strip is usually cached); later count changes debounce
     const delay = mounted.current ? 150 : 0;
@@ -77,10 +82,10 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [wantFilm, asset.id, count, innerH]);
+  }, [wantFilm, near, asset.id, count, innerH]);
 
   useEffect(() => {
-    if (!wantWave) return;
+    if (!wantWave || !near) return;
     let cancelled = false;
     getWaveform(asset.id)
       .then((res) => {
@@ -90,7 +95,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
     return () => {
       cancelled = true;
     };
-  }, [wantWave, asset.id]);
+  }, [wantWave, near, asset.id]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -155,14 +160,41 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       if (!raf) raf = requestAnimationFrame(draw);
     };
 
+    const checkNear = () => {
+      if (nearRef.current) return;
+      const p = latest.current;
+      if (!clipNearView(p.clip.start, p.clip.duration, p.zoom, view.scrollLeft, view.width)) return;
+      nearRef.current = true;
+      setNear(true);
+    };
+
     api.current = {
       invalidate() {
+        checkNear();
         force = true;
         schedule();
       },
-      check: schedule,
+      check() {
+        checkNear();
+        schedule();
+      },
     };
-    const unsub = subscribeView(schedule);
+    /** would draw() do anything now? the same tests as its first lines, without the rAF and without touching the canvas */
+    const needsWork = (): boolean => {
+      const p = latest.current;
+      const clipW = p.clip.duration * p.zoom;
+      const vs = view.scrollLeft - p.clip.start * p.zoom;
+      const ve = vs + view.width;
+      if (ve < -MARGIN || vs > clipW + MARGIN || clipW <= 0) return drawn !== null; // far away: only a release is left
+      if (force || !drawn || drawnGen !== getAppearanceGen()) return true;
+      return !(Math.max(0, vs) >= drawn.a - 0.5 && Math.min(clipW, ve) <= drawn.b + 0.5);
+    };
+    // every scroll / resize tick reaches every mounted canvas: do nothing unless there is something to draw
+    const onView = () => {
+      checkNear();
+      if (!raf && needsWork()) schedule();
+    };
+    const unsub = subscribeView(onView);
     draw();
     return () => {
       unsub();

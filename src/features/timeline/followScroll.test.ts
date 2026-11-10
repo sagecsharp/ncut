@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { followScrollLeft, revealScrollLeft } from './followScroll';
+import { followScrollLeft, nearestScrollDelta, revealScrollLeft } from './followScroll';
 
 describe('follow scroll', () => {
   it('stays when the playhead is in view', () => {
@@ -25,5 +25,20 @@ describe('follow scroll', () => {
     expect(revealScrollLeft(2000, 2200, 0, 800)).toBe(1700);
     expect(revealScrollLeft(2000, 4000, 0, 800)).toBe(1960);
     expect(revealScrollLeft(100, 200, 500, 800)).toBe(0);
+  });
+});
+
+describe('nearest scroll delta', () => {
+  it('no move when inside or covering the port', () => {
+    expect(nearestScrollDelta(10, 50, 0, 100)).toBe(0);
+    expect(nearestScrollDelta(-10, 200, 0, 100)).toBe(0);
+  });
+  it('brings the nearest edge in', () => {
+    expect(nearestScrollDelta(-20, 20, 0, 100)).toBe(-20);
+    expect(nearestScrollDelta(80, 130, 0, 100)).toBe(30);
+  });
+  it('a box bigger than the port shows its start edge', () => {
+    expect(nearestScrollDelta(-20, 150, 0, 100)).toBe(0);
+    expect(nearestScrollDelta(50, 250, 0, 100)).toBe(50);
   });
 });

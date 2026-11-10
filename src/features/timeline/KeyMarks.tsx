@@ -4,7 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { KEY_STRIP_H, keyX, mergeKeys } from './keyGeometry';
 import { clipKeyTimes, keyAt } from './keyTimesCache';
-import { cssVar, subscribeView, view } from './view';
+import { cssVar, getAppearanceGen, subscribeView, view } from './view';
 
 interface Props {
   clip: Clip;
@@ -31,6 +31,9 @@ export const KeyMarks = memo(function KeyMarks({ clip, zoom, clipH }: Props) {
     if (!canvas) return;
     let raf = 0;
     let activeKey = NaN;
+    /** the clip-local range the canvas covers right now, null when it is empty */
+    let drawn: { a: number; b: number } | null = null;
+    let drawnGen = getAppearanceGen();
 
     /** clip-local time of the key at the playhead, or NaN */
     const activeAt = (): number => {
@@ -48,11 +51,14 @@ export const KeyMarks = memo(function KeyMarks({ clip, zoom, clipH }: Props) {
       const a = Math.max(0, Math.floor(vs - MARGIN));
       const b = Math.min(w, Math.ceil(vs + view.width + MARGIN));
       const ctx = b > a ? canvas.getContext('2d') : null;
+      drawnGen = getAppearanceGen();
       if (!ctx) {
+        drawn = null;
         canvas.width = 0;
         canvas.height = 0;
         return;
       }
+      drawn = { a, b };
       const cssW = b - a;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const pw = Math.max(1, Math.round(cssW * dpr));
@@ -93,7 +99,17 @@ export const KeyMarks = memo(function KeyMarks({ clip, zoom, clipH }: Props) {
     };
 
     api.current = { invalidate: schedule };
-    const unView = subscribeView(schedule);
+    // a scroll that leaves the visible part of the clip as it was drawn changes no pixel: skip it
+    const unView = subscribeView(() => {
+      if (raf) return;
+      const p = latest.current;
+      const w = p.clip.duration * p.zoom;
+      const vs = view.scrollLeft - p.clip.start * p.zoom;
+      const seen = Math.min(w, vs + view.width) > Math.max(0, vs);
+      if (!seen && !drawn) return;
+      if (drawn && drawnGen === getAppearanceGen() && Math.max(0, vs) >= drawn.a && Math.min(w, vs + view.width) <= drawn.b) return;
+      schedule();
+    });
     const unPlay = usePlayback.subscribe(() => {
       const now = activeAt();
       if (now !== activeKey && !(Number.isNaN(now) && Number.isNaN(activeKey))) schedule();

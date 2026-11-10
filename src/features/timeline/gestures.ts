@@ -12,14 +12,15 @@ import { keyTimes } from '../../lib/anim';
 import { formatTimecode, snapToFrame } from '../../lib/time';
 import { previousClipOnTrack, transitionSpan } from '../../lib/transitions';
 import { MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
-import { clipEnd, findFreeStart, snapTime } from '../../lib/timelineOps';
+import { clipEnd, findFreeStart } from '../../lib/timelineOps';
+import { snapTimeFast as snapTime } from './snapSearch';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { findFollowers, placeFollowers } from './effectFollow';
 import type { ClipSpan } from './effectFollow';
 import { hitKey } from './keyGeometry';
-import { groupIds, marqueeSelection, pressedSelection } from './selectionRules';
+import { groupIds, marqueeReplaceList, pressedSelection } from './selectionRules';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
 import { hitMarker, markerTimes, timelineSnapPoints } from './markers';
 import type { MarkerMenuRequest } from './MarkerUi';
@@ -681,8 +682,8 @@ export function createGestures(env: GestureEnv) {
     const key = hits.join(',');
     if (key === mq.lastKey) return;
     mq.lastKey = key;
-    st.select(mq.baseSelection, 'replace');
-    if (hits.length > 0) st.select(marqueeSelection(project, hits), 'add');
+    // one select call with the final list instead of replace(base) + add(hits): same selection, one store update
+    st.select(marqueeReplaceList(project, mq.baseSelection, hits), 'replace');
   }
 
   /* ---------- entry points ---------- */

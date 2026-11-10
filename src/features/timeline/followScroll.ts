@@ -33,3 +33,17 @@ export function revealScrollLeft(x0: number, x1: number, scrollLeft: number, wid
   if (x1 - x0 + pad * 2 >= width) return Math.max(0, x0 - pad);
   return Math.max(0, (x0 + x1) / 2 - width / 2);
 }
+
+/**
+ * how far to scroll sideways or down so a box [top, bottom] fits the port [portTop, portBottom]
+ * (same numbers as scrollIntoView with block "nearest"): 0 when it is already in view or bigger than the
+ * port on both sides, else the smallest move that brings the nearest edge in.
+ */
+export function nearestScrollDelta(top: number, bottom: number, portTop: number, portBottom: number): number {
+  const above = top < portTop;
+  const below = bottom > portBottom;
+  if (above === below) return 0; // fully inside, or covers the port
+  const fits = bottom - top <= portBottom - portTop;
+  if (above) return fits ? top - portTop : bottom - portBottom;
+  return fits ? bottom - portBottom : top - portTop;
+}
