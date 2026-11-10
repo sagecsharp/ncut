@@ -10,21 +10,25 @@ import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip } from '../../types';
-import { getClipBox, hitTestBox, visibleClipsAt } from '../../engine/draw';
+import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { cameraClipAt, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
 import type { CameraRig } from '../../engine/scene3d/camera';
 import { resolveClip } from '../../lib/anim';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
+import type { ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { type Quad, clipQuad, pointInQuad, projectRig } from './overlayMath';
+import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeResize, hasCrop, hitTestKept, keptBox, pointInQuad, projectRig, snapAxis } from './overlayMath';
 
 const SNAP_PX = 6;
 const DRAG_THRESHOLD_PX = 2;
 const MIN_SCALE = 0.02;
 const MAX_SCALE = 20;
+/** thin things (a line shape) can still be grabbed: every hit box is at least this many css px thick */
+const MIN_HIT_PX = 12;
+const MIN_SHAPE_PX = 4;
 const CORNERS = ['nw', 'ne', 'se', 'sw'] as const;
 
 /** shared, mutable view info (css px per canvas px) plus the boxes to refresh when it changes */
@@ -123,7 +127,11 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         quadEl.style.display = 'none';
         shown3d = false;
       }
-      const box = getClipBox(project, resolveClip(clip, time));
+      // the outline hugs the kept rectangle of a cropped clip
+      const box = keptBox(getClipBox(project, resolveClip(clip, time)), clip.crop);
+      // edge handles change a shape's own width / height (scale cannot): only for a plain, uncropped shape
+      const edges = clip.type === 'shape' && !hasCrop(clip.crop) ? '1' : '0';
+      if (el.dataset.edges !== edges) el.dataset.edges = edges;
       const w = box.width * f;
       const h = box.height * f;
       const ws = `${w}px`;
@@ -162,6 +170,10 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         <div className="preview-handle preview-handle-ne" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-sw" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-se" data-handle="scale" data-clip={clipId} title="scale" />
+        <div className="preview-handle preview-handle-edge preview-handle-w" data-handle="edge" data-edge="l" data-clip={clipId} title="width" />
+        <div className="preview-handle preview-handle-edge preview-handle-e" data-handle="edge" data-edge="r" data-clip={clipId} title="width" />
+        <div className="preview-handle preview-handle-edge preview-handle-n" data-handle="edge" data-edge="t" data-clip={clipId} title="height" />
+        <div className="preview-handle preview-handle-edge preview-handle-s" data-handle="edge" data-edge="b" data-clip={clipId} title="height" />
         <div className="preview-rotate-stem" />
         <div className="preview-handle preview-handle-rotate" data-handle="rotate" data-clip={clipId} title="rotate (shift = 15 degree steps)" />
       </div>
@@ -231,6 +243,11 @@ interface MoveItem {
   x: number;
   y: number;
   threeD: boolean;
+  /** 2d: half extents of the kept box's bounds and the offset of its center from the clip center (canvas px) */
+  hw: number;
+  hh: number;
+  ox: number;
+  oy: number;
   /** world point under the pointer at gesture start, on the plane parallel to the canvas at the clip's depth */
   p0: [number, number, number] | null;
   z: number;
@@ -247,6 +264,18 @@ type Gesture =
       items: MoveItem[];
       rig: CameraRig;
     }
+  | {
+      kind: 'edge';
+      pointerId: number;
+      startX: number;
+      startY: number;
+      id: string;
+      edge: Edge;
+      start: EdgeStart;
+      x0: number;
+      y0: number;
+      started: boolean;
+    }
   | { kind: 'scale'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean }
   | { kind: 'rotate'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; a0: number; r0: number; started: boolean };
 
@@ -254,13 +283,14 @@ interface PointerSnapshot {
   x: number;
   y: number;
   shift: boolean;
+  alt: boolean;
 }
 
 /**
  * top-most visual clip under a canvas point (skips locked tracks). 2d clips use their rotated box,
  * 3d clips their projected quad; a run of consecutive 3d clips is depth sorted like the renderer does.
  */
-function hitTest(project: Project, time: number, rig: CameraRig, px: number, py: number): VisualClip | null {
+function hitTest(project: Project, time: number, rig: CameraRig, px: number, py: number, minHit: number): VisualClip | null {
   const visible = visibleClipsAt(project, time);
   const locked = (c: VisualClip) => project.tracks.find((t) => t.id === c.trackId)?.locked ?? true;
   let i = visible.length - 1;
@@ -268,7 +298,7 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
     const clip = visible[i]!;
     if (!clip.threeD) {
       i--;
-      if (!locked(clip) && hitTestBox(getClipBox(project, resolveClip(clip, time)), px, py)) return clip;
+      if (!locked(clip) && hitTestKept(keptBox(getClipBox(project, resolveClip(clip, time)), clip.crop), px, py, minHit)) return clip;
       continue;
     }
     let best: VisualClip | null = null;
@@ -334,9 +364,20 @@ function OutputOverlay() {
     [],
   );
 
-  const showGuides = (x: boolean, y: boolean) => {
-    if (guideV.current) guideV.current.style.display = x ? 'block' : 'none';
-    if (guideH.current) guideH.current.style.display = y ? 'block' : 'none';
+  /** hairlines at a canvas x / y while snapped (null = hidden). positioned with a transform, no layout */
+  const showGuides = (x: number | null, y: number | null) => {
+    const project = useEditor.getState().project;
+    const f = viewRef.current.f;
+    const v = guideV.current;
+    const h = guideH.current;
+    if (v) {
+      v.style.display = x === null ? 'none' : 'block';
+      if (x !== null && project) v.style.transform = `translate3d(${Math.min(x * f, project.width * f - 1)}px, 0, 0)`;
+    }
+    if (h) {
+      h.style.display = y === null ? 'none' : 'block';
+      if (y !== null && project) h.style.transform = `translate3d(0, ${Math.min(y * f, project.height * f - 1)}px, 0)`;
+    }
   };
 
   const apply = (snap: PointerSnapshot) => {
@@ -370,23 +411,39 @@ function OutputOverlay() {
       }
       let adjX = 0;
       let adjY = 0;
-      let snapX = false;
-      let snapY = false;
+      let atX: number | null = null;
+      let atY: number | null = null;
       const pi = Math.max(0, g.items.findIndex((i) => i.id === g.primary));
       const primary = g.items[pi];
       const pd = deltas[pi];
-      if (primary && pd) {
+      // snapping follows the primary clip. alt turns it off.
+      if (primary && pd && !snap.alt) {
         const thr = SNAP_PX / f;
-        if (Math.abs(primary.x + pd[0]) <= thr) {
-          adjX = -primary.x - pd[0];
-          snapX = true;
-        }
-        if (Math.abs(primary.y + pd[1]) <= thr) {
-          adjY = -primary.y - pd[1];
-          snapY = true;
+        if (primary.threeD) {
+          // a 3d clip snaps its center to the canvas center only
+          if (Math.abs(primary.x + pd[0]) <= thr) {
+            adjX = -primary.x - pd[0];
+            atX = project.width / 2;
+          }
+          if (Math.abs(primary.y + pd[1]) <= thr) {
+            adjY = -primary.y - pd[1];
+            atY = project.height / 2;
+          }
+        } else {
+          // a 2d clip snaps its center and its edges (of the kept, rotated bounds) to the canvas center and edges
+          const sx = snapAxis(project.width / 2 + primary.x + pd[0] + primary.ox, primary.hw, project.width, thr);
+          const sy = snapAxis(project.height / 2 + primary.y + pd[1] + primary.oy, primary.hh, project.height, thr);
+          if (sx) {
+            adjX = sx.adj;
+            atX = sx.at;
+          }
+          if (sy) {
+            adjY = sy.adj;
+            atY = sy.at;
+          }
         }
       }
-      showGuides(snapX, snapY);
+      showGuides(atX, atY);
       g.items.forEach((it, i) => {
         const d = deltas[i]!;
         store.setClipValue(it.id, 'x', time, Math.round((it.x + d[0] + adjX) * 100) / 100, { skipHistory: true });
@@ -400,6 +457,17 @@ function OutputOverlay() {
       if (Math.hypot(snap.x - g.startX, snap.y - g.startY) < DRAG_THRESHOLD_PX) return;
       g.started = true;
       store.pushHistory();
+    }
+    if (g.kind === 'edge') {
+      const r = edgeResize(g.start, g.edge, px, py, MIN_SHAPE_PX);
+      const patch: Record<string, number> = {};
+      if (r.width !== undefined) patch.width = Math.round(r.width * 100) / 100;
+      if (r.height !== undefined) patch.height = Math.round(r.height * 100) / 100;
+      // the opposite edge stays fixed in canvas space: the center follows. x / y go through setClipValue (keyframes)
+      store.updateClip(g.id, patch as unknown as ClipPatch, { skipHistory: true });
+      store.setClipValue(g.id, 'x', time, Math.round((g.x0 + r.dx) * 100) / 100, { skipHistory: true });
+      store.setClipValue(g.id, 'y', time, Math.round((g.y0 + r.dy) * 100) / 100, { skipHistory: true });
+      return;
     }
     if (g.kind === 'scale') {
       const d = Math.hypot(px - g.cx, py - g.cy);
@@ -467,7 +535,22 @@ function OutputOverlay() {
           cx = c.x;
           cy = c.y;
         }
-        if (handle.dataset.handle === 'scale') {
+        if (handle.dataset.handle === 'edge') {
+          const edge = handle.dataset.edge as Edge | undefined;
+          if (clip.type !== 'shape' || clip.threeD || !edge) return;
+          gestureRef.current = {
+            kind: 'edge',
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            id: clip.id,
+            edge,
+            start: { cx: box.cx, cy: box.cy, rotation: box.rotation, bw: box.width, bh: box.height, scale: clip.transform.scale },
+            x0: clip.transform.x,
+            y0: clip.transform.y,
+            started: false,
+          };
+        } else if (handle.dataset.handle === 'scale') {
           gestureRef.current = {
             kind: 'scale',
             pointerId: e.pointerId,
@@ -499,7 +582,7 @@ function OutputOverlay() {
       return;
     }
 
-    const hit = hitTest(project, time, rig, px, py);
+    const hit = hitTest(project, time, rig, px, py, MIN_HIT_PX / f);
     if (!hit) {
       if (!e.shiftKey) store.clearSelection();
       return;
@@ -521,7 +604,20 @@ function OutputOverlay() {
       const clip = resolveClip(raw, time);
       const z = clip.transform.z ?? 0;
       const p0 = raw.threeD ? rayPlane(ray.origin, ray.dir, [0, 0, z], [0, 0, 1]) : null;
-      items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, threeD: !!raw.threeD, p0, z });
+      let hw = 0;
+      let hh = 0;
+      let ox = 0;
+      let oy = 0;
+      if (!raw.threeD) {
+        const full = getClipBox(project, clip);
+        const kept = keptBox(full, raw.crop);
+        const b = boxBounds(kept);
+        hw = b.hw;
+        hh = b.hh;
+        ox = kept.cx - full.cx;
+        oy = kept.cy - full.cy;
+      }
+      items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, threeD: !!raw.threeD, hw, hh, ox, oy, p0, z });
     }
     if (items.length === 0) return;
     gestureRef.current = { kind: 'move', pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, started: false, primary: hit.id, items, rig };
@@ -531,7 +627,7 @@ function OutputOverlay() {
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const g = gestureRef.current;
     if (!g || g.pointerId !== e.pointerId) return;
-    pendingRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+    pendingRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey, alt: e.altKey };
     if (!rafRef.current) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = 0;
@@ -545,10 +641,10 @@ function OutputOverlay() {
   const endGesture = (e: ReactPointerEvent<HTMLDivElement>) => {
     const g = gestureRef.current;
     if (!g || g.pointerId !== e.pointerId) return;
-    if (e.type === 'pointerup') pendingRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+    if (e.type === 'pointerup') pendingRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey, alt: e.altKey };
     flush();
     gestureRef.current = null;
-    showGuides(false, false);
+    showGuides(null, null);
     const root = rootRef.current;
     if (root && root.hasPointerCapture(e.pointerId)) root.releasePointerCapture(e.pointerId);
   };

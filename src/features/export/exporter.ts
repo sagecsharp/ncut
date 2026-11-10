@@ -12,9 +12,11 @@ import {
   CanvasSource,
   Input,
   Mp4OutputFormat,
+  OggOutputFormat,
   Output,
   QUALITY_MEDIUM,
   Quality,
+  WavOutputFormat,
   WebMOutputFormat,
   canEncodeVideo,
   getFirstEncodableAudioCodec,
@@ -25,10 +27,18 @@ import { neededClipsAt, renderFrame } from '../../engine/draw';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { projectDuration } from '../../lib/timelineOps';
+import { type TimeRange, clampRange, frameTime, rangeFrameCount } from './range';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, renderAudioMix, sliceAudioBuffer } from './audioMix';
 
-export type ExportContainer = 'mp4' | 'webm';
+export type VideoContainer = 'mp4' | 'webm';
+/** wav / ogg are audio only files (no picture) */
+export type AudioContainer = 'wav' | 'ogg';
+export type ExportContainer = VideoContainer | AudioContainer;
+
+export function isAudioContainer(c: ExportContainer): c is AudioContainer {
+  return c === 'wav' || c === 'ogg';
+}
 export type ExportQuality = 'low' | 'medium' | 'high';
 
 export interface ExportOptions {
@@ -38,6 +48,8 @@ export interface ExportOptions {
   fps: number;
   quality: ExportQuality;
   includeAudio: boolean;
+  /** the part of the timeline to render (absolute seconds). missing = the whole project. the file starts at 0. */
+  range?: TimeRange;
 }
 
 export interface ExportProgress {
@@ -55,13 +67,15 @@ export interface ExportHooks {
 }
 
 /** tried in this order, the first one the browser can encode at the chosen size + fps + bitrate wins */
-export const VIDEO_CODECS: Record<ExportContainer, VideoCodec[]> = {
+export const VIDEO_CODECS: Record<VideoContainer, VideoCodec[]> = {
   mp4: ['avc', 'hevc', 'av1', 'vp9'],
   webm: ['vp9', 'av1', 'vp8'],
 };
 const AUDIO_CODECS: Record<ExportContainer, AudioCodec[]> = {
   mp4: ['aac', 'opus'],
   webm: ['opus'],
+  wav: ['pcm-s16'],
+  ogg: ['opus', 'vorbis'],
 };
 
 export const CODEC_LABEL: Record<string, string> = {
@@ -99,7 +113,7 @@ export interface ExportPlan {
 }
 
 export interface PlanRequest {
-  container: ExportContainer;
+  container: VideoContainer;
   width: number;
   height: number;
   fps: number;
@@ -137,10 +151,10 @@ export function outputSize(project: Pick<Project, 'width' | 'height'>, scale: nu
   return { width: even(project.width * scale), height: even(project.height * scale) };
 }
 
-export function frameCount(project: Pick<Project, 'clips'>, fps: number): number {
-  const n = projectDuration(project) * fps;
+export function frameCount(project: Pick<Project, 'clips'>, fps: number, range?: TimeRange): number {
+  const r = clampRange(range, projectDuration(project));
   // float error in duration * fps stays far below 1e-6 even for hours at 240 fps
-  return Math.max(1, Math.ceil(n - 1e-6));
+  return r ? rangeFrameCount(r, fps) : 1;
 }
 
 export function fileExtension(container: ExportContainer): string {
@@ -177,16 +191,24 @@ interface VideoFeed {
 }
 
 /** source timestamps (seconds in the asset) for every output frame where the clip is visible */
-function clipTimestamps(clip: VideoClip, fps: number, totalFrames: number, assetDuration: number, firstTimestamp = 0): Float64Array {
+export function clipTimestamps(
+  clip: VideoClip,
+  fps: number,
+  totalFrames: number,
+  assetDuration: number,
+  firstTimestamp = 0,
+  rangeStart = 0,
+): Float64Array {
   const end = clip.start + clip.duration;
-  const from = Math.max(0, Math.floor(clip.start * fps) - 1);
-  const to = Math.min(totalFrames - 1, Math.ceil(end * fps) + 1);
+  // output frame i shows timeline time rangeStart + i / fps
+  const from = Math.max(0, Math.floor((clip.start - rangeStart) * fps) - 1);
+  const to = Math.min(totalFrames - 1, Math.ceil((end - rangeStart) * fps) + 1);
   const maxT = assetDuration > 0 ? Math.max(0, assetDuration - 0.001) : Infinity;
   // frames before the track's first packet do not exist, show the first picture instead
   const minT = Math.min(maxT, Math.max(0, firstTimestamp));
   const out: number[] = [];
   for (let i = from; i <= to; i++) {
-    const t = i / fps;
+    const t = frameTime(rangeStart, i, fps);
     if (t >= clip.start - EPS && t < end - EPS) {
       out.push(Math.min(maxT, Math.max(minT, 0, clip.trimStart + (t - clip.start) * clip.speed)));
     }
@@ -196,16 +218,22 @@ function clipTimestamps(clip: VideoClip, fps: number, totalFrames: number, asset
 
 export async function exportProject(project: Project, options: ExportOptions, hooks: ExportHooks = {}): Promise<Blob> {
   const { onProgress, onWarning, signal } = hooks;
+  const projectLength = projectDuration(project);
+  if (projectLength <= 0) throw new Error('the project is empty');
+  const range = clampRange(options.range, projectLength);
+  if (!range) throw new Error('the range is empty, pick a start before the end');
+  if (signal?.aborted) throw abortError();
+  if (isAudioContainer(options.container)) return exportAudioOnly(project, options.container, range, hooks);
   if (typeof VideoEncoder === 'undefined') {
     throw new Error('this browser has no webcodecs support, try a recent chrome or edge');
   }
-  const duration = projectDuration(project);
-  if (duration <= 0) throw new Error('the project is empty');
-  if (signal?.aborted) throw abortError();
+  // the file is the range only: its time 0 is the range start. `duration` is its length.
+  const rangeStart = range.start;
+  const duration = range.end - range.start;
 
   const fps = options.fps > 0 ? options.fps : project.fps;
   const { width, height } = outputSize(project, options.scale);
-  const totalFrames = frameCount(project, fps);
+  const totalFrames = rangeFrameCount(range, fps);
   const container = options.container;
 
   const plan = await planExport({ container, width, height, fps, quality: options.quality }, signal);
@@ -235,7 +263,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
   if (options.includeAudio) {
     report('audio', 0, 0);
     await yieldToUi();
-    const res = await renderAudioMix(project, duration, signal, (f) => report('audio', f * 0.05, 0));
+    const res = await renderAudioMix(project, duration, signal, (f) => report('audio', f * 0.05, 0), rangeStart);
     for (const w of res.warnings) onWarning?.(w);
     mix = res.buffer;
     if (mix) {
@@ -335,7 +363,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         const first = await track.getFirstTimestamp();
         // one pooled canvas is enough: each frame is drawn right after it is pulled
         const sink = new CanvasSink(track, { poolSize: 1 });
-        const stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first);
+        const stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart);
         if (stamps.length === 0) continue;
         feeds.set(clip.id, { gen: sink.canvasesAtTimestamps(stamps), current: null, done: false });
       } catch {
@@ -381,7 +409,8 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     const frameDur = 1 / fps;
     for (let i = 0; i < totalFrames; i++) {
       if (signal?.aborted) throw abortError();
-      const t = i / fps;
+      // timeline time of this frame. the file's own timestamp is i / fps (starts at 0).
+      const t = frameTime(rangeStart, i, fps);
 
       // advance decoders of the video clips visible in this frame. a clip that a transition shows
       // before it starts gets its first frame early; one shown after it ended holds its last frame.
@@ -417,10 +446,10 @@ export async function exportProject(project: Project, options: ExportOptions, ho
       }
 
       renderFrame(ctx, project, t, resolver);
-      await videoSource.add(t, frameDur);
+      await videoSource.add(i / fps, frameDur);
 
       // free the decoder + canvas of video clips that just played their last frame
-      const nextT = (i + 1) / fps;
+      const nextT = frameTime(rangeStart, i + 1, fps);
       const neededNext = neededClipsAt(project, nextT);
       for (const clip of visible) {
         if (clip.type !== 'video' || clip.start + clip.duration - EPS > nextT) continue;
@@ -442,7 +471,7 @@ export async function exportProject(project: Project, options: ExportOptions, ho
         feed.current = null;
         feeds.delete(clip.id);
       }
-      await feedAudio(t + 1.5);
+      await feedAudio(i / fps + 1.5);
 
       report('video', 0.05 + 0.9 * ((i + 1) / totalFrames), i + 1, false);
       if (performance.now() - lastYield > 14) await yieldToUi();
@@ -471,5 +500,72 @@ export async function exportProject(project: Project, options: ExportOptions, ho
     throw err;
   } finally {
     await dispose();
+  }
+}
+
+/** wav / ogg: only the audio mix of the range, no picture */
+async function exportAudioOnly(project: Project, container: AudioContainer, range: TimeRange, hooks: ExportHooks): Promise<Blob> {
+  const { onProgress, onWarning, signal } = hooks;
+  const length = range.end - range.start;
+  const frames = Math.max(1, Math.ceil(length * MIX_SAMPLE_RATE));
+  let lastReport = 0;
+  const report = (phase: ExportProgress['phase'], progress: number, force = true) => {
+    const now = performance.now();
+    if (!force && now - lastReport < PROGRESS_MS) return;
+    lastReport = now;
+    onProgress?.({ phase, progress: Math.min(1, Math.max(0, progress)), frame: 0, totalFrames: 0 });
+  };
+
+  report('audio', 0);
+  await yieldToUi();
+  const res = await renderAudioMix(project, length, signal, (f) => report('audio', f * 0.8, false), range.start);
+  for (const w of res.warnings) onWarning?.(w);
+  const mix = res.buffer;
+  if (!mix) throw new Error('there is no sound in this range, nothing to export');
+  if (signal?.aborted) throw abortError();
+
+  const codec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
+    numberOfChannels: MIX_CHANNELS,
+    sampleRate: MIX_SAMPLE_RATE,
+    quality: QUALITY_MEDIUM,
+  });
+  if (!codec) throw new Error(`this browser cannot encode ${container} audio, try wav`);
+
+  const format = container === 'wav' ? new WavOutputFormat() : new OggOutputFormat();
+  const target = new BufferTarget();
+  const output = new Output({ format, target });
+  let finished = false;
+  try {
+    const source = new AudioBufferSource({ codec, quality: QUALITY_MEDIUM });
+    output.addAudioTrack(source);
+    await output.start();
+    // 1 s slices, so cancel and progress stay responsive
+    for (let pos = 0; pos < Math.min(mix.length, frames); ) {
+      if (signal?.aborted) throw abortError();
+      const end = Math.min(mix.length, pos + MIX_SAMPLE_RATE);
+      await source.add(sliceAudioBuffer(mix, pos, end));
+      pos = end;
+      report('audio', 0.8 + 0.18 * (pos / mix.length), false);
+      if (performance.now() - lastYield > 14) await yieldToUi();
+    }
+    report('finalizing', 0.98);
+    await yieldToUi();
+    await output.finalize();
+    finished = true;
+    if (signal?.aborted) throw abortError();
+    const buffer = target.buffer;
+    if (!buffer) throw new Error('the encoder produced no data');
+    report('finalizing', 1);
+    return new Blob([buffer], { type: format.mimeType });
+  } catch (err) {
+    if (!finished) {
+      try {
+        await output.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    if (signal?.aborted && !(err instanceof DOMException && err.name === 'AbortError')) throw abortError();
+    throw err;
   }
 }

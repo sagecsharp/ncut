@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Project } from '../../types';
-import { frameCount, outputSize, planExport, videoBitrate } from './exporter';
+import type { Project, ShapeClip, VideoClip } from '../../types';
+import { neededClipsAt } from '../../engine/draw';
+import { projectDuration } from '../../lib/timelineOps';
+import { clipTimestamps, frameCount, isAudioContainer, outputSize, planExport, videoBitrate } from './exporter';
 import { MIX_SAMPLE_RATE } from './audioMix';
 
 function withDuration(d: number): Pick<Project, 'clips'> {
@@ -52,5 +54,62 @@ describe('outputSize', () => {
 describe('planExport', () => {
   it('returns null without webcodecs', async () => {
     expect(await planExport({ container: 'mp4', width: 1920, height: 1080, fps: 240, quality: 'medium' })).toBeNull();
+  });
+});
+
+describe('export range', () => {
+  it('counts the frames of the range only', () => {
+    const p = withDuration(10);
+    expect(frameCount(p, 30)).toBe(300);
+    expect(frameCount(p, 30, { start: 2, end: 8 })).toBe(180);
+    expect(frameCount(p, 30, { start: 8, end: 99 })).toBe(60);
+  });
+  it('video clip timestamps follow the range offset', () => {
+    const clip = { id: 'v', type: 'video', start: 4, duration: 2, trimStart: 1, speed: 1 } as unknown as VideoClip;
+    // range 3..9 at 10 fps: frame 10 is timeline 4s = the clip start = source 1s
+    const stamps = clipTimestamps(clip, 10, 60, 100, 0, 3);
+    expect(stamps.length).toBe(20);
+    expect(stamps[0]).toBeCloseTo(1);
+    expect(stamps[19]).toBeCloseTo(2.9);
+    // the same clip without a range offset starts at frame 40
+    expect(clipTimestamps(clip, 10, 90, 100, 0, 0)[0]).toBeCloseTo(1);
+  });
+  it('a range that starts inside a clip begins at the matching source time', () => {
+    const clip = { id: 'v', type: 'video', start: 0, duration: 10, trimStart: 0, speed: 2 } as unknown as VideoClip;
+    const stamps = clipTimestamps(clip, 10, 50, 100, 0, 3);
+    expect(stamps[0]).toBeCloseTo(6);
+  });
+  it('wav and ogg are audio only', () => {
+    expect(isAudioContainer('wav')).toBe(true);
+    expect(isAudioContainer('ogg')).toBe(true);
+    expect(isAudioContainer('mp4')).toBe(false);
+  });
+});
+
+describe('shape clips', () => {
+  const shape = {
+    id: 's',
+    type: 'shape',
+    trackId: 't',
+    start: 1,
+    duration: 3,
+    kind: 'rect',
+    width: 100,
+    height: 100,
+    color: '#fff',
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+  } as unknown as ShapeClip;
+  const project = {
+    clips: [shape],
+    tracks: [{ id: 't', kind: 'video', hidden: false }],
+    assets: [],
+  } as unknown as Project;
+  it('count towards the export length without a source', () => {
+    expect(projectDuration(project)).toBe(4);
+    expect(frameCount(project, 30)).toBe(120);
+  });
+  it('are drawn: the exporter asks for them like for images', () => {
+    expect(neededClipsAt(project, 2)).toEqual([shape]);
+    expect(neededClipsAt(project, 0.5)).toEqual([]);
   });
 });

@@ -266,6 +266,20 @@ export class PreviewEngine {
 
   /* ---------- drawing ---------- */
 
+  /**
+   * the frame at the playhead as a png at the full project resolution: the same renderFrame and the same
+   * picture sources as the preview, at quality 1 (full motion blur). null when it cannot be made.
+   */
+  async frameBlob(): Promise<Blob | null> {
+    const project = useEditor.getState().project;
+    if (this.disposed || !project || typeof OffscreenCanvas === 'undefined') return null;
+    const canvas = new OffscreenCanvas(project.width, project.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) return null;
+    renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
+    return canvas.convertToBlob({ type: 'image/png' });
+  }
+
   /** returns true when a frame was painted */
   private draw(): boolean {
     if (this.disposed) return false;

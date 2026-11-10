@@ -131,6 +131,10 @@ export function SceneOverlay() {
   const axisText = useRef<Array<SVGTextElement | null>>([null, null, null]);
   const axisGroup = useRef<Array<SVGGElement | null>>([null, null, null]);
   const centerDot = useRef<SVGCircleElement>(null);
+  const targetUnder = useRef<SVGLineElement>(null);
+  const targetLine = useRef<SVGLineElement>(null);
+  /** some camera clip has a target: the time subscription keeps its line fresh even without a selection */
+  const hasTargetCam = useRef(false);
   const viewF = useRef(0);
   const redrawRef = useRef<() => void>(() => undefined);
   const gizmo = useRef<GizmoState>({ visible: false, cx: 0, cy: 0, tips: [0, 1, 2].map(() => ({ x: 0, y: 0, ok: false })), target: null });
@@ -215,6 +219,36 @@ export function SceneOverlay() {
           }
         }
       }
+      // thin line from the project camera to the center of the clip it keeps looking at
+      let lineOn = false;
+      hasTargetCam.current = !!project && project.clips.some((c) => c.type === 'camera' && !!c.target);
+      const under = targetUnder.current;
+      const line = targetLine.current;
+      if (project && f > 0 && under && line) {
+        const time = usePlayback.getState().time;
+        const camClip = cameraClipAt(project, time);
+        const tid = camClip?.target;
+        const tClip = tid ? project.clips.find((c) => c.id === tid) : undefined;
+        if (camClip && tClip && isVisualClip(tClip) && time >= tClip.start - 1e-6 && time < clipEnd(tClip) - 1e-6) {
+          const rig = viewRig(project);
+          const r = resolveClip(camClip, time);
+          const tr = resolveClip(tClip, time);
+          const tb = getClipBox(project, tr);
+          const a = projectPoint(rig, project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z, project.width, project.height);
+          const b = projectPoint(rig, tb.cx, tb.cy, tr.transform.z ?? 0, project.width, project.height);
+          if (a.visible && b.visible) {
+            lineOn = true;
+            for (const ln of [under, line]) {
+              ln.setAttribute('x1', String(a.x * f));
+              ln.setAttribute('y1', String(a.y * f));
+              ln.setAttribute('x2', String(b.x * f));
+              ln.setAttribute('y2', String(b.y * f));
+            }
+          }
+        }
+      }
+      if (under) under.style.display = lineOn ? '' : 'none';
+      if (line) line.style.display = lineOn ? '' : 'none';
       for (let i = 0; i < unders.length; i++) {
         const show = i < used ? '' : 'none';
         unders[i]!.style.display = show;
@@ -281,7 +315,7 @@ export function SceneOverlay() {
       else if (s.project !== p.project || s.selection !== p.selection) redraw();
     });
     const unTime = usePlayback.subscribe((s, p) => {
-      if (s.time !== p.time && useEditor.getState().selection.length > 0) redraw();
+      if (s.time !== p.time && (hasTargetCam.current || useEditor.getState().selection.length > 0)) redraw();
     });
     const unCam = useSceneCamera.subscribe(redraw);
     redraw();
@@ -548,6 +582,8 @@ export function SceneOverlay() {
     >
       <svg className="scene-svg" aria-hidden="true">
         <g ref={polyGroup} />
+        <line ref={targetUnder} className="scene-target-under" style={{ display: 'none' }} />
+        <line ref={targetLine} className="scene-target-line" style={{ display: 'none' }} />
         {AXIS_NAMES.map((name, a) => (
           <g
             key={name}
