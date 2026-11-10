@@ -102,8 +102,16 @@ describe('project templates', () => {
   }
 
   it('builds the same timeline twice apart from ids', () => {
+    // ids differ between two builds: links between clips are compared by position instead
+    const at = (p: Project, id: unknown) => (typeof id === 'string' ? p.clips.findIndex((c) => c.id === id) : id);
     const strip = (p: Project) =>
-      JSON.stringify(p.clips.map((c) => ({ ...c, id: '', trackId: p.tracks.findIndex((t) => t.id === c.trackId) })));
+      JSON.stringify(
+        p.clips.map((c) => {
+          const o: Record<string, unknown> = { ...c, id: '', trackId: p.tracks.findIndex((t) => t.id === c.trackId) };
+          for (const k of ['parent', 'lookTarget', 'target']) if (k in o) o[k] = at(p, o[k]);
+          return o;
+        }),
+      );
     for (const t of PROJECT_TEMPLATES) {
       const a = t.build(createProject('a'));
       const b = t.build(createProject('b'));

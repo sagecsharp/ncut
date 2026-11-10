@@ -348,12 +348,161 @@ function lyrics(project: Project): Project {
   return b.finish(project, '#0b0c0e');
 }
 
+function stats(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 6;
+  const wide = b.w >= b.h;
+  const items: { text: string; to: number; decimals: number; separator: boolean; label: string }[] = [
+    { text: '{n}%', to: 87, decimals: 0, separator: false, label: 'happier' },
+    { text: '{n}', to: 12500, decimals: 0, separator: true, label: 'views' },
+    { text: '{n}x', to: 3.5, decimals: 1, separator: false, label: 'faster' },
+  ];
+  const gap = wide ? Math.min(600 * u, b.w * 0.3) : 420 * u;
+  items.forEach((item, i) => {
+    const x = wide ? (i - 1) * gap : 0;
+    const y = wide ? 0 : (i - 1) * gap;
+    const start = i * 0.4;
+    b.text(b.track(`number ${i + 1}`), start, {
+      duration: len - start,
+      name: item.label,
+      text: item.text,
+      fontSize: 180 * u,
+      fontWeight: 700,
+      color: i === 1 ? ACCENT : INK,
+      counter: { from: 0, to: item.to, decimals: item.decimals, separator: item.separator, ease: 'out', hold: 1.5 },
+      animIn: { id: 'rise', duration: 0.5 },
+      transform: { x, y: y - 40 * u, scale: 1, rotation: 0, opacity: 1 },
+    });
+    b.text(b.track(`label ${i + 1}`), start + 0.2, {
+      duration: len - start - 0.2,
+      name: `${item.label} label`,
+      text: item.label,
+      fontSize: 50 * u,
+      color: DIM,
+      letterSpacing: 0.15,
+      underline: true,
+      animIn: { id: 'fade', duration: 0.5 },
+      transform: { x, y: y + 110 * u, scale: 1, rotation: 0, opacity: 1 },
+    });
+  });
+  return b.finish(project, '#0b0c0e');
+}
+
+function winter(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 6;
+
+  b.effect(b.track('snow'), 'snow', 0, { duration: len, fadeIn: 0.8, amount: 0.85 });
+  b.text(b.track('title'), 0.3, {
+    duration: len - 0.3,
+    name: 'title',
+    text: 'first snow',
+    fontSize: 190 * u,
+    fontWeight: 700,
+    color: INK,
+    extrude: { depth: 0.07, angle: 60, color: '#51618a' },
+    animIn: { id: 'cascade', duration: 1.2 },
+    transform: { x: 0, y: -30 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  b.text(b.track('line'), 1.4, {
+    duration: len - 1.4,
+    name: 'line',
+    text: 'change the words, keep the weather',
+    fontSize: 44 * u,
+    color: '#c9d3ea',
+    letterSpacing: 0.12,
+    wrapWidth: Math.round(b.w * 0.8),
+    animIn: { id: 'fade', duration: 0.8 },
+    transform: { x: 0, y: 150 * u, scale: 1, rotation: 0, opacity: 1 },
+  });
+  b.effect(b.track('mist'), 'mist', 0, { duration: len, amount: 0.7 });
+  b.shape(b.track('sky'), 0, {
+    duration: len,
+    name: 'sky',
+    kind: 'rect',
+    width: b.w,
+    height: b.h,
+    color: '#141d33',
+    color2: '#46527a',
+    gradientAngle: 90,
+  });
+  return b.finish(project, '#141d33');
+}
+
+function carousel(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 8;
+  const count = 8;
+  const radius = 560 * u;
+
+  b.camera(b.track('camera'), 0, {
+    duration: len,
+    tilt: -10,
+    y: -230 * u,
+    keyframes: { z: ramp(-650 * u, -200 * u, len, 'ease-out') },
+  });
+  // everything on the ring is attached to the pole: turn the pole and the cards go around
+  const pole = b.shape(b.track('pole'), 0, {
+    duration: len,
+    name: 'pole',
+    kind: 'rect',
+    width: 36 * u,
+    height: 520 * u,
+    color: '#3a3e46',
+    color2: '#1c1e23',
+    gradientAngle: 90,
+    threeD: true,
+    shape: 'cylinder',
+    shapeDepth: 36 * u,
+    keyframes: { rotY: ramp(0, 360, len, 'linear') },
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: 0, rotY: 0 },
+  });
+  const tones = ['#f2f2f2', '#ffe14d', '#9ad1ff', '#8a8f98'];
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2;
+    b.shape(b.track(`card ${i + 1}`), 0, {
+      duration: len,
+      name: `card ${i + 1}`,
+      kind: 'rect',
+      width: 300 * u,
+      height: 400 * u,
+      color: tones[i % tones.length]!,
+      color2: '#22252b',
+      gradientAngle: 90,
+      radius: 0.08,
+      threeD: true,
+      parent: pole.id,
+      // around the pole, each card turned to face away from it
+      transform: { x: Math.sin(a) * radius, y: 0, scale: 1, rotation: 0, opacity: 1, z: -Math.cos(a) * radius, rotY: (i / count) * 360 },
+    });
+  }
+  b.shape(b.track('floor'), 0, {
+    duration: len,
+    name: 'floor',
+    kind: 'ellipse',
+    width: 2200 * u,
+    height: 2200 * u,
+    color: '#24272c',
+    color2: '#101215',
+    gradientRadial: true,
+    threeD: true,
+    transform: { x: 0, y: 275 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: 90 },
+  });
+  return b.finish(project, '#0e1013');
+}
+
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
   { id: 'lower-third', name: 'name tag', description: 'a name and a role sliding in at the bottom left', build: lowerThird },
   { id: 'countdown', name: 'countdown', description: 'five to one with a ring that pops on every number', build: countdown },
   { id: 'lyrics', name: 'lyrics', description: 'lines whose words light up one after another', build: lyrics },
+  { id: 'stats', name: 'numbers', description: 'three numbers that count up, each with a label under it', build: stats },
+  { id: 'winter', name: 'snow title', description: 'a block title in falling snow and mist over an evening sky', build: winter },
+  { id: 'carousel', name: 'carousel', description: 'eight cards on a turning ring in 3d: they are attached to the pole in the middle', build: carousel },
 ];
 
 export function getTemplate(id: string | null | undefined): ProjectTemplate | undefined {

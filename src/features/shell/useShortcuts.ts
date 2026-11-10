@@ -88,11 +88,32 @@ export function useShortcuts(): void {
       e.preventDefault();
     };
 
+    // a select keeps the focus after a pick with the mouse, and then takes arrows / space / letters for itself:
+    // the next arrow press would change its value again instead of stepping a frame. so a select that was
+    // changed with the pointer gives the focus back. one that is driven with the keyboard keeps it.
+    let pointerLast = false;
+    const onPointerDown = () => {
+      pointerLast = true;
+    };
+    const onAnyKey = () => {
+      pointerLast = false;
+    };
+    const onChange = (e: Event) => {
+      const el = e.target;
+      if (pointerLast && el instanceof HTMLSelectElement) el.blur();
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onAnyKey, true);
+    window.addEventListener('change', onChange);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onAnyKey, true);
+      window.removeEventListener('change', onChange);
     };
   }, []);
 }
