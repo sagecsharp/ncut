@@ -898,3 +898,108 @@ describe('render channels', () => {
     expect(effectRunnerCount()).toBe(0);
   });
 });
+
+describe('planeFor: 3d depth text', () => {
+  class FakeCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) {
+      this.width = w;
+      this.height = h;
+    }
+    getContext() {
+      const target: Record<string, unknown> = {
+        font: '',
+        getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+        measureText: (s: string) => ({ width: Array.from(s).length * 10 }),
+      };
+      return new Proxy(target, {
+        get: (tg, k: string) => (k in tg ? tg[k] : () => undefined),
+        set: (tg, k: string, v) => {
+          tg[k] = v;
+          return true;
+        },
+        has: (tg, k: string) => k in tg,
+      });
+    }
+  }
+  beforeAll(() => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+  });
+  afterAll(() => vi.unstubAllGlobals());
+
+  const tracks = [track('t', 'video')];
+  const rig = { eye: [960, 540, -1500] } as unknown as Parameters<typeof planeFor>[2];
+  const ex = { depth: 0.5, angle: 45, color: '#ff0000' };
+  const text = (over: Record<string, unknown> = {}) => createTextClip('t', 0, { threeD: true, fontFamily: 'Depth A', fontSize: 40, duration: 5, ...over } as never);
+  const build = (c: ReturnType<typeof text>, alpha = 1, time = 1) => {
+    const sides: NonNullable<ReturnType<typeof planeFor>>[] = [];
+    const face = planeFor(project([c], tracks), { clip: c, source: null, alpha, time }, rig, 'default', sides)!;
+    return { face, sides };
+  };
+
+  it('a 3d text with an extrude is a face plus a stack of side planes behind it', () => {
+    const { face, sides } = build(text({ extrude: ex }));
+    // 0.5 x 40 = 20 px of depth: one plane per 2 px
+    expect(sides.length).toBe(10);
+    // every side is the face moved back along z (an unrotated plane: +z), farthest first
+    const zs = sides.map((p) => p.model[14]! - face.model[14]!);
+    expect(zs[0]).toBeCloseTo(20, 4);
+    expect(zs[zs.length - 1]).toBeCloseTo(2, 4);
+    for (let i = 1; i < zs.length; i++) expect(zs[i]!).toBeLessThan(zs[i - 1]!);
+    for (const p of sides) {
+      expect(p.model[12]).toBe(face.model[12]);
+      expect(p.model[13]).toBe(face.model[13]);
+      expect(p.alpha).toBe(1);
+    }
+  });
+
+  it('the sides share one silhouette picture and key, which differ from the face', () => {
+    const { face, sides } = build(text({ extrude: ex }));
+    expect(new Set(sides.map((p) => p.image)).size).toBe(1);
+    expect(new Set(sides.map((p) => p.cacheKey)).size).toBe(1);
+    expect(sides[0]!.image).not.toBe(face.image);
+    expect(sides[0]!.cacheKey).not.toBe(face.cacheKey);
+  });
+
+  it('the depth follows the clip scale and the stack turns with the clip', () => {
+    const c = text({ extrude: ex, transform: { ...DEFAULT_TRANSFORM, scale: 2, rotY: 90 } });
+    const { face, sides } = build(c);
+    // rotY 90 turns the local z axis to the x axis: the stack reaches 40 px sideways, not in z
+    const dx = Math.abs(sides[0]!.model[12]! - face.model[12]!);
+    const dz = Math.abs(sides[0]!.model[14]! - face.model[14]!);
+    expect(Math.hypot(dx, dz)).toBeCloseTo(40, 3);
+    expect(dx).toBeGreaterThan(39);
+  });
+
+  it('a faded stack fades its sides less than a plain overlap would', () => {
+    const { face, sides } = build(text({ extrude: ex }), 0.5);
+    expect(face.alpha).toBe(0.5);
+    expect(sides[0]!.alpha).toBeLessThan(0.5);
+    expect(sides[0]!.alpha).toBeGreaterThan(0);
+  });
+
+  it('keeps the planes while nothing changes and rebuilds them when the pose does', () => {
+    const c = text({ extrude: ex });
+    const a = build(c).sides;
+    const b = build(c).sides;
+    expect(b[0]).toBe(a[0]);
+    const moved = { ...c, transform: { ...c.transform, x: 50 } };
+    expect(build(moved).sides[0]).not.toBe(a[0]);
+  });
+
+  it('a 3d text without an extrude, a flat one and non-text clips yield only their one plane', () => {
+    expect(build(text()).sides.length).toBe(0);
+    expect(build(text({ extrude: { ...ex, depth: 0 } })).sides.length).toBe(0);
+    expect(build(text({ extrude: ex, threeD: false })).sides.length).toBe(0);
+    const v = video('t', 0, 5, { threeD: true });
+    const sides: never[] = [];
+    expect(planeFor(project([v], tracks), { clip: v, source: mkSource('a', 100, 100), alpha: 1, time: 1 }, rig, 'default', sides)).not.toBeNull();
+    expect(sides.length).toBe(0);
+  });
+
+  it('planeFor without a sides list returns the face only', () => {
+    const c = text({ extrude: ex });
+    expect(planeFor(project([c], tracks), { clip: c, source: null, alpha: 1, time: 1 }, rig)).not.toBeNull();
+  });
+});

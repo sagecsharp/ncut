@@ -26,6 +26,7 @@ import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
 import { drawShape, shapeSignature, shapeSpill } from './shape';
 import { drawText, measureText, textSignature, textSpill } from './text';
+import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSignature } from './textDepth';
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
 import { easeTransition, releaseTransitionRunner, renderTransition } from './transitions/runner';
@@ -524,6 +525,10 @@ interface TextTexture {
   key: string | undefined;
   /** unscaled pixels of extra room around the text box on every side */
   margin: number;
+  /** 3d depth text: the flat silhouette of the letters in the side colour, same size as `canvas`. built on demand. */
+  side?: { canvas: AnyCanvas; key: string | undefined; sig: string };
+  /** pixels per unit the picture was drawn at */
+  q: number;
 }
 const textTextures = new Map<string, TextTexture>();
 let textTextureSerial = 0;
@@ -542,19 +547,19 @@ export function textureQuality(scale: number, fullW: number, fullH: number): num
  * a text clip rendered to its own canvas for use as a 3d texture. cached until the text or its style
  * changes; while a text animation runs it is redrawn every frame (key undefined = upload every frame).
  */
-function textTexture(clip: TextClip, time: number): TextTexture | null {
+function textTexture(clip: TextClip, time: number, stacked = false): TextTexture | null {
   const m = measureText(clip);
   const local = time - clip.start;
   const animated = textAnimActive(clip, local);
   // the same room whether or not the animation is running right now, so the plane never changes size
-  const margin = textSpill(clip, !!(clip.animIn || clip.animOut || clip.animLoop)) * clip.fontSize;
+  const margin = textSpill(clip, !!(clip.animIn || clip.animOut || clip.animLoop), stacked) * clip.fontSize;
   const fullW = m.width + margin * 2;
   const fullH = m.height + margin * 2;
   // enough pixels for the size it is shown at, within reason
   const q = textureQuality(clip.transform.scale, fullW, fullH);
   const w = Math.max(2, Math.ceil(fullW * q));
   const h = Math.max(2, Math.ceil(fullH * q));
-  const sig = animated ? '' : textSignature(clip) + '|' + w + '|' + h;
+  const sig = animated ? '' : textSignature(clip) + '|' + w + '|' + h + (stacked ? '|d' : '');
   const hit = textTextures.get(clip.id);
   if (hit && !animated && hit.sig === sig) {
     // most recently used goes last, so the first key is the one to evict
@@ -578,11 +583,13 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
   c.clearRect(0, 0, w, h);
   c.translate(w / 2, h / 2);
   c.scale(q, q);
-  drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined);
+  drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined, stacked ? { noExtrude: true } : undefined);
   // a counter text changes all the time: no cache key (the gl side uploads it every frame and keeps no copy),
   // so the changing numbers cannot fill the texture cache. the 2d canvas here is replaced per clip id as before.
   const live = animated || counterTexts.has(clip);
-  const entry: TextTexture = { sig, canvas, key: live ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin };
+  const entry: TextTexture = { sig, canvas, key: live ? undefined : `text:${clip.id}:${++textTextureSerial}`, margin, q };
+  // the silhouette is stale now; its canvas is kept for reuse
+  if (stacked && hit?.side) entry.side = { canvas: hit.side.canvas, key: undefined, sig: '' };
   textTextures.delete(clip.id);
   textTextures.set(clip.id, entry);
   if (textTextures.size > 64) {
@@ -590,6 +597,53 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
     if (first !== undefined) textTextures.delete(first);
   }
   return entry;
+}
+
+/**
+ * the flat silhouette of a 3d depth text: the letters (outline included) filled with the side colour, with the alpha
+ * shape of the face. made from the same picture as the face: when nothing but the letters is in it (no shadow, no
+ * background box) the face canvas is copied and tinted ('source-in'), so an animated text costs a copy and a fill per
+ * frame, not a second text layout. otherwise the letters are drawn again without shadow / boxes and tinted.
+ * cached with the face (the face entry is replaced whenever the picture is redrawn, which drops the silhouette).
+ * it always has a texture key, even while the face is live: the n planes of the stack share it, so the gl side uploads
+ * it once per redraw (a key-less picture would be uploaded again for every plane). the keys of live pictures are
+ * unique per redraw and age out of the gl cache.
+ */
+function textSide(t: TextTexture, clip: TextClip, time: number, color: string): { canvas: AnyCanvas; key: string | undefined } | null {
+  // its own cache key: the text signature of the face + 'side' (+ colour). an animated face has no signature: redrawn every frame.
+  const sig = t.sig === '' ? '' : sideSignature(t.sig, color);
+  if (t.side && sig !== '' && t.side.sig === sig) return t.side;
+  const w = t.canvas.width;
+  const h = t.canvas.height;
+  let canvas: AnyCanvas | null = t.side && t.side.canvas.width === w && t.side.canvas.height === h ? t.side.canvas : null;
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(w, h);
+    else if (typeof document !== 'undefined') {
+      canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+    } else return null;
+  }
+  const c = canvas.getContext('2d') as Ctx | null;
+  if (!c) return null;
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'source-over';
+  c.clearRect(0, 0, w, h);
+  if (canTintFace(clip)) c.drawImage(t.canvas as CanvasImageSource, 0, 0);
+  else {
+    const local = time - clip.start;
+    c.translate(w / 2, h / 2);
+    c.scale(t.q, t.q);
+    drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, textAnimActive(clip, local) ? local : undefined, { noExtrude: true, bare: true });
+    c.setTransform(1, 0, 0, 1, 0, 0);
+  }
+  c.globalCompositeOperation = 'source-in';
+  c.fillStyle = color;
+  c.fillRect(0, 0, w, h);
+  c.globalCompositeOperation = 'source-over';
+  t.side = { canvas, key: `side:${clip.id}:${++textTextureSerial}`, sig };
+  return t.side;
 }
 
 /* ---------- shape clips as textures (3d) ---------- */
@@ -654,12 +708,13 @@ let cacheClips: readonly Clip[] | null = null;
 function syncTextureCaches(project: Project): void {
   if (project.clips === cacheClips) return;
   cacheClips = project.clips;
-  if (textTextures.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0) return;
+  if (textTextures.size === 0 && sideStacks.size === 0 && shapeTextures.size === 0 && lookCopies.size === 0 && maskCopies.size === 0) return;
   const ids = new Set<string>();
   for (const c of project.clips) ids.add(c.id);
   for (const id of [...lookCopies.keys()]) if (!ids.has(id)) lookCopies.delete(id);
   for (const id of [...maskCopies.keys()]) if (!ids.has(id)) maskCopies.delete(id);
   for (const id of [...textTextures.keys()]) if (!ids.has(id)) textTextures.delete(id);
+  for (const id of [...sideStacks.keys()]) if (!ids.has(id)) sideStacks.delete(id);
   for (const id of [...shapeTextures.keys()]) if (!ids.has(id)) shapeTextures.delete(id);
 }
 
@@ -838,7 +893,58 @@ function maskedTexture(
   return { image: canvas as TexImageSource, key: outKey };
 }
 
-export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, channel: Channel = 'default'): Plane3D | null {
+interface SideStack {
+  /** the face model the planes were built from */
+  model: Float32Array;
+  depth: number;
+  planes: Plane3D[];
+}
+const sideStacks = new Map<string, SideStack>();
+
+/**
+ * the side planes of a 3d depth text, farthest first: copies of the face plane moved back along the clip's own z axis
+ * (the third column of its model matrix), all sharing the silhouette picture. the list is kept per clip while the
+ * face model and the depth stay the same, so a still text allocates nothing per frame; only the picture, its key and
+ * the alpha are written each time. the returned array and planes are only valid until the next call for this clip.
+ */
+function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexImageSource, cacheKey: string | undefined, alpha: number): Plane3D[] {
+  const offsets = sideOffsets(depthPx);
+  const a = sideAlpha(alpha, offsets.length);
+  let st = sideStacks.get(clipId);
+  let same = !!st && st.depth === depthPx && st.planes.length === offsets.length;
+  if (same) for (let i = 0; i < 16 && same; i++) if (st!.model[i] !== face.model[i]) same = false;
+  if (!st || !same) {
+    const planes: Plane3D[] = offsets.map((dz) => {
+      const m = new Float32Array(face.model);
+      m[12] = m[12]! + dz * m[8]!;
+      m[13] = m[13]! + dz * m[9]!;
+      m[14] = m[14]! + dz * m[10]!;
+      return { image, cacheKey, model: m, alpha: a, shape: face.shape };
+    });
+    st = { model: new Float32Array(face.model), depth: depthPx, planes };
+    sideStacks.delete(clipId);
+    sideStacks.set(clipId, st);
+    if (sideStacks.size > 64) {
+      const first = sideStacks.keys().next().value;
+      if (first !== undefined) sideStacks.delete(first);
+    }
+  }
+  for (const p of st.planes) {
+    p.image = image;
+    p.cacheKey = cacheKey;
+    p.alpha = a;
+    p.uv = face.uv;
+  }
+  return st.planes;
+}
+
+/**
+ * the plane of a 3d clip. a 3d text with an extrude (textDepth.ts hasTextDepth) is a stack: pass `sides` and the
+ * side planes are pushed into it, farthest first (the plane returned is the face, the one at the clip's own position).
+ * without `sides` only the face comes back. the face is the text without the flat extrude; the look and the mask act
+ * on the face only, a crop acts on both.
+ */
+export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, channel: Channel = 'default', sides?: Plane3D[]): Plane3D | null {
   syncTextureCaches(project);
   const { clip, source } = layer;
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
@@ -850,9 +956,12 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   // size in pixels of the picture, for the clip look (0 = unknown)
   let lw = 0;
   let lh = 0;
+  let sideTex: { canvas: AnyCanvas; key: string | undefined } | null = null;
   if (clip.type === 'text') {
-    const t = textTexture(clip, layer.time);
+    const stacked = hasTextDepth(clip);
+    const t = textTexture(clip, layer.time, stacked);
     if (!t) return null;
+    if (stacked && sides) sideTex = textSide(t, clip, layer.time, clip.extrude!.color);
     // the texture has room around the text for outlines, shadows and moving letters
     pad = t.margin * clip.transform.scale;
     box.width += pad * 2;
@@ -939,6 +1048,11 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     plane.radius = radius;
     plane.size = size;
   }
+  if (sideTex && sides) {
+    // farthest first, the face last: the order the planes are given in is the order coplanar ties keep (order.ts)
+    const list = sidePlanes(clip.id, plane, depthPixels(clip), sideTex.canvas, sideTex.key, layer.alpha);
+    for (const p of list) sides.push(p);
+  }
   return plane;
 }
 
@@ -954,7 +1068,8 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   if (!canvas) return;
   const planes: Plane3D[] = [];
   for (const layer of layers) {
-    const p = planeFor(project, layer, rig, channel);
+    // a 3d depth text pushes its side planes (far to near) before its face
+    const p = planeFor(project, layer, rig, channel, planes);
     if (p) planes.push(p);
   }
   const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null);
