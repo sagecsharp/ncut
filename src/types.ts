@@ -159,7 +159,19 @@ export interface ClipMotionBlur {
   shutter: number;
   /** how many copies are averaged. 2..32 */
   samples: number;
+  /**
+   * the kind of blur. missing = 'even'.
+   * 'even'  = every moment of the open shutter counts the same: the classic smooth smear.
+   * 'trail' = the clip itself stays sharp and bright where it is now and leaves a tail that fades out
+   *           behind it (the weights fall off toward the past, nothing from the future).
+   * 'ghost' = a few separate see-through copies behind the clip instead of a smear (a strobe look):
+   *           at most 5 copies spread over the shutter, however many samples are set.
+   */
+  style?: MotionBlurStyle;
 }
+
+export type MotionBlurStyle = 'even' | 'trail' | 'ghost';
+export const MOTION_BLUR_STYLES: MotionBlurStyle[] = ['even', 'trail', 'ghost'];
 
 /** color correction of one clip's picture. every value at 0 changes nothing. see engine/clipLook.ts. */
 export interface ClipAdjust {
@@ -409,6 +421,15 @@ export interface TextClip extends ClipBase, Spatial {
   extrude?: TextExtrude | null;
   /** a running number inside the text. null / missing = off. */
   counter?: TextCounter | null;
+  /** a line under every line of text, in the fill color, about 1/14 of the font size thick. missing = false. */
+  underline?: boolean;
+  /** a line through the middle of every line of text. missing = false. */
+  strike?: boolean;
+  /**
+   * the background box (`background`) is drawn once per line, each hugging its own line's width
+   * (the caption / label look), instead of one box around the whole block. missing = false.
+   */
+  backgroundPerLine?: boolean;
   /* ---- animation ---- */
   animIn?: TextAnim | null;
   animOut?: TextAnim | null;

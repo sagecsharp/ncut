@@ -51,7 +51,7 @@ export function counterText(clip: Pick<TextClip, 'text' | 'counter' | 'start' | 
 }
 
 /**
- * the clip as it is drawn at a time: the counter's number written into \`text\` and the counter taken off,
+ * the clip as it is drawn at a time: the counter's number written into `text` and the counter taken off,
  * so everything after this (layout, caches, signatures, overlays) just sees a plain text clip.
  * a clip without a counter is returned as it is (the same object, no copy).
  */
