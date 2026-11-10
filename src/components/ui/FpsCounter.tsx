@@ -60,7 +60,7 @@ export function FpsCounter() {
       data-level="good"
       onClick={() => setVisible(false)}
       onPointerEnter={(e) => {
-        e.currentTarget.title = ;
+        e.currentTarget.title = `${TITLE} preview quality: ${previewQuality()}.`;
       }}
       title={TITLE}
     >
