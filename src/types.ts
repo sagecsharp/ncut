@@ -67,9 +67,11 @@ export interface Transform {
 
 /**
  * 3d: 'camera' keeps the plane facing the camera position (a billboard), 'cameraY' does the same but
- * stays upright (only turns left / right). rotation / tilt / turn are applied on top.
+ * stays upright (only turns left / right). 'clip' faces the center of another clip (Spatial.lookTarget),
+ * wherever that one moves; without a valid target it behaves like 'none'.
+ * rotation / tilt / turn are applied on top.
  */
-export type LookAt = 'none' | 'camera' | 'cameraY';
+export type LookAt = 'none' | 'camera' | 'cameraY' | 'clip';
 
 export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'hold' | 'back' | 'bounce' | 'elastic';
 
@@ -105,7 +107,9 @@ interface ClipBase {
 }
 
 /** what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face. */
-export type Shape3D = 'plane' | 'box' | 'sphere' | 'cylinder';
+export type Shape3D = 'plane' | 'box' | 'sphere' | 'cylinder' | 'cone' | 'pyramid' | 'torus';
+
+export const SHAPES_3D: Shape3D[] = ['plane', 'box', 'sphere', 'cylinder', 'cone', 'pyramid', 'torus'];
 
 /**
  * a transition INTO a clip from whatever was on its track right before it (or from nothing).
@@ -183,6 +187,36 @@ export interface ChromaKey {
   spill: number;
 }
 
+export type MaskShape = 'rect' | 'ellipse' | 'split' | 'band' | 'star' | 'heart';
+
+export const MASK_SHAPES: MaskShape[] = ['rect', 'ellipse', 'split', 'band', 'star', 'heart'];
+
+/**
+ * show only part of a clip's picture, with an optional soft edge. everything is relative to the
+ * clip's own (cropped) picture, so the mask moves, scales and turns with the clip. see engine/mask.ts.
+ * - rect / ellipse / star / heart: the figure of width x height centered at x, y
+ * - split: a straight edge through x, y: the side the rotation points away from is hidden
+ *   (rotation 0 keeps the left half, 90 keeps the top half)
+ * - band: a stripe of `height` across the picture through x, y (rotation 0 = a horizontal stripe)
+ */
+export interface Mask {
+  shape: MaskShape;
+  /** center of the mask as an offset from the picture's center, in fractions of its width / height */
+  x: number;
+  y: number;
+  /** size in fractions of the picture's width / height (1 = as big as the picture). 0..3 */
+  width: number;
+  height: number;
+  /** degrees, clockwise */
+  rotation: number;
+  /** soft edge, 0..1 (a fraction of the picture's shorter side / 2) */
+  feather: number;
+  /** show what is outside the figure instead */
+  invert: boolean;
+  /** rect only: corner roundness 0..1 */
+  radius?: number;
+}
+
 /** shared by the clips that draw a picture (video, image, text, shape) */
 interface Spatial {
   transform: Transform;
@@ -192,6 +226,8 @@ interface Spatial {
    */
   threeD?: boolean;
   lookAt?: LookAt;
+  /** lookAt 'clip': id of the visual clip to face. null / missing / unknown id = no target. */
+  lookTarget?: string | null;
   /** 3d only. missing = 'plane'. */
   shape?: Shape3D;
   /** 3d only, box / cylinder: thickness in project pixels at scale 1. missing = the clip's height. */
@@ -218,6 +254,7 @@ interface Spatial {
   motionBlur?: ClipMotionBlur | null;
   adjust?: ClipAdjust | null;
   chromaKey?: ChromaKey | null;
+  mask?: Mask | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -299,6 +336,19 @@ export interface TextHighlight {
   background?: string | null;
 }
 
+/**
+ * a solid side for the letters: the text is repeated behind itself along a direction, like block
+ * letters or a long hard shadow. drawn under the fill and the outline. see engine/text.ts.
+ */
+export interface TextExtrude {
+  /** how far the side reaches, as a fraction of the font size. 0..1 */
+  depth: number;
+  /** direction it reaches toward, degrees clockwise from the right (45 = down right) */
+  angle: number;
+  /** css color of the side */
+  color: string;
+}
+
 export interface TextClip extends ClipBase, Spatial {
   type: 'text';
   text: string;
@@ -335,6 +385,8 @@ export interface TextClip extends ClipBase, Spatial {
   wrapWidth?: number;
   /** karaoke: the words light up one after another over the length of the clip. null / missing = off. */
   highlight?: TextHighlight | null;
+  /** block letters / long shadow. null / missing = off. */
+  extrude?: TextExtrude | null;
   /* ---- animation ---- */
   animIn?: TextAnim | null;
   animOut?: TextAnim | null;
@@ -426,6 +478,21 @@ export interface CameraClip extends ClipBase {
   target?: string | null;
 }
 
+/**
+ * distance haze for the 3d space: 3d clips blend toward `color` the farther they are from the camera,
+ * which gives an unlit scene depth. 2d layers are never fogged.
+ */
+export interface SceneFog {
+  /** css hex color, usually the project background */
+  color: string;
+  /** distance from the camera (project pixels) where the haze starts */
+  near: number;
+  /** distance where it reaches `amount` */
+  far: number;
+  /** strongest haze, 0..1 */
+  amount: number;
+}
+
 /** a named point on the timeline (snaps, jump with shortcuts) */
 export interface Marker {
   id: string;
@@ -457,6 +524,8 @@ export interface Project {
   clips: Clip[];
   /** sorted by time. missing = none. */
   markers?: Marker[];
+  /** haze over the 3d space. null / missing = none. */
+  fog?: SceneFog | null;
 }
 
 /** lightweight row for the projects screen */

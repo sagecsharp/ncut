@@ -1,5 +1,6 @@
 /**
- * links between clips by id: parent (Spatial.parent), groups (ClipBase.group) and camera targets.
+ * links between clips by id: parent (Spatial.parent), look targets (Spatial.lookTarget), groups
+ * (ClipBase.group) and camera targets.
  * pure, no math: the geometry of parenting lives in engine/parent.ts.
  */
 import type { Clip, Project } from '../types';
@@ -86,6 +87,7 @@ export function relinkCopies(copies: Clip[], idMap: ReadonlyMap<string, string>,
   return copies.map((c) => {
     let next = c;
     if (isVisualClip(next) && next.parent && idMap.has(next.parent)) next = { ...next, parent: idMap.get(next.parent)! };
+    if (isVisualClip(next) && next.lookTarget && idMap.has(next.lookTarget)) next = { ...next, lookTarget: idMap.get(next.lookTarget)! };
     if (isCameraClip(next) && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
     if (next.group) {
       if ((groupCount.get(next.group) ?? 0) >= 2) {
@@ -107,7 +109,9 @@ export function relinkCopies(copies: Clip[], idMap: ReadonlyMap<string, string>,
 
 /** clips with every link to one of the removed ids cleared (parents, camera targets) */
 export function unlinkRemoved(clips: Clip[], removed: ReadonlySet<string>): Clip[] {
-  return clips.map((c) => {
+  return clips.map((c0) => {
+    let c = c0;
+    if (isVisualClip(c) && c.lookTarget && removed.has(c.lookTarget)) c = { ...c, lookTarget: null };
     if (isVisualClip(c) && c.parent && removed.has(c.parent)) return { ...c, parent: null };
     if (isCameraClip(c) && c.target && removed.has(c.target)) return { ...c, target: null };
     return c;

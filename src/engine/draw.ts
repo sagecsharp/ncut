@@ -722,7 +722,7 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
     const p = planeFor(project, layer, rig, channel);
     if (p) planes.push(p);
   }
-  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel);
+  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null);
   if (!out) return;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);

@@ -109,6 +109,8 @@ const SPATIAL_KEYS = [
   'motionBlur',
   'adjust',
   'chromaKey',
+  'mask',
+  'lookTarget',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   video: SPATIAL_KEYS,
@@ -129,6 +131,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
     'curve',
     'wrapWidth',
     'highlight',
+    'extrude',
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner'],
   camera: ['target'],
@@ -140,7 +143,7 @@ export interface ClipMove {
   start: number;
 }
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background'>>;
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog'>>;
 export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>;
 
 export interface EditorState {
@@ -245,6 +248,13 @@ export interface EditorState {
    * time 0, and the source media bounds for video/audio.
    */
   trimClip(id: string, edge: 'start' | 'end', time: number, opts?: ActionOpts): void;
+  /**
+   * swap the media of a video / image / audio clip for another asset of the same kind, keeping the
+   * clip's place, look and animation. a video / audio clip keeps its trim when the new media is long
+   * enough, else the trim start moves back and then the clip gets shorter. returns false when the
+   * clip or asset is missing, the kinds differ or the track is locked.
+   */
+  replaceClipAsset(id: string, assetId: string, opts?: ActionOpts): boolean;
   /** change playback rate of a video/audio clip. duration follows (clamped to the next clip). */
   setClipSpeed(id: string, speed: number, opts?: ActionOpts): void;
   /**
@@ -492,7 +502,8 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (patch.name !== undefined) next.name = patch.name.trim() || 'untitled project';
         const before = p as unknown as Record<string, unknown>;
         const after = next as unknown as Record<string, unknown>;
-        if (Object.keys(patch).every((k) => before[k] === after[k])) return null;
+        // a missing optional field and null mean the same thing
+        if (Object.keys(patch).every((k) => before[k] === after[k] || (before[k] == null && after[k] == null))) return null;
         return next;
       }, opts);
     },
@@ -818,6 +829,22 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (typeof next.volume === 'number') next.volume = clamp(next.volume as number, 0, 2);
         if (clip.type === 'effect' && typeof next.amount === 'number') next.amount = clamp(next.amount as number, 0, 1);
         return replaceClip(p, clampFades(next as unknown as Clip));
+      }, opts);
+    },
+    replaceClipAsset(id, assetId, opts) {
+      return mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        const asset = p.assets.find((a) => a.id === assetId);
+        if (!clip || !asset || isLocked(p, clip.trackId)) return null;
+        if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'audio') return null;
+        if (asset.kind !== clip.type || clip.assetId === assetId) return null;
+        if (clip.type === 'image') return replaceClip(p, { ...clip, assetId, name: asset.name });
+        const speed = clip.speed > 0 ? clip.speed : 1;
+        const length = asset.duration > 0 ? asset.duration : clip.duration * speed;
+        const want = clip.duration * speed;
+        const trimStart = Math.max(0, Math.min(clip.trimStart, length - want));
+        const duration = Math.max(MIN_CLIP_DURATION, Math.min(clip.duration, (length - trimStart) / speed));
+        return replaceClip(p, clampFades({ ...clip, assetId, name: asset.name, trimStart, duration }));
       }, opts);
     },
     updateTransform(id, patch, opts) {

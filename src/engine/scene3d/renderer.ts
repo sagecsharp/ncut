@@ -3,7 +3,7 @@
  * one webgl2 context per channel, like the effects runner. the result is a transparent canvas
  * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there.
  */
-import type { Shape3D } from '../../types';
+import type { SceneFog, Shape3D } from '../../types';
 import type { Mat4, Vec3 } from './math';
 import { mul } from './math';
 import { paintOrder } from './order';
@@ -340,7 +340,8 @@ class SceneRenderer {
     }
   }
 
-  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number): GLCanvas | null {
+  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null): GLCanvas | null {
+    void fog;
     const gl = this.gl;
     if (this.dead || gl.isContextLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -469,8 +470,10 @@ export function renderScene(
   width: number,
   height: number,
   channel = 'default',
+  /** distance haze over the planes (types.ts SceneFog). null = none. */
+  fog: SceneFog | null = null,
 ): GLCanvas | null {
   if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0)) return null;
   const r = getRenderer(channel);
-  return r ? r.render(planes, lines, viewProj, eye, width, height) : null;
+  return r ? r.render(planes, lines, viewProj, eye, width, height, fog) : null;
 }

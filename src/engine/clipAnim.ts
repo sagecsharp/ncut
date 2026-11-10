@@ -9,6 +9,8 @@ export interface ClipMotionInfo {
   id: string;
   /** lowercase label for menus */
   name: string;
+  /** true = only makes sense for 3d clips (menus hide it for 2d clips, a 2d clip ignores it) */
+  threeD?: boolean;
 }
 
 /** entrances. the exits are the same moves played backwards (the clip leaves the way it would have come). */
