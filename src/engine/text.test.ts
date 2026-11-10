@@ -10,6 +10,11 @@ import {
   gradientLine,
   highlightIndex,
   highlightIndexFromCounts,
+  lineBackgrounds,
+  lineDecorations,
+  lineLengths,
+  lineSpans,
+  lineVisibility,
   measureText,
   remapPoint,
   textSignature,
@@ -451,6 +456,7 @@ describe('highlightIndex', () => {
 function recordCtx() {
   const fills: { text: string; color: unknown }[] = [];
   const boxes: number[][] = [];
+  const rects: number[][] = [];
   const state: Record<string, unknown> = {
     fillStyle: '#fff',
     getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
@@ -458,6 +464,7 @@ function recordCtx() {
     fillText: (text: string) => fills.push({ text, color: state.fillStyle }),
     roundRect: (...a: number[]) => boxes.push(a),
     rect: (...a: number[]) => boxes.push(a),
+    fillRect: (...a: number[]) => rects.push(a),
   };
   const ctx = new Proxy(state, {
     get: (t, k: string) => (k in t ? t[k] : () => undefined),
@@ -467,7 +474,7 @@ function recordCtx() {
     },
     has: (t, k: string) => k in t,
   });
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, boxes };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, boxes, rects };
 }
 
 describe('karaoke drawing', () => {
@@ -588,5 +595,109 @@ describe('extrude drawing', () => {
     expect(textSignature(a)).not.toBe(textSignature(b));
     expect(textSignature(b)).not.toBe(textSignature(mk({ extrude: { ...ex, angle: 45 } })));
     expect(textSpill(b, false)).toBeGreaterThanOrEqual(textSpill(a, false) + 0.1);
+  });
+});
+
+describe('line geometry', () => {
+  const widths = [100, 60];
+  it('places lines by alignment', () => {
+    expect(lineSpans(widths, null, 100, 'left')).toEqual([
+      { left: -50, width: 100 },
+      { left: -50, width: 60 },
+    ]);
+    expect(lineSpans(widths, null, 100, 'center')[1]).toEqual({ left: -30, width: 60 });
+    expect(lineSpans(widths, null, 100, 'right')[1]).toEqual({ left: -10, width: 60 });
+  });
+  it('widens lines by extra spacing between letters', () => {
+    const s = lineSpans([100], [5], 100, 'center', 2);
+    expect(s[0]!.width).toBe(108);
+    expect(s[0]!.left).toBe(-54);
+    expect(lineLengths(['abc', '', 'a\u{1F600}'])).toEqual([3, 0, 2]);
+  });
+  it('makes underline and strike bars of fontSize / 14 thickness', () => {
+    const spans = lineSpans(widths, null, 100, 'left');
+    const r = lineDecorations(spans, 125, -125, 100, true, true);
+    expect(r.length).toBe(4);
+    for (const b of r) expect(b.h).toBeCloseTo(100 / 14, 6);
+    const first = r.filter((b) => b.line === 0);
+    expect(first[1]!.y).toBeGreaterThan(first[0]!.y);
+    expect(first[1]!.w).toBe(100);
+    expect(r.filter((b) => b.line === 1)[0]!.y - first[0]!.y).toBeCloseTo(125, 6);
+    expect(lineDecorations(spans, 125, 0, 100, false, false)).toEqual([]);
+    expect(lineDecorations(lineSpans([0], null, 100, 'left'), 125, 0, 100, true, false)).toEqual([]);
+  });
+  it('makes per line boxes that touch and hug each line', () => {
+    const spans = lineSpans([100, 60, 80], null, 100, 'center');
+    const b = lineBackgrounds(spans, 100, 0, 10);
+    expect(b.length).toBe(3);
+    expect(b[0]!.y).toBe(-10);
+    expect(b[0]!.y + b[0]!.h).toBe(b[1]!.y);
+    expect(b[1]!.y + b[1]!.h).toBe(b[2]!.y);
+    expect(b[2]!.y + b[2]!.h).toBe(310);
+    expect(b[1]!.w).toBe(80);
+    expect(b[1]!.x).toBe(-40);
+    expect(lineBackgrounds(lineSpans([0, 50], null, 100, 'left'), 100, 0, 10).length).toBe(1);
+  });
+  it('finds what shows of a line while letters animate', () => {
+    const g = [
+      { ch: 'a', x: 5, w: 10, line: 0 },
+      { ch: ' ', x: 15, w: 10, line: 0 },
+      { ch: 'b', x: 25, w: 10, line: 0 },
+      { ch: 'c', x: 5, w: 10, line: 1 },
+    ];
+    const v = lineVisibility(g, [1, 1, 0, 0], 2);
+    expect(v[0]).toEqual({ x0: 0, x1: 10, alpha: 1, all: false });
+    expect(v[1]).toBeNull();
+    const all = lineVisibility(g, [0.5, 1, 0.8, 1], 2);
+    expect(all[0]).toEqual({ x0: 0, x1: 30, alpha: 0.8, all: true });
+    expect(all[1]!.all).toBe(true);
+  });
+});
+
+describe('underline, strike and per line boxes drawing', () => {
+  const mk = (extra: Partial<Parameters<typeof createTextClip>[2]> = {}) =>
+    createTextClip('t', 0, { text: 'ab\ncd', fontFamily: 'Line A', fontSize: 70, color: '#ffffff', ...extra });
+  it('draws nothing extra without the flags', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk());
+    expect(r.rects.length).toBe(0);
+  });
+  it('draws a bar per line for underline, two per line for both', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ underline: true }));
+    expect(r.rects.length).toBe(2);
+    expect(r.rects[0]![2]).toBe(20);
+    const b = recordCtx();
+    drawText(b.ctx, mk({ underline: true, strike: true }));
+    expect(b.rects.length).toBe(4);
+  });
+  it('skips the bars on curved text', () => {
+    const r = recordCtx();
+    drawText(r.ctx, mk({ underline: true, curve: 90 }));
+    expect(r.rects.length).toBe(0);
+  });
+  it('draws one box per line with a background per line, one otherwise', () => {
+    const one = recordCtx();
+    drawText(one.ctx, mk({ background: '#000000' }));
+    expect(one.boxes.length).toBe(1);
+    const per = recordCtx();
+    drawText(per.ctx, mk({ background: '#000000', backgroundPerLine: true, backgroundRadius: 0.5 }));
+    expect(per.boxes.length).toBe(2);
+    const none = recordCtx();
+    drawText(none.ctx, mk({ background: null, backgroundPerLine: true }));
+    expect(none.boxes.length).toBe(0);
+  });
+  it('is part of the signature', () => {
+    const base = textSignature(mk());
+    expect(textSignature(mk({ underline: true }))).not.toBe(base);
+    expect(textSignature(mk({ strike: true }))).not.toBe(base);
+    expect(textSignature(mk({ backgroundPerLine: true }))).not.toBe(base);
+  });
+  it('does not crash on a clip that still has a counter and shows its text', () => {
+    const r = recordCtx();
+    const c = mk({ text: '{n}', counter: { from: 0, to: 5, decimals: 0 } });
+    drawText(r.ctx, c);
+    expect(r.fills[0]!.text).toBe('{n}');
+    expect(measureText(c).lines).toEqual(['{n}']);
   });
 });

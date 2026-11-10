@@ -1,5 +1,7 @@
 import { memo } from 'react';
+import { Strikethrough, Underline } from 'lucide-react';
 import { NumberField } from '../../components/ui/NumberField';
+import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
 import {
   DEFAULT_TEXT_ANIM_IN,
   DEFAULT_TEXT_ANIM_LOOP,
@@ -10,7 +12,7 @@ import {
 } from '../../engine/textAnim';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
-import type { TextAnim, TextClip, TextExtrude, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
+import type { TextAnim, TextClip, TextCounter, TextExtrude, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
 import { ColorField, Row, Section, SelectRow, Switch } from './controls';
 import { beginEdit, liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
@@ -59,7 +61,12 @@ function Pct({
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
-  const { stroke, shadow, gradient, highlight, extrude } = clip;
+  const { stroke, shadow, gradient, highlight, extrude, counter } = clip;
+  const underline = !!clip.underline;
+  const strike = !!clip.strike;
+  const setCounter = (patch: Partial<TextCounter>) => {
+    if (counter) actions().updateClip(id, { counter: { ...counter, ...patch } }, liveOpts());
+  };
   const setGradient = (patch: Partial<TextGradient>) => {
     if (gradient) actions().updateClip(id, { gradient: { ...gradient, ...patch } }, liveOpts());
   };
@@ -96,6 +103,31 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       />
       <Row label="capitals" title="draw the text in capital letters">
         <Switch checked={!!clip.uppercase} title="capitals on or off" onChange={(v) => actions().updateClip(id, { uppercase: v })} />
+      </Row>
+
+      <Row label="lines" title="a line under or through every line of text">
+        <div className="props-seg">
+          <button
+            type="button"
+            className={`icon-btn${underline ? ' is-active' : ''}`}
+            title="underline"
+            aria-label="underline"
+            aria-pressed={underline}
+            onClick={() => actions().updateClip(id, { underline: !underline })}
+          >
+            <Underline size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${strike ? ' is-active' : ''}`}
+            title="strikethrough"
+            aria-label="strikethrough"
+            aria-pressed={strike}
+            onClick={() => actions().updateClip(id, { strike: !strike })}
+          >
+            <Strikethrough size={14} />
+          </button>
+        </div>
       </Row>
 
       <Row label="outline" title="a line around the letters">
@@ -231,6 +263,88 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         />
       </Row>
 
+      <Row label="counter" title="a number that counts up or down over the length of the clip">
+        <Switch
+          checked={!!counter}
+          title="counter on or off"
+          onChange={(v) => actions().updateClip(id, { counter: v ? { ...DEFAULT_COUNTER } : null })}
+        />
+      </Row>
+      {counter ? (
+        <>
+          <Row label="from" title="the number at the start">
+            <NumberField
+              className="props-grow"
+              title="counter start number"
+              value={counter.from}
+              min={-1000000000}
+              max={1000000000}
+              precision={4}
+              onStart={beginEdit}
+              onChange={(v) => setCounter({ from: v })}
+            />
+          </Row>
+          <Row label="to" title="the number at the end">
+            <NumberField
+              className="props-grow"
+              title="counter end number"
+              value={counter.to}
+              min={-1000000000}
+              max={1000000000}
+              precision={4}
+              onStart={beginEdit}
+              onChange={(v) => setCounter({ to: v })}
+            />
+          </Row>
+          <Row label="decimals" title="digits after the point (0 to 4)">
+            <NumberField
+              className="props-grow"
+              title="counter decimals (0 to 4)"
+              value={counter.decimals}
+              min={0}
+              max={4}
+              precision={0}
+              onStart={beginEdit}
+              onChange={(v) => setCounter({ decimals: Math.min(4, Math.max(0, Math.round(v))) })}
+            />
+          </Row>
+          <Row label="1,000" title="group the digits in threes">
+            <Switch
+              checked={!!counter.separator}
+              title="thousands separator on or off"
+              onChange={(v) => actions().updateClip(id, { counter: { ...counter, separator: v } })}
+            />
+          </Row>
+          <SelectRow
+            label="pace"
+            title="how the number moves"
+            value={counter.ease ?? 'out'}
+            options={[
+              ['linear', 'steady'],
+              ['out', 'fast then slow'],
+              ['in-out', 'slow fast slow'],
+            ]}
+            onChange={(v) => setCounter({ ease: v === 'linear' ? 'linear' : v === 'in-out' ? 'in-out' : 'out' })}
+          />
+          <Row label="hold at end" title="seconds at the end of the clip where the final number just stays">
+            <NumberField
+              className="props-grow"
+              suffix="s"
+              title="hold at end (seconds)"
+              value={counter.hold ?? 0}
+              min={0}
+              max={3600}
+              precision={2}
+              onStart={beginEdit}
+              onChange={(v) => setCounter({ hold: v })}
+            />
+          </Row>
+          <p className="props-hint">
+            {COUNTER_TOKEN} in the text is where the number goes
+          </p>
+        </>
+      ) : null}
+
       <Row label="karaoke" title="light up the words one after another over the length of the clip">
         <Switch
           checked={!!highlight}
@@ -282,6 +396,13 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             max={200}
             onChange={(v) => actions().updateClip(id, { backgroundPadding: v }, liveOpts())}
           />
+          <Row label="per line" title="one box per line, like captions">
+            <Switch
+              checked={!!clip.backgroundPerLine}
+              title="one box per line, like captions"
+              onChange={(v) => actions().updateClip(id, { backgroundPerLine: v })}
+            />
+          </Row>
         </>
       ) : null}
     </Section>

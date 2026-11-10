@@ -20,7 +20,7 @@ export function hasCounter(clip: Pick<TextClip, 'counter'>): boolean {
  */
 export function counterValue(counter: TextCounter, local: number, duration: number): number {
   const span = Math.max(1e-6, duration - Math.max(0, counter.hold ?? 0));
-  const p = Math.min(1, Math.max(0, local / span));
+  const p = Number.isFinite(local) ? Math.min(1, Math.max(0, local / span)) : 0;
   const ease = counter.ease ?? 'out';
   const e = ease === 'linear' ? p : ease === 'out' ? 1 - (1 - p) * (1 - p) * (1 - p) : p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
   if (p >= 1) return counter.to;
