@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { createTextClip } from '../lib/factory';
 import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, setCanvasChannel, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 import { SCENE_RETRY_MS, releaseSceneRenderer, renderScene, sceneRendererCount, startBlocked } from './scene3d/renderer';
 import { effectRunnerCount, releaseEffectRunner } from './effects/runner';
@@ -884,5 +884,17 @@ describe('counter text in the renderer', () => {
     const a = new FakeCtx();
     renderFrame(asCtx(a), project([t], tracks), 1, () => null);
     expect(drawnTexts(a).join('')).toContain('got {n}%');
+  });
+});
+
+describe('render channels', () => {
+  it('the inset channel can be released and a canvas can be marked and unmarked', () => {
+    const canvas = {} as unknown as HTMLCanvasElement;
+    expect(() => {
+      setCanvasChannel(canvas, 'inset');
+      releaseRenderResources('inset');
+      setCanvasChannel(canvas, 'default');
+    }).not.toThrow();
+    expect(effectRunnerCount()).toBe(0);
   });
 });

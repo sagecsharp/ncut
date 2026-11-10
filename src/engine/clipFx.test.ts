@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioClip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { buildTargetIndex, effectsOnClip, isTargetedEffect, targetIndex } from './clipFx';
+import { buildTargetIndex, clampIntoClip, effectsOnClip, fxRuns, isMixingFx, isTargetedEffect, targetIndex } from './clipFx';
+import type { EffectDef, EffectPass } from './effects/types';
 
 let seq = 0;
 function video(trackId: string, start: number, duration: number): VideoClip {
@@ -136,5 +137,80 @@ describe('targetIndex cache', () => {
     const p2 = { ...p, clips: [v] };
     expect(targetIndex(p2)).toBeNull();
     expect(targetIndex(p)).not.toBeNull();
+  });
+});
+
+describe('clampIntoClip', () => {
+  it('keeps a time inside the clip and clamps the others to its first and last frame', () => {
+    const v = video('t', 2, 3);
+    expect(clampIntoClip(v, 3)).toBe(3);
+    expect(clampIntoClip(v, 0)).toBe(2);
+    expect(clampIntoClip(v, 2)).toBe(2);
+    const last = clampIntoClip(v, 99);
+    expect(last).toBeLessThan(5);
+    expect(last).toBeGreaterThan(4.99);
+  });
+  it('a time clamped before the start finds the effect that starts with the clip', () => {
+    const v = video('bot', 2, 3);
+    const e = fx('top', 2, 3, v.id);
+    const p = project([v, e], [track('top'), track('bot')]);
+    const idx = buildTargetIndex(p);
+    expect(effectsOnClip(idx, p, v.id, 1.9)).toBeNull();
+    expect(effectsOnClip(idx, p, v.id, clampIntoClip(v, 1.9))).toEqual([e]);
+  });
+  it('a time clamped after the end finds the effect that ends with the clip', () => {
+    const v = video('bot', 2, 3);
+    const e = fx('top', 2, 3, v.id);
+    const p = project([v, e], [track('top'), track('bot')]);
+    const idx = buildTargetIndex(p);
+    expect(effectsOnClip(idx, p, v.id, 5.02)).toBeNull();
+    expect(effectsOnClip(idx, p, v.id, clampIntoClip(v, 5.02))).toEqual([e]);
+  });
+  it('an effect that does not cover the edge frame stays off there', () => {
+    const v = video('bot', 2, 3);
+    const e = fx('top', 3, 2, v.id);
+    const p = project([v, e], [track('top'), track('bot')]);
+    expect(effectsOnClip(buildTargetIndex(p), p, v.id, clampIntoClip(v, 1.9))).toBeNull();
+  });
+});
+
+describe('isMixingFx and fxRuns', () => {
+  const pass = (category: string): EffectPass => ({
+    def: { id: category, name: category, category: category as EffectDef['category'], description: '', params: [], glsl: '' },
+    time: 0,
+    duration: 1,
+    amount: 1,
+    seed: 0,
+    params: {},
+  });
+  it('only blur and distort mix pixels', () => {
+    expect(isMixingFx('blur')).toBe(true);
+    expect(isMixingFx('distort')).toBe(true);
+    for (const c of ['color', 'stylize', 'overlay', 'motion']) expect(isMixingFx(c)).toBe(false);
+  });
+  it('no passes, no runs', () => {
+    expect(fxRuns([])).toEqual([]);
+  });
+  it('one kind stays one run', () => {
+    const runs = fxRuns([pass('blur'), pass('distort')]);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.mixing).toBe(true);
+    expect(runs[0]!.passes).toHaveLength(2);
+  });
+  it('a mixed chain splits in order, neighbours of a kind join', () => {
+    const runs = fxRuns([pass('color'), pass('blur'), pass('blur'), pass('stylize'), pass('overlay'), pass('distort')]);
+    expect(runs.map((r) => [r.mixing, r.passes.length])).toEqual([
+      [false, 1],
+      [true, 2],
+      [false, 2],
+      [true, 1],
+    ]);
+  });
+  it('every effect in the registry is sorted by its declared category', async () => {
+    const { EFFECTS } = await import('./effects/registry');
+    for (const def of EFFECTS) {
+      const runs = fxRuns([{ ...pass('x'), def }]);
+      expect(runs[0]!.mixing).toBe(def.category === 'blur' || def.category === 'distort');
+    }
   });
 });

@@ -5,6 +5,7 @@
 import type { EffectClip, Project, Track } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd } from '../lib/timelineOps';
+import type { EffectPass } from './effects/types';
 
 /** target clip id -> the effect clips that point at it, in the order they run (see buildTargetIndex) */
 export type TargetIndex = Map<string, EffectClip[]>;
@@ -79,6 +80,47 @@ export function effectsOnClip(index: TargetIndex | null, project: Project, clipI
     const track = project.tracks.find((t) => t.id === e.trackId);
     if (!track || track.kind !== 'video' || track.hidden) continue;
     (out ??= []).push(e);
+  }
+  return out;
+}
+
+/** how far inside a clip's end its last frame sits (the frozen tail of a transition shows this frame) */
+export const CLIP_EDGE = 1e-4;
+
+/**
+ * a time clamped into a clip's own range [start, end - CLIP_EDGE]. a clip drawn frozen (the sides of a transition
+ * hold their edge frame outside their range) looks up and evaluates its effects at this time, so the frozen edge
+ * keeps the effects it has on that edge frame instead of losing them until the frame time reaches the clip.
+ */
+export function clampIntoClip(clip: { start: number; duration: number }, time: number): number {
+  const last = Math.max(clip.start, clip.start + clip.duration - CLIP_EDGE);
+  return Math.min(last, Math.max(clip.start, time));
+}
+
+/**
+ * true for effects that only move or mix pixels they find in the picture (blur, distortion). such an effect works on
+ * the premultiplied picture and its alpha can be carried through the same pass (see paintWithFx). the other
+ * categories (color, stylize, overlay, motion ...) invent or rescale colors, so they are not linear that way.
+ */
+export function isMixingFx(category: string): boolean {
+  return category === 'blur' || category === 'distort';
+}
+
+/** a stretch of passes of one kind, in run order */
+export interface FxRun {
+  /** true = every pass only moves / mixes pixels (premultiplied path) */
+  mixing: boolean;
+  passes: EffectPass[];
+}
+
+/** split a pass list into stretches of the same kind, order kept. empty list = no runs. */
+export function fxRuns(passes: readonly EffectPass[]): FxRun[] {
+  const out: FxRun[] = [];
+  for (const pass of passes) {
+    const mixing = isMixingFx(pass.def.category);
+    const last = out[out.length - 1];
+    if (last && last.mixing === mixing) last.passes.push(pass);
+    else out.push({ mixing, passes: [pass] });
   }
   return out;
 }

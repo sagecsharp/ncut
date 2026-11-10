@@ -11,14 +11,14 @@ import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
-import { type TargetIndex, effectsOnClip, isTargetedEffect, targetIndex } from './clipFx';
+import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
-import { releaseEffectRunner, renderEffects } from './effects/runner';
+import { releaseEffectRunner, renderEffects, renderEffectsPremul } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
 import { mul, scaling, translation } from './scene3d/math';
@@ -36,8 +36,9 @@ export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
  * free what the renderer keeps for a channel (scratch canvases, cached textures). the exporter calls
  * it with 'export' when a render ends so a big export does not stay in memory.
  */
-export function releaseRenderResources(channel: 'preview' | 'export'): void {
-  const prefix = (channel === 'export' ? 'export' : 'default') + ':';
+export function releaseRenderResources(channel: 'preview' | 'export' | 'inset'): void {
+  const glChannel: Channel = channel === 'export' ? 'export' : channel === 'inset' ? 'inset' : 'default';
+  const prefix = glChannel + ':';
   for (const [key, sc] of scratches) {
     if (!key.startsWith(prefix)) continue;
     // a zero sized canvas gives its backing store back right away
@@ -47,13 +48,15 @@ export function releaseRenderResources(channel: 'preview' | 'export'): void {
     }
     scratches.delete(key);
   }
-  const lc: LookChannel = channel === 'export' ? 'export' : 'preview';
+  const lc = lookChannel(glChannel);
   releaseMaskResources(lc);
   releaseClipLook(lc);
-  const gl = channel === 'export' ? 'export' : 'default';
-  releaseSceneRenderer(gl);
-  releaseEffectRunner(gl);
-  releaseTransitionRunner(gl);
+  releaseSceneRenderer(glChannel);
+  releaseEffectRunner(glChannel);
+  releaseTransitionRunner(glChannel as TransitionChannel);
+  // the inset only borrows the shared copies below (they are keyed by clip id and rebuilt on demand): leave them to the
+  // main view so closing the inset costs it nothing
+  if (glChannel === 'inset') return;
   // the per clip copies made for 3d are shared by both channels (keyed by clip id): emptying them is safe, the next
   // plane that needs one rebuilds it (and gets a new texture key)
   emptyCopies(lookCopies);
@@ -388,13 +391,37 @@ export function effectPassAt(raw: EffectClip, time: number): EffectPass | null {
   return { def, time: Math.max(0, time - clip.start + (raw.timeOffset ?? 0)), duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params: clip.params };
 }
 
-type Channel = 'default' | 'export';
+/**
+ * which set of gpu contexts + scratch canvases a render uses. things that render at different sizes must not share
+ * one (every size change reallocates the canvases and the framebuffers): 'default' = the main preview, 'export' = the
+ * exporter, 'inset' = the small camera picture of the scene view.
+ */
+export type Channel = 'default' | 'export' | 'inset';
+
+/** canvases that belong to a channel other than the one their type says (see setCanvasChannel) */
+const canvasChannels = new WeakMap<object, Channel>();
+
+/**
+ * make everything rendered onto `canvas` use `channel`'s own contexts and scratch canvases (the camera inset draws at
+ * 240 px next to the main preview: on the same channel they would resize each other's canvases up to 20 times a
+ * second). 'default' undoes it. free what a channel holds with releaseRenderResources.
+ */
+export function setCanvasChannel(canvas: HTMLCanvasElement | OffscreenCanvas, channel: Channel): void {
+  if (channel === 'default') canvasChannels.delete(canvas);
+  else canvasChannels.set(canvas, channel);
+}
 
 function channelOf(ctx: Ctx): Channel {
   const canvas = ctx.canvas as AnyCanvas | undefined;
+  if (!canvas) return 'default';
+  const marked = canvasChannels.get(canvas);
+  if (marked) return marked;
   // the export draws on an OffscreenCanvas and can run while the preview is on screen
   return typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas ? 'export' : 'default';
 }
+
+/** the channel types of the transition runner (engine/transitions/runner.ts) do not list 'inset' yet; it keys on any string */
+type TransitionChannel = 'default' | 'export' | 'thumb';
 
 /** run effect passes over what is already on the canvas and put the result back */
 function applyEffects(ctx: Ctx, project: Project, passes: EffectPass[], channel: Channel): void {
@@ -487,6 +514,8 @@ export interface Layer3D {
   alpha: number;
   /** timeline seconds this layer is shown at (drives text animations) */
   time: number;
+  /** the time its parents / look target are read at, when not `time` (the sub-times of a motion blur). default `time`. */
+  poseTime?: number;
 }
 
 interface TextTexture {
@@ -637,7 +666,11 @@ function syncTextureCaches(project: Project): void {
 /* ---------- clip look (color correction / chroma key) ---------- */
 
 type LookChannel = 'preview' | 'export';
-const lookChannel = (c: Channel): LookChannel => (c === 'export' ? 'export' : 'preview');
+/**
+ * the look and the mask keep one gl context / canvas per channel name. their types only list 'preview' and 'export'
+ * but they key on any string, so 'inset' gets its own through the cast.
+ */
+const lookChannel = (c: Channel): LookChannel => (c === 'export' ? 'export' : c === 'inset' ? ('inset' as LookChannel) : 'preview');
 
 /** a flat picture to draw. pad (text / shape pictures) = room around the clip box on every side, in pixels at scale 1 */
 type FlatSource = DrawSource & {
@@ -865,8 +898,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     clip.transform,
     clip.lookAt,
     rig.eye,
-    clip.parent ? parentModelMatrix(project, clip, layer.time) : null,
-    clip.lookAt === 'clip' ? clipLookPoint(project, clip, layer.time) : null,
+    clip.parent ? parentModelMatrix(project, clip, layer.poseTime ?? layer.time) : null,
+    clip.lookAt === 'clip' ? clipLookPoint(project, clip, layer.poseTime ?? layer.time) : null,
   );
   let uv: [number, number, number, number] | undefined;
   let radius: number | undefined;
@@ -1138,25 +1171,39 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
   ctx.restore();
 }
 
-/** true when two poses put the clip in the same place with the same alpha */
-function samePose(a: Transform, aa: number, b: Transform, ba: number): boolean {
+/** true when two poses put the clip in the same place with the same alpha (3d: depth and tilt count too) */
+export function samePose(a: Transform, aa: number, b: Transform, ba: number): boolean {
   return (
     Math.abs(a.x - b.x) < 1e-4 &&
     Math.abs(a.y - b.y) < 1e-4 &&
     Math.abs(a.scale - b.scale) < 1e-6 &&
     Math.abs(a.rotation - b.rotation) < 1e-4 &&
+    Math.abs((a.z ?? 0) - (b.z ?? 0)) < 1e-4 &&
+    Math.abs((a.rotX ?? 0) - (b.rotX ?? 0)) < 1e-4 &&
+    Math.abs((a.rotY ?? 0) - (b.rotY ?? 0)) < 1e-4 &&
     Math.abs(aa - ba) < 1e-4
   );
 }
 
+/** true when two number lists (a matrix, a point) are the same within a hair; two nulls are the same */
+function sameNums(a: ArrayLike<number> | null, b: ArrayLike<number> | null): boolean {
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (Math.abs(a[i]! - b[i]!) > 1e-4) return false;
+  return true;
+}
+
 /**
- * draw a flat clip with its motion blur: `samples` copies at moments spread over the shutter, each with its own
+ * draw a clip with its motion blur: `samples` copies at moments spread over the shutter, each with its own
  * pose (keyframes, motions, parents, fades), summed premultiplied on a scratch layer ('lighter' at 1 / samples) and
  * laid over the frame with the clip's blend mode. the picture itself (video frame, text animation) is the one of the
  * real time, only the placement is blurred. false = nothing to blur (a still clip), the caller draws it plain.
  * inside a transition (blend false) the layer is mixed with normal blending, the mixed result carries the blend.
+ * `rig` = the clip is 3d: every copy is a 3d run of its own (one clip through the camera of the frame, at the pose of
+ * its sample time: position, depth, tilt, parents and look target move, the camera does not) added into the same
+ * accumulator. one gpu render per copy, so it is only paid by clips that switch the blur on.
  */
-function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true): boolean {
+function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true, rig: CameraRig | null = null): boolean {
   const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
   if (times.length < 2) return false;
   // 'trail' / 'ghost' choose their own moments and weights; 'even' (or no style) keeps the old times and equal shares
@@ -1180,7 +1227,14 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   for (let i = 0; i < times.length; i++) times[i] = Math.min(end, Math.max(raw.start, times[i]!));
   const pose = (t: number) => {
     const c = resolveVisual(raw, t, project, time);
-    return { c, a: c.transform.opacity * fadeFactor(c, t), w: worldTransformOf(project, c, t) };
+    return {
+      c,
+      a: c.transform.opacity * fadeFactor(c, t),
+      w: worldTransformOf(project, c, t),
+      // 3d only: what a parent chain or a look target does in space (worldTransformOf only knows the flat part)
+      m: rig && c.parent ? parentModelMatrix(project, c, t) : null,
+      l: rig && c.lookAt === 'clip' ? clipLookPoint(project, c, t) : null,
+    };
   };
   // still = every sample has the pose of the first one (not just the two ends: at the turning point of a
   // move the ends match while the middle is somewhere else)
@@ -1190,7 +1244,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   for (let i = times.length - 1; i >= 1 && still; i--) {
     const p = pose(times[i]!);
     poses[i] = p;
-    if (!samePose(first.w, first.a, p.w, p.a)) still = false;
+    if (!samePose(first.w, first.a, p.w, p.a) || !sameNums(first.m, p.m) || !sameNums(first.l, p.l)) still = false;
   }
   if (still) return false;
   const canvas = ctx.canvas as AnyCanvas | undefined;
@@ -1204,7 +1258,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
     clearScratch(copy);
-    paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
+    if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t }], rig, env.channel);
+    else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
     acc.ctx.globalAlpha = weights ? weights[i]! : share;
@@ -1226,9 +1281,9 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
  * there are none (the clip is drawn the old way). temporal effects (motion blur, echo, frame blend, strobe) on one
  * clip are not supported: effectPassAt gives no pass for them, so they do nothing.
  */
-function clipFxPasses(project: Project, env: Env, clipId: string, frameTime: number): EffectPass[] | null {
-  if (!env.fx) return null;
-  const list = effectsOnClip(env.fx, project, clipId, frameTime);
+export function clipFxPasses(project: Project, fx: TargetIndex | null, clipId: string, frameTime: number): EffectPass[] | null {
+  if (!fx) return null;
+  const list = effectsOnClip(fx, project, clipId, frameTime);
   if (!list) return null;
   let passes: EffectPass[] | null = null;
   for (const e of list) {
@@ -1244,10 +1299,20 @@ function clipFxPasses(project: Project, env: Env, clipId: string, frameTime: num
  * on that picture, then the result is laid over `ctx` with `op` (the clip's blend mode, null = normal).
  * the clip's opacity, fades and per-clip motion blur are part of the picture `draw` makes (so the effect gets the
  * clip as it would have been drawn); the blend mode is applied at the end.
- * alpha: the effects framework forces the output alpha to 1, so the result is cut back to the alpha of the
- * un-effected picture ('source-in' with it as the destination): a text clip with a glitch is still text on a
- * see-through background. effects that move pixels outside the clip's old outline (shake, zoom, blur halos) get
- * cut at that outline. a simple honest rule: the clip's own shape stays the shape.
+ *
+ * alpha: the effects framework uploads the picture un-premultiplied (see-through texels are rgb 0,0,0) and forces the
+ * output alpha to 1. the passes go in runs of the same kind (fxRuns), one run after the other, and the scratch canvas
+ * carries picture + alpha between them (as an ordinary premultiplied 2d canvas):
+ *  - a run of effects that only move or mix pixels (categories blur and distort) goes through renderEffectsPremul. the
+ *    picture is uploaded premultiplied, so a blur mixes colour weighted by coverage (white text stays white, no black
+ *    leaks in from the see-through texels), and the new alpha is made by running the same passes over the old alpha
+ *    as a grey picture (white = opaque). the result is laid in as one premultiplied picture with that alpha, and NOT
+ *    cut back to the old outline: a blur on a text or a small picture goes soft past its old edge, a shake moves it.
+ *  - a run of any other kind (color, stylize, overlay, motion ...: not linear in that way) keeps the plain path: the
+ *    un-premultiplied picture goes in, and the result is cut back to the alpha the picture has at that point
+ *    ('source-in' with it as the destination), so a text with a glitch is still text on a see-through background.
+ * a chain that mixes both goes run by run, so a later colour effect is cut at the outline the blur before it made.
+ * a clip whose passes are all of one kind costs one gpu run (two chains for the blur kind: picture + alpha).
  * false = could not (no scratch canvas): nothing was drawn, the caller draws the clip plain.
  */
 function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: GlobalCompositeOperation | null, env: Env, draw: (target: Ctx) => void): boolean {
@@ -1256,18 +1321,35 @@ function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: Globa
   if (!canvas || !pic) return false;
   clearScratch(pic);
   draw(pic.ctx);
-  const out = renderEffects(pic.canvas, pic.canvas.width, pic.canvas.height, passes, {
-    projectWidth: project.width,
-    projectHeight: project.height,
-    channel: env.channel,
-  });
-  if (out) {
-    pic.ctx.save();
-    pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    pic.ctx.globalAlpha = 1;
-    pic.ctx.globalCompositeOperation = 'source-in';
-    pic.ctx.drawImage(out, 0, 0, pic.canvas.width, pic.canvas.height);
-    pic.ctx.restore();
+  const opts = { projectWidth: project.width, projectHeight: project.height, channel: env.channel };
+  for (const run of fxRuns(passes)) {
+    const w = pic.canvas.width;
+    const h = pic.canvas.height;
+    let done = false;
+    if (run.mixing) {
+      const out = renderEffectsPremul(pic.canvas, w, h, run.passes, opts);
+      if (out) {
+        // already premultiplied with its own alpha: it replaces the picture
+        pic.ctx.save();
+        pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        pic.ctx.globalAlpha = 1;
+        pic.ctx.globalCompositeOperation = 'copy';
+        pic.ctx.drawImage(out, 0, 0, w, h);
+        pic.ctx.restore();
+        done = true;
+      }
+    }
+    if (!done) {
+      const out = renderEffects(pic.canvas, w, h, run.passes, opts);
+      if (out) {
+        pic.ctx.save();
+        pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        pic.ctx.globalAlpha = 1;
+        pic.ctx.globalCompositeOperation = 'source-in';
+        pic.ctx.drawImage(out, 0, 0, w, h);
+        pic.ctx.restore();
+      }
+    }
   }
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1280,8 +1362,9 @@ function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: Globa
 
 /**
  * draw one clip by itself (2d or 3d) at a time, e.g. onto a transition layer. false when nothing was drawn.
- * `frameTime` is the time of the frame (a frozen side of a transition is drawn at another time): the effects that sit
- * on the clip are looked up at the frame time.
+ * `frameTime` is the time of the frame (a frozen side of a transition is drawn at another time). the effects that sit
+ * on the clip are looked up and evaluated at the frame time clamped into the clip's own range, so a frozen edge keeps
+ * the effects its edge frame has (the frame time itself is before the start / after the end of that clip).
  */
 function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false, frameTime = time): boolean {
   // a frozen side of a transition sits on its edge frame: its entrance / exit would hold it at nothing, so only the loop runs
@@ -1293,14 +1376,16 @@ function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, e
     source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
     if (!source) return false;
   }
-  const passes = clipFxPasses(project, env, raw.id, frameTime);
+  const passes = env.fx ? clipFxPasses(project, env.fx, raw.id, clampIntoClip(raw, frameTime)) : null;
+  // the motion blur of a clip inside a transition (a frozen side has no entrance / exit to blur)
+  const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
   if (clip.threeD) {
-    const run = (c: Ctx) => draw3d(c, project, [{ clip, source, alpha, time }], rig(), env.channel);
+    const run = (c: Ctx) => {
+      if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, rig()))) draw3d(c, project, [{ clip, source, alpha, time }], rig(), env.channel);
+    };
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
   } else {
     const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
-    // the motion blur of a clip inside a transition (a frozen side has no entrance / exit to blur)
-    const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
     const run = (c: Ctx) => {
       if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
     };
@@ -1341,7 +1426,7 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   const out = renderTransition(hasA && la ? la.canvas : null, hasB ? lb.canvas : null, def, p, canvas.width, canvas.height, {
     projectWidth: project.width,
     projectHeight: project.height,
-    channel: env.channel,
+    channel: env.channel as TransitionChannel,
     seed: seedOf(span.to.id),
   });
   ctx.save();
@@ -1462,7 +1547,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       source = env.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
       if (!source) continue;
     }
-    const passes = clipFxPasses(project, env, raw.id, time);
+    const passes = clipFxPasses(project, env.fx, raw.id, time);
     if (clip.threeD) {
       const bop = blendOp(clip.blend);
       if (passes) {
@@ -1470,9 +1555,19 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
         flush3d();
         const layer: Layer3D = { clip, source, alpha, time };
-        if (paintWithFx(ctx, project, passes, bop, env, (c) => draw3d(c, project, [layer], getRig(), env.channel))) continue;
+        const run = (c: Ctx) => {
+          if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, getRig()))) draw3d(c, project, [layer], getRig(), env.channel);
+        };
+        if (paintWithFx(ctx, project, passes, bop, env, run)) continue;
+        if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env, true, getRig())) continue;
         draw3d(ctx, project, [layer], getRig(), env.channel, NO_LINES, bop ?? 'source-over');
         continue;
+      }
+      if (raw.motionBlur) {
+        // a 3d clip with a motion blur is a run of its own too: one render per copy, summed, then mixed onto the
+        // canvas with its blend mode. a clip that does not move takes the normal paths below.
+        flush3d();
+        if (paintBlurred(ctx, project, raw, source, time, env, true, getRig())) continue;
       }
       if (bop) {
         // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
