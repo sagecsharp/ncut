@@ -13,13 +13,15 @@ import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { type CameraRig, cameraClipAt, cameraRig, homeDistance, projectPoint, screenRay } from '../../engine/scene3d/camera';
 import { type Vec3, add, dot, scale as vscale } from '../../engine/scene3d/math';
 import { resolveClip } from '../../lib/anim';
+import { parentOf } from '../../lib/links';
 import { clipEnd } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Project } from '../../types';
 import { isVisualClip } from '../../types';
+import { isAttached, localDelta, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
-import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, segDist, unwrapStep } from './overlayMath';
+import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
 import { useSceneTool } from './sceneTool';
@@ -95,6 +97,9 @@ type SceneGesture =
       t0: number;
       c0: Vec3;
       v0: number;
+      /** own x / y at the grab: an attached clip writes both so it follows a world axis exactly */
+      x0: number;
+      y0: number;
       rig: CameraRig;
       /** a 2d clip dragged along z becomes 3d when the drag really starts */
       to3d: boolean;
@@ -148,19 +153,21 @@ function gizmoTarget(project: Project, selection: string[], time: number, rig: C
       };
     }
     if (isVisualClip(clip)) {
+      // the gizmo sits at the world pose (an attached clip is drawn there); the values it edits stay the clip's own
       const r = resolveClip(clip, time);
-      const box = getClipBox(project, r);
+      const w = worldClip(project, clip, time);
+      const box = getClipBox(project, w);
       const threeD = !!clip.threeD;
-      const z = threeD ? (r.transform.z ?? 0) : 0;
-      const rotX = threeD ? (r.transform.rotX ?? 0) : 0;
-      const rotY = threeD ? (r.transform.rotY ?? 0) : 0;
+      const z = threeD ? (w.transform.z ?? 0) : 0;
+      const rotX = threeD ? (w.transform.rotX ?? 0) : 0;
+      const rotY = threeD ? (w.transform.rotY ?? 0) : 0;
       return {
         id,
         kind: 'clip',
         threeD,
         center: [box.cx, box.cy, z],
-        v: [r.transform.x, r.transform.y, z],
-        rot: [rotX, rotY, r.transform.rotation],
+        v: [r.transform.x, r.transform.y, threeD ? (r.transform.z ?? 0) : 0],
+        rot: [threeD ? (r.transform.rotX ?? 0) : 0, threeD ? (r.transform.rotY ?? 0) : 0, r.transform.rotation],
         scale: r.transform.scale,
         axes: ringAxes(box, { z, rotX, rotY }, threeD ? clip.lookAt : undefined, rig.eye),
       };
@@ -197,6 +204,7 @@ function sceneHit(project: Project, time: number, rig: CameraRig, px: number, py
 export function SceneOverlay() {
   const rootRef = useRef<HTMLDivElement>(null);
   const polyGroup = useRef<SVGGElement>(null);
+  const linkGroup = useRef<SVGGElement>(null);
   const axisLine = useRef<Array<SVGLineElement | null>>([null, null, null]);
   const axisUnder = useRef<Array<SVGLineElement | null>>([null, null, null]);
   const axisTip = useRef<Array<SVGRectElement | null>>([null, null, null]);
@@ -258,6 +266,18 @@ export function SceneOverlay() {
         lines.push(l);
       }
       return i;
+    };
+
+    const linkGroupEl = linkGroup.current;
+    const linkLines: SVGLineElement[] = [];
+    const linkLine = (i: number) => {
+      while (linkLines.length <= i && linkGroupEl) {
+        const l = document.createElementNS(SVG_NS, 'line');
+        l.setAttribute('class', 'scene-link-line');
+        linkGroupEl.appendChild(l);
+        linkLines.push(l);
+      }
+      return linkLines[i]!;
     };
 
     const redraw = () => {
@@ -333,6 +353,31 @@ export function SceneOverlay() {
           }
         }
       }
+      // thin line from each selected attached clip to the center of its parent
+      let links = 0;
+      if (project && f > 0) {
+        const time = usePlayback.getState().time;
+        for (const id of useEditor.getState().selection) {
+          const clip = project.clips.find((c) => c.id === id);
+          if (!clip || !isVisualClip(clip) || !isAttached(clip) || !inRange(clip, time)) continue;
+          const parent = parentOf(project, clip);
+          if (!parent) continue;
+          const rig = viewRig(project);
+          const a = sceneCenter(project, clip, time);
+          const b = sceneCenter(project, parent, time);
+          if (!a || !b) continue;
+          const pa = projectPoint(rig, a[0], a[1], a[2], project.width, project.height);
+          const pb = projectPoint(rig, b[0], b[1], b[2], project.width, project.height);
+          if (!pa.visible || !pb.visible) continue;
+          const ln = linkLine(links++);
+          ln.setAttribute('x1', String(pa.x * f));
+          ln.setAttribute('y1', String(pa.y * f));
+          ln.setAttribute('x2', String(pb.x * f));
+          ln.setAttribute('y2', String(pb.y * f));
+        }
+      }
+      for (let i = 0; i < linkLines.length; i++) linkLines[i]!.style.display = i < links ? '' : 'none';
+
       // thin line from the project camera to the center of the clip it keeps looking at
       let lineOn = false;
       hasTargetCam.current = !!project && project.clips.some((c) => c.type === 'camera' && !!c.target);
@@ -616,7 +661,16 @@ export function SceneOverlay() {
     const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
     const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[g.axis]!);
     if (t1 === null) return;
-    store.setClipValue(g.id, AXIS_NAMES[g.axis]!, time, Math.round((g.v0 + (t1 - g.t0)) * 100) / 100, { skipHistory: true });
+    const delta = t1 - g.t0;
+    const raw = g.axis < 2 ? project.clips.find((c) => c.id === g.id) : undefined;
+    if (raw && isVisualClip(raw) && isAttached(raw)) {
+      // the arrow is a world axis: the world movement along it becomes the clip's own x and y (z is left as is)
+      const l = localDelta(project, raw, time, g.axis === 0 ? delta : 0, g.axis === 1 ? delta : 0);
+      store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
+      store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
+      return;
+    }
+    store.setClipValue(g.id, AXIS_NAMES[g.axis]!, time, Math.round((g.v0 + delta) * 100) / 100, { skipHistory: true });
   };
 
   const queue = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -675,7 +729,7 @@ export function SceneOverlay() {
         const ray = screenRay(rig, lx / f, ly / f, project.width, project.height);
         const t0 = closestOnAxis(ray.origin, ray.dir, target.center, AXES[h.i]!);
         if (t0 !== null) {
-          begin({ kind: 'axis', ...base, started: false, axis: h.i, id: target.id, t0, c0: target.center, v0: target.v[h.i]!, rig, to3d: target.kind === 'clip' && !target.threeD && h.i === 2 });
+          begin({ kind: 'axis', ...base, started: false, axis: h.i, id: target.id, t0, c0: target.center, v0: target.v[h.i]!, x0: target.v[0], y0: target.v[1], rig, to3d: target.kind === 'clip' && !target.threeD && h.i === 2 });
           redrawRef.current();
           return;
         }
@@ -847,6 +901,7 @@ export function SceneOverlay() {
     >
       <svg className="scene-svg" aria-hidden="true">
         <g ref={polyGroup} />
+        <g ref={linkGroup} />
         <line ref={targetUnder} className="scene-target-under" style={{ display: 'none' }} />
         <line ref={targetLine} className="scene-target-line" style={{ display: 'none' }} />
         {AXIS_NAMES.map((name, a) => (
