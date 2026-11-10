@@ -74,6 +74,27 @@ export function expandGroups(project: Clips, ids: readonly string[]): string[] {
   return out;
 }
 
+/** one clip with its parent / look target / camera target / effect target swapped through idMap (ids not in the map stay) */
+function repointLinks(c: Clip, idMap: ReadonlyMap<string, string>): Clip {
+  let next = c;
+  if (isVisualClip(next) && next.parent && idMap.has(next.parent)) next = { ...next, parent: idMap.get(next.parent)! };
+  if (isVisualClip(next) && next.lookTarget && idMap.has(next.lookTarget)) next = { ...next, lookTarget: idMap.get(next.lookTarget)! };
+  if (isCameraClip(next) && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
+  if (next.type === 'effect' && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
+  return next;
+}
+
+/**
+ * after splitting clips: the right halves (clips whose id is a value of rightOf) that pointed at a clip
+ * that was cut too now point at its right half, so a child keeps following its parent after the cut.
+ * rightOf: original id -> right half id. left halves and other clips are returned as they were.
+ */
+export function repointSplitHalves(clips: Clip[], rightOf: ReadonlyMap<string, string>): Clip[] {
+  if (rightOf.size === 0) return clips;
+  const rights = new Set(rightOf.values());
+  return clips.map((c) => (rights.has(c.id) ? repointLinks(c, rightOf) : c));
+}
+
 /**
  * after copying clips: point the links of the copies at each other instead of at the originals.
  * idMap: original id -> copy id. a parent / camera target that was copied too is swapped for its
@@ -85,11 +106,7 @@ export function relinkCopies(copies: Clip[], idMap: ReadonlyMap<string, string>,
   for (const c of originals) if (c.group) groupCount.set(c.group, (groupCount.get(c.group) ?? 0) + 1);
   const newGroup = new Map<string, string>();
   return copies.map((c) => {
-    let next = c;
-    if (isVisualClip(next) && next.parent && idMap.has(next.parent)) next = { ...next, parent: idMap.get(next.parent)! };
-    if (isVisualClip(next) && next.lookTarget && idMap.has(next.lookTarget)) next = { ...next, lookTarget: idMap.get(next.lookTarget)! };
-    if (isCameraClip(next) && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
-    if (next.type === 'effect' && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
+    let next = repointLinks(c, idMap);
     if (next.group) {
       if ((groupCount.get(next.group) ?? 0) >= 2) {
         let g = newGroup.get(next.group);

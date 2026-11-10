@@ -59,7 +59,7 @@ import {
   withoutKeys,
 } from '../lib/anim';
 import { uid } from '../lib/id';
-import { relinkCopies, unlinkRemoved, wouldCycle } from '../lib/links';
+import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
 import { clamp } from '../lib/time';
 import {
   clipEnd,
@@ -851,13 +851,16 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (!clip || !asset || isLocked(p, clip.trackId)) return null;
         if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'audio') return null;
         if (asset.kind !== clip.type || clip.assetId === assetId) return null;
-        if (clip.type === 'image') return replaceClip(p, { ...clip, assetId, name: asset.name });
+        // a name the user gave the clip stays: the new asset's name only replaces the old asset's name or none
+        const oldAsset = p.assets.find((a) => a.id === clip.assetId);
+        const name = !clip.name || clip.name === oldAsset?.name ? asset.name : clip.name;
+        if (clip.type === 'image') return replaceClip(p, { ...clip, assetId, name });
         const speed = clip.speed > 0 ? clip.speed : 1;
         const length = asset.duration > 0 ? asset.duration : clip.duration * speed;
         const want = clip.duration * speed;
         const trimStart = Math.max(0, Math.min(clip.trimStart, length - want));
         const duration = Math.max(MIN_CLIP_DURATION, Math.min(clip.duration, (length - trimStart) / speed));
-        return replaceClip(p, clampFades({ ...clip, assetId, name: asset.name, trimStart, duration }));
+        return replaceClip(p, clampFades({ ...clip, assetId, name, trimStart, duration }));
       }, opts);
     },
     updateTransform(id, patch, opts) {
@@ -976,12 +979,22 @@ export const useEditor = create<EditorState>()((set, get) => {
         const sel = get().selection;
         const scope = ids ?? (sel.length > 0 ? sel : p.clips.map((c) => c.id));
         const targets = new Set(scope);
+        const asked = new Set(scope);
+        const cuts = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId);
+        // an effect put on a clip that is cut is cut with it (its right half then follows the right half of the clip)
+        const extra = new Set<string>();
+        for (const c of p.clips) if (targets.has(c.id) && cuts(c)) extra.add(c.id);
+        for (const c of p.clips) {
+          if (c.type === 'effect' && !targets.has(c.id) && c.target && extra.has(c.target) && cuts(c)) targets.add(c.id);
+        }
         const clips: Clip[] = [];
+        // original id -> right half id, to point the links of the right halves at each other
+        const rightOf = new Map<string, string>();
+        const extraCreated: string[] = [];
         // a group cut in two becomes two groups: the right halves get a group of their own
         const rightGroups = new Map<string, string>();
         for (const c of p.clips) {
-          const inside = time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION;
-          if (!targets.has(c.id) || !inside || isLocked(p, c.trackId)) {
+          if (!targets.has(c.id) || !cuts(c)) {
             clips.push(c);
             continue;
           }
@@ -1011,17 +1024,21 @@ export const useEditor = create<EditorState>()((set, get) => {
             if (!rightGroups.has(c.group)) rightGroups.set(c.group, uid('grp'));
             right.group = rightGroups.get(c.group)!;
           }
-          created.push(right.id);
+          rightOf.set(c.id, right.id);
+          if (asked.has(c.id)) created.push(right.id);
+          else extraCreated.push(right.id);
           clips.push(left, clampFades(right));
         }
+        created.push(...extraCreated);
         if (created.length === 0) return null;
-        if (rightGroups.size === 0) return { ...p, clips };
+        const linked = repointSplitHalves(clips, rightOf);
+        if (rightGroups.size === 0) return { ...p, clips: linked };
         // a group of one is no group
         const size = new Map<string, number>();
-        for (const c of clips) if (c.group) size.set(c.group, (size.get(c.group) ?? 0) + 1);
+        for (const c of linked) if (c.group) size.set(c.group, (size.get(c.group) ?? 0) + 1);
         return {
           ...p,
-          clips: clips.map((c) => {
+          clips: linked.map((c) => {
             if (!c.group || (size.get(c.group) ?? 0) > 1) return c;
             const alone = { ...c };
             delete alone.group;

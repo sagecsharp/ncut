@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { POSTER_MAX_CHARS, isPoster, loadPoster, posterSize, savePoster } from './posters';
+import { POSTER_MAX_CHARS, isBlankPixels, isPoster, loadPoster, posterSize, pruneOrphanPosters, savePoster } from './posters';
 
 describe('posterSize', () => {
   it('fits the longer side and keeps the shape', () => {
@@ -33,5 +33,29 @@ describe('storage', () => {
     // vitest runs in node: no localStorage
     expect(savePoster('p1', 'data:image/jpeg;base64,abc')).toBe(false);
     expect(loadPoster('p1')).toBeNull();
+  });
+});
+
+describe('isBlankPixels', () => {
+  const fill = (w: number, h: number, px: number[]) => {
+    const d = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) d.set(px, i * 4);
+    return d;
+  };
+  it('is blank for transparent and flat pictures', () => {
+    expect(isBlankPixels(fill(40, 20, [0, 0, 0, 0]), 40, 20)).toBe(true);
+    expect(isBlankPixels(fill(40, 20, [0, 0, 0, 255]), 40, 20)).toBe(true);
+    expect(isBlankPixels(new Uint8ClampedArray(0), 40, 20)).toBe(true);
+  });
+  it('is not blank when something is drawn', () => {
+    const d = fill(40, 20, [0, 0, 0, 255]);
+    for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++) d.set([255, 255, 255, 255], (y * 40 + x) * 4);
+    expect(isBlankPixels(d, 40, 20)).toBe(false);
+  });
+});
+
+describe('pruneOrphanPosters', () => {
+  it('does nothing quietly where there is no localStorage', () => {
+    expect(pruneOrphanPosters(['a'])).toBe(0);
   });
 });

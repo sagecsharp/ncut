@@ -70,7 +70,7 @@ beforeEach(() => {
 
 describe('replaceClipAsset', () => {
   it('swaps an image and keeps the look', () => {
-    open((v) => [image(v, 'a', 0, { radius: 0.5, transform: { ...DEFAULT_TRANSFORM, x: 40 } })]);
+    open((v) => [image(v, 'a', 0, { name: 'img1', radius: 0.5, transform: { ...DEFAULT_TRANSFORM, x: 40 } })]);
     expect(ed().replaceClipAsset('a', 'img2')).toBe(true);
     const c = clipOf<ImageClip>('a');
     expect(c.assetId).toBe('img2');
