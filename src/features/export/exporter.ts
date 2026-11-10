@@ -5,6 +5,9 @@
  *
  * a video export is rendered in parts: a few web workers each draw and encode a stretch of the timeline
  * (segment.ts, parallel.ts, exportWorker.ts) and this thread joins their packets in order and adds the sound.
+ * a gif is drawn on this thread, but the slow part of each frame (palette lookup, dithering, lzw) runs in a
+ * few web workers (gifPool.ts): the same bytes, made side by side.
+ *
  * the plain way (every frame on this thread, one encoder) is still here: gifs, exports too short to gain,
  * pictures only an <img> can read, and anything that goes wrong in the parts fall back to it.
  */
@@ -37,6 +40,7 @@ import { collectFontKit } from '../../lib/fontKit';
 import { projectDuration } from '../../lib/timelineOps';
 import { buildPalette, createGifEncoder, gifDelayCs, indexFrame } from '../../lib/gif';
 import { gifExportFps, gifSizeWarning, paletteSampleFrames, sampleSize } from './gifPlan';
+import { GifPoolError, createGifPool, gifWorkerCount } from './gifPool';
 import { type TimeRange, clampRange, rangeFrameCount } from './range';
 import { createFrameSources } from './sources';
 import { KEYFRAME_SECONDS } from './segment';
@@ -634,7 +638,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     if (signal?.aborted) throw abortError();
 
     // ---- gif: pass 1 samples a few small frames for one global palette, pass 2 encodes every frame ----
-    const exportGifFrames = async (): Promise<Blob> => {
+    const exportGifFrames = async (allowPool: boolean): Promise<Blob> => {
       // increasing order: the pass-1 feeds hold only these frames, so nothing in between is decoded
       const sampleList = [...new Set(paletteSampleFrames(totalFrames))].sort((a, b) => a - b);
       const sampleFrames = new Set(sampleList);
@@ -671,30 +675,74 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       if (!gctx) throw new Error('2d canvas is not available');
       gctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
       const encoder = createGifEncoder({ width, height, palette, loop: 0 });
+      // the slow part of a frame (palette lookup, dithering, lzw) goes to web workers when that pays off
+      const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+      const gifWorkers = allowPool ? (options.workers ?? gifWorkerCount(cores, width * height, totalFrames)) : 1;
+      const pool = gifWorkers > 1 ? createGifPool(gifWorkers, width, palette) : null;
+      const made: Promise<Uint8Array>[] = [];
+      const ignore = () => undefined;
       let indices: Uint8Array | undefined;
       lastYield = performance.now();
-      for (let i = 0; i < totalFrames; i++) {
-        if (signal?.aborted) throw abortError();
-        await stepFrame(i, (t) => {
-          renderFrame(gctx, project, t, resolver);
-          const data = gctx.getImageData(0, 0, width, height).data;
-          indices = indexFrame(data, width, palette, true, indices);
-          encoder.addFrame(indices, gifDelayCs(i, fps));
-        });
-        report('video', 0.2 + 0.78 * ((i + 1) / totalFrames), i + 1, false);
-        if (performance.now() - lastYield > 14) await yieldToUi();
+      try {
+        for (let i = 0; i < totalFrames; i++) {
+          if (signal?.aborted) throw abortError();
+          // at most a few frames of pixels wait for a worker
+          if (pool) await pool.room();
+          await stepFrame(i, (t) => {
+            const t0 = performance.now();
+            renderFrame(gctx, project, t, resolver);
+            const data = gctx.getImageData(0, 0, width, height).data;
+            const t1 = performance.now();
+            stats.renderMs += t1 - t0;
+            if (pool) {
+              const lzw = pool.encode(data.buffer as ArrayBuffer);
+              // a failure is seen where the frame is added, not as an unhandled rejection
+              lzw.catch(ignore);
+              made.push(lzw);
+            } else {
+              indices = indexFrame(data, width, palette, true, indices);
+              encoder.addFrame(indices, gifDelayCs(i, fps));
+            }
+            stats.encodeMs += performance.now() - t1;
+          });
+          report('video', 0.2 + 0.78 * ((i + 1) / totalFrames), i + 1, false);
+          if (performance.now() - lastYield > 14) await yieldToUi();
+        }
+        // into the file in playing order, whatever order the workers finished in
+        const t2 = performance.now();
+        for (let i = 0; i < made.length; i++) {
+          if (signal?.aborted) throw abortError();
+          encoder.addEncodedFrame(await made[i]!, gifDelayCs(i, fps));
+        }
+        stats.encodeMs += performance.now() - t2;
+      } finally {
+        pool?.dispose();
+        gifCanvas.width = 0;
+        gifCanvas.height = 0;
       }
       if (signal?.aborted) throw abortError();
       report('finalizing', 0.99, totalFrames);
       await yieldToUi();
       const blob = new Blob(encoder.finishParts() as BlobPart[], { type: 'image/gif' });
+      finish(pool ? gifWorkers : 1);
       report('finalizing', 1, totalFrames);
       return blob;
     };
 
     // ---- output ----
     if (container === 'gif') {
-      return await exportGifFrames();
+      try {
+        return await exportGifFrames(true);
+      } catch (err) {
+        if (signal?.aborted || isAbort(err) || !(err instanceof GifPoolError)) throw err;
+        // the workers failed: the gif is made again on this thread, so the user still gets the file
+        console.warn('[export] gif workers failed, encoding on one thread:', err.message);
+        hooks.onFallback?.(err.message);
+        await sources.dispose();
+        releaseRenderResources('export');
+        for (const k of ['decodeMs', 'renderMs', 'encodeMs'] as const) stats[k] = 0;
+        return await exportGifFrames(false);
+      }
     }
     await sources.open();
     const format =

@@ -3,6 +3,8 @@
  *
  * flow: buildPalette(samples) -> createGifEncoder({ width, height, palette }) -> for each frame
  * indexFrame(rgba, width, palette) + addFrame(indices, delayCs) -> finish() / finishParts().
+ * frames do not depend on each other, so the slow part of a frame (indexFrame + lzw = encodeGifFrame) can run
+ * anywhere, in any order (web workers), and the result is handed over with addEncodedFrame in playing order.
  * everything is deterministic (no random numbers, ordered dithering), so the same frames give the same bytes.
  *
  * a palette is a flat Uint8Array of r, g, b triples (length 3 * colors, 1..256 colors).
@@ -185,6 +187,8 @@ function nearest(palette: Palette, cache: Int16Array, key: number): number {
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 /** dither amplitude in 8 bit levels (one 5 bit cell is 8 wide) */
 const DITHER_STRENGTH = 12;
+/** the offset each cell of the 4x4 pattern adds to a pixel */
+const DITHER_OFFSET = Float64Array.from(BAYER4, (v) => (v - 7.5) * (DITHER_STRENGTH / 7.5));
 
 function clamp255(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : v;
@@ -210,13 +214,15 @@ export function indexFrame(
     return res;
   }
   let x = 0;
-  let y = 0;
+  let row = 0;
   for (let p = 0, o = 0; p < pixels; p++, o += 4) {
-    const t = (BAYER4[((y & 3) << 2) | (x & 3)] - 7.5) * (DITHER_STRENGTH / 7.5);
-    res[p] = nearest(palette, cache, binOf(clamp255(rgba[o] + t), clamp255(rgba[o + 1] + t), clamp255(rgba[o + 2] + t)));
+    const t = DITHER_OFFSET[row | (x & 3)];
+    const key = binOf(clamp255(rgba[o] + t), clamp255(rgba[o + 1] + t), clamp255(rgba[o + 2] + t));
+    const hit = cache[key];
+    res[p] = hit >= 0 ? hit : nearest(palette, cache, key);
     if (++x === w) {
       x = 0;
-      y++;
+      row = (row + 4) & 12;
     }
   }
   return res;
@@ -226,97 +232,140 @@ export function indexFrame(
 // lzw
 // ---------------------------------------------------------------------------------------------------------------
 
-/** growable byte buffer */
-class Bytes {
-  buf = new Uint8Array(1024);
-  len = 0;
-  push(b: number): void {
-    if (this.len === this.buf.length) {
-      const n = new Uint8Array(this.buf.length * 2);
-      n.set(this.buf);
-      this.buf = n;
-    }
-    this.buf[this.len++] = b & 255;
-  }
+/** slots of the lzw dictionary's hash table: 4x the most codes it can hold, so probes stay short */
+const LZW_SLOTS = 16384;
+
+/** per thread scratch of lzwEncode, so a frame allocates only its result */
+interface LzwScratch {
+  keys: Int32Array;
+  codes: Int16Array;
+  bytes: Uint8Array;
 }
+let lzwScratch: LzwScratch | null = null;
 
 /**
  * gif flavoured lzw. returns the data sub-blocks (each <= 255 bytes, with its length byte) plus the 0 terminator.
  * the caller writes the minimum code size byte in front.
+ *
+ * the dictionary maps (code of the string so far, next byte) to the code of the longer string. it is a hash
+ * table with open addressing (one probe on average), cleared by a fill when the 4096 codes are used up.
  */
 export function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
   const clear = 1 << minCodeSize;
   const eoi = clear + 1;
-  const raw = new Bytes();
+  const count = indices.length;
+  // the most the codes can take: 12 bits per input byte, plus the clear codes, plus the two ends
+  const most = Math.ceil((count * 12 + Math.ceil(count / 3000) * 12 + 64) / 8) + 8;
+  const s = (lzwScratch ??= { keys: new Int32Array(LZW_SLOTS), codes: new Int16Array(LZW_SLOTS), bytes: new Uint8Array(0) });
+  if (s.bytes.length < most) s.bytes = new Uint8Array(most);
+  const keys = s.keys;
+  const codes = s.codes;
+  const raw = s.bytes;
+  let len = 0;
   let bitBuf = 0;
   let bitCount = 0;
   let codeSize = minCodeSize + 1;
-  const emit = (code: number) => {
-    bitBuf |= code << bitCount;
-    bitCount += codeSize;
-    while (bitCount >= 8) {
-      raw.push(bitBuf & 255);
-      bitBuf >>>= 8;
-      bitCount -= 8;
-    }
-  };
-
-  // dictionary as a trie: first child / next sibling per code, the byte that extends the parent
-  const child = new Int16Array(4096);
-  const sibling = new Int16Array(4096);
-  const suffix = new Uint8Array(4096);
   let next = eoi + 1;
-  const reset = () => {
-    child.fill(-1);
-    next = eoi + 1;
-    codeSize = minCodeSize + 1;
-  };
-  reset();
-  emit(clear);
+  keys.fill(-1);
 
-  if (indices.length > 0) {
+  // emit(clear)
+  bitBuf |= clear << bitCount;
+  bitCount += codeSize;
+  while (bitCount >= 8) {
+    raw[len++] = bitBuf & 255;
+    bitBuf >>>= 8;
+    bitCount -= 8;
+  }
+
+  if (count > 0) {
     let cur = indices[0];
-    for (let i = 1; i < indices.length; i++) {
+    for (let i = 1; i < count; i++) {
       const k = indices[i];
-      let c = child[cur];
-      while (c >= 0 && suffix[c] !== k) c = sibling[c];
-      if (c >= 0) {
-        cur = c;
+      const key = (cur << 8) | k;
+      let h = Math.imul(key, 0x9e3779b1) >>> 18;
+      let hk = keys[h];
+      while (hk >= 0 && hk !== key) {
+        h = (h + 1) & (LZW_SLOTS - 1);
+        hk = keys[h];
+      }
+      if (hk === key) {
+        cur = codes[h];
         continue;
       }
-      emit(cur);
+      // emit(cur)
+      bitBuf |= cur << bitCount;
+      bitCount += codeSize;
+      while (bitCount >= 8) {
+        raw[len++] = bitBuf & 255;
+        bitBuf >>>= 8;
+        bitCount -= 8;
+      }
       if (next === 4096) {
-        emit(clear);
-        reset();
+        // emit(clear) and start over
+        bitBuf |= clear << bitCount;
+        bitCount += codeSize;
+        while (bitCount >= 8) {
+          raw[len++] = bitBuf & 255;
+          bitBuf >>>= 8;
+          bitCount -= 8;
+        }
+        keys.fill(-1);
+        next = eoi + 1;
+        codeSize = minCodeSize + 1;
       } else {
         if (next >= 1 << codeSize) codeSize++;
-        suffix[next] = k;
-        sibling[next] = child[cur];
-        child[next] = -1;
-        child[cur] = next;
+        keys[h] = key;
+        codes[h] = next;
         next++;
       }
       cur = k;
     }
-    emit(cur);
+    // emit(cur)
+    bitBuf |= cur << bitCount;
+    bitCount += codeSize;
+    while (bitCount >= 8) {
+      raw[len++] = bitBuf & 255;
+      bitBuf >>>= 8;
+      bitCount -= 8;
+    }
     // the decoder adds an entry after this code too, which can widen the code size of the end code
     if (next < 4096 && next >= 1 << codeSize) codeSize++;
   }
-  emit(eoi);
-  if (bitCount > 0) raw.push(bitBuf & 255);
+  // emit(eoi)
+  bitBuf |= eoi << bitCount;
+  bitCount += codeSize;
+  while (bitCount >= 8) {
+    raw[len++] = bitBuf & 255;
+    bitBuf >>>= 8;
+    bitCount -= 8;
+  }
+  if (bitCount > 0) raw[len++] = bitBuf & 255;
 
-  const n = raw.len;
-  const blocks = Math.ceil(n / 255);
-  const out = new Uint8Array(n + blocks + 1);
+  const blocks = Math.ceil(len / 255);
+  const out = new Uint8Array(len + blocks + 1);
   let o = 0;
-  for (let p = 0; p < n; p += 255) {
-    const size = Math.min(255, n - p);
+  for (let p = 0; p < len; p += 255) {
+    const size = Math.min(255, len - p);
     out[o++] = size;
-    out.set(raw.buf.subarray(p, p + size), o);
+    out.set(raw.subarray(p, p + size), o);
     o += size;
   }
   out[o] = 0;
   return out;
+}
+
+/** the lzw minimum code size of a palette with this many colors (2..8) */
+export function gifMinCodeSize(colors: number): number {
+  return Math.max(2, tableBits(colors));
+}
+
+/**
+ * the slow part of one frame, start to end: palette indices (dithered) and their lzw data, ready for
+ * GifEncoder.addEncodedFrame. `scratch` (the index buffer) is reused when it has the right length.
+ * gives exactly the bytes addFrame(indexFrame(...)) would write.
+ */
+export function encodeGifFrame(rgba: Uint8Array | Uint8ClampedArray, width: number, palette: Palette, scratch?: Uint8Array): Uint8Array {
+  return lzwEncode(indexFrame(rgba, width, palette, true, scratch), gifMinCodeSize(palette.length / 3));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -334,6 +383,8 @@ export interface GifEncoderOptions {
 export interface GifEncoder {
   /** `indices` is width * height palette indices, row by row. `delayCs` is rounded and clamped to 2..65535. */
   addFrame(indices: Uint8Array, delayCs: number): void;
+  /** the same for a frame whose lzw data was made elsewhere (encodeGifFrame with this encoder's palette and size) */
+  addEncodedFrame(lzw: Uint8Array, delayCs: number): void;
   readonly frameCount: number;
   /** the finished file in pieces (cheap, nothing is copied): `new Blob(parts, { type: 'image/gif' })` */
   finishParts(): Uint8Array[];
@@ -360,7 +411,7 @@ export function createGifEncoder(opts: GifEncoderOptions): GifEncoder {
   if (!Number.isInteger(colors) || colors < 1 || colors > 256) throw new Error('gif palette must have 1..256 colors');
   const bits = tableBits(colors);
   const tableSize = 1 << bits;
-  const minCode = Math.max(2, bits);
+  const minCode = gifMinCodeSize(colors);
   const loop = Math.max(0, Math.min(65535, Math.floor(opts.loop ?? 0)));
 
   const parts: Uint8Array[] = [];
@@ -384,13 +435,17 @@ export function createGifEncoder(opts: GifEncoderOptions): GifEncoder {
     addFrame(indices, delayCs) {
       if (done) throw new Error('gif is finished');
       if (indices.length !== width * height) throw new Error('frame has the wrong number of pixels');
+      this.addEncodedFrame(lzwEncode(indices, minCode), delayCs);
+    },
+    addEncodedFrame(lzw, delayCs) {
+      if (done) throw new Error('gif is finished');
       const delay = Math.max(GIF_MIN_DELAY_CS, Math.min(65535, Math.round(delayCs)));
       // graphic control: disposal 1 (leave), no transparency
       parts.push(Uint8Array.from([0x21, 0xf9, 4, 0x04, ...u16(delay), 0, 0]));
       // image descriptor: whole canvas, no local table, not interlaced
       parts.push(Uint8Array.from([0x2c, 0, 0, 0, 0, ...u16(width), ...u16(height), 0]));
       parts.push(Uint8Array.of(minCode));
-      parts.push(lzwEncode(indices, minCode));
+      parts.push(lzw);
       frames++;
     },
     get frameCount() {
