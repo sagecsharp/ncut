@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpRight, Camera, Focus, Grid3x3, ImageDown, Scan } from 'lucide-react';
+import { ArrowUpRight, Camera, Focus, Grid3x3, ImageDown, PictureInPicture2, Scan } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { resolveClip } from '../../lib/anim';
+import type { SourceResolver } from '../../engine/draw';
 import { useSceneCamera } from './sceneCamera';
 import type { ViewPreset } from './sceneCamera';
 import { useSceneTool, TOOL_KEYS } from './sceneTool';
 import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
 import { localDelta, withoutRidingChildren } from './attached';
+import { CameraInset } from './CameraInset';
+import { useCameraInset } from './insetState';
 import { GuidesOverlay } from './GuidesOverlay';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { useGuides } from './guides';
@@ -57,6 +60,8 @@ export function Preview() {
   const setQuality = usePreviewQuality((s) => s.setQuality);
   const guidesOn = useGuides((s) => s.on);
   const toggleGuides = useGuides((s) => s.toggle);
+  const insetOn = useCameraInset((s) => s.on);
+  const toggleInset = useCameraInset((s) => s.toggle);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
 
   // engine + layout: the canvas is the largest project-aspect rect that fits the stage
@@ -202,6 +207,13 @@ export function Preview() {
     const onChange = () => setFullscreen(document.fullscreenElement === stageRef.current);
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  // the inset draws with the engine's media sources. the resolver is private to the engine (not in my files):
+  // read it when it is needed, and the inset simply stays empty if it is ever not there
+  const getResolve = useCallback((): SourceResolver | null => {
+    const r = (engineRef.current as unknown as { resolve?: SourceResolver } | null)?.resolve;
+    return typeof r === 'function' ? r : null;
   }, []);
 
   const toggleFullscreen = useCallback(() => {
@@ -374,6 +386,15 @@ export function Preview() {
             <button className="icon-btn" title="frame selected (f)" aria-label="frame selected" onClick={frameSelected}>
               <Scan size={14} />
             </button>
+            <button
+              className={`icon-btn${insetOn ? ' is-active' : ''}`}
+              title={insetOn ? 'hide the camera view' : 'show the camera view (what the output looks like)'}
+              aria-label="camera view"
+              aria-pressed={insetOn}
+              onClick={toggleInset}
+            >
+              <PictureInPicture2 size={14} />
+            </button>
             <button className="icon-btn preview-camview" title="move the camera to this view" aria-label="move the camera to this view" onClick={cameraToView}>
               <Camera size={14} />
               <ArrowUpRight size={9} className="preview-camview-arrow" />
@@ -442,6 +463,7 @@ export function Preview() {
           <canvas ref={canvasRef} className="preview-canvas" />
           <GuidesOverlay />
           <TransformOverlay />
+          <CameraInset getResolve={getResolve} />
           {empty && <div className="preview-hint">import media to get started</div>}
         </div>
       </div>

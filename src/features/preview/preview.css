@@ -515,3 +515,39 @@
   stroke-width: 1;
   stroke-dasharray: 8 3;
 }
+
+/* camera inset of the scene view: the output as the project camera sees it */
+.scene-inset {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  width: 240px;
+  max-width: 40%;
+  padding: 0;
+  display: block;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  z-index: 3;
+}
+.scene-inset:hover,
+.scene-inset:focus-visible {
+  border-color: var(--text-dim);
+}
+.scene-inset-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.scene-inset-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 0 var(--space-1);
+  background: var(--surface-3);
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  pointer-events: none;
+}

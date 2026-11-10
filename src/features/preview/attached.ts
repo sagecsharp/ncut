@@ -1,9 +1,10 @@
 /** helpers for clips that are attached to a parent (Spatial.parent): the overlays work at the world pose. pure, no dom. */
+import { resolveCounter } from '../../engine/counter';
 import { parentModelMatrix, worldDeltaToLocal, worldTransform } from '../../engine/parent';
 import type { Vec3 } from '../../engine/scene3d/math';
 import { resolveClip } from '../../lib/anim';
 import { parentChain } from '../../lib/links';
-import type { Project, VisualClip } from '../../types';
+import type { Clip, Project, VisualClip } from '../../types';
 
 /** true when the clip is attached to something (a parent id is set; the engine ignores unknown ids on its own) */
 export function isAttached(clip: VisualClip): boolean {
@@ -11,11 +12,20 @@ export function isAttached(clip: VisualClip): boolean {
 }
 
 /**
+ * resolveClip plus the running number of a counter text: the clip as it is drawn at a time, so a box measured from
+ * it matches the drawn text. a clip without a counter costs nothing extra. only for measuring, never for writing back.
+ */
+export function resolveShown<T extends Clip>(raw: T, time: number): T {
+  const r = resolveClip(raw, time);
+  return r.type === 'text' && r.counter ? (resolveCounter(r, time) as T) : r;
+}
+
+/**
  * the clip as the renderer draws it at a time: keyframes baked, and for an attached clip the transform replaced by
  * its pose in the world. the result is only for measuring (boxes, outlines), never for writing back to the store.
  */
 export function worldClip<T extends VisualClip>(project: Project, raw: T, time: number): T {
-  const resolved = resolveClip(raw, time);
+  const resolved = resolveShown(raw, time);
   if (!raw.parent) return resolved;
   return { ...resolved, transform: worldTransform(project, raw, time) };
 }

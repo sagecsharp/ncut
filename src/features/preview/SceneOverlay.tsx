@@ -20,11 +20,12 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Project } from '../../types';
 import { isVisualClip } from '../../types';
-import { isAttached, localDelta, localDelta3, worldClip } from './attached';
+import { isAttached, localDelta, localDelta3, resolveShown, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
+import { snapAngle, snapDelta } from './sceneSnap';
 import { useSceneTool } from './sceneTool';
 import { frameTarget, viewRig } from './sceneViews';
 
@@ -156,7 +157,7 @@ function gizmoTarget(project: Project, selection: string[], time: number, rig: C
     }
     if (isVisualClip(clip)) {
       // the gizmo sits at the world pose (an attached clip is drawn there); the values it edits stay the clip's own
-      const r = resolveClip(clip, time);
+      const r = resolveShown(clip, time);
       const threeD = !!clip.threeD;
       if (usesParentFrame(clip)) {
         // a real 3d clip under a parent: center and rings come from the parent's matrix, so z and the rings are exact
@@ -260,6 +261,8 @@ export function SceneOverlay() {
   const originRef = useRef({ left: 0, top: 0 });
   /** shift held at the last pointer event (rings snap to 15 degree steps) */
   const dragShift = useRef(false);
+  /** ctrl / cmd held at the last pointer event (arrows snap to the grid, rings to 15 degree steps) */
+  const dragCtrl = useRef(false);
   const tool = useSceneTool((s) => s.tool);
   const setTool = useSceneTool((s) => s.setTool);
 
@@ -446,7 +449,7 @@ export function SceneOverlay() {
         if (camClip && tClip && isVisualClip(tClip) && inRange(tClip, time)) {
           const rig = viewRig(project);
           const r = resolveClip(camClip, time);
-          const tr = resolveClip(tClip, time);
+          const tr = resolveShown(tClip, time);
           const tb = getClipBox(project, tr);
           const a = projectPoint(rig, project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z, project.width, project.height);
           const b = projectPoint(rig, tb.cx, tb.cy, tr.transform.z ?? 0, project.width, project.height);
@@ -702,7 +705,7 @@ export function SceneOverlay() {
     const time = usePlayback.getState().time;
     if (g.kind === 'ring') {
       let v = g.v0 + g.sign * g.acc;
-      if (dragShift.current) v = Math.round(v / 15) * 15;
+      v = snapAngle(v, dragCtrl.current, dragShift.current);
       store.setClipValue(g.id, g.prop, time, Math.round(v * 100) / 100, { skipHistory: true });
       return;
     }
@@ -716,7 +719,8 @@ export function SceneOverlay() {
     const ray = screenRay(g.rig, lx / f, ly / f, project.width, project.height);
     const t1 = closestOnAxis(ray.origin, ray.dir, g.c0, AXES[g.axis]!);
     if (t1 === null) return;
-    const delta = t1 - g.t0;
+    // ctrl / cmd: the clip lands on a grid line (50 px, 10 with shift) along the dragged axis
+    const delta = snapDelta(g.v0, t1 - g.t0, dragCtrl.current, dragShift.current);
     // read again: the first step of a z drag has just turned a 2d clip into a 3d one
     const now = useEditor.getState().project ?? project;
     const raw = now.clips.find((c) => c.id === g.id);
@@ -748,6 +752,7 @@ export function SceneOverlay() {
   const queue = (e: ReactPointerEvent<HTMLDivElement>) => {
     pendingRef.current = { x: e.clientX, y: e.clientY };
     dragShift.current = e.shiftKey;
+    dragCtrl.current = e.ctrlKey || e.metaKey;
     if (!rafRef.current) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = 0;
@@ -772,6 +777,7 @@ export function SceneOverlay() {
     const o0 = currentOrbit(project);
     const base = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
     dragShift.current = e.shiftKey;
+    dragCtrl.current = e.ctrlKey || e.metaKey;
 
     const begin = (g: SceneGesture) => {
       gestureRef.current = g;
@@ -885,6 +891,7 @@ export function SceneOverlay() {
     rafRef.current = 0;
     if (e.type === 'pointerup') {
       dragShift.current = e.shiftKey;
+      dragCtrl.current = e.ctrlKey || e.metaKey;
       apply({ x: e.clientX, y: e.clientY });
     }
     pendingRef.current = null;
@@ -1069,7 +1076,7 @@ export function SceneOverlay() {
           </button>
         ))}
       </div>
-      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame</div>
+      <div className="preview-scene-hint">drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap</div>
     </div>
   );
 }
