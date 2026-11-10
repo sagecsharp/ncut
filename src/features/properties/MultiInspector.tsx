@@ -10,6 +10,7 @@ import { isVisualClip } from '../../types';
 import type { VisualClip } from '../../types';
 import { AlignButtons } from './AlignButtons';
 import { ArrangeSection } from './ArrangeSection';
+import { SplitButtons } from './SplitButtons';
 import { LookButtons } from './LookSection';
 import { ParentSelect } from './AttachSection';
 import { attachClips } from './attachActions';
@@ -165,6 +166,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
       {sum.visual > 0 ? (
         <Section id="m-align" title="align">
           <AlignButtons ids={visualIds} />
+          {visualIds.length > 1 ? <SplitButtons ids={visualIds} /> : null}
         </Section>
       ) : null}
       {visualIds.length > 1 ? (
