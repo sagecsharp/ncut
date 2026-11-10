@@ -1,7 +1,8 @@
 # ncut architecture
 
-ncut is an in-browser video editor: multi-track timeline, real-time canvas preview, text overlays,
-local-only storage (indexeddb), export through webcodecs. no server, no accounts, no watermark.
+ncut is an in-browser video editor: multi-track timeline, real-time canvas preview, keyframes, an unlit
+3d space with cameras, gpu effects and transitions, animated text, local-only storage (indexeddb),
+export through webcodecs up to 240 fps. no server, no accounts, no watermark.
 
 stack: vite 8, react 19, typescript 7 (strict), zustand 5, mediabunny (muxing/encoding/decoding),
 lucide-react (icons). plain css with tokens. package manager is npm.
@@ -15,22 +16,33 @@ lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, 
                          findTrackWithRoom, clipsAtTime, sourceTimeAt, fadeFactor, collectSnapPoints, snapTime
 lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
 lib/dnd.ts               drag payloads between media panel and timeline/preview
+lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
+lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
+lib/fonts.ts             font catalog: bundled (lazy css imports), system, local and imported fonts
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
 store/playback.ts        usePlayback: the master clock (time, playing, loop, volume)
-store/ui.ts              useUi: open dialog, toasts
+store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
 media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
-engine/draw.ts           renderFrame(ctx, project, time, resolver) + getClipBox, hitTestBox, measureText
+engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + renderSceneView, getClipBox, hitTestBox
+engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
+engine/textAnim.ts       the per-letter text animations (in / out / loop)
+engine/shape.ts          shape clips (rect, ellipse, polygon, star ...)
+engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop)
+engine/effects/          effect registry + defs (glsl) + the webgl2 runner for adjustment layers
+engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
+engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts
-features/media/          MediaPanel
+features/media/          MediaPanel (media, text, shapes, effects, transitions tabs)
+features/fonts/          FontPicker
 features/timeline/       Timeline
 features/preview/        Preview
 features/properties/     PropertiesPanel
@@ -47,6 +59,32 @@ audio tracks (audio clips). all times are seconds. clips on one track never over
 `[start, start + duration)`. for video/audio clips, source time = `trimStart + (t - start) * speed`.
 `transform.x/y` are offsets from the canvas center in canvas pixels, `scale: 1` = contain-fit for media and
 natural size for text. `fadeIn/fadeOut` scale opacity (visual) and gain (audio).
+
+more clip types live on video tracks: `shape` (a drawn figure, visual like an image), `effect` (an adjustment
+layer: changes the picture made by everything below its track) and `camera` (the 3d camera for its time range).
+
+## the frame renderer
+
+`engine/draw.ts` `renderFrame` draws one frame of a project at a time onto a 2d canvas. the live preview
+and the exporter both call it with their own source resolver, so they always match. the rule that keeps
+them matching: a frame depends only on `(project, time)`. never on the wall clock, never on random
+numbers at draw time (effects get a per-clip `seed`).
+
+- layers are painted bottom track first. a run of consecutive 3d clips is rendered together through the
+  camera by `engine/scene3d/renderer.ts` (depth tested, unlit) and laid over the canvas.
+- keyframes: `resolveClip(clip, time)` returns the clip with every animated property baked in. always
+  edit animatable numbers through the store's `setClipValue` (it writes a key when the property is animated).
+- effects: an effect clip post-processes the canvas below it in webgl2 (`engine/effects/runner.ts`).
+  an effect with `temporal` (motion blur, echo) instead asks the renderer to draw the layers below at
+  several sub-frame times and averages them. that is a real shutter: it blurs transform, camera and
+  effect motion, in preview and export alike.
+- transitions: `clip.transition` belongs to the INCOMING clip and is centered on the cut. each side is
+  painted alone (frozen on its edge frame outside its own range) and mixed by a glsl
+  `vec4 transition(vec2 uv, float p)`.
+- 3d space: canvas pixels, x right, y down, +z away from the viewer, z = 0 is the canvas plane. the home
+  camera sees the canvas plane exactly filling the frame, so a flat 3d clip at z = 0 looks identical to
+  a 2d clip. a camera clip stores offsets from that home pose.
+- text is laid out per glyph (`engine/text.ts`); 3d text goes through a cached texture.
 
 ## store rules
 
@@ -115,4 +153,6 @@ add it locally and mention it in your report.
 
 ## dev hook
 
-in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles }` is available for testing.
+in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, fx }` is available for testing.
+`fx` has the effect and transition registries plus `checkEffects()` / `checkTransitions()`, which compile
+every shader in the browser and return the ones that fail (an empty list = all good).
