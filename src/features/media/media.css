@@ -1,8 +1,8 @@
 .media-panel {
   height: 100%;
 }
-/* five tabs share the narrow panel (min width 280): tight padding, equal stretch, no scrollbar.
-   below 290px the labels give way to icons (every tab keeps its title and aria-label) */
+/* six tabs share the narrow panel (min width 280): tight padding, equal stretch, no scrollbar.
+   below 400px the labels give way to icons (every tab keeps its title and aria-label) */
 .media-panel > .tabs {
   container-type: inline-size;
   overflow: hidden;
@@ -23,7 +23,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@container (max-width: 289px) {
+@container (max-width: 399px) {
   .media-tab-icon {
     display: block;
   }
@@ -355,4 +355,117 @@
   color: var(--text-faint);
   font-size: var(--font-size-sm);
   text-align: center;
+}
+
+/* layers tab */
+.layers-tab {
+  min-height: 0;
+}
+.layers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  flex-shrink: 0;
+}
+.layers-seg {
+  display: flex;
+  gap: 2px;
+}
+.layers-count {
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+.layers-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.layers-list {
+  flex-shrink: 0;
+}
+.layers-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h);
+  padding-right: 6px;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  user-select: none;
+}
+.layers-row:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.layers-row:focus-visible {
+  outline-color: var(--border-soft);
+}
+.layers-row.is-selected {
+  background: var(--accent-muted);
+  color: var(--text);
+}
+.layers-row.is-hidden {
+  opacity: 0.5;
+}
+.layers-row.is-dragging {
+  opacity: 0.4;
+}
+.layers-row.is-drop {
+  outline-color: var(--accent);
+  background: var(--surface-3);
+}
+.layers-icon {
+  flex-shrink: 0;
+}
+.layers-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.layers-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+}
+.layers-flag {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.layers-detach {
+  flex-shrink: 0;
+}
+.layers-rest {
+  flex: 1;
+  min-height: 36px;
+  margin: var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed transparent;
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+.layers-rest.is-armed {
+  border-color: var(--border-soft);
+}
+.layers-rest.is-drop {
+  border-color: var(--accent);
+  color: var(--accent);
 }
