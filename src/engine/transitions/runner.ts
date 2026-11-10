@@ -5,6 +5,7 @@
 import { PRELUDE, VERTEX_SRC } from '../effects/glsl';
 import type { TransitionDef } from './registry';
 import { createCanvas } from '../../lib/canvas';
+import { textureHolds } from './sideMemo';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -16,6 +17,13 @@ export interface TransitionRenderOptions {
   channel?: 'default' | 'export' | 'thumb';
   /** varies the random parts */
   seed?: number;
+  /**
+   * what picture `a` / `b` are, when they are the same picture as the last call that gave the same key (a frozen side of
+   * the transition): the texture that holds it is not uploaded again. the caller guarantees the same key = the same pixels.
+   * undefined = upload every time.
+   */
+  keyA?: string;
+  keyB?: string;
 }
 
 const HEAD = `
@@ -75,6 +83,9 @@ class TransitionRunner {
   private texA: WebGLTexture;
   private texB: WebGLTexture;
   private empty: WebGLTexture;
+  /** the key of the picture each texture holds (null = unknown: upload next time) */
+  private keyA: string | null = null;
+  private keyB: string | null = null;
   dead = false;
 
   constructor(canvas: GLCanvas, gl: WebGL2RenderingContext) {
@@ -186,20 +197,23 @@ class TransitionRunner {
     return l;
   }
 
-  private upload(unit: number, tex: WebGLTexture, source: TexImageSource | null): boolean {
+  /** upload a picture into a texture and bind it to a unit. `held` = the key the texture holds: with the same `key` the upload is skipped. returns whether there is a picture. */
+  private upload(unit: number, tex: WebGLTexture, source: TexImageSource | null, held: string | null, key: string | undefined): { ok: boolean; held: string | null } {
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0 + unit);
     if (!source) {
       gl.bindTexture(gl.TEXTURE_2D, this.empty);
-      return false;
+      return { ok: false, held: null };
     }
     gl.bindTexture(gl.TEXTURE_2D, tex);
+    // the texture still has this very picture (held is only set by a successful upload of a keyed picture)
+    if (textureHolds(held, key)) return { ok: true, held };
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-      return true;
+      return { ok: true, held: key ?? null };
     } catch {
       gl.bindTexture(gl.TEXTURE_2D, this.empty);
-      return false;
+      return { ok: false, held: null };
     }
   }
 
@@ -213,6 +227,8 @@ class TransitionRunner {
     sizeW: number,
     sizeH: number,
     seed: number,
+    keyA?: string,
+    keyB?: string,
   ): GLCanvas | null {
     const gl = this.gl;
     if (this.dead || gl.isContextLost()) return null;
@@ -223,8 +239,12 @@ class TransitionRunner {
       this.canvas.height = h;
     }
     gl.useProgram(prog.program);
-    const hasA = this.upload(1, this.texA, a);
-    const hasB = this.upload(2, this.texB, b);
+    const ua = this.upload(1, this.texA, a, this.keyA, keyA);
+    const ub = this.upload(2, this.texB, b, this.keyB, keyB);
+    this.keyA = ua.held;
+    this.keyB = ub.held;
+    const hasA = ua.ok;
+    const hasB = ub.ok;
     gl.uniform1i(this.loc(prog, 'u_a'), 1);
     gl.uniform1i(this.loc(prog, 'u_b'), 2);
     gl.uniform1f(this.loc(prog, 'u_hasA'), hasA ? 1 : 0);
@@ -307,7 +327,7 @@ export function renderTransition(
   if (width < 1 || height < 1) return null;
   const runner = getRunner(opts.channel ?? 'default');
   if (!runner) return null;
-  return runner.render(a, b, def, Math.min(1, Math.max(0, progress)), width, height, opts.projectWidth, opts.projectHeight, opts.seed ?? 0);
+  return runner.render(a, b, def, Math.min(1, Math.max(0, progress)), width, height, opts.projectWidth, opts.projectHeight, opts.seed ?? 0, opts.keyA, opts.keyB);
 }
 
 /** compile every transition and report the broken ones. for tests in the browser console. */

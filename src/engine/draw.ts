@@ -32,6 +32,8 @@ import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSig
 import { textAnimActive } from './textAnim';
 import { getTransition } from './transitions/registry';
 import { easeTransition, releaseTransitionRunner, renderTransition } from './transitions/runner';
+import { SideMemo, constantSideKind, frozenSideKey } from './transitions/sideMemo';
+import { fontsVersion } from '../lib/fonts';
 
 export { TEXT_LINE_HEIGHT, TEXT_PADDING, measureText, textFont } from './text';
 
@@ -1726,6 +1728,43 @@ function seedOf(id: string): number {
   return h;
 }
 
+/** which scratch canvases ('tra' / 'trb') hold the picture of a frozen transition side, and for which key */
+const sideMemo = new SideMemo();
+
+/**
+ * the key of the picture of a transition side, or null when it cannot be proven the same on the next frame. only a side
+ * that is frozen on its edge frame and is a flat text / shape / image clip qualifies (see constantSideKind); every input that
+ * can change what paintAlone draws is in the key (frozenSideKey). `sc` = the scratch canvas the side is painted into.
+ */
+function sideKeyOf(project: Project, raw: VisualClip, paintTime: number, frozen: boolean, frameTime: number, env: Env, sc: Scratch): string | null {
+  if (!constantSideKind(raw.type, raw.threeD, frozen)) return null;
+  let image: { source: object; width: number; height: number } | null = null;
+  if (raw.type === 'image') {
+    // the same resolver call paintAlone makes: a missing picture (still loading) is not constant
+    const src = env.resolve(raw, 0);
+    const obj = src?.image as (object & { width?: number; height?: number }) | undefined;
+    if (!src || !obj || (typeof obj !== 'object' && typeof obj !== 'function')) return null;
+    image = { source: obj, width: obj.width || src.width, height: obj.height || src.height };
+  }
+  const m = typeof sc.ctx.getTransform === 'function' ? sc.ctx.getTransform() : null;
+  return frozenSideKey({
+    clip: raw,
+    project,
+    clips: project.clips,
+    clipCount: project.clips.length,
+    tracks: project.tracks,
+    paintTime,
+    fxTime: clampIntoClip(raw, frameTime),
+    width: sc.canvas.width,
+    height: sc.canvas.height,
+    matrix: m ? [m.a, m.b, m.c, m.d, m.e, m.f] : [],
+    channel: env.channel,
+    quality: env.quality,
+    fonts: fontsVersion(),
+    image,
+  });
+}
+
 /** blend the outgoing and the incoming clip of a transition and lay the result on the canvas */
 function paintTransition(ctx: Ctx, project: Project, time: number, span: TransitionSpan, env: Env, rig: () => CameraRig): void {
   const def = getTransition(span.id);
@@ -1737,23 +1776,46 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   const lb = def && canvas ? scratchFor(ctx, env.channel, 'trb') : null;
   if (!def || !canvas || !lb) {
     // no canvas to blend on: a plain cut
+    if (la) sideMemo.set(la.canvas, null);
+    if (lb) sideMemo.set(lb.canvas, null);
     const natural = span.from && time < span.to.start ? span.from : span.to;
     paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig, natural === span.to ? timeB !== time : timeA !== time, time);
     return;
   }
+  // a frozen side that is a still picture is painted (and uploaded to the gpu) once, not every frame: while its key is
+  // unchanged the scratch canvas still holds it. anything that is not provably constant is painted as before.
   let hasA = false;
+  let keyA: string | null = null;
   if (la && span.from) {
-    clearScratch(la);
-    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time, time);
+    keyA = sideKeyOf(project, span.from, timeA, timeA !== time, time, env, la);
+    if (sideMemo.holds(la.canvas, keyA)) hasA = true;
+    else {
+      sideMemo.set(la.canvas, null);
+      clearScratch(la);
+      hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time, time);
+      // only a picture that was drawn is kept: a clip that was skipped (not ready, error) is tried again next frame
+      if (hasA) sideMemo.set(la.canvas, keyA);
+    }
+  } else if (la) sideMemo.set(la.canvas, null);
+  let keyB = sideKeyOf(project, span.to, timeB, timeB !== time, time, env, lb);
+  let hasB: boolean;
+  if (sideMemo.holds(lb.canvas, keyB)) hasB = true;
+  else {
+    sideMemo.set(lb.canvas, null);
+    clearScratch(lb);
+    hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time, time);
+    if (hasB) sideMemo.set(lb.canvas, keyB);
   }
-  clearScratch(lb);
-  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time, time);
+  if (!hasA) keyA = null;
+  if (!hasB) keyB = null;
   const p = easeTransition((time - span.start) / Math.max(1e-6, span.end - span.start));
   const out = renderTransition(hasA && la ? la.canvas : null, hasB ? lb.canvas : null, def, p, canvas.width, canvas.height, {
     projectWidth: project.width,
     projectHeight: project.height,
     channel: env.channel as TransitionChannel,
     seed: seedOf(span.to.id),
+    keyA: keyA ?? undefined,
+    keyB: keyB ?? undefined,
   });
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
