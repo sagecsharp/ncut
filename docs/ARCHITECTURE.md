@@ -40,28 +40,37 @@ engine/draw.ts           renderFrame(ctx, project, time, resolver, opts) + rende
 engine/text.ts           text layout and drawing (styles, wrap, curve, per-glyph animation states)
 engine/textAnim.ts       the per-letter text animations (in / out / loop)
 engine/counter.ts        running numbers in text clips (counterValue, counterText, resolveCounter)
-engine/shape.ts          shape clips (rect, ellipse, polygon, star ...)
+engine/shape.ts          shape clips (rect, ellipse, polygon, star ...), shapeOutline (the outline as one path)
+engine/shapeTrim.ts      draw on: flatten an outline and cut it to a share of its length (drawStart / drawEnd)
+engine/textDepth.ts      block text in 3d: how many side layers a text gets, where they sit, how they are shaded
 engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), some only for 3d clips
 engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
 engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel)
 engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
 engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target), cached per clips array
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
-engine/effects/          effect registry + defs (glsl) + the webgl2 runner for adjustment layers
+engine/effects/          effect registry + defs (glsl, one file per pack) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
-engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer, depth of field (focus.ts)
+engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer, depth of field (focus.ts),
+                         meshes.ts (plane, box, ball ... and solids pushed out of a 2d outline: outline2d.ts)
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k)
 features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools,
-                         favorites.ts (starred effects / transitions, kept in localStorage)
+                         favorites.ts (starred effects / transitions, kept in localStorage), transitionBatch.ts
+                         (a transition on every cut of a track, shuffle, same length) + transitionApply.ts
+                         (a transition never longer than its cut allows, the last used one)
 features/fonts/          FontPicker
 features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followApply.ts: effects put on a clip follow it
-                         through every way a clip can move (drag, trim, inspector fields, gaps, speed, freeze frame)
-features/preview/        Preview
+                         through every way a clip can move (drag, trim, inspector fields, gaps, speed, freeze frame).
+                         beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks).
+                         sequence.ts + sequenceActions.ts (clips in a row, fitted to the markers, cut at the markers)
+features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizmo.ts (handles, axis lock),
+                         sceneHelpers.ts (focus plane, floor grid, readouts)
 features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
-                         frame with the camera, floor), FocusSection (depth of field)
+                         frame with the camera, floor), FocusSection (depth of field), splitLayout.ts + splitActions.ts
+                         (split screen: the canvas cut into cells, every selected clip fitted into one)
 features/export/         ExportDialog + the offline renderer
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
@@ -101,6 +110,13 @@ numbers at draw time (effects get a per-clip `seed`).
   camera sees the canvas plane exactly filling the frame, so a flat 3d clip at z = 0 looks identical to
   a 2d clip. a camera clip stores offsets from that home pose.
 - text is laid out per glyph (`engine/text.ts`); 3d text goes through a cached texture.
+- block text in 3d (`TextClip.extrude` on a 3d clip): the face is drawn without the flat extrude, and behind
+  it a stack of planes with the silhouette of the text in the side color (`engine/textDepth.ts`), so the
+  depth is real and turns with the clip. a flat text keeps the painted extrude.
+- solids: `Spatial.shape` picks the mesh. capsule, prism, hexagon, star and heart are 2d outlines pushed
+  out along z (`scene3d/outline2d.ts`); the clip's picture sits on the front and back, the sides take its edge.
+- draw on (`ShapeClip.drawStart` / `drawEnd`, shares of the outline length, keyframable): only the stroke is
+  cut (`engine/shapeTrim.ts`), the fill stays whole, an arrow keeps its head at the drawn end.
 - attached clips: `clip.parent` is the id of another clip (or a camera). the renderer draws a child at its
   world pose (`engine/parent.ts` `worldTransform`): the parent's pose after keyframes and motions, at the
   time clamped into the parent's range, composed down the chain. a parent does not have to be visible.
@@ -124,6 +140,10 @@ numbers at draw time (effects get a per-clip `seed`).
   ('clip' + `lookTarget`). it is applied last, in the world.
 - fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
 - groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
+- a split keeps the picture: clips that point at a cut clip (parent, look target, camera target, effect
+  target) and lie after the cut are re-pointed to the right half (`repointSplitDependents`).
+  `duplicateClips(ids, { sameTime })` makes copies that keep their time and go on a track above (alt + drag
+  in the scene view).
 - an effect on one clip (`EffectClip.target`): the effect is skipped by the adjustment layer walk. when its
   target is drawn, that clip is painted alone into a scratch canvas, the effects run on it and the result is
   laid into the stack with the clip's blend mode. effects that only move or mix pixels (categories blur and
