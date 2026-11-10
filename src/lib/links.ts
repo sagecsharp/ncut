@@ -48,12 +48,50 @@ export function parentChain(project: Clips, clip: Clip): Clip[] {
   return chain;
 }
 
-/** true when attaching childId to parentId would make a loop (or is the clip itself) */
-export function wouldCycle(project: Clips, childId: string, parentId: string): boolean {
+/** id -> clip for one pass over a clip list. the first clip with an id wins, like Array.find. */
+export function indexClips(clips: readonly Clip[]): Map<string, Clip> {
+  const index = new Map<string, Clip>();
+  for (const c of clips) if (!index.has(c.id)) index.set(c.id, c);
+  return index;
+}
+
+/** parentChain over an id index instead of a linear find per hop (same chain) */
+export function parentChainIn(index: ReadonlyMap<string, Clip>, clip: Clip): Clip[] {
+  const chain: Clip[] = [];
+  const seen = new Set<string>([clip.id]);
+  const up = (c: Clip): Clip | null => {
+    const id = parentId(c);
+    if (!id || id === c.id) return null;
+    const parent = index.get(id);
+    return parent && canBeParent(parent) ? parent : null;
+  };
+  let cur: Clip | null = up(clip);
+  while (cur && !seen.has(cur.id) && chain.length < MAX_PARENT_DEPTH) {
+    chain.push(cur);
+    seen.add(cur.id);
+    cur = up(cur);
+  }
+  return chain;
+}
+
+/**
+ * true when attaching childId to parentId would make a loop (or is the clip itself).
+ * index: an optional id index of project.clips (indexClips) so many calls share one pass.
+ */
+export function wouldCycle(project: Clips, childId: string, parentId: string, index?: ReadonlyMap<string, Clip>): boolean {
   if (childId === parentId) return true;
-  const parent = project.clips.find((c) => c.id === parentId);
+  const parent = index ? index.get(parentId) : project.clips.find((c) => c.id === parentId);
   if (!parent) return false;
-  return parent.id === childId || parentChain(project, parent).some((c) => c.id === childId);
+  if (parent.id === childId) return true;
+  return (index ? parentChainIn(index, parent) : parentChain(project, parent)).some((c) => c.id === childId);
+}
+
+/** wouldCycle(id, candidateId) for any id of the set, in one chain walk of the candidate */
+export function wouldCycleAny(index: ReadonlyMap<string, Clip>, ids: ReadonlySet<string>, candidateId: string): boolean {
+  if (ids.has(candidateId)) return true;
+  const candidate = index.get(candidateId);
+  if (!candidate) return false;
+  return parentChainIn(index, candidate).some((c) => ids.has(c.id));
 }
 
 /** the clips attached directly to a clip */
