@@ -11,6 +11,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const shellRules = require('./rules.cjs');
 
 const DIST = path.join(__dirname, '..', 'dist');
@@ -57,6 +58,36 @@ function releaseBlocker(st) {
     /* already gone */
   }
   st.blocker = null;
+  syncExportSpeed();
+}
+
+// ---------- full speed for an export in the background ----------
+
+/**
+ * windows slows the processes of a minimized or covered window down (power throttling), and an export is what runs
+ * while the user looks at something else: measured 10 to 20 % slower. while any window is exporting (it holds the
+ * power blocker) the processes of this app are marked as doing work the user waits for, afterwards windows decides
+ * again. done by a tiny helper (electron/qos.cs) that gets nothing but the app's own process ids.
+ */
+const QOS_HELPER = app.isPackaged ? path.join(process.resourcesPath, 'ncut-qos.exe') : path.join(__dirname, '..', 'build', 'bin', 'ncut-qos.exe');
+let exportSpeedHigh = false;
+
+function syncExportSpeed() {
+  if (process.platform !== 'win32') return;
+  let wanted = false;
+  for (const st of bridge.values()) if (st.blocker !== null) wanted = true;
+  if (wanted === exportSpeedHigh) return;
+  exportSpeedHigh = wanted;
+  try {
+    if (!fs.existsSync(QOS_HELPER)) return;
+    const args = shellRules.qosArgs(wanted, app.getAppMetrics().map((m) => m.pid));
+    if (!args) return;
+    execFile(QOS_HELPER, args, { windowsHide: true, timeout: 5000 }, () => {
+      /* best effort: without it the export is only slower in the background */
+    });
+  } catch {
+    /* best effort */
+  }
 }
 
 /** the window an ipc message came from, or null when it is not the top frame of the app itself */
@@ -126,6 +157,7 @@ function setupBridge() {
     const st = bridgeState(w.webContents.id);
     if (on === true) {
       if (st.blocker === null) st.blocker = powerSaveBlocker.start('prevent-app-suspension');
+      syncExportSpeed();
     } else {
       releaseBlocker(st);
     }

@@ -294,3 +294,27 @@ describe('cache headers and showing the window', () => {
     expect(rules.SHOW_FALLBACK_MS).toBeLessThanOrEqual(2000);
   });
 });
+
+describe('the arguments of the export speed helper', () => {
+  it('is the word and the process ids as digits', () => {
+    expect(rules.qosArgs(true, [100, 2044, 31])).toEqual(['high', '100', '2044', '31']);
+    expect(rules.qosArgs(false, [7])).toEqual(['auto', '7']);
+    // anything but true is auto
+    expect(rules.qosArgs('high', [7])).toEqual(['auto', '7']);
+    expect(rules.qosArgs(1, [7])).toEqual(['auto', '7']);
+  });
+  it('lets only whole numbers above 0 through, each once', () => {
+    expect(rules.qosArgs(true, [1, 1, 2, '3', -1, 0, 1.5, NaN, Infinity, null, { pid: 4 }, 2 ** 40, 99])).toEqual(['high', '1', '2', '99']);
+    for (const a of rules.qosArgs(true, [5, 6, 7]).slice(1)) expect(a).toMatch(/^[0-9]+$/);
+  });
+  it('is null when there is nothing to do or the input is not a list', () => {
+    expect(rules.qosArgs(true, [])).toBeNull();
+    expect(rules.qosArgs(true, ['1; calc.exe', '--help'])).toBeNull();
+    expect(rules.qosArgs(true, 'high 1')).toBeNull();
+    expect(rules.qosArgs(true, undefined)).toBeNull();
+  });
+  it('never passes more ids than the helper takes', () => {
+    const many = Array.from({ length: 500 }, (_, i) => i + 1);
+    expect(rules.qosArgs(true, many).length).toBe(1 + rules.QOS_MAX_PIDS);
+  });
+});

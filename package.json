@@ -16,7 +16,8 @@
     "app": "npm run build && electron .",
     "app:dev": "electron . --dev-url=http://localhost:5173",
     "icon": "node scripts/make-icon.cjs",
-    "exe": "npm run build && electron-builder --win --x64"
+    "exe": "npm run build && npm run qos && electron-builder --win --x64",
+    "qos": "node scripts/build-qos.cjs"
   },
   "build": {
     "appId": "com.sagecsharp.ncut",
@@ -70,7 +71,16 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "extraResources": [
+      {
+        "from": "build/bin",
+        "to": ".",
+        "filter": [
+          "ncut-qos.exe"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "@fontsource/abril-fatface": "^5.3.0",

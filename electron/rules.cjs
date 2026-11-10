@@ -228,6 +228,25 @@ function clampProgress(value) {
   return value;
 }
 
+/** most process ids ncut-qos.exe is given at once */
+const QOS_MAX_PIDS = 64;
+
+/**
+ * the arguments for ncut-qos.exe (electron/qos.cs): the word and the process ids as plain digits. null when there
+ * is nothing to do. only whole numbers above 0 get through, each once.
+ */
+function qosArgs(high, pids) {
+  if (!Array.isArray(pids)) return null;
+  const seen = new Set();
+  for (const pid of pids) {
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || pid > 0xffffffff) continue;
+    seen.add(String(pid));
+    if (seen.size >= QOS_MAX_PIDS) break;
+  }
+  if (seen.size === 0) return null;
+  return [high === true ? 'high' : 'auto', ...seen];
+}
+
 /** does this look like the path of a project file? (right extension, a real name, not a folder) */
 function isProjectFile(p) {
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096) return false;
@@ -271,6 +290,8 @@ module.exports = {
   PROJECT_EXT,
   MAX_OPEN_BYTES,
   clampProgress,
+  qosArgs,
+  QOS_MAX_PIDS,
   isProjectFile,
   projectFileFromArgs,
   baseName,
