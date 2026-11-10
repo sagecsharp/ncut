@@ -72,6 +72,56 @@ function gainPoints(clip: TimedAudible): Array<[number, number]> {
     });
 }
 
+/** where a clip lands in a mix that covers [offset, offset + length) of the timeline */
+export interface ClipWindow {
+  /** seconds from the start of the mix when the clip's first audible sample plays */
+  when: number;
+  /** clip-local seconds (timeline time) cut off the head of the clip because the mix starts later */
+  localFrom: number;
+  /** clip-local seconds where the mix ends (or the clip ends) */
+  localTo: number;
+  /** source seconds to skip at the head of the used range, and source seconds to play */
+  skip: number;
+  span: number;
+}
+
+/** null when the clip is entirely outside the window */
+export function clipWindow(clipStart: number, clipDuration: number, speed: number, offset: number, length: number): ClipWindow | null {
+  const from = Math.max(clipStart, offset);
+  const to = Math.min(clipStart + clipDuration, offset + length);
+  if (to - from <= 1e-9) return null;
+  const localFrom = from - clipStart;
+  const localTo = to - clipStart;
+  return { when: from - offset, localFrom, localTo, skip: localFrom * speed, span: (localTo - localFrom) * speed };
+}
+
+/**
+ * keep the part of a gain envelope inside [from, to] (clip-local seconds) and re-base it to 0. the new ends are
+ * interpolated like a linear ramp would, so cutting the head or tail does not change the sound that is left.
+ */
+export function trimGainPoints(pts: ReadonlyArray<[number, number]>, from: number, to: number): Array<[number, number]> {
+  if (pts.length === 0 || to <= from) return [];
+  const at = (t: number): number => {
+    if (t <= pts[0]![0]) return pts[0]![1];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1]!;
+      const b = pts[i]!;
+      if (t <= b[0]) {
+        // two points at one time are a step: take the value after it
+        if (b[0] - a[0] <= 1e-12) return b[1];
+        return a[1] + ((b[1] - a[1]) * (t - a[0])) / (b[0] - a[0]);
+      }
+    }
+    return pts[pts.length - 1]![1];
+  };
+  const out: Array<[number, number]> = [[0, at(from)]];
+  for (const [t, g] of pts) {
+    if (t > from + 1e-9 && t < to - 1e-9) out.push([t - from, g]);
+  }
+  out.push([to - from, at(to)]);
+  return out;
+}
+
 const FALLBACK_MAX_BYTES = 200 * 1024 * 1024;
 
 function abortError(): DOMException {
@@ -110,11 +160,16 @@ async function decodeClipRange(
   return out;
 }
 
+/**
+ * mix `duration` seconds of the timeline starting at `offset` (an export range) into one buffer.
+ * the buffer's time 0 is the timeline's `offset`.
+ */
 export async function renderAudioMix(
   project: Project,
   duration: number,
   signal?: AbortSignal,
   onProgress?: (fraction: number) => void,
+  offset = 0,
 ): Promise<AudioMixResult> {
   const warnings: string[] = [];
   const clips = getAudibleClips(project);
@@ -144,8 +199,11 @@ export async function renderAudioMix(
         warn(clip.assetId, clip.name);
         continue;
       }
-      const from = Math.max(0, clip.trimStart);
-      const span = clip.duration * clip.speed;
+      const win = clipWindow(clip.start, clip.duration, clip.speed, offset, duration);
+      if (!win) continue;
+      // the part of the source this clip plays inside the range
+      const from = Math.max(0, clip.trimStart) + win.skip;
+      const span = win.span;
 
       // streaming path: decode just the used range
       if (!tracks.has(clip.assetId)) {
@@ -162,7 +220,7 @@ export async function renderAudioMix(
       }
       const track = tracks.get(clip.assetId) ?? null;
       let buf: AudioBuffer | null = null;
-      let offset = 0;
+      let bufferOffset = 0;
       if (track) {
         try {
           buf = await decodeClipRange(ctx, track, from, from + span, signal);
@@ -183,7 +241,7 @@ export async function renderAudioMix(
           fallback.set(clip.assetId, whole);
         }
         buf = fallback.get(clip.assetId) ?? null;
-        offset = from;
+        bufferOffset = from;
       }
       if (!buf) {
         warn(clip.assetId, clip.name);
@@ -195,16 +253,16 @@ export async function renderAudioMix(
       // pitch follows speed here (resampling), same as no time-stretch
       src.playbackRate.value = clip.speed;
       const gain = ctx.createGain();
-      const pts = gainPoints(clip);
+      const pts = trimGainPoints(gainPoints(clip), win.localFrom, win.localTo);
       const first = pts[0]!;
-      gain.gain.setValueAtTime(first[1], clip.start + first[0]);
+      gain.gain.setValueAtTime(first[1], win.when + first[0]);
       for (let i = 1; i < pts.length; i++) {
         const p = pts[i]!;
-        gain.gain.linearRampToValueAtTime(p[1], clip.start + p[0]);
+        gain.gain.linearRampToValueAtTime(p[1], win.when + p[0]);
       }
       src.connect(gain);
       gain.connect(ctx.destination);
-      src.start(clip.start, offset, span);
+      src.start(win.when, bufferOffset, span);
       scheduled++;
       onProgress?.((ci + 1) / clips.length);
     }

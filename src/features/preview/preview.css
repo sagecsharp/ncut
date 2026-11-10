@@ -107,6 +107,39 @@
   bottom: -5px;
   cursor: nesw-resize;
 }
+.preview-handle-edge {
+  display: none;
+}
+.preview-box[data-edges='1'] .preview-handle-edge {
+  display: block;
+}
+.preview-box[data-locked='1'] .preview-handle-edge {
+  display: none;
+}
+.preview-handle-w {
+  left: -5px;
+  top: 50%;
+  margin-top: -5px;
+  cursor: ew-resize;
+}
+.preview-handle-e {
+  right: -5px;
+  top: 50%;
+  margin-top: -5px;
+  cursor: ew-resize;
+}
+.preview-handle-n {
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: ns-resize;
+}
+.preview-handle-s {
+  bottom: -5px;
+  left: 50%;
+  margin-left: -5px;
+  cursor: ns-resize;
+}
 .preview-handle-rotate {
   left: 50%;
   top: -26px;
@@ -134,16 +167,18 @@
   pointer-events: none;
 }
 .preview-guide-v {
-  left: 50%;
+  left: 0;
   top: 0;
   bottom: 0;
   width: 1px;
+  will-change: transform;
 }
 .preview-guide-h {
-  top: 50%;
+  top: 0;
   left: 0;
   right: 0;
   height: 1px;
+  will-change: transform;
 }
 
 .preview-transport {
@@ -329,4 +364,41 @@
   color: var(--text-faint);
   font-size: var(--font-size-xs);
   pointer-events: none;
+}
+
+/* ---------- composition guides ---------- */
+
+.preview-guides {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.preview-guides-under {
+  stroke: var(--on-accent);
+  stroke-width: 3;
+  opacity: 0.5;
+}
+.preview-guides-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.85;
+}
+.preview-stage:focus {
+  outline: none;
+}
+.preview-stage.is-drop:focus {
+  outline: 1px solid var(--accent);
+}
+
+/* camera -> target line in the scene view */
+.scene-target-under {
+  stroke: var(--on-accent);
+  stroke-width: 3;
+}
+.scene-target-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
 }

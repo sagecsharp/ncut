@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DragEvent } from 'react';
-import { Focus } from 'lucide-react';
+import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { Camera, Focus, Grid3x3 } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { resolveClip } from '../../lib/anim';
+import { clipEnd } from '../../lib/timelineOps';
+import { isVisualClip } from '../../types';
+import type { VisualClip } from '../../types';
 import { useSceneCamera } from './sceneCamera';
+import { GuidesOverlay } from './GuidesOverlay';
+import { useGuides } from './guides';
+import { frameFileName, nudgeDelta } from './nudge';
 import { PreviewEngine } from './PreviewEngine';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
@@ -27,9 +34,12 @@ export function Preview() {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const engineRef = useRef<PreviewEngine | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const mode = useUi((s) => s.previewMode);
   const setMode = useUi((s) => s.setPreviewMode);
+  const guidesOn = useGuides((s) => s.on);
+  const toggleGuides = useGuides((s) => s.toggle);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
 
   // engine + layout: the canvas is the largest project-aspect rect that fits the stage
@@ -39,6 +49,7 @@ export function Preview() {
     const canvas = canvasRef.current;
     if (!stage || !frame || !canvas) return;
     const engine = new PreviewEngine(canvas);
+    engineRef.current = engine;
     let stageW = 0;
     let stageH = 0;
 
@@ -71,6 +82,7 @@ export function Preview() {
       ro.disconnect();
       unsub();
       engine.dispose();
+      engineRef.current = null;
     };
   }, []);
 
@@ -86,6 +98,61 @@ export function Preview() {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
     else void stage.requestFullscreen().catch(() => undefined);
   }, []);
+
+  const saveFrame = useCallback(() => {
+    const engine = engineRef.current;
+    const project = useEditor.getState().project;
+    if (!engine || !project) return;
+    const time = usePlayback.getState().time;
+    void engine
+      .frameBlob()
+      .then((blob) => {
+        if (!blob) throw new Error('no frame');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = frameFileName(project.name, time, project.fps);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      })
+      .catch(() => useUi.getState().toast('could not save the frame', 'error'));
+  }, []);
+
+  // clicking the picture puts the keyboard focus on the stage (the overlay cancels the default focus change),
+  // so the arrow keys can nudge the selected clip
+  const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button === 0) e.currentTarget.focus({ preventScroll: true });
+  };
+
+  // arrows nudge the selected visual clips by 1 px (shift = 10) through setClipValue, so keyframes are honoured.
+  // left / right fall through to the global frame stepping when nothing can be nudged.
+  const onStageKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    const d = nudgeDelta(e.key, e.shiftKey);
+    if (!d) return;
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!project || store.selection.length === 0) return;
+    const time = usePlayback.getState().time;
+    const targets = project.clips.filter((c): c is VisualClip => {
+      if (!store.selection.includes(c.id) || !isVisualClip(c)) return false;
+      const track = project.tracks.find((t) => t.id === c.trackId);
+      return !!track && !track.locked && time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
+    });
+    if (targets.length === 0) return;
+    e.preventDefault();
+    // the first press is one undo step, held-key repeats join it
+    const opts = e.repeat ? { skipHistory: true } : undefined;
+    if (!e.repeat && targets.length > 1) store.pushHistory();
+    const inner = targets.length > 1 ? { skipHistory: true } : opts;
+    for (const c of targets) {
+      const t = resolveClip(c, time).transform;
+      if (d[0] !== 0) store.setClipValue(c.id, 'x', time, t.x + d[0], inner);
+      if (d[1] !== 0) store.setClipValue(c.id, 'y', time, t.y + d[1], inner);
+    }
+  };
 
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (!isNcutDrag(e)) return;
@@ -129,6 +196,18 @@ export function Preview() {
             <Focus size={14} />
           </button>
         )}
+        <button
+          className={`icon-btn${guidesOn ? ' is-active' : ''}`}
+          title={guidesOn ? 'hide guides' : 'show guides (thirds, center, title safe)'}
+          aria-label="guides"
+          aria-pressed={guidesOn}
+          onClick={toggleGuides}
+        >
+          <Grid3x3 size={14} />
+        </button>
+        <button className="icon-btn" title="save frame as png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
+          <Camera size={14} />
+        </button>
         <div className="preview-seg" role="group" aria-label="preview mode">
           {(['output', 'scene'] as const).map((m) => (
             <button
@@ -144,9 +223,16 @@ export function Preview() {
           ))}
         </div>
       </div>
-      <div ref={stageRef} className="preview-stage" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      <div
+        ref={stageRef}
+        className="preview-stage"
+        tabIndex={0}
+        onPointerDown={onStagePointerDown}
+        onKeyDown={onStageKeyDown}
+        onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         <div ref={frameRef} className="preview-frame">
           <canvas ref={canvasRef} className="preview-canvas" />
+          <GuidesOverlay />
           <TransformOverlay />
           {empty && <div className="preview-hint">import media to get started</div>}
         </div>

@@ -6,8 +6,10 @@ import { usePlayback } from '../../store/playback';
 import { FPS_OPTIONS } from '../../lib/factory';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
-import { CODEC_LABEL, exportProject, frameCount, outputSize, planExport } from './exporter';
-import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality } from './exporter';
+import { CODEC_LABEL, exportProject, isAudioContainer, outputSize, planExport } from './exporter';
+import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality, VideoContainer } from './exporter';
+import { markerRange, rangeFrameCount, resolveRange } from './range';
+import type { RangeMode } from './range';
 import './export.css';
 
 export interface ExportDialogProps {
@@ -35,7 +37,7 @@ const QUALITIES: ExportQuality[] = ['low', 'medium', 'high'];
 const PROBE_DEBOUNCE_MS = 250;
 
 /** what the browser can encode for the current settings: undefined = still probing, null = nothing */
-type Plans = Record<ExportContainer, ExportPlan | null | undefined>;
+type Plans = Record<VideoContainer, ExportPlan | null | undefined>;
 const PROBING: Plans = { mp4: undefined, webm: undefined };
 
 function formatBitrate(bps: number): string {
@@ -79,6 +81,9 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const [quality, setQuality] = useState<ExportQuality>('medium');
   const [includeAudio, setIncludeAudio] = useState(true);
   const [plans, setPlans] = useState<Plans>(PROBING);
+  const [rangeMode, setRangeMode] = useState<RangeMode>('all');
+  const [rangeFrom, setRangeFrom] = useState('0');
+  const [rangeTo, setRangeTo] = useState('');
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -111,12 +116,16 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setProgress(null);
     setDone(null);
     setError('');
+    setRangeMode('all');
+    setRangeFrom('0');
+    setRangeTo('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, projectId]);
 
   // ask the browser what it can encode for the chosen size + fps + quality (debounced, cancelled by the next change)
   useEffect(() => {
-    if (!open || phase !== 'setup' || projectW <= 0) return;
+    if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container)) return;
+    const videoContainer: VideoContainer = container;
     const size = outputSize({ width: projectW, height: projectH }, scale);
     setPlans(PROBING);
     const ac = new AbortController();
@@ -124,7 +133,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
       void (async () => {
         const next: Plans = { mp4: null, webm: null };
         try {
-          for (const c of [container, container === 'mp4' ? 'webm' : 'mp4'] as const) {
+          for (const c of [videoContainer, videoContainer === 'mp4' ? 'webm' : 'mp4'] as const) {
             next[c] = await planExport({ container: c, width: size.width, height: size.height, fps, quality }, ac.signal);
           }
         } catch {
@@ -165,9 +174,21 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     return [...set].sort((a, b) => a - b);
   }, [projectFps]);
 
-  const duration = project ? projectDuration(project) : 0;
-  const empty = !project || duration <= 0;
-  const totalFrames = project ? frameCount(project, fps) : 0;
+  const projectLength = project ? projectDuration(project) : 0;
+  const markers = project?.markers;
+  const hasMarkerRange = markerRange(markers) !== null;
+  // a marker choice that stopped being possible (a marker was removed) falls back to the whole project
+  const mode: RangeMode = rangeMode === 'markers' && !hasMarkerRange ? 'all' : rangeMode;
+  const customStart = Number.parseFloat(rangeFrom);
+  const customEnd = rangeTo.trim() === '' ? projectLength : Number.parseFloat(rangeTo);
+  const range = useMemo(
+    () => resolveRange(mode, projectLength, markers, { start: customStart, end: customEnd }),
+    [mode, projectLength, markers, customStart, customEnd],
+  );
+  const audioOnly = isAudioContainer(container);
+  const empty = !project || projectLength <= 0;
+  const duration = range ? range.end - range.start : 0;
+  const totalFrames = range ? rangeFrameCount(range, fps) : 0;
 
   const triggerDownload = useCallback((url: string, name: string) => {
     const a = document.createElement('a');
@@ -179,7 +200,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   }, []);
 
   const start = useCallback(async () => {
-    if (!project || phase === 'exporting') return;
+    if (!project || phase === 'exporting' || !range) return;
     usePlayback.getState().pause();
     revokeUrl();
     const ac = new AbortController();
@@ -194,7 +215,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     try {
       const blob = await exportProject(
         project,
-        { container, scale, fps, quality, includeAudio },
+        { container, scale, fps, quality, includeAudio: includeAudio || audioOnly, range },
         {
           signal: ac.signal,
           onWarning: (m) => {
@@ -227,7 +248,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
     }
-  }, [project, phase, totalFrames, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
+  }, [project, phase, range, totalFrames, audioOnly, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
 
   const cancel = useCallback(() => abortRef.current?.abort(), []);
 
@@ -240,12 +261,14 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   let body;
   let footer;
   if (phase === 'setup') {
-    const plan = plans[container];
-    const other: ExportContainer = container === 'mp4' ? 'webm' : 'mp4';
-    const probing = plan === undefined;
-    const noEncoder = typeof VideoEncoder === 'undefined';
+    // audio only files need no video encoder and no plan
+    const plan = audioOnly ? undefined : plans[container as VideoContainer];
+    const other: VideoContainer = container === 'mp4' ? 'webm' : 'mp4';
+    const probing = !audioOnly && plan === undefined;
+    const noEncoder = !audioOnly && typeof VideoEncoder === 'undefined';
     let note = '';
     if (noEncoder) note = 'this browser cannot encode video, try a recent chrome or edge';
+    else if (!empty && !range) note = 'the range is empty, the start must be before the end';
     else if (plan === null) {
       note = `${container} cannot be encoded at ${size.width}x${size.height} and ${fps} fps here${
         plans[other] ? `, try ${other}, or` : ', try'
@@ -272,10 +295,59 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               title="container format"
               onChange={(e) => setContainer(e.target.value as ExportContainer)}
             >
-              <option value="mp4">mp4</option>
-              <option value="webm">webm</option>
+              <optgroup label="video">
+                <option value="mp4">mp4</option>
+                <option value="webm">webm</option>
+              </optgroup>
+              <optgroup label="audio only">
+                <option value="wav">wav</option>
+                <option value="ogg">ogg (opus)</option>
+              </optgroup>
             </select>
           </label>
+          <label className="field">
+            <span className="field-label">range</span>
+            <select
+              className="select"
+              value={mode}
+              title="which part of the timeline to export"
+              onChange={(e) => setRangeMode(e.target.value as RangeMode)}
+            >
+              <option value="all">whole project</option>
+              {hasMarkerRange && <option value="markers">first to last marker</option>}
+              <option value="custom">custom</option>
+            </select>
+          </label>
+          {mode === 'custom' && (
+            <>
+              <label className="field">
+                <span className="field-label">start (s)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={rangeFrom}
+                  title="start of the range in seconds"
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">end (s)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={rangeTo}
+                  placeholder={projectLength.toFixed(2)}
+                  title="end of the range in seconds, empty = the end of the project"
+                  onChange={(e) => setRangeTo(e.target.value)}
+                />
+              </label>
+            </>
+          )}
+          {!audioOnly && (
           <label className="field">
             <span className="field-label">resolution</span>
             <select
@@ -294,6 +366,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               })}
             </select>
           </label>
+          )}
+          {!audioOnly && (
           <label className="field">
             <span className="field-label">frame rate</span>
             <select className="select" value={fps} title="frames per second" onChange={(e) => setFps(Number(e.target.value))}>
@@ -304,6 +378,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               ))}
             </select>
           </label>
+          )}
+          {!audioOnly && (
           <label className="field">
             <span className="field-label">quality</span>
             <select
@@ -319,23 +395,40 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               ))}
             </select>
           </label>
+          )}
         </div>
-        <label className="field-row export-check" title="mix all audible clips into the file">
-          <input
-            type="checkbox"
-            className="checkbox"
-            checked={includeAudio}
-            onChange={(e) => setIncludeAudio(e.target.checked)}
-          />
-          <span>include audio</span>
-        </label>
+        {!audioOnly && (
+          <label className="field-row export-check" title="mix all audible clips into the file">
+            <input
+              type="checkbox"
+              className="checkbox"
+              checked={includeAudio}
+              onChange={(e) => setIncludeAudio(e.target.checked)}
+            />
+            <span>include audio</span>
+          </label>
+        )}
         <div className="export-summary">
           {empty
             ? 'the project is empty, add some clips first'
-            : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${fps} fps`}
+            : !range
+              ? 'nothing to export in this range'
+              : audioOnly
+                ? `${formatDuration(duration)} (${duration.toFixed(2)}s) of audio, from ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s`
+                : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${fps} fps${
+                    mode === 'all' ? '' : `, from ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s`
+                  }`}
         </div>
         <div className="export-summary">
-          {probing ? 'checking encoders...' : plan ? `codec ${CODEC_LABEL[plan.codec] ?? plan.codec}, about ${formatBitrate(plan.bitrate)}` : ''}
+          {audioOnly
+            ? container === 'wav'
+              ? 'uncompressed 16 bit stereo, 48 khz'
+              : 'opus audio in an ogg file'
+            : probing
+              ? 'checking encoders...'
+              : plan
+                ? `codec ${CODEC_LABEL[plan.codec] ?? plan.codec}, about ${formatBitrate(plan.bitrate)}`
+                : ''}
         </div>
         {note ? <div className="export-note is-error">{note}</div> : null}
       </>
@@ -348,7 +441,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
         <button
           className="btn btn-primary"
           onClick={start}
-          disabled={empty || !plan}
+          disabled={empty || !range || (!audioOnly && !plan)}
           title="render the project to a file"
         >
           export
@@ -372,9 +465,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           <span className="mono">{Math.round(frac * 100)}%</span>
         </div>
         <div className="export-stats export-dim">
-          <span className="mono">
-            frame {progress?.frame ?? 0} / {progress?.totalFrames ?? totalFrames}
-          </span>
+          <span className="mono">{(progress?.totalFrames ?? totalFrames) > 0 ? `frame ${progress?.frame ?? 0} / ${progress?.totalFrames ?? totalFrames}` : ''}</span>
           <span className="mono">
             {formatClock(elapsed)} elapsed{eta !== null ? `, about ${formatClock(eta)} left` : ''}
           </span>

@@ -1,10 +1,10 @@
 /** geometry helpers shared by the output overlay and the scene overlay. pure, no dom. */
-import { getClipBox } from '../../engine/draw';
+import { type ClipBox, getClipBox } from '../../engine/draw';
 import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from '../../engine/scene3d/camera';
 import { type Vec3, cross, dot, sub } from '../../engine/scene3d/math';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
-import type { Project, VisualClip } from '../../types';
+import type { Crop, Project, VisualClip } from '../../types';
 
 let rigProject: Project | null = null;
 let rigTime = NaN;
@@ -114,4 +114,136 @@ export function closestOnAxis(o: Vec3, d: Vec3, c: Vec3, a: Vec3): number | null
   const den = 1 - b * b;
   if (den < 1e-5) return null;
   return (aw - b * dw) / den;
+}
+
+/* ---------- crop ---------- */
+
+const MIN_KEPT = 0.001;
+
+/** true when any edge is really cut */
+export function hasCrop(crop: Crop | null | undefined): crop is Crop {
+  return !!crop && (crop.left > 0 || crop.top > 0 || crop.right > 0 || crop.bottom > 0);
+}
+
+function clamp01(n: number): number {
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+}
+
+/**
+ * the kept rectangle of a clip box: crop fractions are cut from each edge of the clip's own box, so the
+ * rest keeps its place (cropping never moves or stretches the picture). the result is rotated with the clip.
+ */
+export function keptBox(box: ClipBox, crop: Crop | null | undefined): ClipBox {
+  if (!hasCrop(crop)) return box;
+  const l = clamp01(crop.left);
+  const t = clamp01(crop.top);
+  let r = clamp01(crop.right);
+  let b = clamp01(crop.bottom);
+  // never cut everything away: the box would vanish and could not be grabbed
+  if (l + r > 1 - MIN_KEPT) r = Math.max(0, 1 - MIN_KEPT - l);
+  if (t + b > 1 - MIN_KEPT) b = Math.max(0, 1 - MIN_KEPT - t);
+  const kw = box.width * (1 - l - r);
+  const kh = box.height * (1 - t - b);
+  // offset of the kept center from the box center, in the clip's own (unrotated) axes
+  const ox = ((l - r) * box.width) / 2;
+  const oy = ((t - b) * box.height) / 2;
+  const rad = (box.rotation * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  return { cx: box.cx + ox * c - oy * s, cy: box.cy + ox * s + oy * c, width: kw, height: kh, rotation: box.rotation };
+}
+
+/** half extents of the axis aligned bounds of a rotated box */
+export function boxBounds(box: ClipBox): { hw: number; hh: number } {
+  const rad = (box.rotation * Math.PI) / 180;
+  const c = Math.abs(Math.cos(rad));
+  const s = Math.abs(Math.sin(rad));
+  return { hw: (box.width * c + box.height * s) / 2, hh: (box.width * s + box.height * c) / 2 };
+}
+
+/** point inside the rotated box, with every side at least `minSize` canvas px wide (thin lines stay grabbable) */
+export function hitTestKept(box: ClipBox, px: number, py: number, minSize = 0): boolean {
+  const rad = (-box.rotation * Math.PI) / 180;
+  const dx = px - box.cx;
+  const dy = py - box.cy;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.abs(lx) <= Math.max(box.width, minSize) / 2 && Math.abs(ly) <= Math.max(box.height, minSize) / 2;
+}
+
+/* ---------- snapping ---------- */
+
+export interface Snap {
+  /** how far to move so the edge / center lands on the target */
+  adj: number;
+  /** the target position on the canvas axis (where to draw the guide) */
+  at: number;
+}
+
+/**
+ * snap a span on one canvas axis: its center to the canvas center, its low edge to 0 and its high edge to
+ * `size`. returns the closest candidate within `thr`, or null.
+ */
+export function snapAxis(center: number, half: number, size: number, thr: number): Snap | null {
+  const cands: Array<[number, number]> = [
+    [center, size / 2],
+    [center - half, 0],
+    [center + half, size],
+  ];
+  let best: Snap | null = null;
+  for (const [value, target] of cands) {
+    const d = target - value;
+    if (Math.abs(d) <= thr && (!best || Math.abs(d) < Math.abs(best.adj))) best = { adj: d, at: target };
+  }
+  return best;
+}
+
+/* ---------- edge resize (shape clips) ---------- */
+
+export type Edge = 'l' | 'r' | 't' | 'b';
+
+export interface EdgeStart {
+  /** box center, canvas px */
+  cx: number;
+  cy: number;
+  /** degrees */
+  rotation: number;
+  /** box size at gesture start, canvas px (shape size x transform scale) */
+  bw: number;
+  bh: number;
+  scale: number;
+}
+
+export interface EdgeResult {
+  /** new shape width (set for l / r) or height (set for t / b), px at scale 1 */
+  width?: number;
+  height?: number;
+  /** move the clip's transform x / y by this much (canvas px) so the opposite edge stays put */
+  dx: number;
+  dy: number;
+}
+
+/** drag one edge of a rotated box to the canvas point (px, py); the opposite edge stays fixed in canvas space */
+export function edgeResize(s: EdgeStart, edge: Edge, px: number, py: number, minPx = 4): EdgeResult {
+  const rad = (s.rotation * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const sn = Math.sin(rad);
+  // pointer in the clip's own axes
+  const lx = (px - s.cx) * c + (py - s.cy) * sn;
+  const ly = -(px - s.cx) * sn + (py - s.cy) * c;
+  let shiftX = 0;
+  let shiftY = 0;
+  let width: number | undefined;
+  let height: number | undefined;
+  const sc = Math.max(1e-6, s.scale);
+  if (edge === 'r' || edge === 'l') {
+    const nb = Math.max(minPx, edge === 'r' ? lx + s.bw / 2 : s.bw / 2 - lx);
+    shiftX = ((edge === 'r' ? 1 : -1) * (nb - s.bw)) / 2;
+    width = nb / sc;
+  } else {
+    const nb = Math.max(minPx, edge === 'b' ? ly + s.bh / 2 : s.bh / 2 - ly);
+    shiftY = ((edge === 'b' ? 1 : -1) * (nb - s.bh)) / 2;
+    height = nb / sc;
+  }
+  return { width, height, dx: shiftX * c - shiftY * sn, dy: shiftX * sn + shiftY * c };
 }
