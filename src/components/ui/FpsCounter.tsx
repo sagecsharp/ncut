@@ -3,6 +3,18 @@ import { subscribePerf } from '../../lib/perf';
 
 const STORAGE_KEY = 'ncut.fps';
 
+const TITLE = 'editor performance: frames per second and the slowest frame in the last half second. click to hide.';
+
+/** the preview quality the user picked (features/preview/quality.ts keeps it under this key) */
+function previewQuality(): string {
+  try {
+    const q = localStorage.getItem('ncut.preview.quality');
+    return q === 'half' || q === 'quarter' ? q : 'full';
+  } catch {
+    return 'full';
+  }
+}
+
 function loadVisible(): boolean {
   try {
     return localStorage.getItem(STORAGE_KEY) !== 'off';
@@ -47,7 +59,10 @@ export function FpsCounter() {
       className="fps-counter mono"
       data-level="good"
       onClick={() => setVisible(false)}
-      title="editor performance: frames per second and the slowest frame in the last half second. click to hide."
+      onPointerEnter={(e) => {
+        e.currentTarget.title = ;
+      }}
+      title={TITLE}
     >
       <span className="fps-counter-dot" />
       <span ref={fpsRef}>--</span>
