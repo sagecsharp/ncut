@@ -28,10 +28,18 @@ export function App() {
       if (!cancelled) setBooting(false);
     };
     void sync();
+    // a file dropped outside a drop zone would make the browser open it and leave the editor
+    const blockFileNav = (e: DragEvent) => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+    };
+    window.addEventListener('dragover', blockFileNav);
+    window.addEventListener('drop', blockFileNav);
     window.addEventListener('popstate', sync);
     window.addEventListener('hashchange', sync);
     return () => {
       cancelled = true;
+      window.removeEventListener('dragover', blockFileNav);
+      window.removeEventListener('drop', blockFileNav);
       window.removeEventListener('popstate', sync);
       window.removeEventListener('hashchange', sync);
     };

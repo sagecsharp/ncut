@@ -24,7 +24,7 @@ export interface MediaAsset {
 }
 
 /**
- * 'video' tracks hold video, image and text clips (anything visual).
+ * 'video' tracks hold video, image, text and effect clips (anything visual).
  * 'audio' tracks hold audio clips only.
  * in project.tracks, index 0 is the TOP row of the timeline and the TOP visual layer.
  * all video tracks come before all audio tracks.
@@ -117,7 +117,24 @@ export interface TextClip extends ClipBase {
   transform: Transform;
 }
 
-export type Clip = VideoClip | ImageClip | AudioClip | TextClip;
+/**
+ * an effect clip is an adjustment layer: while it is active it changes the picture made by
+ * everything BELOW its track (lower video tracks + the background). it lives on a video track.
+ * the look is animated by the clip-local time, so preview and export always match.
+ */
+export interface EffectClip extends ClipBase {
+  type: 'effect';
+  /** id of an effect in engine/effects/registry. unknown ids are skipped. */
+  effect: string;
+  /** overall strength 0..1. also scaled by fadeIn / fadeOut. */
+  amount: number;
+  /** values keyed by the effect's param keys. missing keys use the effect's default. */
+  params: Record<string, number>;
+  /** varies the random parts (shake path, noise) between clips */
+  seed: number;
+}
+
+export type Clip = VideoClip | ImageClip | AudioClip | TextClip | EffectClip;
 export type ClipType = Clip['type'];
 export type VisualClip = VideoClip | ImageClip | TextClip;
 export type MediaClip = VideoClip | ImageClip | AudioClip;
@@ -161,6 +178,9 @@ export const MAX_SPEED = 4;
 
 export function isVisualClip(c: Clip): c is VisualClip {
   return c.type === 'video' || c.type === 'image' || c.type === 'text';
+}
+export function isEffectClip(c: Clip): c is EffectClip {
+  return c.type === 'effect';
 }
 export function isMediaClip(c: Clip): c is MediaClip {
   return c.type === 'video' || c.type === 'image' || c.type === 'audio';

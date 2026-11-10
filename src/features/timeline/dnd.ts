@@ -5,7 +5,7 @@
  */
 import type { DragEvent as ReactDragEvent } from 'react';
 import type { MediaAsset, TrackKind } from '../../types';
-import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
+import { DEFAULT_EFFECT_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { snapToFrame } from '../../lib/time';
@@ -36,7 +36,7 @@ interface Target {
 }
 
 function kindOfPayload(payload: DragPayload, assets: MediaAsset[]): TrackKind | null {
-  if (payload.kind === 'text') return 'video';
+  if (payload.kind === 'text' || payload.kind === 'effect') return 'video';
   const asset = assets.find((a) => a.id === payload.assetId);
   if (!asset) return null;
   return asset.kind === 'audio' ? 'audio' : 'video';
@@ -47,6 +47,7 @@ function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
     const d = payload.preset?.duration;
     return typeof d === 'number' && d > 0 ? d : DEFAULT_TEXT_DURATION;
   }
+  if (payload.kind === 'effect') return DEFAULT_EFFECT_DURATION;
   const asset = assets.find((a) => a.id === payload.assetId);
   if (!asset) return 1;
   return asset.kind === 'image' ? DEFAULT_IMAGE_DURATION : Math.max(asset.duration, 0.1);
@@ -207,9 +208,12 @@ export function createDnd(env: DndEnv) {
         st.pushHistory();
         const trackId = st.addTrack(kind, { skipHistory: true, index });
         if (payload.kind === 'asset') st.insertAsset(payload.assetId, { trackId, start: target.start, skipHistory: true });
+        else if (payload.kind === 'effect') st.addEffect(payload.effect, { trackId, start: target.start, skipHistory: true });
         else st.addText({ trackId, start: target.start, preset: payload.preset, skipHistory: true });
       } else if (payload.kind === 'asset') {
         st.insertAsset(payload.assetId, { trackId: target.trackId, start: target.start });
+      } else if (payload.kind === 'effect') {
+        st.addEffect(payload.effect, { trackId: target.trackId, start: target.start });
       } else {
         st.addText({ trackId: target.trackId, start: target.start, preset: payload.preset });
       }

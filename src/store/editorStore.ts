@@ -17,6 +17,7 @@ import { create } from 'zustand';
 import type {
   AudioClip,
   Clip,
+  EffectClip,
   ImageClip,
   MediaAsset,
   Project,
@@ -27,7 +28,16 @@ import type {
   VideoClip,
 } from '../types';
 import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip, trackKindForClip } from '../types';
-import { DEFAULT_TEXT_DURATION, createClipFromAsset, createTextClip, createTrack } from '../lib/factory';
+import {
+  DEFAULT_EFFECT_DURATION,
+  DEFAULT_TEXT_DURATION,
+  MAX_FPS,
+  createClipFromAsset,
+  createEffectClip,
+  createTextClip,
+  createTrack,
+} from '../lib/factory';
+import { getEffect } from '../engine/effects/registry';
 import { uid } from '../lib/id';
 import { clamp } from '../lib/time';
 import {
@@ -56,7 +66,8 @@ type LockedKeys = 'id' | 'type' | 'trackId' | 'start' | 'duration' | 'trimStart'
 export type ClipPatch = Partial<Omit<VideoClip, LockedKeys>> &
   Partial<Omit<ImageClip, LockedKeys>> &
   Partial<Omit<AudioClip, LockedKeys>> &
-  Partial<Omit<TextClip, LockedKeys>>;
+  Partial<Omit<TextClip, LockedKeys>> &
+  Partial<Omit<EffectClip, LockedKeys>>;
 
 export interface ClipMove {
   id: string;
@@ -117,7 +128,17 @@ export interface EditorState {
   insertAsset(assetId: string, opts?: ActionOpts & { trackId?: string; start?: number }): string | null;
   /** add a text clip. same placement rules as insertAsset. returns the new clip id. */
   addText(opts?: ActionOpts & { trackId?: string; start?: number; duration?: number; preset?: Partial<TextClip> }): string;
-  /** patch editable fields (name, volume, transform, text props, fades...). */
+  /**
+   * add an effect clip (an adjustment layer that changes everything below its track).
+   * - trackId + start: placed on that video track at the nearest free spot to start
+   * - otherwise: at start (default 0) on the TOP video track when it has room there, else on a new top track,
+   *   so a new effect always covers the whole picture.
+   * returns the new clip id, or null when the effect id is unknown.
+   */
+  addEffect(effect: string, opts?: ActionOpts & { trackId?: string; start?: number; duration?: number }): string | null;
+  /** set one parameter of an effect clip (clamped to the param range). */
+  setEffectParam(id: string, key: string, value: number, opts?: ActionOpts): void;
+  /** patch editable fields (name, volume, transform, text props, effect amount, fades...). */
   updateClip(id: string, patch: ClipPatch, opts?: ActionOpts): void;
   /** shallow-merge into the clip transform (visual clips only) */
   updateTransform(id: string, patch: Partial<Transform>, opts?: ActionOpts): void;
@@ -327,7 +348,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         const next = { ...p, ...patch };
         if (patch.width !== undefined) next.width = clamp(Math.round(patch.width), 16, 7680);
         if (patch.height !== undefined) next.height = clamp(Math.round(patch.height), 16, 7680);
-        if (patch.fps !== undefined) next.fps = clamp(patch.fps, 1, 120);
+        if (patch.fps !== undefined) next.fps = clamp(patch.fps, 1, MAX_FPS);
         if (patch.name !== undefined) next.name = patch.name.trim() || 'untitled project';
         return next;
       }, opts);
@@ -439,6 +460,45 @@ export const useEditor = create<EditorState>()((set, get) => {
       return id;
     },
 
+    addEffect(effect, opts) {
+      const def = getEffect(effect);
+      if (!def) return null;
+      let id: string | null = null;
+      mutate((p) => {
+        const duration = Math.max(MIN_CLIP_DURATION, opts?.duration ?? DEFAULT_EFFECT_DURATION);
+        let placed: { project: Project; trackId: string; start: number };
+        const wanted = opts?.trackId ? p.tracks.find((t) => t.id === opts.trackId) : undefined;
+        if (wanted && wanted.kind === 'video' && !wanted.locked) {
+          placed = resolvePlacement(p, 'video', duration, wanted.id, opts?.start);
+        } else {
+          const s = Math.max(0, opts?.start ?? 0);
+          const top = p.tracks[0];
+          if (top && top.kind === 'video' && !top.locked && isRangeFree(p, top.id, s, duration)) {
+            placed = { project: p, trackId: top.id, start: s };
+          } else {
+            const made = withNewTrack(p, 'video', 0);
+            placed = { project: made.project, trackId: made.track.id, start: s };
+          }
+        }
+        const clip = createEffectClip(def.id, def.name, placed.trackId, placed.start, { duration });
+        id = clip.id;
+        return { ...placed.project, clips: [...placed.project.clips, clip] };
+      }, opts);
+      if (id) set({ selection: [id] });
+      return id;
+    },
+    setEffectParam(id, key, value, opts) {
+      mutate((p) => {
+        const clip = p.clips.find((c) => c.id === id);
+        if (!clip || clip.type !== 'effect' || isLocked(p, clip.trackId)) return null;
+        const param = getEffect(clip.effect)?.params.find((q) => q.key === key);
+        if (!param || !Number.isFinite(value)) return null;
+        const v = clamp(value, param.min, param.max);
+        if ((clip.params[key] ?? param.default) === v) return null;
+        return replaceClip(p, { ...clip, params: { ...clip.params, [key]: v } });
+      }, opts);
+    },
+
     updateClip(id, patch, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
@@ -456,6 +516,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         }
         if (!changed) return null;
         if (typeof next.volume === 'number') next.volume = clamp(next.volume as number, 0, 2);
+        if (clip.type === 'effect' && typeof next.amount === 'number') next.amount = clamp(next.amount as number, 0, 1);
         return replaceClip(p, clampFades(next as unknown as Clip));
       }, opts);
     },

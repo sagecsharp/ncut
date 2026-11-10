@@ -1,4 +1,4 @@
-import type { AudioClip, ImageClip, MediaAsset, Project, TextClip, Track, TrackKind, VideoClip } from '../types';
+import type { AudioClip, EffectClip, ImageClip, MediaAsset, Project, TextClip, Track, TrackKind, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { uid } from './id';
 
@@ -18,10 +18,13 @@ export const CANVAS_PRESETS: CanvasPreset[] = [
   { id: '21:9', label: '21:9 ultrawide (2560x1080)', width: 2560, height: 1080 },
 ];
 
-export const FPS_OPTIONS = [24, 25, 30, 50, 60];
+/** frame rates offered for the project and for export */
+export const FPS_OPTIONS = [24, 25, 30, 50, 60, 90, 120, 144, 165, 240];
+export const MAX_FPS = 240;
 
 export const DEFAULT_IMAGE_DURATION = 5;
 export const DEFAULT_TEXT_DURATION = 4;
+export const DEFAULT_EFFECT_DURATION = 3;
 
 export const FONT_FAMILIES = [
   'Kode Mono',
@@ -118,6 +121,31 @@ export function createTextClip(trackId: string, start: number, overrides: Partia
     background: null,
     align: 'center',
     transform: { ...DEFAULT_TRANSFORM },
+    ...overrides,
+  };
+}
+
+/** an effect clip. `effect` is an id from engine/effects/registry. params missing here use the effect defaults. */
+export function createEffectClip(
+  effect: string,
+  name: string,
+  trackId: string,
+  start: number,
+  overrides: Partial<EffectClip> = {},
+): EffectClip {
+  return {
+    id: uid('clp'),
+    type: 'effect',
+    trackId,
+    start,
+    duration: DEFAULT_EFFECT_DURATION,
+    name,
+    fadeIn: 0,
+    fadeOut: 0,
+    effect,
+    amount: 1,
+    params: {},
+    seed: Math.floor(Math.random() * 1000),
     ...overrides,
   };
 }

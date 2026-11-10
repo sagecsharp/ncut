@@ -9,7 +9,8 @@ export const DND_MIME = 'application/x-ncut';
 
 export type DragPayload =
   | { kind: 'asset'; assetId: string }
-  | { kind: 'text'; preset?: Partial<TextClip> };
+  | { kind: 'text'; preset?: Partial<TextClip> }
+  | { kind: 'effect'; effect: string };
 
 let current: DragPayload | null = null;
 

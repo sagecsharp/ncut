@@ -7,6 +7,9 @@ import './styles/theme.css';
 import './styles/base.css';
 import './components/ui/ui.css';
 import { App } from './App';
+import { EFFECTS } from './engine/effects/registry';
+import { checkEffects, renderEffects } from './engine/effects/runner';
+import { drawTestPattern } from './engine/effects/testPattern';
 import { initAppearance } from './lib/appearance';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
@@ -24,7 +27,14 @@ session.startAutosave();
 
 // handy for poking at the app from the devtools console (dev builds only)
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__ncut = { useEditor, usePlayback, useUi, session, importFiles };
+  (window as unknown as Record<string, unknown>).__ncut = {
+    useEditor,
+    usePlayback,
+    useUi,
+    session,
+    importFiles,
+    fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern },
+  };
 }
 
 createRoot(document.getElementById('root')!).render(

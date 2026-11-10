@@ -100,7 +100,12 @@ export function Preview() {
     if (!payload) return;
     const store = useEditor.getState();
     const start = usePlayback.getState().time;
-    const id = payload.kind === 'asset' ? store.insertAsset(payload.assetId, { start }) : store.addText({ start, preset: payload.preset });
+    const id =
+      payload.kind === 'asset'
+        ? store.insertAsset(payload.assetId, { start })
+        : payload.kind === 'effect'
+          ? store.addEffect(payload.effect, { start })
+          : store.addText({ start, preset: payload.preset });
     if (id) store.select([id], 'replace');
   };
 

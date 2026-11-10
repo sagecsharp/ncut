@@ -1,12 +1,15 @@
 /**
- * the frame renderer. draws one frame of a project onto a 2d canvas.
+ * the frame renderer. draws one frame of a project onto a 2d canvas (effect clips run on the gpu, see engine/effects).
  * shared by the live preview and the exporter so both always look the same.
  * it does not know where pixels come from: the caller passes a resolver that returns the
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
-import type { ImageClip, Project, TextClip, Transform, VideoClip, VisualClip } from '../types';
+import type { EffectClip, ImageClip, Project, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
+import { getEffect } from './effects/registry';
+import { renderEffects } from './effects/runner';
+import type { EffectPass } from './effects/types';
 
 export interface DrawSource {
   image: CanvasImageSource;
@@ -110,6 +113,62 @@ export function visibleClipsAt(project: Project, time: number): VisualClip[] {
   return out;
 }
 
+/**
+ * everything that paints at a time, bottom layer first: visual clips and effect clips.
+ * an effect clip changes the picture made by the items before it. skips hidden tracks.
+ */
+export function paintListAt(project: Project, time: number): (VisualClip | EffectClip)[] {
+  const out: (VisualClip | EffectClip)[] = [];
+  for (let i = project.tracks.length - 1; i >= 0; i--) {
+    const track = project.tracks[i]!;
+    if (track.kind !== 'video' || track.hidden) continue;
+    for (const clip of project.clips) {
+      if (clip.trackId !== track.id || (clip.type !== 'effect' && !isVisualClip(clip))) continue;
+      if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
+    }
+  }
+  return out;
+}
+
+/** true when at least one effect clip on a visible track is active at the time */
+export function hasEffectsAt(project: Project, time: number): boolean {
+  for (const clip of project.clips) {
+    if (clip.type !== 'effect' || time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6) continue;
+    const track = project.tracks.find((t) => t.id === clip.trackId);
+    if (track && !track.hidden) return true;
+  }
+  return false;
+}
+
+/** the gpu pass for an effect clip at a time, or null (unknown effect, faded to nothing) */
+export function effectPassAt(clip: EffectClip, time: number): EffectPass | null {
+  const def = getEffect(clip.effect);
+  if (!def) return null;
+  const amount = clip.amount * fadeFactor(clip, time);
+  if (!(amount > 0.001)) return null;
+  return { def, time: Math.max(0, time - clip.start), duration: clip.duration, amount, seed: clip.seed, params: clip.params };
+}
+
+/** run effect passes over what is already on the canvas and put the result back */
+function applyEffects(ctx: Ctx, project: Project, passes: EffectPass[]): void {
+  const canvas = ctx.canvas as (HTMLCanvasElement | OffscreenCanvas) | undefined;
+  if (!canvas || passes.length === 0) return;
+  const offscreen = typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas;
+  const out = renderEffects(canvas, canvas.width, canvas.height, passes, {
+    projectWidth: project.width,
+    projectHeight: project.height,
+    // the export draws on an OffscreenCanvas and can run while the preview is on screen
+    channel: offscreen ? 'export' : 'default',
+  });
+  if (!out) return;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'copy';
+  ctx.drawImage(out, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
 /** true when the canvas point (px, py) is inside the clip's rotated box */
 export function hitTestBox(box: ClipBox, px: number, py: number): boolean {
   const rad = (-box.rotation * Math.PI) / 180;
@@ -151,7 +210,19 @@ export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: S
   ctx.fillStyle = project.background || '#000000';
   ctx.fillRect(0, 0, project.width, project.height);
 
-  for (const clip of visibleClipsAt(project, time)) {
+  // effect clips stack up until the next picture is drawn on top of them (or the frame ends),
+  // then run together in one gpu round trip
+  let pending: EffectPass[] = [];
+  for (const clip of paintListAt(project, time)) {
+    if (clip.type === 'effect') {
+      const pass = effectPassAt(clip, time);
+      if (pass) pending.push(pass);
+      continue;
+    }
+    if (pending.length > 0) {
+      applyEffects(ctx, project, pending);
+      pending = [];
+    }
     const alpha = clip.transform.opacity * fadeFactor(clip, time);
     if (alpha <= 0.001) continue;
 
@@ -177,5 +248,6 @@ export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: S
     }
     ctx.restore();
   }
+  if (pending.length > 0) applyEffects(ctx, project, pending);
   ctx.restore();
 }

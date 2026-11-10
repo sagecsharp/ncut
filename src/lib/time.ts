@@ -23,7 +23,8 @@ export function formatTimecode(t: number, fps: number): string {
   const s = totalSeconds % 60;
   const m = Math.floor(totalSeconds / 60) % 60;
   const h = Math.floor(totalSeconds / 3600);
-  const base = `${pad(m)}:${pad(s)}:${pad(f)}`;
+  // 3 frame digits once a second holds 100+ frames (120, 144, 165, 240 fps)
+  const base = `${pad(m)}:${pad(s)}:${pad(f, Math.round(fps) > 100 ? 3 : 2)}`;
   return h > 0 ? `${pad(h)}:${base}` : base;
 }
 

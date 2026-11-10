@@ -1158,7 +1158,7 @@ describe('updateClip / updateTransform / updateProject', () => {
   it('updateProject clamps size and fps and cleans the name', () => {
     fresh();
     ed().updateProject({ width: 1, height: 99999, fps: 500, name: '   ' });
-    expect(proj()).toMatchObject({ width: 16, height: 7680, fps: 120, name: 'untitled project' });
+    expect(proj()).toMatchObject({ width: 16, height: 7680, fps: 240, name: 'untitled project' });
   });
 });
 
