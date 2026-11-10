@@ -672,6 +672,101 @@ function blockTitle(project: Project): Project {
   return b.finish(project, '#0d0e12');
 }
 
+function tunnel(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 6;
+  const frames = 14;
+  const gap = 420 * u;
+
+  // the camera flies down the row of frames (what the repeat tool makes from one frame: a step in z and a turn)
+  b.camera(b.track('camera'), 0, { duration: len, keyframes: { z: ramp(-300 * u, gap * (frames - 2), len, 'ease'), roll: ramp(50, 0, len, 'ease-out') } });
+  b.text(b.track('title'), 0, {
+    duration: len,
+    name: 'title',
+    text: 'the end of\nthe tunnel',
+    fontSize: 190 * u,
+    fontWeight: 700,
+    color: ACCENT,
+    threeD: true,
+    fadeOut: 0.4,
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: gap * frames },
+  });
+  for (let i = 0; i < frames; i++) {
+    b.shape(b.track(`frame ${i + 1}`), 0, {
+      duration: len,
+      name: `frame ${i + 1}`,
+      kind: 'rect',
+      width: 1500 * u,
+      height: 860 * u,
+      filled: false,
+      color: INK,
+      stroke: { color: i % 3 === 0 ? ACCENT : INK, width: 14 * u },
+      radius: 0.06,
+      threeD: true,
+      fadeOut: 0.4,
+      transform: { x: 0, y: 0, scale: 1, rotation: i * 9, opacity: 1, z: i * gap },
+    });
+  }
+  return { ...b.finish(project, '#090a0d'), fog: { color: '#090a0d', near: 2600 * u, far: gap * 11, amount: 1 } };
+}
+
+function letterRing(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 8;
+  const word = 'all the way around ';
+  const radius = 520 * u;
+
+  b.camera(b.track('camera'), 0, { duration: len, tilt: -12, y: -260 * u, keyframes: { z: ramp(-500 * u, -150 * u, len, 'ease-out') } });
+  // every letter is a clip of its own (what "split into letters" gives), attached to a hub that turns
+  const hub = b.shape(b.track('hub'), 0, {
+    duration: len,
+    name: 'hub',
+    kind: 'ellipse',
+    width: 180 * u,
+    height: 180 * u,
+    color: ACCENT,
+    color2: '#ff9f1c',
+    gradientAngle: 90,
+    threeD: true,
+    shape: 'sphere',
+    keyframes: { rotY: ramp(0, -360, len, 'linear') },
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: 0, rotY: 0 },
+  });
+  const letters = [...word];
+  letters.forEach((ch, i) => {
+    if (ch === ' ') return;
+    const a = (i / letters.length) * Math.PI * 2;
+    b.text(b.track(`letter ${i + 1}`), 0, {
+      duration: len,
+      name: ch,
+      text: ch,
+      uppercase: true,
+      fontSize: 150 * u,
+      fontWeight: 700,
+      color: INK,
+      threeD: true,
+      parent: hub.id,
+      extrude: { depth: 0.18, angle: 45, color: '#5b6270' },
+      transform: { x: Math.sin(a) * radius, y: 0, scale: 1, rotation: 0, opacity: 1, z: -Math.cos(a) * radius, rotY: (i / letters.length) * 360 },
+    });
+  });
+  b.shape(b.track('floor'), 0, {
+    duration: len,
+    name: 'floor',
+    kind: 'ellipse',
+    width: 2000 * u,
+    height: 2000 * u,
+    color: '#22252b',
+    color2: '#0e1013',
+    gradientRadial: true,
+    threeD: true,
+    transform: { x: 0, y: 200 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: 90 },
+  });
+  return b.finish(project, '#0e1013');
+}
+
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
@@ -683,6 +778,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'carousel', name: 'carousel', description: 'eight cards on a turning ring in 3d: they are attached to the pole in the middle', build: carousel },
   { id: 'rack-focus', name: 'rack focus', description: 'three cards at different depths while the camera pulls the focus from one to the next', build: rackFocus },
   { id: 'block-title', name: 'block title', description: 'thick 3d letters that turn, with a star, a heart and a hexagon spinning around them', build: blockTitle },
+  { id: 'tunnel', name: 'tunnel', description: 'a row of frames into the distance, each turned a little more, and a camera that flies through them', build: tunnel },
+  { id: 'letter-ring', name: 'letter ring', description: 'a sentence standing in a circle, every letter its own 3d clip, turning around a hub', build: letterRing },
   { id: 'timer', name: 'timer', description: 'a ten second count down written as m:ss, with a bar that runs out', build: timer },
 ];
 
