@@ -11,7 +11,6 @@ import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
 import { resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
-import { type Bounds, type Region, deviceBounds, unionRegion } from './blurBounds';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
 import { resolveCounter } from './counter';
@@ -519,16 +518,6 @@ function scratchFor(like: Ctx, channel: Channel, name: string, precise = false):
   }
   if (typeof like.getTransform === 'function') sc.ctx.setTransform(like.getTransform());
   return sc;
-}
-
-/** clearScratch for one rectangle (device pixels): the rest of the canvas is left as it is */
-function clearScratchRect(sc: Scratch, r: Region): void {
-  sc.ctx.save();
-  sc.ctx.setTransform(1, 0, 0, 1, 0, 0);
-  sc.ctx.clearRect(r.x, r.y, r.w, r.h);
-  sc.ctx.restore();
-  sc.ctx.globalAlpha = 1;
-  sc.ctx.globalCompositeOperation = 'source-over';
 }
 
 function clearScratch(sc: Scratch): void {
@@ -1434,42 +1423,17 @@ export function pruneSamples(samples: TemporalSample[]): TemporalSample[] {
 const OPEN_SIDE = 1e5;
 
 /**
- * where a flat clip sits: under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path).
- * `clip` = the clip with that pose, `box` = its box on the canvas.
+ * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
+ * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
  */
-function placeFlat(project: Project, clip0: VisualClip, source: FlatSource | null, poseTime: number): { clip: VisualClip; box: ClipBox } {
+function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
+  // under a parent the clip is drawn with its world pose (a clip without a parent takes the plain path)
   let clip = clip0;
   if (clip0.parent) {
     const wt = worldTransformOf(project, clip0, poseTime);
     if (wt !== clip0.transform) clip = { ...clip0, transform: wt } as VisualClip;
   }
   const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
-  return { clip, box };
-}
-
-/**
- * a rectangle, in the clip's own units (origin = the box center, before rotation), that paintFlat paints inside of, or null
- * when that cannot be said. a video / image picture is drawn inside its box (crop and the rounded-corner clip only cut it
- * down); a text / shape picture that went through the texture path (look, mask) inside its box plus its room. text and shapes
- * drawn straight onto the canvas (outline, shadow, glow, letters of a text animation spill by amounts only their own
- * drawing code knows) and anything without a picture have no bound here: null.
- */
-function flatPaintedRect(clip: VisualClip, box: ClipBox, source: FlatSource | null): Bounds | null {
-  if (!source) return null;
-  if (clip.type === 'text' || clip.type === 'shape') {
-    if (source.pad === undefined) return null;
-    const p = source.pad * clip.transform.scale;
-    return { x0: -box.width / 2 - p, y0: -box.height / 2 - p, x1: box.width / 2 + p, y1: box.height / 2 + p };
-  }
-  return { x0: -box.width / 2, y0: -box.height / 2, x1: box.width / 2, y1: box.height / 2 };
-}
-
-/**
- * draw one flat (2d) clip. `blend` false ignores clip.blend (layers of a transition mix with normal
- * blending, the mixed result carries the blend). a clip without crop / radius / blend takes the plain path.
- */
-function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSource | null, alpha: number, time: number, blend = true, poseTime = time): void {
-  const { clip, box } = placeFlat(project, clip0, source, poseTime);
   const op = blend ? blendOp(clip.blend) : null;
   const crop = normalizeCrop(clip.crop);
   ctx.save();
@@ -1526,38 +1490,6 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
     }
   }
   ctx.restore();
-}
-
-/**
- * the device pixel rectangle that the drawn samples of a clip's motion blur can paint in (see flatPaintedRect), or null.
- * every sample that is drawn (opacity over 0.001) must be bounded, or there is no rectangle.
- */
-function blurRegion(
-  project: Project,
-  poses: readonly ({ c: VisualClip; a: number } | undefined)[],
-  times: readonly number[],
-  source: FlatSource | null,
-  width: number,
-  height: number,
-  copyCtx: Ctx,
-): Region | null {
-  if (!source || typeof copyCtx.getTransform !== 'function') return null;
-  const m = copyCtx.getTransform();
-  const matrix = [m.a, m.b, m.c, m.d, m.e, m.f];
-  const list: Bounds[] = [];
-  for (let i = 0; i < times.length; i++) {
-    const p = poses[i];
-    // a pose that was not worked out yet is drawn from a fresh one in the loop: no region then
-    if (!p) return null;
-    if (p.a <= 0.001) continue;
-    const { clip, box } = placeFlat(project, p.c, source, times[i]!);
-    const local = flatPaintedRect(clip, box, source);
-    if (!local) return null;
-    const b = deviceBounds(matrix, box.cx, box.cy, box.rotation, local);
-    if (!b) return null;
-    list.push(b);
-  }
-  return unionRegion(list, width, height);
 }
 
 /** true when two poses put the clip in the same place with the same alpha (3d: depth and tilt count too) */
@@ -1642,38 +1574,27 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   if (!canvas || !copy || !acc) return false;
   // the clip really moves: now (and not before) the 3d run in the bin is composited, so a still clip stays in it
   beforeDraw?.();
-  // the part of the canvas the clip can paint over all the samples, or null (3d, text / shapes drawn straight, anything
-  // unbounded: the whole canvas, as ever). outside it every sample is transparent, so clearing and adding less changes nothing.
-  // (the poses the still check did not get to are worked out here instead of in the loop: the same values, in another order)
-  if (!rig) for (let i = 1; i < times.length; i++) poses[i] ??= pose(times[i]!);
-  const region = rig ? null : blurRegion(project, poses, times, source, canvas.width, canvas.height, copy.ctx);
   clearScratch(acc);
-  // the first clear of the copy is always the whole canvas: it may still hold what an earlier clip painted elsewhere
-  let copyDirty = true;
   const share = 1 / times.length;
   for (let i = 0; i < times.length; i++) {
     const t = times[i]!;
     const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
-    if (region && !copyDirty) clearScratchRect(copy, region);
-    else clearScratch(copy);
-    copyDirty = false;
+    clearScratch(copy);
     if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t }], rig, env.channel);
     else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
     acc.ctx.globalAlpha = weights ? weights[i]! : share;
     acc.ctx.globalCompositeOperation = over ? 'source-over' : 'lighter';
-    if (region) acc.ctx.drawImage(copy.canvas, region.x, region.y, region.w, region.h, region.x, region.y, region.w, region.h);
-    else acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
+    acc.ctx.drawImage(copy.canvas, 0, 0, canvas.width, canvas.height);
     acc.ctx.restore();
   }
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = (blend ? blendOp(raw.blend) : null) ?? 'source-over';
-  if (region) ctx.drawImage(acc.canvas, region.x, region.y, region.w, region.h, region.x, region.y, region.w, region.h);
-  else ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
   ctx.restore();
   return true;
 }
