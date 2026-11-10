@@ -63,7 +63,8 @@
       ]
     },
     "portable": {
-      "artifactName": "ncut-${version}-portable.exe"
+      "artifactName": "ncut-${version}-portable.exe",
+      "useZip": true
     },
     "nsis": {
       "artifactName": "ncut-${version}-setup.exe",

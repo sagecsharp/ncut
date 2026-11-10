@@ -46,7 +46,7 @@ npm run exe
 
 this builds into `release/`:
 
-- `ncut-<version>-portable.exe` one file, just run it
+- `ncut-<version>-portable.exe` one file, just run it (it unpacks itself on every start, about 2 s. the installer and the plain folder open at once)
 - `ncut-<version>-setup.exe` installer (start menu entry, uninstaller)
 - `win-unpacked/ncut.exe` the plain folder build, starts the fastest
 
