@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import {
+  Camera,
   Copy,
   ListEnd,
   Magnet,
@@ -133,6 +134,15 @@ export function TimelineToolbar({ onZoom, onFit }: Props) {
       >
         <Plus size={11} />
         <Music size={15} />
+      </button>
+      <span className="timeline-toolbar-sep" />
+      <button
+        className="icon-btn"
+        onClick={() => ed().addCamera({ start: usePlayback.getState().time })}
+        title="add 3d camera"
+        aria-label="add 3d camera"
+      >
+        <Camera size={16} />
       </button>
 
       <span className="spacer" />

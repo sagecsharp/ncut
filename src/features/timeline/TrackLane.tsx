@@ -1,9 +1,11 @@
 import { memo, useMemo } from 'react';
-import type { Track } from '../../types';
+import type { Project, Track } from '../../types';
+import { transitionSpan } from '../../lib/transitions';
 import { useEditor } from '../../store/editorStore';
 import { ClipView } from './ClipView';
 import { laneHeight } from './layout';
 import { selectTrackClips } from './trackClips';
+import { TransitionMarker } from './TransitionMarker';
 
 interface Props {
   track: Track;
@@ -21,6 +23,14 @@ export const TrackLane = memo(function TrackLane({ track, zoom }: Props) {
   const selected = useMemo(() => new Set(selection), [selection]);
   const assetById = useMemo(() => new Map((assets ?? []).map((a) => [a.id, a])), [assets]);
   const laneH = laneHeight(track.kind);
+  // transitionSpan only looks at the clips of this track, so a project-shaped wrapper is enough here
+  const spans = useMemo(() => {
+    const scope = { clips } as Project;
+    return clips.flatMap((c) => {
+      const span = transitionSpan(scope, c);
+      return span ? [span] : [];
+    });
+  }, [clips]);
 
   return (
     <div
@@ -37,6 +47,18 @@ export const TrackLane = memo(function TrackLane({ track, zoom }: Props) {
           zoom={zoom}
           laneH={laneH}
           asset={'assetId' in c ? assetById.get(c.assetId) : undefined}
+        />
+      ))}
+      {spans.map((sp) => (
+        <TransitionMarker
+          key={sp.to.id}
+          clipId={sp.to.id}
+          transitionId={sp.id}
+          start={sp.start}
+          end={sp.end}
+          zoom={zoom}
+          laneH={laneH}
+          selected={selected.has(sp.to.id)}
         />
       ))}
     </div>

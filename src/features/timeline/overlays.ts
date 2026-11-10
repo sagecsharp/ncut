@@ -52,7 +52,7 @@ export class Overlays {
     if (el.hidden) el.hidden = false;
   }
 
-  setGhost(r: OverlayRect | null, kind?: 'asset' | 'text' | 'effect', label?: string): void {
+  setGhost(r: OverlayRect | null, kind?: 'asset' | 'text' | 'effect' | 'camera' | 'transition', label?: string): void {
     const el = this.ghostEl;
     if (!el) return;
     if (!r) {

@@ -8,11 +8,15 @@
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { Clip, ClipType } from '../../types';
 import { trackKindForClip } from '../../types';
+import { keyTimes } from '../../lib/anim';
 import { snapToFrame } from '../../lib/time';
+import { previousClipOnTrack, transitionSpan } from '../../lib/transitions';
+import { MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
 import { clipEnd, collectSnapPoints, findFreeStart, snapTime } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { hitKey } from './keyGeometry';
 import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitLane } from './layout';
 import type { Layout } from './layout';
 import type { Overlays } from './overlays';
@@ -82,6 +86,27 @@ interface TrimGesture extends Base {
 
 interface SeekGesture extends Base {
   kind: 'seek';
+  /** key times of the selected clips (timeline seconds), empty when snapping is off */
+  points: number[];
+}
+
+/** a press on a keyframe diamond: click = jump to it, drag = retime that moment for every property */
+interface KeyGesture extends Base {
+  kind: 'key';
+  id: string;
+  /** timeline time of the moment being dragged (follows the key as it moves) */
+  time: number;
+  /** key time minus pointer time at press */
+  offset: number;
+  points: number[];
+}
+
+/** a drag on the inner edge of a transition marker */
+interface TransitionGesture extends Base {
+  kind: 'transition';
+  id: string;
+  /** span end minus pointer time at press */
+  offset: number;
 }
 
 interface MarqueeGesture extends Base {
@@ -93,7 +118,7 @@ interface MarqueeGesture extends Base {
   lastKey: string;
 }
 
-type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture;
+type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture | KeyGesture | TransitionGesture;
 
 const DRAG_THRESHOLD = 3;
 const EDGE = 36;
@@ -260,19 +285,35 @@ export function createGestures(env: GestureEnv) {
       case 'marquee':
         stepMarquee(cur);
         break;
+      case 'key':
+        stepKey(cur);
+        break;
+      case 'transition':
+        stepTransition(cur);
+        break;
     }
   }
 
   function finish(cur: Gesture): void {
     if (cur.kind === 'move') finishMove(cur);
+    else if (cur.kind === 'key' && !cur.started) usePlayback.getState().seek(cur.time);
   }
 
   /* ---------- seek (ruler scrub) ---------- */
 
-  function seekAt(cur: Gesture): void {
+  function seekAt(cur: SeekGesture): void {
     const project = store().project;
     if (!project) return;
     const t = Math.max(0, laneX(cur.geo, cur.cx)) / cur.zoom;
+    if (cur.points.length > 0) {
+      const r = snapTime(t, cur.points, SNAP_PX / cur.zoom);
+      if (r.hit !== null) {
+        env.overlays.setSnap(r.hit, cur.zoom);
+        usePlayback.getState().seek(r.hit);
+        return;
+      }
+    }
+    env.overlays.setSnap(null, cur.zoom);
     usePlayback.getState().seek(snapToFrame(t, project.fps));
   }
 
@@ -433,6 +474,67 @@ export function createGestures(env: GestureEnv) {
     env.overlays.setSnap(hit, t.zoom);
   }
 
+  /* ---------- keyframe diamonds ---------- */
+
+  function stepKey(k: KeyGesture): void {
+    const st = store();
+    const project = st.project;
+    if (!project) return;
+    if (!k.started) {
+      if (Math.abs(k.cx - k.startX) < DRAG_THRESHOLD) return;
+      k.started = true;
+      st.pushHistory();
+    }
+    const clip = project.clips.find((c) => c.id === k.id);
+    if (!clip) return;
+    const tol = 0.5 / project.fps;
+    const lo = clip.start;
+    const hi = clipEnd(clip);
+    let time = Math.min(hi, Math.max(lo, laneX(k.geo, k.cx) / k.zoom + k.offset));
+    let hit: number | null = null;
+    if (st.snapping) {
+      const r = snapTime(time, k.points, SNAP_PX / k.zoom);
+      hit = r.hit;
+      if (hit !== null) time = Math.min(hi, Math.max(lo, r.time));
+    }
+    if (hit === null) time = Math.min(hi, Math.max(lo, snapToFrame(time, project.fps)));
+    if (Math.abs(time - k.time) < 1e-6) return;
+    // landing on another moment of this clip would replace its keys: stay where we are instead
+    for (const t of keyTimes(clip.keyframes)) {
+      const at = clip.start + t;
+      if (Math.abs(at - k.time) > tol && Math.abs(at - time) <= tol) {
+        env.overlays.setSnap(null, k.zoom);
+        return;
+      }
+    }
+    st.moveKeyframe(k.id, null, k.time, time, undefined, { skipHistory: true });
+    k.time = time;
+    env.overlays.setSnap(hit, k.zoom);
+  }
+
+  /* ---------- transition length ---------- */
+
+  function stepTransition(t: TransitionGesture): void {
+    const st = store();
+    const project = st.project;
+    if (!project) return;
+    const clip = project.clips.find((c) => c.id === t.id);
+    if (!clip || !('transition' in clip) || !clip.transition) return;
+    if (!t.started) {
+      if (Math.abs(t.cx - t.startX) < 2) return;
+      t.started = true;
+      st.pushHistory();
+    }
+    const prev = previousClipOnTrack(project, clip);
+    const end = Math.max(0, laneX(t.geo, t.cx) / t.zoom + t.offset);
+    // with a clip before it the band is centered on the cut, so the dragged edge is half the length
+    let duration = prev ? (end - clip.start) * 2 : end - clip.start;
+    const cap = prev ? Math.min(clip.duration, prev.duration) : clip.duration;
+    duration = snapToFrame(Math.min(MAX_TRANSITION_DURATION, cap, Math.max(MIN_TRANSITION_DURATION, duration)), project.fps);
+    if (Math.abs(duration - clip.transition.duration) < 1e-6) return;
+    st.updateClip(t.id, { transition: { id: clip.transition.id, duration } }, { skipHistory: true });
+  }
+
   /* ---------- marquee ---------- */
 
   function stepMarquee(mq: MarqueeGesture): void {
@@ -487,13 +589,64 @@ export function createGestures(env: GestureEnv) {
     const captureEl = e.currentTarget;
     const mod = e.shiftKey || e.ctrlKey || e.metaKey;
     const clipEl = target.closest<HTMLElement>('[data-clip-id]');
+    const handleEl = target.closest<HTMLElement>('[data-transition-handle]');
+    // a press on a transition band acts on the clip that owns it
+    const pressId =
+      handleEl?.dataset.transitionHandle ?? clipEl?.dataset.clipId ?? target.closest<HTMLElement>('[data-transition-clip]')?.dataset.transitionClip;
 
-    if (clipEl) {
-      const id = clipEl.dataset.clipId ?? '';
+    if (pressId !== undefined) {
+      const id = pressId;
       const clip = project.clips.find((c) => c.id === id);
       const track = clip ? project.tracks.find((t) => t.id === clip.trackId) : undefined;
       if (!clip || !track || track.locked) return;
       e.preventDefault();
+      if (handleEl) {
+        if (!st.selection.includes(id)) st.select([id], 'replace');
+        const span = transitionSpan(project, clip);
+        if (!span) return;
+        begin(
+          {
+            ...base(e, geo, layout, captureEl),
+            kind: 'transition',
+            id,
+            offset: span.end - laneX(geo, e.clientX) / st.zoom,
+          },
+          'trim',
+        );
+        return;
+      }
+      if (clipEl && clip.keyframes && !mod) {
+        const rect = clipEl.getBoundingClientRect();
+        const key = hitKey(
+          keyTimes(clip.keyframes),
+          st.zoom,
+          Math.max(2, clip.duration * st.zoom),
+          rect.height - 2,
+          e.clientX - rect.left - 1,
+          e.clientY - rect.top - 1,
+        );
+        if (key !== null) {
+          if (!st.selection.includes(id)) st.select([id], 'replace');
+          const time = clip.start + key;
+          const points = new Set<number>([usePlayback.getState().time]);
+          for (const c of project.clips) {
+            if (c.id === id) continue;
+            for (const t of keyTimes(c.keyframes)) points.add(c.start + t);
+          }
+          begin(
+            {
+              ...base(e, geo, layout, captureEl),
+              kind: 'key',
+              id,
+              time,
+              offset: time - laneX(geo, e.clientX) / st.zoom,
+              points: [...points].sort((a, b) => a - b),
+            },
+            'trim',
+          );
+          return;
+        }
+      }
       const edgeAttr = target.closest<HTMLElement>('[data-trim]')?.dataset.trim;
       if (edgeAttr === 'start' || edgeAttr === 'end') {
         if (!st.selection.includes(id)) st.select([id], 'replace');
@@ -580,16 +733,25 @@ export function createGestures(env: GestureEnv) {
     const geo = measure();
     if (!geo) return;
     e.preventDefault();
-    const cur: SeekGesture = { ...base(e, geo, computeLayout(project.tracks), e.currentTarget), kind: 'seek' };
+    const st = store();
+    const points: number[] = [];
+    if (st.snapping && st.selection.length > 0) {
+      const sel = new Set(st.selection);
+      for (const c of project.clips) {
+        if (sel.has(c.id)) for (const t of keyTimes(c.keyframes)) points.push(c.start + t);
+      }
+    }
+    const cur: SeekGesture = { ...base(e, geo, computeLayout(project.tracks), e.currentTarget), kind: 'seek', points };
     begin(cur, 'seek');
     seekAt(cur);
   }
 
   function onContextMenu(e: ReactMouseEvent<HTMLElement>): void {
-    const clipEl = (e.target as HTMLElement).closest<HTMLElement>('[data-clip-id]');
-    if (!clipEl) return;
+    const el = e.target as HTMLElement;
+    const id =
+      el.closest<HTMLElement>('[data-clip-id]')?.dataset.clipId ?? el.closest<HTMLElement>('[data-transition-clip]')?.dataset.transitionClip;
+    if (id === undefined) return;
     const st = store();
-    const id = clipEl.dataset.clipId ?? '';
     const clip = st.project?.clips.find((c) => c.id === id);
     const track = clip ? st.project?.tracks.find((t) => t.id === clip.trackId) : undefined;
     if (!clip || !track || track.locked) return;
