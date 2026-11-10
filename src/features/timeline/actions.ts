@@ -12,6 +12,8 @@ import { effectsOn } from './effectTarget';
 import { notifyView, view } from './view';
 import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
 import { expandGroups } from '../../lib/links';
+import { applyFollowerSpans } from './followApply';
+import { planTrimToPlayhead } from './trimPlan';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
 export function groupIdsNow(ids: string[]): boolean {
@@ -177,4 +179,28 @@ export function applyEffectsToEverything(ids: readonly string[]): void {
   if (targeted.length === 0) return;
   st.pushHistory();
   for (const c of targeted) st.updateClip(c.id, { target: null }, { skipHistory: true });
+}
+
+/**
+ * cut off one side of the clips at the playhead: 'start' = the clip now starts there (the left part is gone),
+ * 'end' = it now ends there. the selected clips, or every clip under the playhead when nothing is selected.
+ * one undo step (pushHistory only lands with the first real change, so nothing changed = no step).
+ */
+export function trimToPlayhead(edge: 'start' | 'end'): void {
+  const st = useEditor.getState();
+  const project = st.project;
+  if (!project) return;
+  const time = usePlayback.getState().time;
+  const steps = planTrimToPlayhead(project.clips, project.tracks, st.selection, time, edge);
+  if (steps.length === 0) {
+    useUi.getState().toast(st.selection.length > 0 ? 'move the playhead onto the selected clip first' : 'no clip under the playhead');
+    return;
+  }
+  st.pushHistory();
+  const skip = { skipHistory: true };
+  for (const s of steps) {
+    st.trimClip(s.id, edge, s.time, skip);
+    // effects put on the clip are trimmed with it, like when the edge is dragged
+    applyFollowerSpans(project, s.id, skip);
+  }
 }

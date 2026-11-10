@@ -83,6 +83,7 @@ press `?` in the editor for the full list. the main ones:
 
 - `space` play / pause, `j` `k` `l` shuttle
 - `s` split, `delete` delete, `shift+delete` ripple delete
+- `[` / `]` cut off the left / right side of the clip at the playhead
 - `ctrl+z` / `ctrl+shift+z` undo / redo
 - `ctrl+c` `ctrl+x` `ctrl+v` `ctrl+d` copy, cut, paste, duplicate
 - `ctrl+g` / `ctrl+shift+g` group / ungroup

@@ -7,6 +7,8 @@ import {
   Magnet,
   Maximize2,
   Music,
+  PanelLeftClose,
+  PanelRightClose,
   Plus,
   Redo2,
   Scan,
@@ -22,7 +24,7 @@ import { formatDuration, formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import { freezeAtPlayhead } from './actions';
+import { freezeAtPlayhead, trimToPlayhead } from './actions';
 
 interface Props {
   /** zoom to an absolute px/second value, keeping the playhead steady in the viewport */
@@ -84,6 +86,24 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         aria-label="split at playhead"
       >
         <Scissors size={16} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={() => trimToPlayhead('start')}
+        disabled={!hasClips}
+        title="cut off the left side: the clip starts at the playhead ([)"
+        aria-label="cut off the left side"
+      >
+        <PanelLeftClose size={16} />
+      </button>
+      <button
+        className="icon-btn"
+        onClick={() => trimToPlayhead('end')}
+        disabled={!hasClips}
+        title="cut off the right side: the clip ends at the playhead (])"
+        aria-label="cut off the right side"
+      >
+        <PanelRightClose size={16} />
       </button>
       <button
         className="icon-btn"
