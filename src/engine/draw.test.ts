@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { ImageClip, Project, Track, VideoClip } from '../types';
+import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { containSize, getClipBox, hitTestBox, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, blendOp, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 
 let seq = 0;
@@ -35,6 +35,24 @@ function image(trackId: string, start: number, duration: number, over: Partial<I
     fadeIn: 0,
     fadeOut: 0,
     assetId: 'img',
+    transform: { ...DEFAULT_TRANSFORM },
+    ...over,
+  };
+}
+function shape(trackId: string, start: number, duration: number, over: Partial<ShapeClip> = {}): ShapeClip {
+  return {
+    id: `s${++seq}`,
+    type: 'shape',
+    trackId,
+    start,
+    duration,
+    name: 's',
+    fadeIn: 0,
+    fadeOut: 0,
+    kind: 'rect',
+    width: 400,
+    height: 200,
+    color: '#ffffff',
     transform: { ...DEFAULT_TRANSFORM },
     ...over,
   };
@@ -183,6 +201,7 @@ interface Call {
   args: unknown[];
   alpha: number;
   fill: unknown;
+  comp: string;
 }
 
 class FakeCtx {
@@ -193,12 +212,12 @@ class FakeCtx {
   font = '';
   textBaseline = 'alphabetic';
   textAlign = 'start';
-  private stack: Array<{ a: number; f: unknown }> = [];
+  private stack: Array<{ a: number; f: unknown; c: string }> = [];
   private rec(op: string, args: unknown[]): void {
-    this.calls.push({ op, args, alpha: this.globalAlpha, fill: this.fillStyle });
+    this.calls.push({ op, args, alpha: this.globalAlpha, fill: this.fillStyle, comp: this.globalCompositeOperation });
   }
   save(): void {
-    this.stack.push({ a: this.globalAlpha, f: this.fillStyle });
+    this.stack.push({ a: this.globalAlpha, f: this.fillStyle, c: this.globalCompositeOperation });
     this.rec('save', []);
   }
   restore(): void {
@@ -206,6 +225,7 @@ class FakeCtx {
     if (s) {
       this.globalAlpha = s.a;
       this.fillStyle = s.f;
+      this.globalCompositeOperation = s.c;
     }
     this.rec('restore', []);
   }
@@ -223,6 +243,33 @@ class FakeCtx {
   }
   drawImage(...a: unknown[]): void {
     this.rec('drawImage', a);
+  }
+  beginPath(): void {
+    this.rec('beginPath', []);
+  }
+  closePath(): void {
+    this.rec('closePath', []);
+  }
+  moveTo(...a: number[]): void {
+    this.rec('moveTo', a);
+  }
+  lineTo(...a: number[]): void {
+    this.rec('lineTo', a);
+  }
+  arcTo(...a: number[]): void {
+    this.rec('arcTo', a);
+  }
+  rect(...a: number[]): void {
+    this.rec('rect', a);
+  }
+  clip(): void {
+    this.rec('clip', []);
+  }
+  fill(): void {
+    this.rec('fill', []);
+  }
+  stroke(): void {
+    this.rec('stroke', []);
   }
   fillText(...a: unknown[]): void {
     this.rec('fillText', a);
@@ -391,5 +438,222 @@ describe('renderFrame', () => {
     const ctx = new FakeCtx();
     renderFrame(asCtx(ctx), p, 0, () => null);
     expect(ctx.ops('fillRect')[0]!.fill).toBe('#000000');
+  });
+});
+
+describe('blendOp', () => {
+  it('maps modes to canvas composite operations, normal to null', () => {
+    expect(blendOp(undefined)).toBeNull();
+    expect(blendOp('normal')).toBeNull();
+    expect(blendOp('add')).toBe('lighter');
+    for (const m of ['screen', 'multiply', 'overlay', 'darken', 'lighten', 'difference'] as const) expect(blendOp(m)).toBe(m);
+  });
+});
+
+describe('crop helpers', () => {
+  it('normalizeCrop returns null when nothing is cut', () => {
+    expect(normalizeCrop(undefined)).toBeNull();
+    expect(normalizeCrop(null)).toBeNull();
+    expect(normalizeCrop({ left: 0, top: 0, right: 0, bottom: 0 })).toBeNull();
+  });
+  it('clamps negative and huge values, keeping at least 1% per axis', () => {
+    const c = normalizeCrop({ left: -1, top: 2, right: 0.5, bottom: 2 })!;
+    expect(c.left).toBe(0);
+    expect(c.right).toBe(0.5);
+    expect(c.top + c.bottom).toBeCloseTo(0.99, 9);
+    const d = normalizeCrop({ left: 0.9, right: 0.9, top: 0, bottom: 0 })!;
+    expect(1 - d.left - d.right).toBeCloseTo(0.01, 9);
+    expect(d.left).toBeCloseTo(d.right, 9);
+  });
+  it('cropRect keeps the kept part where it was (origin at the box center)', () => {
+    const crop: Crop = { left: 0.25, top: 0, right: 0, bottom: 0.5 };
+    expect(cropRect(400, 200, crop)).toEqual({ x: -100, y: -100, width: 300, height: 100 });
+    expect(cropRect(400, 200, null)).toEqual({ x: -200, y: -100, width: 400, height: 200 });
+  });
+  it('radiusPx is a share of the shorter half side', () => {
+    expect(radiusPx(undefined, 400, 200)).toBe(0);
+    expect(radiusPx(0, 400, 200)).toBe(0);
+    expect(radiusPx(0.5, 400, 200)).toBe(50);
+    expect(radiusPx(1, 400, 200)).toBe(100);
+    expect(radiusPx(5, 400, 200)).toBe(100);
+  });
+});
+
+describe('renderFrame: crop, radius, blend', () => {
+  const tracks = [track('top', 'video'), track('bot', 'video')];
+
+  it('draws only the kept source rectangle into the matching part of the box', () => {
+    const c = image('top', 0, 5, { crop: { left: 0.25, top: 0.5, right: 0.25, bottom: 0 } });
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([c], tracks), 1, () => mkSource('a', 1920, 1080));
+    const d = ctx.ops('drawImage')[0]!;
+    // source 1920x1080, box is the full canvas
+    expect(d.args.slice(1)).toEqual([480, 540, 960, 540, -480, 0, 960, 540]);
+    expect(ctx.ops('clip')).toHaveLength(0);
+  });
+
+  it('a clip with no crop or radius takes the plain 5 argument path', () => {
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([image('top', 0, 5)], tracks), 1, () => mkSource('a'));
+    expect(ctx.ops('drawImage')[0]!.args).toHaveLength(5);
+    expect(ctx.ops('clip')).toHaveLength(0);
+    expect(ctx.ops('beginPath')).toHaveLength(0);
+  });
+
+  it('clips with a rounded path only when radius is above 0', () => {
+    const none = new FakeCtx();
+    renderFrame(asCtx(none), project([image('top', 0, 5, { radius: 0 })], tracks), 1, () => mkSource('a'));
+    expect(none.ops('clip')).toHaveLength(0);
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([image('top', 0, 5, { radius: 0.5 })], tracks), 1, () => mkSource('a'));
+    expect(ctx.ops('clip')).toHaveLength(1);
+    expect(ctx.ops('arcTo')).toHaveLength(4);
+    // radius 0.5 of the 1080 high box = 270 px corners
+    expect(ctx.ops('arcTo')[0]!.args[4]).toBe(270);
+    const order = ctx.calls.map((x) => x.op).filter((o) => ['clip', 'drawImage'].includes(o));
+    expect(order).toEqual(['clip', 'drawImage']);
+  });
+
+  it('rounds the cropped rectangle', () => {
+    const c = image('top', 0, 5, { radius: 1, crop: { left: 0.5, top: 0, right: 0, bottom: 0 } });
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([c], tracks), 1, () => mkSource('a'));
+    // kept 960 x 1080: corners are half the shorter side
+    expect(ctx.ops('arcTo')[0]!.args[4]).toBe(480);
+    expect(ctx.ops('drawImage')[0]!.args).toHaveLength(9);
+  });
+
+  it('crops a shape by clipping to the kept rectangle, open on the sides that are not cut', () => {
+    const c = shape('top', 0, 5, { crop: { left: 0.25, top: 0, right: 0, bottom: 0 } });
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([c], tracks), 1, () => null);
+    const r = ctx.ops('rect')[0]!;
+    expect(r.args[0]).toBe(-100);
+    expect(r.args[1]).toBeLessThan(-1000);
+    expect(ctx.ops('clip')).toHaveLength(1);
+    expect(ctx.calls.findIndex((x) => x.op === 'clip')).toBeLessThan(ctx.calls.findIndex((x) => x.op === 'fill'));
+  });
+
+  it('ignores radius for non rect shapes (no clip path)', () => {
+    const st = new FakeCtx();
+    renderFrame(asCtx(st), project([shape('top', 0, 5, { kind: 'star', radius: 1 })], tracks), 1, () => null);
+    expect(st.ops('clip')).toHaveLength(0);
+  });
+
+  it('sets the composite operation for the draw and restores source-over after', () => {
+    const c = video('top', 0, 5, { blend: 'add' });
+    const plain = image('bot', 0, 5);
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([c, plain], tracks), 1, (clip) => mkSource(clip.id));
+    expect(ctx.ops('drawImage').map((d) => d.comp)).toEqual(['source-over', 'lighter']);
+    expect(ctx.globalCompositeOperation).toBe('source-over');
+    expect(ctx.depth).toBe(0);
+  });
+
+  it('maps every blend mode', () => {
+    for (const [mode, op] of [['screen', 'screen'], ['multiply', 'multiply'], ['overlay', 'overlay'], ['darken', 'darken'], ['lighten', 'lighten'], ['difference', 'difference'], ['normal', 'source-over']] as const) {
+      const ctx = new FakeCtx();
+      renderFrame(asCtx(ctx), project([shape('top', 0, 5, { blend: mode })], tracks), 1, () => null);
+      expect(ctx.ops('fill')[0]!.comp).toBe(op);
+    }
+  });
+
+  it('draws shape clips in layer order, bottom first', () => {
+    const a = shape('top', 0, 5, { color: '#aa0000' });
+    const b = shape('bot', 0, 5, { color: '#00bb00' });
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project([a, b], tracks), 1, () => null);
+    expect(ctx.ops('fill').map((x) => x.fill)).toEqual(['#00bb00', '#aa0000']);
+    expect(ctx.depth).toBe(0);
+  });
+});
+
+describe('planeFor: 3d crop and radius', () => {
+  const tracks = [track('t', 'video')];
+  const rig = { eye: [960, 540, -1500] } as unknown as Parameters<typeof planeFor>[2];
+  const layer = (clip: VideoClip | ImageClip): Layer3D => ({ clip, source: mkSource('a', 1080, 1080), alpha: 1, time: 0 });
+  const corner = (m: Float32Array, x: number, y: number) => [m[0]! * x + m[4]! * y + m[12]!, m[1]! * x + m[5]! * y + m[13]!];
+
+  it('has no uv window or radius without crop / radius', () => {
+    const c = video('t', 0, 5, { threeD: true });
+    const p = planeFor(project([c], tracks), layer(c), rig)!;
+    expect(p.uv).toBeUndefined();
+    expect(p.radius).toBeUndefined();
+  });
+
+  it('shrinks the plane to the kept rectangle and samples the matching uv window', () => {
+    const c = video('t', 0, 5, { threeD: true, crop: { left: 0.5, top: 0, right: 0, bottom: 0.5 } });
+    const p = planeFor(project([c], tracks), layer(c), rig)!;
+    expect(p.uv).toEqual([0.5, 0, 0.5, 0.5]);
+    // box is 1080 x 1080 centered at (960, 540): the kept quarter is its top right one
+    const tl = corner(p.model, -0.5, -0.5);
+    const br = corner(p.model, 0.5, 0.5);
+    expect(tl[0]).toBeCloseTo(960, 3);
+    expect(tl[1]).toBeCloseTo(0, 3);
+    expect(br[0]).toBeCloseTo(960 + 540, 3);
+    expect(br[1]).toBeCloseTo(540, 3);
+  });
+
+  it('wraps keep their geometry and only change the uv window', () => {
+    const c = video('t', 0, 5, { threeD: true, shape: 'box', crop: { left: 0.5, top: 0, right: 0, bottom: 0 } });
+    const base = planeFor(project([{ ...c, crop: null }], tracks), layer({ ...c, crop: null }), rig)!;
+    const p = planeFor(project([c], tracks), layer(c), rig)!;
+    expect(p.uv).toEqual([0.5, 0, 0.5, 1]);
+    expect(Array.from(p.model)).toEqual(Array.from(base.model));
+    expect(p.radius).toBeUndefined();
+  });
+
+  it('radius is in plane pixels of the kept rectangle, planes of media only', () => {
+    const c = video('t', 0, 5, { threeD: true, radius: 0.5, crop: { left: 0.5, top: 0, right: 0, bottom: 0 } });
+    const p = planeFor(project([c], tracks), layer(c), rig)!;
+    expect(p.size).toEqual([540, 1080]);
+    expect(p.radius).toBe(135);
+    const w = video('t', 0, 5, { threeD: true, shape: 'sphere', radius: 0.5 });
+    expect(planeFor(project([w], tracks), layer(w), rig)!.radius).toBeUndefined();
+  });
+});
+
+describe('renderFrame: clip motions', () => {
+  const tracks = [track('top', 'video'), track('bot', 'video')];
+  const firstDraw = (clips: Project['clips'], t: number) => {
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project(clips, tracks), t, () => mkSource('a'));
+    return ctx;
+  };
+
+  it('a clip without motions takes the old path', () => {
+    const ctx = firstDraw([image('top', 0, 5)], 0.1);
+    expect(ctx.ops('drawImage')[0]!.alpha).toBe(1);
+  });
+  it('fade in lowers the alpha at the start and is back to 1 at rest', () => {
+    const c = image('top', 0, 5, { motionIn: { id: 'fade', duration: 1 } });
+    expect(firstDraw([c], 0.5).ops('drawImage')[0]!.alpha).toBeCloseTo(0.5, 6);
+    expect(firstDraw([c], 2).ops('drawImage')[0]!.alpha).toBe(1);
+  });
+  it('fade out lowers the alpha at the end', () => {
+    const c = image('top', 0, 5, { motionOut: { id: 'fade', duration: 1 } });
+    expect(firstDraw([c], 4.5).ops('drawImage')[0]!.alpha).toBeCloseTo(0.5, 6);
+  });
+  it('a slide starts outside the canvas (translate moves far away)', () => {
+    const c = image('top', 0, 5, { motionIn: { id: 'slide-left', duration: 1 } });
+    const ctx = firstDraw([c], 0.001);
+    const tr = ctx.ops('translate').map((x) => x.args[0] as number);
+    expect(Math.max(...tr)).toBeGreaterThan(1920 + 960);
+  });
+  it('is deterministic for the same (project, time)', () => {
+    const c = image('top', 0, 5, { motionLoop: { id: 'shake', duration: 1 } });
+    const a = firstDraw([c], 1.37).calls.map((x) => [x.op, x.args]);
+    const b = firstDraw([c], 1.37).calls.map((x) => [x.op, x.args]);
+    expect(a).toEqual(b);
+  });
+  it('grouped clips follow edits of the clips array', () => {
+    const a = image('top', 0, 5);
+    const clips = [a];
+    const p = project(clips, tracks);
+    expect(visibleClipsAt(p, 1)).toHaveLength(1);
+    const b = image('top', 0, 5);
+    expect(visibleClipsAt({ ...p, clips: [a, b] }, 1)).toHaveLength(2);
+    clips.push(b);
+    expect(visibleClipsAt(p, 1)).toHaveLength(2);
   });
 });

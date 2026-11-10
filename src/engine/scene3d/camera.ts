@@ -3,7 +3,8 @@
  * exactly the distance where the z = 0 plane fills the frame, so a 3d clip at z = 0 with no 3d
  * rotation looks the same as a 2d clip. everything is an offset from that home pose.
  */
-import { valueAt } from '../../lib/anim';
+import { resolveClip, valueAt } from '../../lib/anim';
+import { applyClipMotion } from '../clipAnim';
 import { clipEnd } from '../../lib/timelineOps';
 import type { CameraClip, Project } from '../../types';
 import { isVisualClip } from '../../types';
@@ -97,10 +98,25 @@ export function cameraRig(cam: Camera3D, projectWidth: number, projectHeight: nu
   return { eye, right, down, forward, view, proj, viewProj: mul(proj, view), tanHalf, aspect, near, far };
 }
 
-/** camera values of a camera clip at a time (keyframes applied) */
-export function cameraFromClip(clip: CameraClip, time: number): Camera3D {
+/** the world center of the camera clip's target at a time, or null (no / unknown / self / non visual target) */
+export function cameraTargetCenter(project: Project, clip: CameraClip, time: number): Vec3 | null {
+  const id = clip.target;
+  if (!id || id === clip.id) return null;
+  const tc = project.clips.find((c) => c.id === id);
+  if (!tc || !isVisualClip(tc)) return null;
+  // not visible at that time is fine: use the nearest moment inside the target clip
+  const t = Math.min(Math.max(time, tc.start), Math.max(tc.start, clipEnd(tc) - 1e-4));
+  const v = applyClipMotion(resolveClip(tc, t), t, project);
+  return [project.width / 2 + v.transform.x, project.height / 2 + v.transform.y, v.threeD ? (v.transform.z ?? 0) : 0];
+}
+
+/**
+ * camera values of a camera clip at a time (keyframes applied). pass the project to honor
+ * clip.target: the camera then aims at the target's center and the clip's own pan / tilt are offsets on top.
+ */
+export function cameraFromClip(clip: CameraClip, time: number, project?: Project): Camera3D {
   const v = (prop: string, fallback: number) => valueAt(clip, prop, time) ?? fallback;
-  return {
+  const cam: Camera3D = {
     x: v('x', 0),
     y: v('y', 0),
     z: v('z', 0),
@@ -109,6 +125,17 @@ export function cameraFromClip(clip: CameraClip, time: number): Camera3D {
     roll: v('roll', 0),
     fov: v('fov', DEFAULT_FOV),
   };
+  if (project && clip.target) {
+    const c = cameraTargetCenter(project, clip, time);
+    if (c) {
+      const dx = c[0] - (project.width / 2 + cam.x);
+      const dy = c[1] - (project.height / 2 + cam.y);
+      const dz = c[2] - (-homeDistance(project.height) + cam.z);
+      cam.pan += Math.atan2(dx, dz) / DEG;
+      cam.tilt += Math.atan2(-dy, Math.hypot(dx, dz)) / DEG;
+    }
+  }
+  return cam;
 }
 
 /** the camera clip in charge at a time: the one on the highest visible track. null = the home camera. */
@@ -125,7 +152,7 @@ export function cameraClipAt(project: Project, time: number): CameraClip | null 
 
 export function cameraAt(project: Project, time: number): Camera3D {
   const clip = cameraClipAt(project, time);
-  return clip ? cameraFromClip(clip, time) : DEFAULT_CAMERA;
+  return clip ? cameraFromClip(clip, time, project) : DEFAULT_CAMERA;
 }
 
 /** true when any visible clip is 3d or a camera clip exists at the time */
