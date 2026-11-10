@@ -13,6 +13,7 @@ import {
   frameMatrix,
   placeInFront,
   poseFromWorld,
+  tiltedAxes,
   worldMatrix,
 } from './place3d';
 import type { PoseValues } from './place3d';
@@ -88,6 +89,27 @@ describe('frame matrices', () => {
   });
   it('a degenerate parent gives null', () => {
     expect(poseFromWorld(new Float64Array(16), W, H, frameMatrix(null, W, H, pose(), true))).toBeNull();
+  });
+});
+
+describe('tiltedAxes', () => {
+  it('lying flat under a turned parent is flat in the world', () => {
+    const parent = frameMatrix(null, W, H, pose({ rotY: 40, rotX: 25, scale: 2 }), true);
+    const own = pose({ x: 10, z: 30, rotY: 15 });
+    const world = frameMatrix(parent, W, H, own, true);
+    const a = axesOf(world);
+    const t = tiltedAxes(own, 90);
+    const next = poseFromWorld(parent, W, H, worldMatrix(a.center, t.right, t.down, t.normal, 2))!;
+    const back = axesOf(frameMatrix(parent, W, H, next, true));
+    near(back.normal, t.normal, 4);
+    // a floor card: its normal is vertical
+    expect(Math.abs(back.normal[1])).toBeCloseTo(1, 4);
+    near(back.center, a.center, 3);
+  });
+  it('standing up (tilt 0) keeps the turn and gives a vertical card', () => {
+    const t = tiltedAxes(pose({ rotY: 30, rotX: 70 }), 0);
+    expect(t.normal[1]).toBeCloseTo(0, 6);
+    expect(t.down[1]).toBeCloseTo(1, 6);
   });
 });
 

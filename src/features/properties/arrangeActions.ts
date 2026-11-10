@@ -3,6 +3,7 @@ import { valueAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { resolveShown } from '../preview/attached';
 import type { LookAt, Project, VisualClip } from '../../types';
 import { isVisualClip } from '../../types';
 import { arrange, arrangeTargets } from './arrange3d';
@@ -31,11 +32,12 @@ export function arrangeSelection(ids: readonly string[], kind: ArrangeKind, opts
   if (!p) return 0;
   const { clips } = arrangeTargets(p, ids);
   if (clips.length === 0) return 0;
-  // one pitch for everybody: the biggest clip box
+  // one pitch for everybody: the biggest clip box, measured as drawn at the playhead (keyframes baked, a counter
+  // text with its running number, not its template)
   let itemW = 0;
   let itemH = 0;
   for (const c of clips) {
-    const b = getClipBox(p, c);
+    const b = getClipBox(p, resolveShown(c, timeIn(c)));
     itemW = Math.max(itemW, b.width);
     itemH = Math.max(itemH, b.height);
   }

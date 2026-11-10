@@ -144,6 +144,16 @@ export function eulerOfAxes(right: Vec3, down: Vec3, normal: Vec3): { rotX: numb
   return { rotX: -b / DEG, rotY: -a / DEG, rotation: c / DEG };
 }
 
+/**
+ * the world axes of a pose with its tilt set to `rotX`, as if it had no parent: the wanted orientation of
+ * "lay flat" / "stand up" in the world. turn and spin of the pose are kept.
+ */
+export function tiltedAxes(pose: PoseValues, rotX: number): { right: Vec3; down: Vec3; normal: Vec3 } {
+  const m = localMatrix({ ...pose, x: 0, y: 0, z: 0, rotX, scale: 1 }, true);
+  const a = axesOf(m);
+  return { right: a.right, down: a.down, normal: a.normal };
+}
+
 /** the world matrix of a placement: center, the three unit axes of the clip and a uniform scale */
 export function worldMatrix(center: Vec3, right: Vec3, down: Vec3, normal: Vec3, scale: number): M {
   const m = ident();

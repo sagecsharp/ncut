@@ -2,7 +2,7 @@ import { memo, useMemo, useState } from 'react';
 import { ArrowDownToLine, Camera, ChartSpline, Dices, Eye, EyeOff, Fan, Footprints, Globe, Layers, LayoutGrid, Orbit, RectangleHorizontal, RectangleVertical, Square, Tornado, Columns3 } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { isVisualClip } from '../../types';
-import { ARRANGE_DEFAULTS, ARRANGE_EXTRA_SLIDERS, ARRANGE_SLIDERS, arrangeTargets } from './arrange3d';
+import { ARRANGE_DEFAULTS, ARRANGE_EXTRA_SLIDERS, ARRANGE_READS_OUTWARD, ARRANGE_SLIDERS, arrangeTargets } from './arrange3d';
 import type { ArrangeKey, ArrangeKind } from './arrange3d';
 import { arrangeSelection, flattenSelection, setLookAll } from './arrangeActions';
 import { dropToFloor, layFlat, putInFrontOfCamera, standUp } from './placeActions';
@@ -16,7 +16,7 @@ const KINDS: { kind: ArrangeKind; icon: typeof Orbit; title: string }[] = [
   { kind: 'fan', icon: Fan, title: 'fan: spread like a hand of cards' },
   { kind: 'grid', icon: LayoutGrid, title: 'grid: rows and columns' },
   { kind: 'spiral', icon: Tornado, title: 'spiral: a ring that climbs and moves away' },
-  { kind: 'sphere', icon: Globe, title: 'sphere: spread evenly over a ball, facing outward' },
+  { kind: 'sphere', icon: Globe, title: 'sphere: spread evenly over a ball, facing outward or inward' },
   { kind: 'scatter', icon: Dices, title: 'scatter: random places in a box. the shuffle slider picks another pattern' },
   { kind: 'wave', icon: ChartSpline, title: 'wave: a row that rises and falls in a sine' },
   { kind: 'stairs', icon: Footprints, title: 'stairs: each clip a step up and back' },
@@ -54,7 +54,7 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
   const off = usable < 2;
   const slider = kind ? ARRANGE_SLIDERS[kind] : null;
   const extra = kind ? (ARRANGE_EXTRA_SLIDERS[kind] ?? null) : null;
-  const roundish = kind === 'ring' || kind === 'spiral' || kind === 'sphere';
+  const roundish = kind ? ARRANGE_READS_OUTWARD[kind] : false;
 
   const choose = (k: ArrangeKind) => {
     setKind(k);

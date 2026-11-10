@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ARRANGE_SLIDERS, arrange, arrangeTargets, wrapDegrees } from './arrange3d';
+import { ARRANGE_READS_OUTWARD, ARRANGE_SLIDERS, arrange, arrangeTargets, wrapDegrees } from './arrange3d';
 import type { ArrangeKind } from './arrange3d';
 import type { Clip, Project } from '../../types';
 
@@ -99,6 +99,26 @@ describe('new layouts', () => {
     }
     expect(Math.min(...p.map((q) => q.y))).toBeLessThan(0);
     expect(Math.max(...p.map((q) => q.y))).toBeGreaterThan(0);
+  });
+  it('sphere: outward false turns every clip to face the middle', () => {
+    const out = arrange('sphere', 30, { radius: 300 });
+    const inn = arrange('sphere', 30, { radius: 300, outward: false });
+    inn.forEach((q, i) => {
+      expect(q.x).toBe(out[i]!.x);
+      expect(q.y).toBe(out[i]!.y);
+      expect(q.z).toBe(out[i]!.z);
+      expect(q.rotX).toBeCloseTo(-out[i]!.rotX!, 5);
+      const rx = (q.rotX! * Math.PI) / 180;
+      const ry = (q.rotY * Math.PI) / 180;
+      const f = [Math.sin(ry) * Math.cos(rx), -Math.sin(rx), -Math.cos(ry) * Math.cos(rx)];
+      expect(f[0]! * q.x + f[1]! * q.y + f[2]! * (q.z - 300)).toBeCloseTo(-300, 0);
+    });
+  });
+  it('only ring, spiral and sphere read outward', () => {
+    for (const k of KINDS) {
+      const same = JSON.stringify(arrange(k, 7, { outward: true })) === JSON.stringify(arrange(k, 7, { outward: false }));
+      expect(same).toBe(!ARRANGE_READS_OUTWARD[k]);
+    }
   });
   it('sphere: spread evenly, the first clip is at the top front', () => {
     const p = arrange('sphere', 4, { radius: 100 });
