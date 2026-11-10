@@ -1,10 +1,11 @@
 import { useRef } from 'react';
-import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, Copy, Diamond, Flag, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, Copy, Diamond, Flag, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Type, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
 import { childrenOf, parentOf } from '../../lib/links';
 import { attachClips } from '../properties/attachActions';
+import { SPLIT_MODES, splitPlans, splitReason, splitText } from '../properties/textSplitActions';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
@@ -60,6 +61,10 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const seqIds = sequenceableIds(project, ids);
   const hasMarkers = (project?.markers?.length ?? 0) > 0;
   const cutIds = picked.filter((c) => markerInsideClip(project, c)).map((c) => c.id);
+
+  // a single text clip: the ways it can be split into one clip per piece (only the ones that would do something)
+  const splitPlansHere = ids.length === 1 && clip.type === 'text' ? splitPlans(clip) : null;
+  const splitModes = SPLIT_MODES.filter((m) => splitPlansHere && splitReason(splitPlansHere[m]) === null);
 
   const run = (fn: () => void) => () => {
     fn();
@@ -193,6 +198,23 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <Snowflake size={14} />
           freeze frame
         </button>
+      ) : null}
+      {clip.type === 'text' && splitModes.length > 0 ? (
+        <>
+          <div className="menu-sep" />
+          {splitModes.map((m) => (
+            <button
+              key={m}
+              className="menu-item"
+              role="menuitem"
+              title={`replace this text with one text clip per ${m.slice(0, -1)}, each where it is now`}
+              onClick={run(() => splitText(clip.id, m))}
+            >
+              <Type size={14} />
+              {`split into ${m}`}
+            </button>
+          ))}
+        </>
       ) : null}
       {swaps.length > 0 ? (
         <>
