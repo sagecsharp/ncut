@@ -5,10 +5,11 @@
  * it does not know where pixels come from: the caller passes a resolver that returns the
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
-import type { BlendMode, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
+import type { BlendMode, Clip, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { resolveClip } from '../lib/anim';
+import { applyClipMotion, hasClipMotion } from './clipAnim';
 import { fontsVersion } from '../lib/fonts';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
@@ -172,14 +173,55 @@ function roundedRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r
   ctx.closePath();
 }
 
+/**
+ * the clips of each track in project order, grouped once per clips array (the store replaces the array on every
+ * edit, so identity is the cache key; the length guards against in-place pushes). the per-frame paint walks used
+ * to scan every clip of the project once per track.
+ */
+const EMPTY_CLIPS: readonly Clip[] = [];
+const clipsByTrackCache = new WeakMap<object, { n: number; map: Map<string, Clip[]> }>();
+function clipsOnTrack(project: Project, trackId: string): readonly Clip[] {
+  const arr = project.clips;
+  let hit = clipsByTrackCache.get(arr);
+  if (!hit || hit.n !== arr.length) {
+    const map = new Map<string, Clip[]>();
+    for (const c of arr) {
+      const list = map.get(c.trackId);
+      if (list) list.push(c);
+      else map.set(c.trackId, [c]);
+    }
+    hit = { n: arr.length, map };
+    clipsByTrackCache.set(arr, hit);
+  }
+  return hit.map.get(trackId) ?? EMPTY_CLIPS;
+}
+
+/** a clip with its keyframes and its ready-made motions applied at a time */
+function resolveVisual<T extends VisualClip>(raw: T, time: number, project: Project): T {
+  const r = resolveClip(raw, time);
+  return hasClipMotion(raw) ? applyClipMotion(r, time, project) : r;
+}
+
+/** JSON of a style object, computed once per object (styles are immutable) */
+const jsonSigs = new WeakMap<object, string>();
+function jsonSig(o: object | null | undefined): string {
+  if (!o) return '0';
+  let v = jsonSigs.get(o);
+  if (v === undefined) {
+    v = JSON.stringify(o);
+    jsonSigs.set(o, v);
+  }
+  return v;
+}
+
 /** visual clips under a time in paint order (bottom layer first). skips hidden tracks. */
 export function visibleClipsAt(project: Project, time: number): VisualClip[] {
   const out: VisualClip[] = [];
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
-    for (const clip of project.clips) {
-      if (clip.trackId !== track.id || !isVisualClip(clip)) continue;
+    for (const clip of clipsOnTrack(project, track.id)) {
+      if (!isVisualClip(clip)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -214,8 +256,8 @@ export function paintListAt(project: Project, time: number): (VisualClip | Effec
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
-    for (const clip of project.clips) {
-      if (clip.trackId !== track.id || (clip.type !== 'effect' && !isVisualClip(clip))) continue;
+    for (const clip of clipsOnTrack(project, track.id)) {
+      if (clip.type !== 'effect' && !isVisualClip(clip)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -369,8 +411,8 @@ function textTexture(clip: TextClip, time: number): TextTexture | null {
         clip.letterSpacing,
         clip.lineHeight,
         clip.uppercase,
-        JSON.stringify(clip.stroke ?? 0),
-        JSON.stringify(clip.shadow ?? 0),
+        jsonSig(clip.stroke),
+        jsonSig(clip.shadow),
         clip.backgroundRadius,
         clip.backgroundPadding,
         w,
@@ -580,8 +622,7 @@ function paintItemsAt(project: Project, time: number, above: number): PaintItem[
     if (track.kind !== 'video' || track.hidden) continue;
     let natural: VisualClip | EffectClip | null = null;
     let span: TransitionSpan | null = null;
-    for (const clip of project.clips) {
-      if (clip.trackId !== track.id) continue;
+    for (const clip of clipsOnTrack(project, track.id)) {
       if (clip.type === 'effect') {
         if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
         continue;
@@ -685,8 +726,9 @@ function paintFlat(ctx: Ctx, project: Project, clip: VisualClip, source: DrawSou
 }
 
 /** draw one clip by itself (2d or 3d) at a time, e.g. onto a transition layer. false when nothing was drawn. */
-function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig): boolean {
-  const clip = resolveClip(raw, time);
+function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false): boolean {
+  // a frozen side of a transition sits on its edge frame: its entrance / exit would hold it at nothing, so only the loop runs
+  const clip = frozen && (raw.motionIn || raw.motionOut) ? resolveVisual({ ...raw, motionIn: null, motionOut: null }, time, project) : resolveVisual(raw, time, project);
   const alpha = clip.transform.opacity * fadeFactor(clip, time);
   if (alpha <= 0.001) return false;
   let source: DrawSource | null = null;
@@ -717,16 +759,16 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
   if (!def || !canvas || !lb) {
     // no canvas to blend on: a plain cut
     const natural = span.from && time < span.to.start ? span.from : span.to;
-    paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig);
+    paintAlone(ctx, project, natural, natural === span.to ? timeB : timeA, env, rig, natural === span.to ? timeB !== time : timeA !== time);
     return;
   }
   let hasA = false;
   if (la && span.from) {
     clearScratch(la);
-    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig);
+    hasA = paintAlone(la.ctx, project, span.from, timeA, env, rig, timeA !== time);
   }
   clearScratch(lb);
-  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig);
+  const hasB = paintAlone(lb.ctx, project, span.to, timeB, env, rig, timeB !== time);
   const p = easeTransition((time - span.start) / Math.max(1e-6, span.end - span.start));
   const out = renderTransition(hasA && la ? la.canvas : null, hasB ? lb.canvas : null, def, p, canvas.width, canvas.height, {
     projectWidth: project.width,
@@ -831,7 +873,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     }
     const raw = it.clip;
     // keyframes baked in. the resolver still gets the stored clip (it is keyed by identity).
-    const clip = resolveClip(raw, time);
+    const clip = resolveVisual(raw, time, project);
     const alpha = clip.transform.opacity * fadeFactor(clip, time);
     if (alpha <= 0.001) continue;
     let source: DrawSource | null = null;
@@ -896,7 +938,7 @@ export function renderSceneView(
   const layers: Layer3D[] = [];
   for (const raw of paintListAt(project, time)) {
     if (raw.type === 'effect') continue;
-    const clip = resolveClip(raw, time);
+    const clip = resolveVisual(raw, time, project);
     if (!clip.threeD) continue;
     const alpha = clip.transform.opacity * fadeFactor(clip, time);
     if (alpha <= 0.001) continue;
@@ -929,7 +971,7 @@ export function renderSceneView(
   seg(frame, [0, H, 0], [0, 0, 0]);
   // the project camera
   const camClip = cameraClipAt(project, time);
-  const camRig = cameraRig(camClip ? cameraFromClip(camClip, time) : DEFAULT_CAMERA, W, H);
+  const camRig = cameraRig(camClip ? cameraFromClip(camClip, time, project) : DEFAULT_CAMERA, W, H);
   const far = frustumCorners(camRig, homeDistance(H));
   for (let i = 0; i < 4; i++) {
     seg(frame, camRig.eye, far[i]!);

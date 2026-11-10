@@ -612,3 +612,48 @@ describe('planeFor: 3d crop and radius', () => {
     expect(planeFor(project([w], tracks), layer(w), rig)!.radius).toBeUndefined();
   });
 });
+
+describe('renderFrame: clip motions', () => {
+  const tracks = [track('top', 'video'), track('bot', 'video')];
+  const firstDraw = (clips: Project['clips'], t: number) => {
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), project(clips, tracks), t, () => mkSource('a'));
+    return ctx;
+  };
+
+  it('a clip without motions takes the old path', () => {
+    const ctx = firstDraw([image('top', 0, 5)], 0.1);
+    expect(ctx.ops('drawImage')[0]!.alpha).toBe(1);
+  });
+  it('fade in lowers the alpha at the start and is back to 1 at rest', () => {
+    const c = image('top', 0, 5, { motionIn: { id: 'fade', duration: 1 } });
+    expect(firstDraw([c], 0.5).ops('drawImage')[0]!.alpha).toBeCloseTo(0.5, 6);
+    expect(firstDraw([c], 2).ops('drawImage')[0]!.alpha).toBe(1);
+  });
+  it('fade out lowers the alpha at the end', () => {
+    const c = image('top', 0, 5, { motionOut: { id: 'fade', duration: 1 } });
+    expect(firstDraw([c], 4.5).ops('drawImage')[0]!.alpha).toBeCloseTo(0.5, 6);
+  });
+  it('a slide starts outside the canvas (translate moves far away)', () => {
+    const c = image('top', 0, 5, { motionIn: { id: 'slide-left', duration: 1 } });
+    const ctx = firstDraw([c], 0.001);
+    const tr = ctx.ops('translate').map((x) => x.args[0] as number);
+    expect(Math.max(...tr)).toBeGreaterThan(1920 + 960);
+  });
+  it('is deterministic for the same (project, time)', () => {
+    const c = image('top', 0, 5, { motionLoop: { id: 'shake', duration: 1 } });
+    const a = firstDraw([c], 1.37).calls.map((x) => [x.op, x.args]);
+    const b = firstDraw([c], 1.37).calls.map((x) => [x.op, x.args]);
+    expect(a).toEqual(b);
+  });
+  it('grouped clips follow edits of the clips array', () => {
+    const a = image('top', 0, 5);
+    const clips = [a];
+    const p = project(clips, tracks);
+    expect(visibleClipsAt(p, 1)).toHaveLength(1);
+    const b = image('top', 0, 5);
+    expect(visibleClipsAt({ ...p, clips: [a, b] }, 1)).toHaveLength(2);
+    clips.push(b);
+    expect(visibleClipsAt(p, 1)).toHaveLength(2);
+  });
+});

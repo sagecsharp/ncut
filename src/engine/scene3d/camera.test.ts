@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CameraClip, Project, TextClip, VideoClip } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
-import { createCameraClip, createProject, createTrack } from '../../lib/factory';
+import { createCameraClip, createProject, createTextClip, createTrack } from '../../lib/factory';
 import {
   DEFAULT_CAMERA,
   DEFAULT_FOV,
@@ -525,5 +525,90 @@ describe('uses3dAt', () => {
     p.clips = [cc(low, 0, 2)];
     expect(uses3dAt(p, 1)).toBe(true);
     expect(uses3dAt(p, 3)).toBe(false);
+  });
+});
+
+/* ---------- camera target ---------- */
+
+describe('camera target', () => {
+  const W = 1920;
+  const H = 1080;
+  const setup = (targetOver: Partial<TextClip>, camOver: Partial<CameraClip> = {}) => {
+    const { p, top, low } = twoTracks();
+    const t = createTextClip(low, 0, { duration: 4, threeD: true, ...targetOver });
+    const c = cc(top, 0, 4, { target: t.id, ...camOver });
+    p.clips = [t, c];
+    return { p, t, c };
+  };
+  const at = (x: number, y: number, z = 0): Partial<TextClip> => ({ transform: { ...DEFAULT_TRANSFORM, x, y, z } });
+  const centerOf = (p: Project, c: CameraClip, tt: TextClip, time = 1) => {
+    const rig = cameraRig(cameraFromClip(c, time, p), W, H);
+    return projectPoint(rig, W / 2 + tt.transform.x, H / 2 + tt.transform.y, tt.threeD ? (tt.transform.z ?? 0) : 0, W, H);
+  };
+
+  it('target straight ahead: pan and tilt stay 0', () => {
+    const { p, c } = setup(at(0, 0, 0));
+    const cam = cameraFromClip(c, 1, p);
+    near(cam.pan, 0, 6);
+    near(cam.tilt, 0, 6);
+  });
+  it('target to the right: positive pan; above: positive tilt', () => {
+    const r = setup(at(400, 0));
+    expect(cameraFromClip(r.c, 1, r.p).pan).toBeGreaterThan(5);
+    near(cameraFromClip(r.c, 1, r.p).tilt, 0, 6);
+    const u = setup(at(0, -300));
+    expect(cameraFromClip(u.c, 1, u.p).tilt).toBeGreaterThan(5);
+    near(cameraFromClip(u.c, 1, u.p).pan, 0, 6);
+  });
+  it('the target center lands on the canvas center', () => {
+    for (const [x, y, z] of [[400, -250, 0], [-600, 300, 500], [0, 200, -200], [900, 0, 1000]] as const) {
+      const { p, t, c } = setup(at(x, y, z));
+      const pt = centerOf(p, c, t);
+      near(pt.x, W / 2, 0);
+      near(pt.y, H / 2, 0);
+    }
+  });
+  it('a camera moved sideways still centers the target', () => {
+    const { p, t, c } = setup(at(200, 100, 300), { x: -500, y: 250, z: -200 });
+    const pt = centerOf(p, c, t);
+    near(pt.x, W / 2, 0);
+    near(pt.y, H / 2, 0);
+  });
+  it('the clip pan / tilt add on top', () => {
+    const base = setup(at(400, -200));
+    const off = setup(at(400, -200), { pan: 10, tilt: -5 });
+    const a = cameraFromClip(base.c, 1, base.p);
+    const b = cameraFromClip(off.c, 1, off.p);
+    near(b.pan - a.pan, 10, 6);
+    near(b.tilt - a.tilt, -5, 6);
+  });
+  it('roll and fov are kept', () => {
+    const { p, c } = setup(at(400, 0), { roll: 7, fov: 80 });
+    const cam = cameraFromClip(c, 1, p);
+    expect(cam.roll).toBe(7);
+    expect(cam.fov).toBe(80);
+  });
+  it('missing, unknown, self and non visual targets mean no target', () => {
+    const { p, c } = setup(at(400, 0));
+    expect(cameraFromClip({ ...c, target: null }, 1, p).pan).toBe(0);
+    expect(cameraFromClip({ ...c, target: 'nope' }, 1, p).pan).toBe(0);
+    expect(cameraFromClip({ ...c, target: c.id }, 1, p).pan).toBe(0);
+    const other = cc(c.trackId, 0, 4);
+    p.clips = [...p.clips, other];
+    expect(cameraFromClip({ ...c, target: other.id }, 1, p).pan).toBe(0);
+    // without a project the target is ignored
+    expect(cameraFromClip(c, 1).pan).toBe(0);
+  });
+  it('cameraAt follows the target, also when it is not on screen at that time', () => {
+    const { p, top, low } = twoTracks();
+    const t = createTextClip(low, 10, { duration: 2, threeD: true, ...at(400, 0) });
+    const c = cc(top, 0, 4, { target: t.id });
+    p.clips = [t, c];
+    expect(cameraAt(p, 1).pan).toBeGreaterThan(5);
+  });
+  it('a 2d target counts as z = 0', () => {
+    const { p, c } = setup({ threeD: false, transform: { ...DEFAULT_TRANSFORM, x: 400, y: 0, z: 800 } });
+    const ref = setup(at(400, 0, 0));
+    near(cameraFromClip(c, 1, p).pan, cameraFromClip(ref.c, 1, ref.p).pan, 6);
   });
 });
