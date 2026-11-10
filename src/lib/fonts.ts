@@ -132,6 +132,8 @@ export function listFonts(): FontInfo[] {
   const taken = new Set(out.map((f) => f.family));
   for (const family of SYSTEM_FONTS) {
     if (taken.has(family)) continue;
+    // not installed on this machine: picking it would only give the fallback font
+    if (!familyRenders(family, 400, canvasWidth)) continue;
     taken.add(family);
     out.push({ family, category: 'system', weights: [400, 700], italic: true });
   }
