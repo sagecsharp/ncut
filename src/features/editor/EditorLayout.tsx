@@ -26,7 +26,11 @@ export const MIN_LEFT = 280;
 
 const DEFAULTS: Sizes = { left: 300, right: 300, bottom: 320 };
 
-/** single source of the panel limits. also used on load and when the window shrinks */
+/**
+ * single source of the panel limits. the state (and what is saved) holds the sizes the user asked
+ * for; this is applied on top when drawing, so a window that was small for a moment does not
+ * shrink the panels for good.
+ */
 function clampSizes(s: Sizes): Sizes {
   const fin = (v: number, d: number) => (Number.isFinite(v) ? v : d);
   return {
@@ -39,11 +43,15 @@ function clampSizes(s: Sizes): Sizes {
 function loadSizes(): Sizes {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return clampSizes({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<Sizes>) });
+    if (raw) {
+      const saved = JSON.parse(raw) as Partial<Sizes>;
+      const pick = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d);
+      return { left: pick(saved.left, DEFAULTS.left), right: pick(saved.right, DEFAULTS.right), bottom: pick(saved.bottom, DEFAULTS.bottom) };
+    }
   } catch {
     // ignore
   }
-  return clampSizes(DEFAULTS);
+  return DEFAULTS;
 }
 
 type Edge = keyof Sizes;
@@ -59,6 +67,11 @@ type Edge = keyof Sizes;
  */
 export function EditorLayout() {
   const [sizes, setSizes] = useState<Sizes>(loadSizes);
+  // bumped when the window changes size, so the limits are applied again
+  const [, setViewport] = useState(0);
+  const shown = clampSizes(sizes);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
   const dialog = useUi((s) => s.dialog);
   const closeDialog = useUi((s) => s.closeDialog);
   const drag = useRef<{ edge: Edge; startPos: number; startSize: number } | null>(null);
@@ -74,18 +87,14 @@ export function EditorLayout() {
   }, [sizes]);
 
   useEffect(() => {
-    const onResize = () =>
-      setSizes((s) => {
-        const n = clampSizes(s);
-        return n.left === s.left && n.right === s.right && n.bottom === s.bottom ? s : n;
-      });
+    const onResize = () => setViewport((n) => n + 1);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
   // settings > reset layout: the saved sizes are already cleared, go back to the defaults
   useEffect(() => {
-    const onReset = () => setSizes(clampSizes(DEFAULTS));
+    const onReset = () => setSizes(DEFAULTS);
     window.addEventListener(LAYOUT_RESET_EVENT, onReset);
     return () => window.removeEventListener(LAYOUT_RESET_EVENT, onReset);
   }, []);
@@ -94,9 +103,9 @@ export function EditorLayout() {
     (edge: Edge) => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
-      drag.current = { edge, startPos: edge === 'bottom' ? e.clientY : e.clientX, startSize: sizes[edge] };
+      drag.current = { edge, startPos: edge === 'bottom' ? e.clientY : e.clientX, startSize: shownRef.current[edge] };
     },
-    [sizes],
+    [],
   );
 
   const onMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
@@ -131,7 +140,7 @@ export function EditorLayout() {
     <div className="editor">
       <Header />
       <div className="editor-top">
-        <div className="editor-pane" style={{ width: sizes.left }}>
+        <div className="editor-pane" style={{ width: shown.left }}>
           <MediaPanel />
         </div>
         {splitter('left')}
@@ -139,12 +148,12 @@ export function EditorLayout() {
           <Preview />
         </div>
         {splitter('right')}
-        <div className="editor-pane" style={{ width: sizes.right }}>
+        <div className="editor-pane" style={{ width: shown.right }}>
           <PropertiesPanel />
         </div>
       </div>
       {splitter('bottom')}
-      <div className="editor-bottom" style={{ height: sizes.bottom }}>
+      <div className="editor-bottom" style={{ height: shown.bottom }}>
         <Timeline />
       </div>
 
