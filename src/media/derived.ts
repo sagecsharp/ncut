@@ -11,6 +11,8 @@ import { useEditor } from '../store/editorStore';
 import { getAssetBlob, getAssetUrl } from './registry';
 import { seekFrame } from './seekFrame';
 import { createScheduler } from './derivedQueue';
+import { thumbCacheKey, waveCacheKey } from './derivedCachePlan';
+import { getCachedBlob, getCachedPeaks, putCachedBlob, putCachedPeaks } from './derivedStore';
 import type { JobKind } from './derivedQueue';
 
 export interface WaveformData {
@@ -21,6 +23,7 @@ export interface WaveformData {
 }
 
 const THUMB_WIDTH = 320;
+const THUMB_QUALITY = 0.8;
 const PEAKS_PER_SECOND = 50;
 const MAX_FILMSTRIP_FRAMES = 160;
 const SEEK_TIMEOUT_MS = 6000;
@@ -162,7 +165,7 @@ async function thumbFromImageElement(blob: Blob): Promise<Blob | null> {
     const scale = THUMB_WIDTH / w;
     const c = makeCanvas(w * scale, h * scale);
     c.getContext('2d')?.drawImage(img, 0, 0, c.width, c.height);
-    return await canvasToBlob(c, 'image/jpeg', 0.8);
+    return await canvasToBlob(c, 'image/jpeg', THUMB_QUALITY);
   } catch {
     return null;
   } finally {
@@ -181,7 +184,7 @@ async function thumbFromImage(blob: Blob): Promise<Blob | null> {
       const c = makeCanvas(full.width * scale, full.height * scale);
       c.getContext('2d')?.drawImage(full, 0, 0, c.width, c.height);
       full.close();
-      return canvasToBlob(c, 'image/jpeg', 0.8);
+      return canvasToBlob(c, 'image/jpeg', THUMB_QUALITY);
     } catch {
       return thumbFromImageElement(blob);
     }
@@ -189,7 +192,7 @@ async function thumbFromImage(blob: Blob): Promise<Blob | null> {
   const c = makeCanvas(bmp.width, bmp.height);
   c.getContext('2d')?.drawImage(bmp, 0, 0);
   bmp.close();
-  return canvasToBlob(c, 'image/jpeg', 0.8);
+  return canvasToBlob(c, 'image/jpeg', THUMB_QUALITY);
 }
 
 async function thumbFromVideoMediabunny(blob: Blob, duration: number): Promise<Blob | null> {
@@ -202,7 +205,7 @@ async function thumbFromVideoMediabunny(blob: Blob, duration: number): Promise<B
     const first = await track.getFirstTimestamp();
     const wrapped = await sink.getCanvas(Math.max(first, d * 0.1));
     if (!wrapped) return null;
-    return canvasToBlob(wrapped.canvas, 'image/jpeg', 0.8);
+    return canvasToBlob(wrapped.canvas, 'image/jpeg', THUMB_QUALITY);
   } finally {
     input.dispose();
   }
@@ -217,7 +220,7 @@ async function thumbFromVideoElement(assetId: string, duration: number): Promise
     const scale = Math.min(1, THUMB_WIDTH / v.videoWidth);
     const c = makeCanvas(v.videoWidth * scale, v.videoHeight * scale);
     c.getContext('2d')?.drawImage(v, 0, 0, c.width, c.height);
-    return await canvasToBlob(c, 'image/jpeg', 0.8);
+    return await canvasToBlob(c, 'image/jpeg', THUMB_QUALITY);
   } finally {
     closeVideoElement(v);
   }
@@ -233,7 +236,8 @@ export function getThumbnail(assetId: string): Promise<string | null> {
   const asset = getAsset(assetId);
   if (!asset || asset.kind === 'audio') return Promise.resolve(null);
   const token = tokenFor(assetId);
-  const p = enqueue('thumb', async () => {
+  const cacheKey = thumbCacheKey(assetId, THUMB_WIDTH, THUMB_QUALITY);
+  const compute = () => enqueue('thumb', async () => {
     if (token.cancelled) return null;
     const blob = getAssetBlob(assetId);
     if (!blob) return null;
@@ -252,6 +256,7 @@ export function getThumbnail(assetId: string): Promise<string | null> {
       out = null;
     }
     if (!out) return null;
+    if (!token.cancelled) putCachedBlob(cacheKey, out);
     const url = URL.createObjectURL(out);
     if (token.cancelled) {
       URL.revokeObjectURL(url);
@@ -260,6 +265,15 @@ export function getThumbnail(assetId: string): Promise<string | null> {
     thumbUrls.set(assetId, url);
     return url;
   });
+  // assets never change after import, so a thumbnail stored by an earlier session is the same picture
+  const p = (async (): Promise<string | null> => {
+    const hit = await getCachedBlob(cacheKey);
+    if (!hit) return compute();
+    if (token.cancelled) return null;
+    const url = URL.createObjectURL(hit);
+    thumbUrls.set(assetId, url);
+    return url;
+  })();
   thumbs.set(assetId, p);
   // a failed attempt may be retried later
   void p.then((u) => {
@@ -514,7 +528,8 @@ export function getWaveform(assetId: string): Promise<WaveformData | null> {
   if (!asset || !asset.hasAudio || asset.kind === 'image') return Promise.resolve(null);
   const token = tokenFor(assetId);
   let retry = false;
-  const p = enqueue('wave', async () => {
+  const cacheKey = waveCacheKey(assetId, PEAKS_PER_SECOND);
+  const compute = () => enqueue('wave', async () => {
     if (token.cancelled) {
       retry = true;
       return null;
@@ -525,14 +540,29 @@ export function getWaveform(assetId: string): Promise<WaveformData | null> {
       return null;
     }
     const viaBunny = await waveformMediabunny(blob, token);
-    if (viaBunny) return viaBunny;
+    if (viaBunny) {
+      if (!token.cancelled) putCachedPeaks(cacheKey, viaBunny.peaks);
+      return viaBunny;
+    }
     if (token.cancelled) {
       retry = true;
       return null;
     }
     if (blob.size > WAVEFORM_FALLBACK_MAX_BYTES) return null;
-    return waveformDecode(blob, token);
+    const decoded = await waveformDecode(blob, token);
+    if (decoded && !token.cancelled) putCachedPeaks(cacheKey, decoded.peaks);
+    return decoded;
   });
+  // assets never change after import, so peaks stored by an earlier session are the same numbers
+  const p = (async (): Promise<WaveformData | null> => {
+    const hit = await getCachedPeaks(cacheKey);
+    if (!hit) return compute();
+    if (token.cancelled) {
+      retry = true;
+      return null;
+    }
+    return { peaksPerSecond: PEAKS_PER_SECOND, peaks: hit };
+  })();
   waveforms.set(assetId, p);
   // a real failure stays cached (tried once per session), only cancelled / missing-file results may be retried
   void p.then((w) => {
