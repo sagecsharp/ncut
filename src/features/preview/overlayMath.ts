@@ -5,7 +5,7 @@ import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from
 import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
 import { clipModelMatrix, clipWorldModel, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
-import { worldClip } from './attached';
+import { resolveShown, worldClip } from './attached';
 import { isVisualClip } from '../../types';
 import type { Clip } from '../../types';
 import { homeDistance } from '../../engine/scene3d/camera';
@@ -64,7 +64,7 @@ export function usesParentFrame(clip: VisualClip): boolean {
 
 /** the center of a real 3d clip in the world, through its parent chain (canvas px) */
 export function worldCenter3d(project: Project, raw: VisualClip, time: number): Vec3 {
-  const clip = resolveClip(raw, time);
+  const clip = resolveShown(raw, time);
   const m = clipWorldModel(project, clip, time, getClipBox(project, clip), [0, 0, 0]);
   return [m[12]!, m[13]!, m[14]!];
 }
@@ -73,7 +73,7 @@ export function worldCenter3d(project: Project, raw: VisualClip, time: number): 
 export function clipQuad(project: Project, raw: VisualClip, time: number, rig: CameraRig, out?: Quad): Quad {
   // an attached clip is drawn at its pose in the world: outline and handles sit there too
   const framed = usesParentFrame(raw);
-  const clip = framed ? resolveClip(raw, time) : worldClip(project, raw, time);
+  const clip = framed ? resolveShown(raw, time) : worldClip(project, raw, time);
   const box = getClipBox(project, clip);
   const base = framed
     ? clipWorldModel(project, clip, time, box, rig.eye)
