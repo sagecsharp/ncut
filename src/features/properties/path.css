@@ -1,0 +1,19 @@
+.path-hint {
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.path-num {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.path-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.path-btns .btn {
+  flex: 1;
+  justify-content: center;
+}
