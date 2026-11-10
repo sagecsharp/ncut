@@ -129,7 +129,11 @@ export async function freezeFrame(): Promise<string | null> {
   }
   if (!newId) {
     // put everything back: the history step pushed above holds the project as it was
-    if (useEditor.getState().project !== before) useEditor.getState().undo();
+    if (useEditor.getState().project !== before) {
+      useEditor.getState().undo();
+      // the half done step must not come back with redo
+      useEditor.setState({ future: [] });
+    }
     void deleteAsset(still.id);
     return null;
   }

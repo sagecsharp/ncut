@@ -516,12 +516,18 @@ export const useEditor = create<EditorState>()((set, get) => {
     removeAsset(assetId) {
       const { project } = get();
       if (!project) return;
+      const uses = (c: Clip) => 'assetId' in c && c.assetId === assetId;
+      const gone = new Set(project.clips.filter(uses).map((c) => c.id));
       const next: Project = {
         ...project,
         assets: project.assets.filter((a) => a.id !== assetId),
-        clips: project.clips.filter((c) => !('assetId' in c) || c.assetId !== assetId),
+        clips: gone.size > 0 ? unlinkRemoved(project.clips.filter((c) => !gone.has(c.id)), gone) : project.clips,
       };
-      set({ project: next, past: [], future: [], selection: pruneSelection(next, get().selection) });
+      // history holds whole projects: a step that still has a clip of this asset cannot be gone back to.
+      // when no step has one (an unused asset), undo and redo stay as they are.
+      const inHistory = [...get().past, ...get().future].some((p) => p.clips.some(uses));
+      if (gone.size > 0 || inHistory) set({ project: next, past: [], future: [], selection: pruneSelection(next, get().selection) });
+      else set({ project: next });
     },
     renameAsset(assetId, name) {
       const { project } = get();
@@ -545,10 +551,11 @@ export const useEditor = create<EditorState>()((set, get) => {
     removeTrack(trackId, opts) {
       mutate((p) => {
         if (!p.tracks.some((t) => t.id === trackId)) return null;
+        const gone = new Set(p.clips.filter((c) => c.trackId === trackId).map((c) => c.id));
         return {
           ...p,
           tracks: p.tracks.filter((t) => t.id !== trackId),
-          clips: p.clips.filter((c) => c.trackId !== trackId),
+          clips: gone.size > 0 ? unlinkRemoved(p.clips.filter((c) => !gone.has(c.id)), gone) : p.clips,
         };
       }, opts);
     },
@@ -921,6 +928,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (isTimedClip(next) && isTimedClip(clip)) {
             next.trimStart = Math.max(0, clip.trimStart + delta * clip.speed);
           }
+          // an effect runs on time - start + timeOffset: keep what it shows at every frame that is left
+          if (next.type === 'effect' && clip.type === 'effect') next.timeOffset = (clip.timeOffset ?? 0) + delta;
           return replaceClip(p, clampFades(next));
         }
         let upper = Infinity;
@@ -962,6 +971,8 @@ export const useEditor = create<EditorState>()((set, get) => {
         const scope = ids ?? (sel.length > 0 ? sel : p.clips.map((c) => c.id));
         const targets = new Set(scope);
         const clips: Clip[] = [];
+        // a group cut in two becomes two groups: the right halves get a group of their own
+        const rightGroups = new Map<string, string>();
         for (const c of p.clips) {
           const inside = time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION;
           if (!targets.has(c.id) || !inside || isLocked(p, c.trackId)) {
@@ -990,11 +1001,27 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (isTimedClip(right) && isTimedClip(c)) right.trimStart = c.trimStart + (time - c.start) * c.speed;
           if (right.type === 'effect' && c.type === 'effect') right.timeOffset = (c.timeOffset ?? 0) + (time - c.start);
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
+          if (c.group) {
+            if (!rightGroups.has(c.group)) rightGroups.set(c.group, uid('grp'));
+            right.group = rightGroups.get(c.group)!;
+          }
           created.push(right.id);
           clips.push(left, clampFades(right));
         }
         if (created.length === 0) return null;
-        return { ...p, clips };
+        if (rightGroups.size === 0) return { ...p, clips };
+        // a group of one is no group
+        const size = new Map<string, number>();
+        for (const c of clips) if (c.group) size.set(c.group, (size.get(c.group) ?? 0) + 1);
+        return {
+          ...p,
+          clips: clips.map((c) => {
+            if (!c.group || (size.get(c.group) ?? 0) > 1) return c;
+            const alone = { ...c };
+            delete alone.group;
+            return alone;
+          }),
+        };
       }, opts);
       return created;
     },
@@ -1025,6 +1052,23 @@ export const useEditor = create<EditorState>()((set, get) => {
         let next = p;
         const originals = p.clips.filter((c) => ids.includes(c.id)).sort((a, b) => a.start - b.start);
         const idMap = new Map<string, string>();
+        // one shift for the whole selection, so copies keep their timing against each other: the smallest
+        // shift (at least the length of the selection) where every copy fits on its track. a clip on a
+        // locked track goes to another track and does not take part.
+        const free = originals.filter((c) => !isLocked(p, c.trackId));
+        let shift = 0;
+        if (free.length > 1) {
+          const first = Math.min(...free.map((c) => c.start));
+          shift = Math.max(...free.map((c) => clipEnd(c))) - first;
+          for (let round = 0; round < 24; round++) {
+            let need = shift;
+            for (const c of free) need = Math.max(need, findFreeStart(p, c.trackId, c.start + shift, c.duration) - c.start);
+            if (need <= shift + 1e-9) break;
+            shift = need;
+          }
+          // no shared spot found (very crowded tracks): place each copy on its own, as for one clip
+          if (free.some((c) => !isRangeFree(p, c.trackId, c.start + shift, c.duration))) shift = 0;
+        }
         for (const c of originals) {
           const copy = structuredClone(c);
           copy.id = uid('clp');
@@ -1040,7 +1084,10 @@ export const useEditor = create<EditorState>()((set, get) => {
             }
           }
           copy.trackId = trackId;
-          copy.start = findFreeStart(next, trackId, clipEnd(c), c.duration);
+          copy.start =
+            shift > 0 && trackId === c.trackId
+              ? findFreeStart(next, trackId, c.start + shift, c.duration)
+              : findFreeStart(next, trackId, clipEnd(c), c.duration);
           created.push(copy.id);
           idMap.set(c.id, copy.id);
           next = { ...next, clips: [...next.clips, copy] };
