@@ -4,14 +4,17 @@
  * then one webgl pass mixes them by progress 0..1. the look lives in ./defs.ts.
  */
 import { TRANSITION_GLSL } from './defs';
+import { GLSL_PACK2 } from './defs2';
+import { GLSL_3D } from './defs3d';
 
-export type TransitionCategory = 'fade' | 'move' | 'wipe' | 'stylize';
+export type TransitionCategory = 'fade' | 'move' | 'wipe' | 'stylize' | '3d';
 
 export const TRANSITION_CATEGORIES: { id: TransitionCategory; label: string }[] = [
   { id: 'fade', label: 'fade' },
   { id: 'move', label: 'move' },
   { id: 'wipe', label: 'wipe' },
   { id: 'stylize', label: 'stylize' },
+  { id: '3d', label: '3d' },
 ];
 
 export interface TransitionDef {
@@ -60,13 +63,56 @@ const LIST: [id: string, name: string, category: TransitionCategory][] = [
   ['rgb-split', 'rgb split', 'stylize'],
   ['flash', 'flash', 'stylize'],
   ['ripple', 'ripple', 'stylize'],
+  // pack 2
+  ['cube-left', 'cube left', '3d'],
+  ['cube-right', 'cube right', '3d'],
+  ['cube-up', 'cube up', '3d'],
+  ['cube-down', 'cube down', '3d'],
+  ['flip-horizontal', 'flip horizontal', '3d'],
+  ['flip-vertical', 'flip vertical', '3d'],
+  ['door', 'door', '3d'],
+  ['fold', 'fold', '3d'],
+  ['page-turn', 'page turn', '3d'],
+  ['fly-in', 'fly in', '3d'],
+  ['swing', 'swing', '3d'],
+  ['zoom-blur', 'zoom blur', 'move'],
+  ['stretch-left', 'stretch left', 'move'],
+  ['stretch-right', 'stretch right', 'move'],
+  ['roll', 'roll', 'move'],
+  ['slide-diagonal', 'slide diagonal', 'move'],
+  ['squeeze', 'squeeze', 'move'],
+  ['wipe-diagonal', 'diagonal wipe', 'wipe'],
+  ['barn-h', 'barn door h', 'wipe'],
+  ['barn-v', 'barn door v', 'wipe'],
+  ['diamond', 'diamond', 'wipe'],
+  ['star', 'star', 'wipe'],
+  ['heart', 'heart', 'wipe'],
+  ['spiral', 'spiral', 'wipe'],
+  ['radial-bars', 'radial bars', 'wipe'],
+  ['fan', 'fan', 'wipe'],
+  ['wave-wipe', 'wave wipe', 'wipe'],
+  ['noise-wipe', 'noise wipe', 'wipe'],
+  ['stripes', 'stripes', 'wipe'],
+  ['split', 'split', 'wipe'],
+  ['burn', 'burn', 'stylize'],
+  ['tv-off', 'tv off', 'stylize'],
+  ['luma-fade', 'luma fade', 'stylize'],
+  ['kaleido-spin', 'kaleidoscope', 'stylize'],
+  ['morph', 'morph', 'stylize'],
+  ['light-sweep', 'light sweep', 'stylize'],
+  ['film-roll', 'film roll', 'stylize'],
+  ['dreamy', 'dreamy', 'stylize'],
+  ['shake-cut', 'shake cut', 'stylize'],
+  ['color-pulse', 'color pulse', 'stylize'],
 ];
+
+const GLSL: Record<string, string> = { ...TRANSITION_GLSL, ...GLSL_PACK2, ...GLSL_3D };
 
 export const TRANSITIONS: TransitionDef[] = LIST.map(([id, name, category]) => ({
   id,
   name,
   category,
-  glsl: TRANSITION_GLSL[id] ?? TRANSITION_GLSL['cross-fade']!,
+  glsl: GLSL[id] ?? TRANSITION_GLSL['cross-fade']!,
 }));
 
 const BY_ID = new Map(TRANSITIONS.map((t) => [t.id, t]));
