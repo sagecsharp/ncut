@@ -328,6 +328,11 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
   and the last save folder in `window.json` (userData).
 - `electron/rules.cjs` every decision as a pure function (url to file, what may navigate, permissions, file names,
   window placement, shell keys), tested in `electron/rules.test.mjs`.
+- the taskbar pin: the portable exe unpacks into a new temp folder on every start and runs the app from there, so
+  a pin made from the running window would point at a file that is gone after closing. `createWindow` gives the
+  window its relaunch details (`rules.taskbarDetails` -> `setAppDetails`): app id, the file to start and to take the
+  icon from. that is `PORTABLE_EXECUTABLE_FILE` (set by the portable starter) when it is a real exe, else the exe
+  that runs. packaged windows builds only.
 - the page has no node access and no network (csp `connect-src 'self' blob: data:`, no inline scripts). it may ask
   for two permissions only: full screen and the installed fonts. new windows and navigation away are refused,
   web links open in the system browser.

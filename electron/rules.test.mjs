@@ -339,3 +339,53 @@ describe('windowBackground', () => {
     expect(rules.WINDOW_LIGHT).toMatch(/^#[0-9a-f]{6}$/);
   });
 });
+
+describe('what the taskbar pin starts', () => {
+  const yes = () => true;
+  const portable = 'D:\\apps\\ncut-0.1.0-portable.exe';
+  const temp = 'C:\\Users\\me\\AppData\\Local\\Temp\\2abc\\ncut.exe';
+  it('is the portable file itself, not the copy it unpacked into the temp folder', () => {
+    expect(rules.taskbarDetails({ PORTABLE_EXECUTABLE_FILE: portable }, temp, yes)).toEqual({
+      appId: rules.APP_ID,
+      appIconPath: portable,
+      appIconIndex: 0,
+      relaunchCommand: `"${portable}"`,
+      relaunchDisplayName: 'ncut',
+    });
+  });
+  it('is the exe that runs for the installed app and the plain folder', () => {
+    const exe = 'C:\\Users\\me\\AppData\\Local\\Programs\\ncut\\ncut.exe';
+    const d = rules.taskbarDetails({}, exe, yes);
+    expect(d.relaunchCommand).toBe(`"${exe}"`);
+    expect(d.appIconPath).toBe(exe);
+    expect(rules.taskbarDetails(undefined, exe, yes).appIconPath).toBe(exe);
+    expect(rules.taskbarDetails(null, exe, yes).appIconPath).toBe(exe);
+  });
+  it('uses the id the app and its shortcuts have', () => {
+    expect(rules.APP_ID).toBe('com.sagecsharp.ncut');
+  });
+  it('takes paths with spaces, forward slashes and network shares', () => {
+    for (const p of ['C:\\my apps\\ncut portable.exe', 'c:/tools/ncut.EXE', '\\\\server\\share\\ncut.exe']) {
+      expect(rules.taskbarDetails({ PORTABLE_EXECUTABLE_FILE: p }, temp, yes).relaunchCommand).toBe(`"${p}"`);
+    }
+  });
+  it('falls back to the running exe when the portable file is gone or is not a usable path', () => {
+    const gone = (p) => p !== portable;
+    expect(rules.taskbarDetails({ PORTABLE_EXECUTABLE_FILE: portable }, temp, gone).appIconPath).toBe(temp);
+    const long = 'C:\\' + 'a'.repeat(2000) + '.exe';
+    for (const bad of ['', 'ncut.exe', '..\\ncut.exe', 'C:\\x\\ncut.bat', 'C:\\x\\a.exe" --evil "', 'C:\\x\\a.exe\n', 'C:\\x\\a<b>.exe', 'C:\\x\\a|b.exe', 42, null, {}, long]) {
+      expect(rules.taskbarDetails({ PORTABLE_EXECUTABLE_FILE: bad }, temp, yes).appIconPath).toBe(temp);
+    }
+  });
+  it('leaves the window alone when nothing usable is there', () => {
+    expect(rules.taskbarDetails({}, temp, () => false)).toBeNull();
+    expect(rules.taskbarDetails({}, '/usr/bin/ncut', yes)).toBeNull();
+    expect(rules.taskbarDetails({}, undefined, yes)).toBeNull();
+    expect(rules.taskbarDetails({}, temp, () => 'yes')).toBeNull();
+    expect(
+      rules.taskbarDetails({}, temp, () => {
+        throw new Error('no such file');
+      }),
+    ).toBeNull();
+  });
+});

@@ -3,6 +3,7 @@
 a flat, monochrome video editor that runs entirely in your browser.
 
 - multi-track timeline: video, image, text, shape and audio clips. move, trim, split, ripple delete, duplicate, copy/paste, snapping, markers, markers on the beats of a song, groups, freeze frame (the still keeps the mask, the effects and the fades of the clip), undo/redo
+- a plain color card is always the first thing in the media tab, in every project, with nothing to import: a full frame picture of one color (pick the color on the card, change it later in the properties). a background, a flash, or a plane for 3d
 - real-time preview on a canvas, with on-canvas move / scale / rotate, zoom and pan, guides, and a quality switch (full / half / quarter) for heavy timelines. preview speed from 0.25x to 2x and j / k / l shuttle in both directions
 - keyframes on almost every number (position, scale, rotation, opacity, volume, effect settings, camera), with easing, and tools for a whole animation: reverse it, fit it to the clip, repeat it, ping pong, copy it to another clip, or add a wiggle (a seeded shake on any value)
 - 3d, set up like a small game engine scene: any clip can become a plane, box, ball, tube, cone, pyramid, ring, capsule, prism, hexagon, star or heart in one shared unlit 3d space, mixed freely with flat 2d layers. camera clips move through it (with ready-made moves: push in, orbit, dolly zoom, handheld), a scene view lets you orbit around the set with move / rotate / scale tools (ctrl snaps to a grid, x / y / z lock an axis, alt + drag leaves a copy) while a small inset shows what the camera sees, distance fog fades far things out, and the camera has depth of field: pick what is sharp, keyframe it to pull the focus, or drag the focus plane right in the scene view
@@ -54,6 +55,8 @@ what the desktop version does on top: exports and saved frames open a normal sav
 last, the window remembers its place, closing while an export runs asks first, `f11` is full screen.
 an export shows its progress on the taskbar button, keeps the pc awake and runs at full speed when the window is
 minimized or covered (windows slows background apps down otherwise). a double click on a `.ncut` file opens it.
+to keep it on the taskbar: start it, right click its taskbar button, pin to taskbar. that works for all three,
+the pin of the portable one starts the portable file itself (not the copy it unpacked).
 projects live in the app's own storage (`%APPDATA%\ncut`), separate from the browser version. use the
 project file (.ncut) to move a project between them.
 

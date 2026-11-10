@@ -27,7 +27,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: shellRules.SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true } },
 ]);
 
-app.setAppUserModelId('com.sagecsharp.ncut');
+app.setAppUserModelId(shellRules.APP_ID);
 
 /** @type {BrowserWindow | null} */
 let win = null;
@@ -383,6 +383,17 @@ function createWindow() {
     },
   });
   const w = win;
+  // pinned to the taskbar, the pin has to start the file the user started (see rules.taskbarDetails)
+  if (process.platform === 'win32' && app.isPackaged) {
+    const details = shellRules.taskbarDetails(process.env, process.execPath, (p) => fs.statSync(p).isFile());
+    if (details) {
+      try {
+        w.setAppDetails(details);
+      } catch {
+        /* the window still works, only the pin is the default one */
+      }
+    }
+  }
   if (saved && saved.maximized) w.maximize();
   // not at ready-to-show: that is the first paint of the empty page. the page tells us (ncut:ready, see revealWindow)
   // once its first screen is in the page. a page that never gets there must not leave an invisible window behind

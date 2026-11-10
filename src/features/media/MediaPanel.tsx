@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
-import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Plus, Replace, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Palette, Plus, Replace, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -18,6 +18,7 @@ import { LayersTab } from './LayersTab';
 import { CaptionTools } from './captions/CaptionTools';
 import { MEDIA_SORTS, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
 import type { MediaFilter, MediaSort } from './mediaList';
+import { PLAIN_COLOR_NAME, plainColorPreset, showsPlainColor, usePlainColor } from './plainColor';
 import { TEXT_PRESETS } from './textPresets';
 import type { TextPreset } from './textPresets';
 import './media.css';
@@ -208,6 +209,73 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
   );
 });
 
+/* ---------- plain color card ---------- */
+
+/**
+ * always the first card of the media tab, in every project: a full frame picture of one color. it is built in
+ * (nothing to import, rename or remove). the swatch sets the color the next clip gets, the clip's own color is
+ * changed in the properties afterwards.
+ */
+const PlainColorCard = memo(function PlainColorCard() {
+  const color = usePlainColor((s) => s.color);
+  const preset = () => {
+    const { w, h } = canvasSize();
+    return plainColorPreset(w, h, usePlainColor.getState().color);
+  };
+  // addShape selects the new clip itself
+  const insert = () => useEditor.getState().addShape({ start: usePlayback.getState().time, preset: preset() });
+  return (
+    <div
+      className="media-card media-card-plain"
+      draggable
+      tabIndex={0}
+      title={`${PLAIN_COLOR_NAME} - a full frame picture of one color, in every project. double click to add it at the playhead, or drag it onto the timeline`}
+      onDragStart={(e) => beginDrag(e, { kind: 'shape', preset: preset() })}
+      onDragEnd={endDrag}
+      onDoubleClick={insert}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || e.key !== 'Enter') return;
+        e.preventDefault();
+        insert();
+      }}
+    >
+      <div className="media-thumb is-plain" style={{ background: color }}>
+        <span className="media-badge media-badge-kind">
+          <ImageIcon size={12} />
+        </span>
+        <span className="media-plain-pick" title="pick the color the next plain color clip gets">
+          <Palette size={12} />
+          <input
+            type="color"
+            aria-label="plain color"
+            value={color}
+            draggable={false}
+            onChange={(e) => usePlainColor.getState().setColor(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+        </span>
+        <div className="media-actions">
+          <button
+            className="icon-btn icon-btn-sm"
+            title="add to timeline at the playhead"
+            aria-label="add plain color to timeline"
+            onClick={(e) => {
+              e.stopPropagation();
+              insert();
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="media-name">{PLAIN_COLOR_NAME}</div>
+    </div>
+  );
+});
+
 /* ---------- media tab ---------- */
 
 interface PendingRemove {
@@ -304,6 +372,8 @@ function MediaTab() {
   };
 
   const hasAssets = !!assets && assets.length > 0;
+  // without imported files the filters are not on screen: nothing may hide the card then
+  const showPlain = !hasAssets || showsPlainColor({ kind: filter, query, unusedOnly });
 
   return (
     <div
@@ -382,8 +452,28 @@ function MediaTab() {
       ) : null}
 
       <div className="media-scroll">
+        {showPlain || (hasAssets && visible.length > 0) ? (
+          <div className="media-grid">
+            {showPlain ? <PlainColorCard /> : null}
+            {hasAssets
+              ? visible.map((a) => (
+                  <AssetCard
+                    key={a.id}
+                    asset={a}
+                    onInsert={onInsert}
+                    onRemove={onRemove}
+                    swapKind={selKind}
+                    swapCurrent={selAsset}
+                    onSwap={onSwap}
+                  />
+                ))
+              : null}
+          </div>
+        ) : (
+          <div className="empty">no matching assets</div>
+        )}
         {!hasAssets ? (
-          <div className="empty">
+          <div className="empty media-empty-import">
             <Upload size={20} />
             <span>drop video, audio or image files here</span>
             <span className="media-empty-sub">or pick them from your computer. files stay in this browser.</span>
@@ -392,23 +482,7 @@ function MediaTab() {
               import files
             </button>
           </div>
-        ) : visible.length === 0 ? (
-          <div className="empty">no matching assets</div>
-        ) : (
-          <div className="media-grid">
-            {visible.map((a) => (
-              <AssetCard
-                key={a.id}
-                asset={a}
-                onInsert={onInsert}
-                onRemove={onRemove}
-                swapKind={selKind}
-                swapCurrent={selAsset}
-                onSwap={onSwap}
-              />
-            ))}
-          </div>
-        )}
+        ) : null}
       </div>
 
       <Dialog

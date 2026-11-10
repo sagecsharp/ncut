@@ -193,6 +193,42 @@
   color: var(--on-accent);
 }
 
+/* the built in plain color card: the thumb is the color itself, the swatch in its corner picks it */
+.media-thumb.is-plain {
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+.media-plain-pick {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+}
+.media-plain-pick:hover,
+.media-plain-pick:focus-within {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* the color input lies over the icon, unseen: a click on the icon opens the system's color picker */
+.media-plain-pick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+/* with no imported files the import hint sits under the grid instead of filling the tab */
+.media-empty-import {
+  height: auto;
+}
+
 .media-name {
   overflow: hidden;
   text-overflow: ellipsis;

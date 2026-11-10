@@ -294,12 +294,43 @@ function baseName(p) {
   return s.slice(Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\')) + 1);
 }
 
+/** the id windows groups the app's windows, shortcuts and taskbar pin under. the same as build.appId (package.json) */
+const APP_ID = 'com.sagecsharp.ncut';
+
+/**
+ * what the windows taskbar keeps when the window is pinned (right click on the taskbar icon, pin to taskbar).
+ * the portable exe unpacks itself into a new temp folder on every start and runs the app from there: without
+ * this the pin would point into that folder, which is gone when the app closes, and the pin would be dead.
+ * the portable starter says where it really lives in PORTABLE_EXECUTABLE_FILE: the pin starts that file and
+ * takes its icon from it. the installed app and the plain folder pin the exe that runs.
+ * null = leave the window alone (not an exe, or the file is not there).
+ */
+function taskbarDetails(env, execPath, exists) {
+  const usable = (p) => {
+    if (typeof p !== 'string' || p.length < 4 || p.length > 1024) return false;
+    // a full windows path to an exe, with nothing in it that could end the quoted command
+    if (!/^(?:[a-zA-Z]:[\\/]|\\\\[^\\/]+[\\/])/.test(p) || !/\.exe$/i.test(p)) return false;
+    if (/["<>|?*\u0000-\u001f]/.test(p)) return false;
+    try {
+      return exists(p) === true;
+    } catch {
+      return false;
+    }
+  };
+  const portable = env && typeof env === 'object' ? env.PORTABLE_EXECUTABLE_FILE : undefined;
+  const exe = usable(portable) ? portable : usable(execPath) ? execPath : null;
+  if (!exe) return null;
+  return { appId: APP_ID, appIconPath: exe, appIconIndex: 0, relaunchCommand: `"${exe}"`, relaunchDisplayName: 'ncut' };
+}
+
 /** may this ipc message be believed? only the top frame of the app itself (or the dev server) */
 function isTrustedSender(frameUrl, isMainFrame, devUrl) {
   return isMainFrame === true && typeof frameUrl === 'string' && isAppUrl(frameUrl, devUrl);
 }
 
 module.exports = {
+  APP_ID,
+  taskbarDetails,
   cacheControlFor,
   SHOW_FALLBACK_MS,
   PROJECT_EXT,
