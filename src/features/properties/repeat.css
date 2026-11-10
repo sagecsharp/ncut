@@ -1,0 +1,16 @@
+.repeat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.repeat-num {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.repeat-go {
+  width: 100%;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 2px;
+}
