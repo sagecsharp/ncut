@@ -237,9 +237,15 @@ scrubbing, dragging clips and zooming, with dozens of clips.
    time than the frame the element shows (`scrubPlan.feedIsNearer`, the element's frame is known from
    requestVideoFrameCallback), and while the feed leads the element does not seek at all: it goes to the playhead
    once, `SETTLE_MS` (60 ms) after the last move, so the resting picture is the element's as before (checked: the same
-   pixels as a plain jump to that time). moving backwards, see-through and hdr video, files whose first frame is
-   not at 0 and files the decoder cannot read stay with the element alone. the feed gives its decoder and
-   canvases back after 3 s without a move and when playback starts.
+   pixels as a plain jump to that time). moving backwards no decoder can keep going, so the feed
+   decodes the stretch behind the playhead once (a webcodecs decoder of its own, from the key frame before it)
+   and keeps those frames as image bitmaps, up to 640 mb of them (`scrubPlan.BACK_BYTES`). the playhead walks
+   back through them, and when half are used up the stretch before is decoded. a faster drag keeps only every
+   nth frame, a drag too fast for that and files above 1440p (too few frames fit, and a main thread decoder is
+   no faster than the element there) get the element alone, as do files the picture is turned in. see-through
+   and hdr video, files whose first frame is not at 0 and files the decoder cannot read stay with the element
+   in both directions. the feed gives its decoders, canvases and bitmaps back after 3 s without a move and when
+   playback starts.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
    observer, object url, raf and ImageBitmap you create.
 

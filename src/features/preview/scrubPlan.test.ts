@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { FORWARD_MAX, KEY_GAIN, feedIsNearer, feedStep, frameDistance, heldLength, movedBack, startsBy } from './scrubPlan';
+import {
+  BACK_STRIDE_MAX,
+  FORWARD_MAX,
+  KEY_GAIN,
+  backFrames,
+  backStretch,
+  backStride,
+  coverIndex,
+  feedIsNearer,
+  feedStep,
+  frameDistance,
+  heldLength,
+  movedBack,
+  startsBy,
+} from './scrubPlan';
 
 const F = 1 / 60;
 const frame = (i: number) => ({ start: i * F, length: F });
@@ -125,6 +139,88 @@ describe('feedIsNearer', () => {
   it('is not without a known element frame or wanted time', () => {
     expect(feedIsNearer(frame(300), Number.NaN, 5)).toBe(false);
     expect(feedIsNearer(frame(300), 4, Number.NaN)).toBe(false);
+  });
+});
+
+describe('backFrames', () => {
+  it('keeps as many frames as the memory allows, at most 48', () => {
+    expect(backFrames(1920, 1080)).toBe(48);
+    expect(backFrames(1280, 720)).toBe(48);
+    expect(backFrames(2560, 1440)).toBe(43);
+  });
+  it('keeps none of a picture too big for enough of them, or without a size', () => {
+    expect(backFrames(3840, 2160)).toBe(0);
+    expect(backFrames(0, 0)).toBe(0);
+    expect(backFrames(Number.NaN, 1080)).toBe(0);
+  });
+});
+
+describe('backStride', () => {
+  // seconds of the file per ms: 1x is 0.001
+  it('keeps every frame of a drag at the speed of the video', () => {
+    expect(backStride(-0.001, F)).toBe(1);
+    expect(backStride(0, F)).toBe(1);
+  });
+  it('keeps every nth frame of a drag that passes n frames per picture', () => {
+    expect(backStride(-0.004, F)).toBe(4);
+    // a 30 fps file at 4x passes 2 frames per picture
+    expect(backStride(-0.004, 1 / 30)).toBe(2);
+  });
+  it('widens the step when a fill takes longer than its frames last', () => {
+    // 24 frames at 60 fps last 400 ms at 1x: a fill of 300 ms fits, one of 700 ms needs every third frame
+    expect(backStride(-0.001, F, 300, 24)).toBe(1);
+    expect(backStride(-0.001, F, 700, 24)).toBe(3);
+  });
+  it('gives up (0) on a drag too fast for the widest step', () => {
+    expect(backStride(-0.015, F)).toBe(0);
+    expect(backStride(-0.001 * BACK_STRIDE_MAX, F)).toBe(BACK_STRIDE_MAX);
+    expect(backStride(-0.001, F, 5000, 24)).toBe(0);
+  });
+});
+
+describe('backStretch', () => {
+  it('ends with the frame the playhead is in and reaches the kept frames further back', () => {
+    const s = backStretch(10, 0, 100, 24, 1, F);
+    expect(s.end).toBeCloseTo(10 + F, 9);
+    expect(s.from).toBeCloseTo(10 - 24 * F, 9);
+  });
+  it('reaches further for a playhead that moves on while the fill runs', () => {
+    // 1x for 100 ms: 0.1 s further
+    const s = backStretch(10, -0.001, 100, 24, 1, F);
+    expect(s.from).toBeCloseTo(10 - 0.1 - 24 * F, 9);
+    // never more than one stretch further
+    const far = backStretch(10, -0.05, 100, 24, 1, F);
+    expect(far.from).toBeCloseTo(10 - 2 * 24 * F, 9);
+  });
+  it('does not start before the file', () => {
+    expect(backStretch(0.1, -0.001, 100, 24, 2, F).from).toBe(0);
+  });
+});
+
+describe('coverIndex', () => {
+  const kept = [0, 1, 2, 3].map((i) => ({ timestamp: 5 + i * F, duration: F }));
+  it('finds the kept frame a time lies in', () => {
+    expect(coverIndex(kept, 5)).toBe(0);
+    expect(coverIndex(kept, 5 + 1.5 * F)).toBe(1);
+    expect(coverIndex(kept, 5 + 3.9 * F)).toBe(3);
+  });
+  it('finds none before the first, after the last, or among no frames', () => {
+    expect(coverIndex(kept, 4.99)).toBe(-1);
+    expect(coverIndex(kept, 5 + 4 * F)).toBe(-1);
+    expect(coverIndex([], 5)).toBe(-1);
+    expect(coverIndex(kept, Number.NaN)).toBe(-1);
+  });
+  it('takes a frame kept for several (a wide step) as the picture for all of them', () => {
+    const wide = [0, 1, 2].map((i) => ({ timestamp: 5 + i * 4 * F, duration: 4 * F }));
+    expect(coverIndex(wide, 5 + 3 * F)).toBe(0);
+    expect(coverIndex(wide, 5 + 4 * F)).toBe(1);
+  });
+  it('finds none in a hole between two kept frames', () => {
+    const holed = [
+      { timestamp: 5, duration: F },
+      { timestamp: 6, duration: F },
+    ];
+    expect(coverIndex(holed, 5.5)).toBe(-1);
   });
 });
 
