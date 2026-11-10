@@ -21,6 +21,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { neededImageAssets } from './imageWindow';
+import { backingSize, usePreviewQuality } from './quality';
 import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 
 type LineColor = [number, number, number, number];
@@ -152,6 +153,14 @@ export class PreviewEngine {
         else this.drawSoon();
       }),
     );
+    // preview quality: another backing size, same css size
+    this.unsubs.push(
+      usePreviewQuality.subscribe((q, prev) => {
+        if (q.quality === prev.quality) return;
+        this.applyBackingSize();
+        this.invalidate();
+      }),
+    );
     // scene view: mode switch and the free camera redraw the canvas
     this.unsubs.push(
       useUi.subscribe((s, prev) => {
@@ -222,10 +231,8 @@ export class PreviewEngine {
   private applyBackingSize(): void {
     const project = useEditor.getState().project;
     if (!project || this.cssW <= 0 || this.cssH <= 0) return;
-    const dpr = window.devicePixelRatio || 1;
-    const k = Math.min(dpr, project.width / this.cssW, project.height / this.cssH);
-    const w = Math.max(1, Math.round(this.cssW * k));
-    const h = Math.max(1, Math.round(this.cssH * k));
+    // the quality only shrinks the backing store: the css size (and with it the overlay math) stays
+    const { w, h } = backingSize(this.cssW, this.cssH, project.width, project.height, window.devicePixelRatio || 1, usePreviewQuality.getState().quality);
     // assigning width/height clears the canvas, so only touch them when they really change
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;

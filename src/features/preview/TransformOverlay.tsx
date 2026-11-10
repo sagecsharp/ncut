@@ -21,6 +21,7 @@ import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
 import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeResize, hasCrop, hitTestKept, keptBox, pointInQuad, projectRig, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { localDelta, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
 import { movableClipsAt } from './nudge';
 
@@ -86,7 +87,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
       const time = usePlayback.getState().time;
       if (!track || track.hidden || !inRange(clip, time)) return hide();
       // keyframes move the box, a 3d clip also follows the camera (which may be animated)
-      dynamic = !!clip.keyframes || !!clip.threeD || project.clips.some((c) => c.type === 'camera');
+      dynamic = !!clip.keyframes || !!clip.threeD || !!clip.parent || project.clips.some((c) => c.type === 'camera');
       const f = view.f;
       const locked = track.locked ? '1' : '0';
 
@@ -127,7 +128,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         shown3d = false;
       }
       // the outline hugs the kept rectangle of a cropped clip
-      const box = keptBox(getClipBox(project, resolveClip(clip, time)), clip.crop);
+      const box = keptBox(getClipBox(project, worldClip(project, clip, time)), clip.crop);
       // edge handles change a shape's own width / height (scale cannot): only for a plain, uncropped shape
       const edges = clip.type === 'shape' && !hasCrop(clip.crop) ? '1' : '0';
       if (el.dataset.edges !== edges) el.dataset.edges = edges;
@@ -239,8 +240,13 @@ function CameraBadge() {
 
 interface MoveItem {
   id: string;
+  /** the clip's own x / y at gesture start (what gets written) */
   x: number;
   y: number;
+  /** where the clip really is: its offsets in the world (same as x / y without a parent) */
+  wx: number;
+  wy: number;
+  clip: VisualClip;
   threeD: boolean;
   /** 2d: half extents of the kept box's bounds and the offset of its center from the clip center (canvas px) */
   hw: number;
@@ -311,7 +317,7 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
     const clip = visible[i]!;
     if (!clip.threeD) {
       i--;
-      if (!locked(clip) && hitTestKept(keptBox(getClipBox(project, resolveClip(clip, time)), clip.crop), px, py, minHit)) return clip;
+      if (!locked(clip) && hitTestKept(keptBox(getClipBox(project, worldClip(project, clip, time)), clip.crop), px, py, minHit)) return clip;
       continue;
     }
     let best: VisualClip | null = null;
@@ -435,18 +441,18 @@ function OutputOverlay() {
         const thr = SNAP_PX / f;
         if (primary.threeD) {
           // a 3d clip snaps its center to the canvas center only
-          if (Math.abs(primary.x + pd[0]) <= thr) {
-            adjX = -primary.x - pd[0];
+          if (Math.abs(primary.wx + pd[0]) <= thr) {
+            adjX = -primary.wx - pd[0];
             atX = project.width / 2;
           }
-          if (Math.abs(primary.y + pd[1]) <= thr) {
-            adjY = -primary.y - pd[1];
+          if (Math.abs(primary.wy + pd[1]) <= thr) {
+            adjY = -primary.wy - pd[1];
             atY = project.height / 2;
           }
         } else {
           // a 2d clip snaps its center and its edges (of the kept, rotated bounds) to the canvas center and edges
-          const sx = snapAxis(project.width / 2 + primary.x + pd[0] + primary.ox, primary.hw, project.width, thr);
-          const sy = snapAxis(project.height / 2 + primary.y + pd[1] + primary.oy, primary.hh, project.height, thr);
+          const sx = snapAxis(project.width / 2 + primary.wx + pd[0] + primary.ox, primary.hw, project.width, thr);
+          const sy = snapAxis(project.height / 2 + primary.wy + pd[1] + primary.oy, primary.hh, project.height, thr);
           if (sx) {
             adjX = sx.adj;
             atX = sx.at;
@@ -460,8 +466,10 @@ function OutputOverlay() {
       showGuides(atX, atY);
       g.items.forEach((it, i) => {
         const d = deltas[i]!;
-        store.setClipValue(it.id, 'x', time, Math.round((it.x + d[0] + adjX) * 100) / 100, { skipHistory: true });
-        store.setClipValue(it.id, 'y', time, Math.round((it.y + d[1] + adjY) * 100) / 100, { skipHistory: true });
+        // the pointer moves the clip in the world: an attached clip turns that into its own x / y
+        const l = localDelta(project, it.clip, time, d[0] + adjX, d[1] + adjY);
+        store.setClipValue(it.id, 'x', time, Math.round((it.x + l.x) * 100) / 100, { skipHistory: true });
+        store.setClipValue(it.id, 'y', time, Math.round((it.y + l.y) * 100) / 100, { skipHistory: true });
       });
       return;
     }
@@ -485,8 +493,10 @@ function OutputOverlay() {
       if (r.height !== undefined) patch.height = Math.round(r.height * 100) / 100;
       // the opposite edge stays fixed in canvas space: the center follows. x / y go through setClipValue (keyframes)
       store.updateClip(g.id, patch as unknown as ClipPatch, { skipHistory: true });
-      store.setClipValue(g.id, 'x', time, Math.round((g.x0 + r.dx) * 100) / 100, { skipHistory: true });
-      store.setClipValue(g.id, 'y', time, Math.round((g.y0 + r.dy) * 100) / 100, { skipHistory: true });
+      const rawClip = project.clips.find((c) => c.id === g.id);
+      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, r.dx, r.dy) : { x: r.dx, y: r.dy };
+      store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
+      store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
       return;
     }
     if (g.kind === 'scale') {
@@ -536,11 +546,13 @@ function OutputOverlay() {
       // only a clip that is on screen now (it has a selection box) can be dragged by its handles
       if (raw && isVisualClip(raw) && track && !track.locked && !track.hidden && inRangeAt(raw, time)) {
         const clip = resolveClip(raw, time);
-        const box = getClipBox(project, clip);
+        // the box sits at the world pose; the values that get written stay the clip's own
+        const world = worldClip(project, raw, time);
+        const box = getClipBox(project, world);
         let cx = box.cx;
         let cy = box.cy;
         if (clip.threeD) {
-          const c = projectPoint(rig, box.cx, box.cy, clip.transform.z ?? 0, project.width, project.height);
+          const c = projectPoint(rig, box.cx, box.cy, world.transform.z ?? 0, project.width, project.height);
           if (!c.visible) return;
           cx = c.x;
           cy = c.y;
@@ -555,7 +567,7 @@ function OutputOverlay() {
             startY: e.clientY,
             id: clip.id,
             edge,
-            start: { cx: box.cx, cy: box.cy, rotation: box.rotation, bw: box.width, bh: box.height, scale: clip.transform.scale },
+            start: { cx: box.cx, cy: box.cy, rotation: box.rotation, bw: box.width, bh: box.height, scale: world.transform.scale },
             x0: clip.transform.x,
             y0: clip.transform.y,
             started: false,
@@ -611,16 +623,18 @@ function OutputOverlay() {
     const items: MoveItem[] = [];
     // selected clips that are not on screen at the playhead stay out of the drag: moving them would write
     // a stray keyframe outside their range
-    for (const raw of movableClipsAt(project, sel, time)) {
+    // (a clip whose parent is dragged too rides along with it and is not written)
+    for (const raw of withoutRidingChildren(project, movableClipsAt(project, sel, time))) {
       const clip = resolveClip(raw, time);
-      const z = clip.transform.z ?? 0;
+      const world = worldClip(project, raw, time);
+      const z = world.transform.z ?? 0;
       const p0 = raw.threeD ? rayPlane(ray.origin, ray.dir, [0, 0, z], [0, 0, 1]) : null;
       let hw = 0;
       let hh = 0;
       let ox = 0;
       let oy = 0;
       if (!raw.threeD) {
-        const full = getClipBox(project, clip);
+        const full = getClipBox(project, world);
         const kept = keptBox(full, raw.crop);
         const b = boxBounds(kept);
         hw = b.hw;
@@ -628,7 +642,7 @@ function OutputOverlay() {
         ox = kept.cx - full.cx;
         oy = kept.cy - full.cy;
       }
-      items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, threeD: !!raw.threeD, hw, hh, ox, oy, p0, z });
+      items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, wx: world.transform.x, wy: world.transform.y, clip: raw, threeD: !!raw.threeD, hw, hh, ox, oy, p0, z });
     }
     if (items.length === 0) return;
     gestureRef.current = { kind: 'move', pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, started: false, primary: hit.id, items, rig };

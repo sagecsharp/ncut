@@ -4,6 +4,10 @@ import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from
 import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
+import { worldClip } from './attached';
+import { isVisualClip } from '../../types';
+import type { Clip } from '../../types';
+import { homeDistance } from '../../engine/scene3d/camera';
 import type { Crop, Project, VisualClip } from '../../types';
 
 let rigProject: Project | null = null;
@@ -47,7 +51,8 @@ export function keptPlaneModel(model: Mat4, crop: Crop | null | undefined, shape
 
 /** the projected outline of a (keyframe resolved) 3d clip through a camera rig */
 export function clipQuad(project: Project, raw: VisualClip, time: number, rig: CameraRig, out?: Quad): Quad {
-  const clip = resolveClip(raw, time);
+  // an attached clip is drawn at its pose in the world: outline and handles sit there too
+  const clip = worldClip(project, raw, time);
   const box = getClipBox(project, clip);
   const model = keptPlaneModel(clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye), clip.crop, clip.shape);
   const world = planeCorners(model);
@@ -286,4 +291,20 @@ export function rotateValue(r0: number, accumulated: number, shift: boolean): nu
 export function asScenePlane(clip: VisualClip): VisualClip {
   if (clip.threeD) return clip;
   return { ...clip, threeD: true, lookAt: undefined, transform: { ...clip.transform, z: 0, rotX: 0, rotY: 0 } };
+}
+
+/**
+ * the center of a clip in the scene world (canvas px, z): a picture at its world pose (a 2d one lies on the canvas
+ * plane), a camera clip at its eye. null for clips that have no place (audio, effects). used for the line from an
+ * attached clip to its parent.
+ */
+export function sceneCenter(project: Project, clip: Clip, time: number): Vec3 | null {
+  if (clip.type === 'camera') {
+    const r = resolveClip(clip, time);
+    return [project.width / 2 + r.x, project.height / 2 + r.y, -homeDistance(project.height) + r.z];
+  }
+  if (!isVisualClip(clip)) return null;
+  const w = worldClip(project, asScenePlane(clip), time);
+  const box = getClipBox(project, w);
+  return [box.cx, box.cy, w.transform.z ?? 0];
 }

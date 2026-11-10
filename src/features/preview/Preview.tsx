@@ -11,10 +11,12 @@ import { useSceneCamera } from './sceneCamera';
 import type { ViewPreset } from './sceneCamera';
 import { useSceneTool, TOOL_KEYS } from './sceneTool';
 import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
+import { localDelta, withoutRidingChildren } from './attached';
 import { GuidesOverlay } from './GuidesOverlay';
 import { useGuides } from './guides';
 import { frameFileName, movableClipsAt, nudgeDelta } from './nudge';
 import { PreviewEngine } from './PreviewEngine';
+import { QUALITIES, parseQuality, usePreviewQuality } from './quality';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
 import './preview.css';
@@ -43,6 +45,8 @@ export function Preview() {
   const [fullscreen, setFullscreen] = useState(false);
   const mode = useUi((s) => s.previewMode);
   const setMode = useUi((s) => s.setPreviewMode);
+  const quality = usePreviewQuality((s) => s.quality);
+  const setQuality = usePreviewQuality((s) => s.setQuality);
   const guidesOn = useGuides((s) => s.on);
   const toggleGuides = useGuides((s) => s.toggle);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
@@ -156,7 +160,7 @@ export function Preview() {
     const project = store.project;
     if (!project || store.selection.length === 0) return;
     const time = usePlayback.getState().time;
-    const targets = movableClipsAt(project, store.selection, time);
+    const targets = withoutRidingChildren(project, movableClipsAt(project, store.selection, time));
     if (targets.length === 0) return;
     e.preventDefault();
     // the first press is one undo step, held-key repeats join it
@@ -165,8 +169,10 @@ export function Preview() {
     const inner = targets.length > 1 ? { skipHistory: true } : opts;
     for (const c of targets) {
       const t = resolveClip(c, time).transform;
-      if (d[0] !== 0) store.setClipValue(c.id, 'x', time, t.x + d[0], inner);
-      if (d[1] !== 0) store.setClipValue(c.id, 'y', time, t.y + d[1], inner);
+      // right is right on screen, also for a clip attached to a turned or scaled parent
+      const l = localDelta(project, c, time, d[0], d[1]);
+      if (d[0] !== 0) store.setClipValue(c.id, 'x', time, t.x + l.x, inner);
+      if (d[1] !== 0) store.setClipValue(c.id, 'y', time, t.y + l.y, inner);
     }
   };
 
@@ -240,6 +246,19 @@ export function Preview() {
         <button className="icon-btn" title="save frame as png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
           <ImageIcon size={14} />
         </button>
+        <select
+          className="select input-sm preview-quality"
+          value={quality}
+          title="preview quality: lower is faster, the export is not affected"
+          aria-label="preview quality"
+          onChange={(e) => setQuality(parseQuality(e.target.value))}
+        >
+          {QUALITIES.map((q) => (
+            <option key={q.id} value={q.id} title={q.title}>
+              {q.id}
+            </option>
+          ))}
+        </select>
         <div className="preview-seg" role="group" aria-label="preview mode">
           {(['output', 'scene'] as const).map((m) => (
             <button

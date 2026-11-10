@@ -393,6 +393,10 @@
 }
 
 /* camera -> target line in the scene view */
+.scene-link-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+}
 .scene-target-under {
   stroke: var(--on-accent);
   stroke-width: 3;
@@ -476,4 +480,9 @@
 .scene-scale.is-active .scene-axis-tip {
   fill: var(--accent);
   stroke: var(--accent);
+}
+
+.preview-quality {
+  width: auto;
+  max-width: 84px;
 }
