@@ -46,6 +46,8 @@ async function run(job: SegmentJob): Promise<void> {
       blobOf: (id) => blobs.get(id),
       // an <img> does not exist here: a picture only it can read sends the export back to the main thread
       strictImages: true,
+      // the same for a video this worker cannot decode: no file with a clip missing
+      strictVideo: true,
       signal: stop.signal,
       onWarning: (message) => post({ type: 'warning', message }),
       onProgress: (done) => {

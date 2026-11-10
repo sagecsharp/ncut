@@ -43,6 +43,8 @@ export interface SegmentJob {
   capture?: number[];
   /** benchmarks: which kind of encoder to ask for (missing = the browser decides, as on one thread) */
   acceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  /** asset ids of video files the main thread cannot decode either (mediaCheck.ts): skipping them here is no difference */
+  lenient?: string[];
 }
 
 export interface SegmentStats {
@@ -72,6 +74,8 @@ export interface SegmentEnv {
   blobOf: (assetId: string) => Blob | undefined;
   loadImageElement?: (assetId: string) => Promise<DrawSource | null>;
   strictImages?: boolean;
+  /** true = a video that cannot be decoded here is an error instead of a skipped clip (see sources.ts) */
+  strictVideo?: boolean;
   onWarning?: (message: string) => void;
   /** frames of this part that are done (called often: throttle on the receiving side) */
   onProgress?: (framesDone: number) => void;
@@ -136,6 +140,8 @@ async function renderGifSegment(project: Project, job: SegmentJob, env: SegmentE
     blobOf: env.blobOf,
     loadImageElement: env.loadImageElement,
     strictImages: env.strictImages,
+    strictVideo: env.strictVideo,
+    lenient: job.lenient,
     onWarning: env.onWarning,
     signal: env.signal,
     stats,
@@ -196,6 +202,8 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     blobOf: env.blobOf,
     loadImageElement: env.loadImageElement,
     strictImages: env.strictImages,
+    strictVideo: env.strictVideo,
+    lenient: job.lenient,
     onWarning: env.onWarning,
     signal: env.signal,
     stats,

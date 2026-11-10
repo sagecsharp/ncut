@@ -416,6 +416,7 @@ async function fileCheck(project: Project, o: FileCheckOptions) {
       keyFrames: keys.length,
       widestKeyGap: widest,
       firstKeys: keys.slice(0, 8),
+      keys,
       codec: config?.codec ?? '',
       colorSpace: config?.colorSpace ? JSON.stringify(config.colorSpace) : '',
       duration: Math.round((await input.computeDuration()) * 1000) / 1000,

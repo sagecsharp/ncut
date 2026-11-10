@@ -47,6 +47,8 @@ import { type TimeRange, clampRange, rangeFrameCount } from './range';
 import { createFrameSources } from './sources';
 import { KEYFRAME_SECONDS, unpackGifFrames } from './segment';
 import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './parallel';
+import { checkPartsMedia } from './mediaCheck';
+import type { PartsMedia } from './mediaCheck';
 import type { SegmentPool } from './parallel';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { MIX_CHANNELS, MIX_SAMPLE_RATE, createAudioMixer, sliceAudioBuffer } from './audioMix';
@@ -142,7 +144,10 @@ export interface ExportHooks {
   onFrame?: (index: number, picture: OffscreenCanvas | ImageBitmap) => void;
   /** the only frames onFrame wants (a worker then sends a copy of just those) */
   captureFrames?: readonly number[];
-  /** rendering in parts failed and the export started over on one thread */
+  /**
+   * rendering in parts failed and the export started over in a simpler way. progress starts again, and frames
+   * onFrame saw before this are not the ones in the file (they come again).
+   */
   onFallback?: (reason: string) => void;
 }
 
@@ -450,9 +455,17 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
   const captureSet = hooks.captureFrames ? new Set(hooks.captureFrames) : null;
 
+  // looked at once, and only when an export is about to be split for workers
+  let mediaCheck: Promise<PartsMedia> | null = null;
+  const partsMedia = () => (mediaCheck ??= checkPartsMedia(project, getAssetBlob));
+
   // ---- the fast way: parts of the timeline rendered and encoded at once, joined here in order ----
-  const runParts = async (workers: number, onMain: boolean): Promise<Blob> => {
+  const runParts = async (workers: number, onMain: boolean, lenient: readonly string[]): Promise<Blob> => {
     const segments = planSegments(totalFrames, fps, workers);
+    // the bar moves with the frames the workers finish and, for the last tenth, with the frames in the file
+    let rendered = 0;
+    let joined = 0;
+    const tell = () => report('video', 0.05 + 0.9 * ((rendered * 0.9 + joined * 0.1) / totalFrames), rendered, false);
     const audio = await openAudio();
     let pool: SegmentPool | null = null;
     let output: Output | null = null;
@@ -493,6 +506,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           rangeStart,
           totalFrames,
           ...(options.acceleration ? { acceleration: options.acceleration } : {}),
+          ...(lenient.length > 0 ? { lenient: [...lenient] } : {}),
         },
         segments,
         workers,
@@ -506,14 +520,16 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
         capture: hooks.onFrame && captureSet ? [...captureSet] : undefined,
         onCapture: (frame, picture) => hooks.onFrame?.(frame, picture),
         onWarning,
-        onFrames: (done) => report('video', 0.05 + 0.9 * (done / totalFrames), done, false),
+        onFrames: (done) => {
+          rendered = done;
+          tell();
+        },
         signal,
       });
       stats.setupMs = performance.now() - startedAt;
 
       const frameDur = 1 / fps;
       let config: VideoDecoderConfig | null = null;
-      let joined = 0;
       for (let s = 0; s < segments.length; s++) {
         const part = await pool.result(s);
         if (signal?.aborted) throw abortError();
@@ -540,11 +556,17 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
             joined++;
             count++;
             await feedAudio(i / fps + 1.5);
+            // a part is thousands of packets: cancel and the ui get their turn inside it too
+            if (signal?.aborted) throw abortError();
+            tell();
+            if (performance.now() - lastYield > 14) await yieldToUi();
           }
           if (count !== part.to - part.from) throw new Error('a rendered part lost frames');
         } finally {
           input.dispose();
         }
+        // its bytes are in the file now: let them go, and let the workers start a part further ahead
+        pool.release(s);
         stats.muxMs += performance.now() - m0 - (stats.audioMs - audioBefore);
         stats.decodeMs += part.stats.decodeMs;
         stats.renderMs += part.stats.renderMs;
@@ -597,11 +619,20 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     const onMain = !!options.partsOnMain;
     // every frame is wanted by the caller: only this thread can hand over the canvas itself
     const watched = !!hooks.onFrame && !captureSet;
-    const able =
+    let able =
       typeof OffscreenCanvas !== 'undefined' && !watched && (onMain || (typeof Worker !== 'undefined' && !needsMainThread(project)));
-    if (workers > 1 && able && planSegments(totalFrames, fps, workers).length > 1) {
+    able = able && workers > 1 && planSegments(totalFrames, fps, workers).length > 1;
+    let lenient: readonly string[] = [];
+    if (able && !onMain) {
+      // a picture only an <img> can show keeps the export here; a video nothing can decode is skipped everywhere
+      const media = await partsMedia();
+      if (signal?.aborted) throw abortError();
+      if (!media.images) able = false;
+      lenient = media.lenient;
+    }
+    if (able) {
       try {
-        return await runParts(workers, onMain);
+        return await runParts(workers, onMain, lenient);
       } catch (err) {
         if (signal?.aborted || isAbort(err)) throw abortError();
         // anything else: the export is done again the plain way, so the user still gets the file
@@ -682,7 +713,9 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       const hasVideo = project.clips.some((c) => c.type === 'video');
       const partsAble =
         typeof OffscreenCanvas !== 'undefined' && typeof Worker !== 'undefined' && !hooks.onFrame && !hasVideo && !needsMainThread(project);
-      if (mode === 'parts' && partWorkers > 1 && (partsAble || options.partsOnMain)) {
+      const partsOk = options.partsOnMain || (partsAble && mode === 'parts' && partWorkers > 1 && (await partsMedia()).images);
+      if (signal?.aborted) throw abortError();
+      if (mode === 'parts' && partWorkers > 1 && partsOk) {
         const segments = planGifParts(totalFrames, partWorkers);
         const fontKit = options.partsOnMain ? null : await collectFontKit(project);
         if (signal?.aborted) throw abortError();
@@ -711,6 +744,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
             const frames = unpackGifFrames(part.buffer);
             if (part.from !== i || frames.length !== part.to - part.from) throw new Error('a rendered part lost frames');
             for (const lzw of frames) encoder.addEncodedFrame(lzw, gifDelayCs(i++, fps));
+            parts.release(s);
             stats.decodeMs += part.stats.decodeMs;
             stats.renderMs += part.stats.renderMs;
             stats.encodeMs += part.stats.encodeMs;

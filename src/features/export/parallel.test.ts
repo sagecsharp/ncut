@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Project, Track, VideoClip } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
-import { MAX_SEGMENT_SECONDS, MIN_PARALLEL_FRAMES, pickWorkers, planSegments, sameDecoderConfig } from './parallel';
+import {
+  MAX_SEGMENT_SECONDS,
+  MIN_PARALLEL_FRAMES,
+  keyFrameIndex,
+  keyGroupOf,
+  pickWorkers,
+  planSegments,
+  runAhead,
+  sameDecoderConfig,
+} from './parallel';
 import { clipTimestamps, heldAtFrame } from './sources';
 import { neededForFrame } from './reach';
 import { frameTime } from './range';
@@ -45,9 +54,78 @@ describe('planSegments', () => {
     expect(parts[parts.length - 1]!.to).toBe(250);
     for (const p of parts) expect(p.to - p.from).toBeGreaterThanOrEqual(60);
   });
+  it('cuts where one encoder starts a key frame group, also at frame rates that are not whole numbers', () => {
+    for (const fps of [23.976, 29.97, 59.94, 119.88, 12.5, 24, 60, 0.7, 0.3]) {
+      for (const total of [481, 1000, 5000, 36001]) {
+        for (const workers of [2, 3, 8]) {
+          const parts = planSegments(total, fps, workers);
+          expect(parts[0]!.from).toBe(0);
+          expect(parts[parts.length - 1]!.to).toBe(total);
+          for (let k = 1; k < parts.length; k++) {
+            const from = parts[k]!.from;
+            expect(from).toBe(parts[k - 1]!.to);
+            // the frame before it belongs to the group before: one encoder writes a key frame exactly here
+            expect(keyGroupOf(from, fps)).toBeGreaterThan(keyGroupOf(from - 1, fps));
+          }
+          // a tail shorter than half a group joins the last part
+          for (const p of parts) expect(p.to - p.from).toBeLessThanOrEqual(Math.ceil((MAX_SEGMENT_SECONDS + 1) * fps) + 1);
+        }
+      }
+    }
+  });
+  it('is the old plan at whole frame rates', () => {
+    // the plan before key frame groups were counted: lengths of round(2 * fps) frames
+    const old = (total: number, fps: number, workers: number) => {
+      const gop = Math.max(1, Math.round(2 * fps));
+      const cap = Math.max(gop, Math.floor((MAX_SEGMENT_SECONDS * fps) / gop) * gop);
+      const len = Math.max(gop, Math.min(cap, Math.ceil(total / workers / gop) * gop));
+      const out: Array<{ from: number; to: number }> = [];
+      for (let from = 0; from < total; from += len) out.push({ from, to: Math.min(total, from + len) });
+      if (out.length > 1 && out[out.length - 1]!.to - out[out.length - 1]!.from < gop / 2) {
+        out.pop();
+        out[out.length - 1]!.to = total;
+      }
+      return out;
+    };
+    for (const fps of [1, 12, 24, 25, 30, 50, 60, 120, 144, 240, 12.5]) {
+      for (const total of [1, 50, 119, 120, 121, 250, 480, 599, 3600, 36001, 144000]) {
+        for (const workers of [1, 2, 3, 4, 8]) expect(planSegments(total, fps, workers)).toEqual(old(total, fps, workers));
+      }
+    }
+  });
   it('is empty for nothing and one part for less than a key frame interval', () => {
     expect(planSegments(0, 60, 3)).toEqual([]);
     expect(planSegments(50, 60, 3)).toEqual([{ from: 0, to: 50 }]);
+  });
+});
+
+describe('keyFrameIndex', () => {
+  it('is the first frame of a group', () => {
+    for (const fps of [23.976, 24, 29.97, 30, 59.94, 60, 240, 0.7]) {
+      let last = -1;
+      for (let k = 0; k < 400; k++) {
+        const i = keyFrameIndex(k, fps);
+        expect(keyGroupOf(i, fps)).toBeGreaterThanOrEqual(k);
+        if (i > 0) expect(keyGroupOf(i - 1, fps)).toBeLessThan(k);
+        expect(i).toBeGreaterThanOrEqual(last);
+        last = i;
+      }
+    }
+    expect(keyFrameIndex(0, 60)).toBe(0);
+    expect(keyFrameIndex(1, 60)).toBe(120);
+    expect(keyFrameIndex(3, 30)).toBe(180);
+    // 29.97: the groups are 60, 60, 60, ... frames with a 59 in between
+    expect(keyFrameIndex(1, 29.97)).toBe(60);
+    expect(keyFrameIndex(17, 29.97)).toBe(1019);
+  });
+});
+
+describe('runAhead', () => {
+  it('keeps a few parts ahead, never less than two', () => {
+    expect(runAhead(1)).toBe(2);
+    expect(runAhead(3)).toBe(6);
+    expect(runAhead(8)).toBe(16);
+    expect(runAhead(0)).toBe(2);
   });
 });
 

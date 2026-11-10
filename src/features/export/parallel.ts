@@ -22,34 +22,66 @@ export const MIN_PARALLEL_FRAMES = 480;
 export const WARMUP_FRAMES = 24;
 /** a worker that has not started after this long is treated as broken */
 const WORKER_START_MS = 20_000;
+/** how often the workers are looked at, and how long one may stay silent in the middle of a part */
+const WATCH_MS = 5_000;
+const STALL_MS = 120_000;
 
 export interface Span {
   from: number;
   to: number;
 }
 
+/** the key frame group of a frame: the rule both ways of exporting drive the encoder by (segment.ts keyStep) */
+export function keyGroupOf(frame: number, fps: number): number {
+  return Math.floor(frame / fps / KEYFRAME_SECONDS);
+}
+
 /**
- * the parts of an export for a number of workers: equal lengths that are whole key frame intervals (every part
- * starts with a key frame anyway, so the file keeps its steady key frame rhythm), at most MAX_SEGMENT_SECONDS each.
- * a short tail joins the part before it.
+ * the first frame of key frame group k, which is where one encoder writes that group's key frame. not k * 2 * fps
+ * rounded: at 29.97 or 23.976 fps the groups are not all the same length.
+ */
+export function keyFrameIndex(k: number, fps: number): number {
+  if (!(k > 0) || !(fps > 0)) return 0;
+  let i = Math.max(0, Math.round(k * KEYFRAME_SECONDS * fps));
+  while (keyGroupOf(i, fps) < k) i++;
+  while (i > 0 && keyGroupOf(i - 1, fps) >= k) i--;
+  return i;
+}
+
+/**
+ * the parts of an export for a number of workers: about equal lengths of whole key frame groups, cut exactly
+ * where one encoder would start a group (every part starts with a key frame anyway, so the file keeps the key
+ * frames of a one-thread export), at most MAX_SEGMENT_SECONDS each. a short tail joins the part before it.
  */
 export function planSegments(totalFrames: number, fps: number, workers: number): Span[] {
   const total = Math.max(0, Math.floor(totalFrames));
   if (total === 0) return [];
-  const gop = Math.max(1, Math.round(KEYFRAME_SECONDS * fps));
-  const cap = Math.max(gop, Math.floor((MAX_SEGMENT_SECONDS * fps) / gop) * gop);
-  const wanted = Math.ceil(total / Math.max(1, Math.floor(workers)) / gop) * gop;
-  const len = Math.max(gop, Math.min(cap, wanted));
+  if (!(fps > 0)) return [{ from: 0, to: total }];
+  const groups = keyGroupOf(total - 1, fps) + 1;
+  const cap = Math.max(1, Math.floor(MAX_SEGMENT_SECONDS / KEYFRAME_SECONDS));
+  const per = Math.max(1, Math.min(cap, Math.ceil(groups / Math.max(1, Math.floor(workers)))));
   const out: Span[] = [];
-  for (let from = 0; from < total; from += len) out.push({ from, to: Math.min(total, from + len) });
+  let from = 0;
+  for (let k = per; from < total; k += per) {
+    const to = Math.min(total, keyFrameIndex(k, fps));
+    // below half a frame per second several groups start on one frame
+    if (to <= from) continue;
+    out.push({ from, to });
+    from = to;
+  }
   if (out.length > 1) {
     const last = out[out.length - 1]!;
-    if (last.to - last.from < gop / 2) {
+    if (last.to - last.from < (KEYFRAME_SECONDS * fps) / 2) {
       out.pop();
       out[out.length - 1]!.to = total;
     }
   }
   return out;
+}
+
+/** how many parts past the one being joined may be rendered: enough that no worker waits, little enough to bound the memory */
+export function runAhead(workers: number): number {
+  return Math.max(2, 2 * Math.max(1, Math.floor(workers)));
 }
 
 /**
@@ -130,8 +162,13 @@ export interface SegmentPoolInit {
 }
 
 export interface SegmentPool {
-  /** the part at an index of `segments`. rejects when any part failed (the whole pool is stopped then). */
+  /**
+   * the part at an index of `segments`. rejects when any part failed (the whole pool is stopped then).
+   * ask in order: asking for a part says the ones before it are joined.
+   */
   result(index: number): Promise<SegmentResult>;
+  /** the caller has joined this part: its bytes are let go and the workers may start a part further ahead */
+  release(index: number): void;
   /** how long each worker took to start (ms), for the stats */
   startTimes(): number[];
   /** stop everything and free the workers */
@@ -147,7 +184,7 @@ interface Deferred {
 
 export function startSegments(init: SegmentPoolInit): SegmentPool {
   const { segments } = init;
-  const deferred: Deferred[] = segments.map(() => {
+  const deferred: Array<Deferred | null> = segments.map(() => {
     let resolve!: (r: SegmentResult) => void;
     let reject!: (e: unknown) => void;
     const promise = new Promise<SegmentResult>((res, rej) => {
@@ -164,6 +201,21 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
   const workers: Worker[] = [];
   let failed = false;
   let next = 0;
+  // parts [0, consumed) are joined. only parts below consumed + ahead are handed out, so a long export never
+  // holds more than a few finished parts in memory
+  let consumed = 0;
+  const count = Math.max(1, Math.min(init.workers, segments.length));
+  const ahead = runAhead(count);
+  const waiting: Array<() => void> = [];
+  const mayStart = () => next < consumed + ahead;
+  const advance = (to: number) => {
+    if (to <= consumed) return;
+    consumed = to;
+    for (const wake of waiting.splice(0)) wake();
+  };
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let watch: ReturnType<typeof setInterval> | null = null;
+  let readyCount = 0;
   const poolStart = performance.now();
   const startMs: number[] = [];
   const done = new Array<number>(segments.length).fill(0);
@@ -176,24 +228,30 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
   };
 
   const settle = (index: number, r: SegmentResult) => {
-    const d = deferred[index]!;
-    if (d.settled) return;
+    const d = deferred[index];
+    if (!d || d.settled) return;
     d.settled = true;
-    progress(index, segments[index]!.to - segments[index]!.from);
+    // the part is handed over first: a progress listener that throws must not leave it hanging
     d.resolve(r);
+    progress(index, segments[index]!.to - segments[index]!.from);
   };
 
   function fail(err: unknown): void {
     if (failed) return;
     failed = true;
     stop.abort();
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    if (watch !== null) clearInterval(watch);
+    watch = null;
     for (const w of workers) w.terminate();
     workers.length = 0;
     for (const d of deferred) {
-      if (d.settled) continue;
+      if (!d || d.settled) continue;
       d.settled = true;
       d.reject(err);
     }
+    for (const wake of waiting.splice(0)) wake();
   }
 
   const jobAt = (index: number): SegmentJob => {
@@ -205,6 +263,7 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
 
   const runOnMain = async () => {
     for (;;) {
+      while (!failed && next < segments.length && !mayStart()) await new Promise<void>((wake) => waiting.push(wake));
       if (failed) return;
       const index = next++;
       if (index >= segments.length) return;
@@ -226,24 +285,55 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
     }
   };
 
+  /** per worker: the part it is on (-1 = none) and whether it was heard from since the last look */
+  interface Watched {
+    current: number;
+    heard: boolean;
+    quiet: number;
+  }
+  const watched = new Map<Worker, Watched>();
+
   const runWorker = (worker: Worker) => {
-    let current = -1;
+    const state: Watched = { current: -1, heard: true, quiet: 0 };
+    watched.set(worker, state);
     const send = (m: ToWorker) => worker.postMessage(m);
     const takeNext = () => {
-      if (failed) return;
-      const index = next++;
-      if (index >= segments.length) {
-        current = -1;
+      state.current = -1;
+      if (failed || next >= segments.length) return;
+      if (!mayStart()) {
+        waiting.push(takeNext);
         return;
       }
-      current = index;
+      const index = next++;
+      state.current = index;
+      state.quiet = 0;
       send({ type: 'segment', job: jobAt(index) });
     };
-    const startTimer = setTimeout(() => fail(new Error('an export worker did not start')), WORKER_START_MS);
+    const startTimer = setTimeout(() => {
+      timers.delete(startTimer);
+      if (failed) return;
+      // the others are at work already: go on without this one instead of throwing their work away
+      if (readyCount > 0) {
+        console.warn('[export] an export worker did not start, going on without it');
+        worker.terminate();
+        watched.delete(worker);
+        const at = workers.indexOf(worker);
+        if (at >= 0) workers.splice(at, 1);
+        return;
+      }
+      fail(new Error('an export worker did not start'));
+    }, WORKER_START_MS);
+    timers.add(startTimer);
+    const started = () => {
+      clearTimeout(startTimer);
+      timers.delete(startTimer);
+    };
     worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const m = e.data;
+      state.heard = true;
       if (m.type === 'ready') {
-        clearTimeout(startTimer);
+        started();
+        readyCount++;
         // text in another font than this thread draws would be a different picture: not acceptable
         const lost = m.missingFonts.filter((f) => !init.missingFonts?.includes(f));
         startMs.push(Math.round(performance.now() - poolStart));
@@ -263,16 +353,15 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
         settle(m.result.id, m.result);
         takeNext();
       } else if (m.type === 'error') {
-        clearTimeout(startTimer);
+        started();
         fail(new Error(m.message));
       }
     };
     worker.onerror = (e) => {
-      clearTimeout(startTimer);
+      started();
       fail(new Error(`an export worker stopped${e.message ? `: ${e.message}` : ''}`));
     };
     worker.onmessageerror = () => fail(new Error('an export worker sent something unreadable'));
-    void current;
     // only the files the project shows are handed over (a Blob is a handle, not a copy)
     const blobs: Array<[string, Blob]> = [];
     const seen = new Set<string>();
@@ -285,7 +374,6 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
     send({ type: 'init', project: init.project, blobs, fontKit: init.fontKit });
   };
 
-  const count = Math.max(1, Math.min(init.workers, segments.length));
   if (init.onMain) {
     for (let k = 0; k < count; k++) void runOnMain();
   } else {
@@ -295,13 +383,36 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
         workers.push(worker);
         runWorker(worker);
       }
+      // a worker that hangs in the middle of a part would hang the export: counted in looks, not in wall time, so
+      // a sleeping machine does not look like a stall
+      watch = setInterval(() => {
+        for (const state of watched.values()) {
+          if (state.current < 0 || state.heard) {
+            state.heard = false;
+            state.quiet = 0;
+            continue;
+          }
+          state.quiet++;
+          if (state.quiet * WATCH_MS >= STALL_MS) {
+            fail(new Error('an export worker stopped answering'));
+            return;
+          }
+        }
+      }, WATCH_MS);
     } catch (err) {
       fail(err);
     }
   }
 
   return {
-    result: (index) => deferred[index]?.promise ?? Promise.reject(new Error('no such part')),
+    result: (index) => {
+      advance(index);
+      return deferred[index]?.promise ?? Promise.reject(new Error('no such part'));
+    },
+    release: (index) => {
+      if (index >= 0 && index < deferred.length) deferred[index] = null;
+      advance(index + 1);
+    },
     startTimes: () => startMs.slice(),
     dispose: () => {
       init.signal?.removeEventListener('abort', onOuterAbort);

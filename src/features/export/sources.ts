@@ -107,6 +107,14 @@ export interface FrameSourcesInit extends FrameGrid {
   loadImageElement?: (assetId: string) => Promise<DrawSource | null>;
   /** true = a picture that cannot be read is an error instead of a skipped clip (a worker hands the export back to the main thread) */
   strictImages?: boolean;
+  /**
+   * true = a video that cannot be decoded is an error instead of a skipped clip or a held frame. a worker sets it:
+   * with several decoders open at once it may fail where the main thread alone would not, and the export is then
+   * done there instead of coming out with a clip missing.
+   */
+  strictVideo?: boolean;
+  /** asset ids strictVideo does not apply to (the main thread cannot decode them either) */
+  lenient?: readonly string[];
   onWarning?: (message: string) => void;
   signal?: AbortSignal;
   /** decodeMs grows by the time spent waiting for decoded frames */
@@ -127,6 +135,9 @@ function abortError(): DOMException {
   return new DOMException('export cancelled', 'AbortError');
 }
 
+/** a video failed where strictVideo is set */
+export class StrictVideoError extends Error {}
+
 export function createFrameSources(init: FrameSourcesInit): FrameSources {
   const { project, fps, rangeStart, totalFrames, blobOf, onWarning, signal } = init;
   const from = Math.max(0, init.from ?? 0);
@@ -137,6 +148,8 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
   const inputs = new Map<string, Input>();
   const feeds = new Map<string, VideoFeed>();
   const images = new Map<string, DrawSource>();
+
+  const strictFor = (assetId: string) => !!init.strictVideo && !init.lenient?.includes(assetId);
 
   const resolver: SourceResolver = (clip: VideoClip | ImageClip) => {
     if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
@@ -265,6 +278,8 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
               feed.current = { image: c, width: c.width, height: c.height };
             }
           } catch {
+            if (signal?.aborted) throw abortError();
+            if (strictFor(clip.assetId)) throw new StrictVideoError(`video "${asset.name}" cannot be decoded here`);
             onWarning?.(`could not decode video "${asset.name}", the clip is skipped`);
           }
           feed.done = true;
@@ -275,7 +290,9 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
           }
         }
         feeds.set(clip.id, feed);
-      } catch {
+      } catch (err) {
+        if (signal?.aborted || err instanceof StrictVideoError) throw err;
+        if (strictFor(clip.assetId)) throw new StrictVideoError(`video "${asset.name}" cannot be decoded here`);
         onWarning?.(`could not decode video "${asset.name}", the clip is skipped`);
       }
     }
@@ -316,6 +333,7 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
         }
       } catch (err) {
         if (signal?.aborted) throw err;
+        if (strictFor(clip.assetId)) throw new StrictVideoError(`video "${clip.name}" stopped decoding here`);
         // the decoder gave up: hold the last frame and keep exporting the rest
         feed.done = true;
         onWarning?.(`video "${clip.name}" stopped decoding, its last frame is held`);

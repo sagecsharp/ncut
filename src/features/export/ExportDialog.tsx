@@ -314,6 +314,11 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           onWarning: (m) => {
             if (!warnings.includes(m)) warnings.push(m);
           },
+          onFallback: () => {
+            // the bar starts over: say why the export took longer
+            const m = 'the fast export did not work here, the file was made the slower way';
+            if (!warnings.includes(m)) warnings.push(m);
+          },
           onProgress: (p) => {
             exportProgressToShell(p.progress);
             const now = performance.now();
