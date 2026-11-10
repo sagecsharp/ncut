@@ -1,4 +1,5 @@
 import type { SceneFog } from '../../types';
+import { homeDistance } from '../../engine/scene3d/camera';
 import { isHex } from './edit';
 
 /** the farthest distance (project pixels) the ui offers */
@@ -8,9 +9,14 @@ export const FOG_GAP = 10;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-/** fog when switched on: the project background (if it is a plain hex color) as the haze color */
-export function defaultFog(background: string): SceneFog {
-  return { color: isHex(background) ? background.slice(0, 7).toLowerCase() : '#000000', near: 500, far: 4000, amount: 1 };
+/**
+ * fog when switched on: the project background (if it is a plain hex color) as the haze color. it starts
+ * at the canvas plane as the home camera sees it (so flat 3d clips at z 0 keep their colors) and is full
+ * three of those distances further back.
+ */
+export function defaultFog(background: string, projectHeight = 1080): SceneFog {
+  const near = Math.max(1, Math.round(homeDistance(projectHeight > 0 ? projectHeight : 1080)));
+  return { color: isHex(background) ? background.slice(0, 7).toLowerCase() : '#000000', near, far: near * 4, amount: 1 };
 }
 
 /** near moved; far is pushed along so it stays past near */

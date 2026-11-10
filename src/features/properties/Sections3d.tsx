@@ -144,7 +144,7 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
             options={SHAPES}
             onChange={(v) => actions().updateClip(id, { shape: v as Shape3D })}
           />
-          {shape === 'box' || shape === 'cylinder' ? (
+          {shape !== 'plane' && shape !== 'sphere' ? (
             <Row label="thickness" title="thickness of the shape (px)" wide>
               <NumberField
                 className="props-grow"

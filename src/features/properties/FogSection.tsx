@@ -13,7 +13,7 @@ export const FogSection = memo(function FogSection({ fog, background }: { fog: S
   return (
     <Section id="fog" title="fog">
       <Row label="fog" title="fade 3d clips into a color with distance" wide>
-        <Switch checked={!!fog} title="fog on or off" onChange={(on) => setFog(on ? defaultFog(background) : null)} />
+        <Switch checked={!!fog} title="fog on or off" onChange={(on) => setFog(on ? defaultFog(background, useEditor.getState().project?.height) : null)} />
       </Row>
       {fog ? (
         <>

@@ -354,12 +354,13 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
 
 /* ---------- root ---------- */
 
-/** shape thickness used while none is set: the clip's own height, like the renderer */
+/** shape thickness used while none is set, like the renderer: a box is as deep as it is tall, the others as deep as they are wide */
 function defaultThickness(clip: VisualClip): number {
   const p = useEditor.getState().project;
   if (!p) return 100;
-  const h = getClipBox(p, clip).height / Math.max(0.01, clip.transform.scale);
-  return Math.max(1, Math.round(h));
+  const box = getClipBox(p, clip);
+  const side = clip.shape === 'box' ? box.height : box.width;
+  return Math.max(1, Math.round(side / Math.max(0.01, clip.transform.scale)));
 }
 
 function typeLabel(clip: Clip): string {
@@ -437,7 +438,7 @@ export function ClipInspector({ id }: { id: string }) {
             lookTarget={clip.lookTarget ?? null}
             shape={clip.shape ?? 'plane'}
             shapeDepth={clip.shapeDepth}
-            defaultDepth={clip.threeD && (clip.shape === 'box' || clip.shape === 'cylinder') ? defaultThickness(clip) : 0}
+            defaultDepth={clip.threeD && clip.shape && clip.shape !== 'plane' && clip.shape !== 'sphere' ? defaultThickness(clip) : 0}
           />
         ) : null}
         <LinksSection clip={clip} />
