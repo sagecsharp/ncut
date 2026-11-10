@@ -7,7 +7,7 @@ import { APPEARANCE_EVENT } from '../../lib/appearance';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { cssVar } from '../timeline/view';
-import { SHAPE_PRESETS, fitPreview, solidOf, solidSilhouette } from './shapePresets';
+import { HANDLE_ID, SHAPE_PRESETS, fitPreview, solidOf, solidSilhouette } from './shapePresets';
 import type { ShapePreset } from './shapePresets';
 
 /** preview canvas, css px. drawn once per card (and again when the theme changes) */
@@ -69,6 +69,25 @@ function drawPreview(canvas: HTMLCanvasElement, preset: ShapePreset): void {
   const solidShape = solidOf(preset);
   if (solidShape) {
     drawSolid(ctx, solidShape, text, dpr);
+    return;
+  }
+  if (preset.id === HANDLE_ID) {
+    // nothing to draw of the clip itself: show what it is, a point with its three axes
+    ctx.setTransform(dpr, 0, 0, dpr, (PREVIEW_W / 2) * dpr, (PREVIEW_H / 2) * dpr);
+    const r = BOX_H * 0.42;
+    ctx.strokeStyle = text;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const [x, y] of [[r, 0], [0, -r], [-r * 0.6, r * 0.6]] as const) {
+      ctx.moveTo(0, 0);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = text;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
     return;
   }
   const fields = preset.build(1920, 1080);

@@ -18,6 +18,9 @@ export const BG_SOLID = '#202020';
 
 const OUTLINE = { color: '#ffffff', width: 12 };
 
+/** id of the card that makes an invisible clip to attach others to */
+export const HANDLE_ID = 'handle';
+
 /** draw on: the outline grows from nothing to whole over the first second of the clip (keys are clip-local) */
 function drawOn(): Pick<ShapeClip, 'keyframes'> {
   return {
@@ -140,6 +143,13 @@ export const SHAPE_PRESETS: readonly ShapePreset[] = [
     label: 'drawn arrow',
     hint: 'an arrow that draws on, head last',
     build: () => named('drawn arrow', { kind: 'arrow', width: 600, height: 260, ...drawOn() }),
+  },
+  {
+    // like an empty object in a game engine: nothing to see, a place to hang other clips on
+    id: HANDLE_ID,
+    label: 'empty',
+    hint: 'draws nothing. attach clips to it and move, turn or scale them as one',
+    build: () => named('empty', { kind: 'rect', width: 200, height: 200, filled: false, stroke: null, threeD: true }),
   },
   solid('cone', 'cone', '3d, round base and a point', 'cone'),
   solid('pyramid', 'pyramid', '3d, square base and a point', 'pyramid'),
