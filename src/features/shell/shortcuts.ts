@@ -2,17 +2,18 @@
  * the single table of keyboard shortcuts. useShortcuts() dispatches from it and ShortcutsDialog
  * renders it, so the two can never drift.
  */
-import { isTimedClip } from '../../types';
+import { isTimedClip, isVisualClip } from '../../types';
 import type { TimedClip } from '../../types';
+import { animProps, keyTimes } from '../../lib/anim';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { getLastEffect, setLastEffect } from './lastEffect';
 import { collectSnapPoints, clipEnd, projectDuration } from '../../lib/timelineOps';
 
-export type ShortcutGroup = 'playback' | 'editing' | 'timeline' | 'app';
+export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'timeline' | 'app';
 
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'timeline', 'app'];
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'timeline', 'app'];
 
 export interface Shortcut {
   id: string;
@@ -100,6 +101,75 @@ function toggleMute(): void {
   const mute = targets.some((c) => !c.muted);
   // first change records one undo step, the rest ride along
   targets.forEach((c, i) => updateClip(c.id, { muted: mute }, { skipHistory: i > 0 }));
+}
+
+/** jump to the previous / next keyframe of the selected clips */
+function seekKeyframe(dir: -1 | 1): void {
+  const { project, selection } = useEditor.getState();
+  if (!project) return;
+  const playback = usePlayback.getState();
+  const t = playback.time;
+  const eps = 1e-3;
+  let target: number | null = null;
+  for (const c of project.clips) {
+    if (!selection.includes(c.id)) continue;
+    for (const k of keyTimes(c.keyframes)) {
+      const at = c.start + k;
+      if (dir < 0 ? at < t - eps && (target === null || at > target) : at > t + eps && (target === null || at < target)) {
+        target = at;
+      }
+    }
+  }
+  if (target === null) toast(dir < 0 ? 'no earlier keyframe on the selection' : 'no later keyframe on the selection');
+  else playback.seek(target);
+}
+
+const KEY_PROPS_VISUAL = ['x', 'y', 'scale', 'rotation', 'opacity'];
+
+/** key position, scale, rotation and opacity of the selected visual clips (every prop for cameras) at the playhead */
+function addKeyframes(): void {
+  const { project, selection, setKeyframe } = useEditor.getState();
+  if (!project) return;
+  const time = usePlayback.getState().time;
+  const jobs: { id: string; prop: string }[] = [];
+  let outside = false;
+  for (const c of project.clips) {
+    if (!selection.includes(c.id)) continue;
+    const props = c.type === 'camera' ? animProps(c).map((p) => p.prop) : isVisualClip(c) ? KEY_PROPS_VISUAL : [];
+    if (props.length === 0) continue;
+    if (time < c.start - 1e-6 || time > c.start + c.duration + 1e-6) {
+      outside = true;
+      continue;
+    }
+    for (const prop of props) jobs.push({ id: c.id, prop });
+  }
+  if (jobs.length === 0) {
+    toast(outside ? 'move the playhead onto the selected clip first' : 'select a video, image, text or camera clip first');
+    return;
+  }
+  jobs.forEach((j, i) => setKeyframe(j.id, j.prop, time, undefined, undefined, { skipHistory: i > 0 }));
+}
+
+function toggle3d(): void {
+  const { project, selection, updateClip } = useEditor.getState();
+  if (!project) return;
+  const targets = project.clips.filter((c) => selection.includes(c.id) && isVisualClip(c));
+  if (targets.length === 0) {
+    toast('select a video, image or text clip first');
+    return;
+  }
+  const on = !targets.every((c) => isVisualClip(c) && c.threeD);
+  targets.forEach((c, i) => updateClip(c.id, { threeD: on }, { skipHistory: i > 0 }));
+  toast(on ? '3d on' : '3d off');
+}
+
+function toggleScene(): void {
+  const ui = useUi.getState();
+  ui.setPreviewMode(ui.previewMode === 'scene' ? 'output' : 'scene');
+}
+
+function addCameraHere(): void {
+  useEditor.getState().addCamera({ start: usePlayback.getState().time });
 }
 
 function trimToPlayhead(edge: 'start' | 'end'): void {
@@ -369,6 +439,58 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'trim clip end to playhead',
     match: (e) => byCode('BracketRight')(e) && notMapped(e),
     run: () => trimToPlayhead('end'),
+  },
+
+  // animation and 3d
+  {
+    id: 'key-prev',
+    keys: [['shift', ',']],
+    group: 'animation',
+    description: 'previous keyframe of the selection',
+    repeat: true,
+    match: byCode('Comma', { shift: true }),
+    run: () => seekKeyframe(-1),
+  },
+  {
+    id: 'key-next',
+    keys: [['shift', '.']],
+    group: 'animation',
+    description: 'next keyframe of the selection',
+    repeat: true,
+    match: byCode('Period', { shift: true }),
+    run: () => seekKeyframe(1),
+  },
+  {
+    id: 'key-add',
+    keys: [['i']],
+    group: 'animation',
+    description: 'keyframe position, scale, rotation and opacity (all of a camera) at playhead',
+    match: byKey('i'),
+    run: addKeyframes,
+  },
+  {
+    id: 'toggle-3d',
+    keys: [['3']],
+    group: 'animation',
+    description: 'turn 3d on / off for selected clips',
+    match: byKey('3'),
+    run: toggle3d,
+  },
+  {
+    id: 'toggle-scene',
+    keys: [['v']],
+    group: 'animation',
+    description: 'switch the preview between output and scene view',
+    match: byKey('v'),
+    run: toggleScene,
+  },
+  {
+    id: 'add-camera',
+    keys: [['c']],
+    group: 'animation',
+    description: 'add a camera at playhead',
+    match: byKey('c'),
+    run: addCameraHere,
   },
 
   // timeline
