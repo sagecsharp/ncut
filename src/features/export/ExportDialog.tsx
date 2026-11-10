@@ -144,6 +144,13 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const projectW = project?.width ?? 0;
   const projectH = project?.height ?? 0;
   useEffect(() => {
+    // another project was opened (or the dialog closed) while an export runs: that export is stopped, and since
+    // abortRef is cleared nothing it says afterwards (result, error, progress) may touch the dialog again
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+      setPhase('setup');
+    }
     if (!open) return;
     setPhase('setup');
     setFileName(sanitizeName(projectName));
@@ -332,6 +339,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             if (!warnings.includes(m)) warnings.push(m);
           },
           onProgress: (p) => {
+            // a stopped or replaced run is silent
+            if (abortRef.current !== ac) return;
             exportProgressToShell(p.progress);
             const now = performance.now();
             if (now - lastUiRef.current < 100 && p.progress < 1) return;
@@ -340,6 +349,8 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           },
         },
       );
+      // stopped because the project changed or the dialog closed: the dialog was reset already
+      if (abortRef.current !== ac) return;
       if (ac.signal.aborted) {
         setPhase('setup');
         return;
@@ -351,6 +362,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
       shell.attention();
       triggerDownload(url, name);
     } catch (err) {
+      if (abortRef.current !== ac) return;
       if (ac.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
         setPhase('setup');
         return;

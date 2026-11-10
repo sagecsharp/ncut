@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DISK_HEADROOM, DISK_MIN_BYTES, expectedExportBytes, openExportSink, wantsDisk } from './sink';
+import { DISK_HEADROOM, DISK_MIN_BYTES, expectedExportBytes, fileOfEntry, lockName, mayRemove, openExportSink, wantsDisk } from './sink';
 
 describe('expectedExportBytes', () => {
   it('is the bitrates times the length', () => {
@@ -28,6 +28,30 @@ describe('wantsDisk', () => {
   it('takes another threshold (tests force the disk with 0)', () => {
     expect(wantsDisk(1000, 1e9, 0)).toBe(true);
     expect(wantsDisk(1000, 1e9, 2000)).toBe(false);
+  });
+});
+
+describe('export file locks', () => {
+  it('names the lock after the file', () => {
+    expect(lockName('export-a-0.mp4')).toBe('ncut-export:export-a-0.mp4');
+  });
+  it('maps the swap file to its export file', () => {
+    expect(fileOfEntry('export-a-0.mp4.crswap')).toBe('export-a-0.mp4');
+    expect(fileOfEntry('export-a-0.mp4')).toBe('export-a-0.mp4');
+  });
+  it('removes what nobody holds', () => {
+    expect(mayRemove('export-a-0.mp4', undefined, new Set())).toBe(true);
+    expect(mayRemove('export-a-0.mp4.crswap', 'export-b-1.mp4', new Set())).toBe(true);
+  });
+  it('keeps the file to keep and its swap file', () => {
+    expect(mayRemove('export-b-1.mp4', 'export-b-1.mp4', new Set())).toBe(false);
+    expect(mayRemove('export-b-1.mp4.crswap', 'export-b-1.mp4', new Set())).toBe(false);
+  });
+  it('keeps a file and its swap file while a lock is held for it', () => {
+    const held = new Set([lockName('export-a-0.mp4')]);
+    expect(mayRemove('export-a-0.mp4', 'export-b-1.mp4', held)).toBe(false);
+    expect(mayRemove('export-a-0.mp4.crswap', 'export-b-1.mp4', held)).toBe(false);
+    expect(mayRemove('export-c-2.mp4', 'export-b-1.mp4', held)).toBe(true);
   });
 });
 

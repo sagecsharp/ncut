@@ -271,7 +271,8 @@ slower way).
   order into the one file and mixes the sound. 3 workers up to 1080p, 2 above: more adds nothing, the limit is the
   gpu process. the pool only runs `runAhead` parts ahead of the join and a joined part is released, so memory stays
   flat. a worker that does not start is dropped, one that goes silent fails the pool (watchdog), then the plain
-  path takes over.
+  path takes over. a part says `alive` (at most once a second) while it renders run-in frames and after its sources
+  opened, so the watchdog does not take a part with very slow frames for a stalled one.
 - what may not run in a worker is found before any worker starts: `mediaCheck.ts` looks at the image files (magic
   bytes) and asks the video decoder about each video file. workers are strict about media (`strictVideo`,
   `strictImages`): a file they cannot read fails the part instead of leaving a black frame.
@@ -283,7 +284,11 @@ slower way).
   through parts, even as one part. at full hd and below the software encoder is as fast, so nothing changes there.
 - big files (`sink.ts`): an export expected to be 256 mb or more is written to the origin private file system
   (folder `ncut-exports`) while it is made, the mp4 index still at the front (`fastStart: 'reserve'`). the result is
-  a blob backed by that file. a cancel or failure removes it, only the newest one is kept, leftovers go at start.
+  a blob backed by that file. a cancel or failure removes it (and its `.crswap` swap file), only the newest one is kept, leftovers go at
+  start. a page holds the web lock `ncut-export:<file>` while it owns a file and the cleanup skips files with a held
+  lock, so a second window never removes the export of the first.
+- the dialog stops a running export when another project is opened (or it closes) and ignores whatever that run
+  reports afterwards.
 - gif (`gifPlan.ts`, `gifPool.ts`, `gifWorker.ts`): without video clips up to 8 workers render, index and compress
   their own frames (`parts`), with video the main thread draws and the workers index and compress (`pool`). the
   bytes are the same as on one thread.
@@ -336,7 +341,8 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 - full speed in the background: windows runs the processes of a minimized or covered window slower (power
   throttling), measured 10 to 20 % on an export. while a window holds the keep awake blocker, `syncExportSpeed()` in
   `main.cjs` starts `ncut-qos.exe` (`electron/qos.cs`, built by `scripts/build-qos.cjs` with the c# compiler that is
-  part of windows, shipped next to the app through `extraResources`) with the app's own process ids
+  part of windows, shipped next to the app through `extraResources`, calls run one after another, only the newest
+  wanted state runs) with the app's own process ids
   (`rules.qosArgs`: digits only). it switches the throttling off for them and hands it back when the export ends.
   without the helper everything works, only slower in the background.
 - packaging: `electron-builder` config in `package.json` (`build`): only `dist/`, `electron/` and `package.json` go

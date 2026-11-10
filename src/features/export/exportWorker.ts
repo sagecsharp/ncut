@@ -41,6 +41,7 @@ async function run(job: SegmentJob): Promise<void> {
     await ready;
     if (!project) throw new Error('the worker got a part before the project');
     let last = 0;
+    let lastAlive = -Infinity;
     const frames = job.to - job.from;
     const result = await renderSegment(project, job, {
       blobOf: (id) => blobs.get(id),
@@ -50,6 +51,13 @@ async function run(job: SegmentJob): Promise<void> {
       strictVideo: true,
       signal: stop.signal,
       onWarning: (message) => post({ type: 'warning', message }),
+      // a part that has not reported a frame yet (sources opening, run-in frames) says so, about once a second
+      onAlive: () => {
+        const now = performance.now();
+        if (now - lastAlive < 1000) return;
+        lastAlive = now;
+        post({ type: 'alive', id: job.id });
+      },
       onProgress: (done) => {
         const now = performance.now();
         if (now - last < 60 && done < frames) return;

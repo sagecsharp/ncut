@@ -129,6 +129,8 @@ export type ToWorker =
 export type FromWorker =
   | { type: 'ready'; missingFonts: string[] }
   | { type: 'progress'; id: number; frames: number }
+  /** the part is working but has no frame to report (run-in frames, sources opening): only tells the watchdog */
+  | { type: 'alive'; id: number }
   | { type: 'warning'; message: string }
   | { type: 'capture'; frame: number; bitmap: ImageBitmap }
   | { type: 'done'; result: SegmentResult }
@@ -341,6 +343,8 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
         else takeNext();
       } else if (m.type === 'progress') {
         if (!failed) progress(m.id, m.frames);
+      } else if (m.type === 'alive') {
+        // nothing more to do: any message already marked the worker as heard from, the progress stays as it is
       } else if (m.type === 'warning') {
         init.onWarning?.(m.message);
       } else if (m.type === 'capture') {

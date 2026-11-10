@@ -85,6 +85,11 @@ export interface SegmentEnv {
   onWarning?: (message: string) => void;
   /** frames of this part that are done (called often: throttle on the receiving side) */
   onProgress?: (framesDone: number) => void;
+  /**
+   * the part is still working but has nothing to report yet (its sources just opened, a run-in frame is done). called
+   * often: throttle on the receiving side. it must not move any progress number.
+   */
+  onAlive?: () => void;
   onCapture?: (frame: number, canvas: OffscreenCanvas) => void | Promise<void>;
   signal?: AbortSignal;
   /** called after every frame; lets the caller give other work a turn */
@@ -157,6 +162,7 @@ async function renderGifSegment(project: Project, job: SegmentJob, env: SegmentE
     const t0 = performance.now();
     await sources.open();
     if (env.signal?.aborted) throw abortError();
+    env.onAlive?.();
     const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!ctx) throw new Error('2d canvas is not available');
     ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
@@ -225,6 +231,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     const t0 = performance.now();
     await sources.open();
     if (env.signal?.aborted) throw abortError();
+    env.onAlive?.();
     // the file is only a container for the packets on their way to the real output: no fast start needed
     const format = job.container === 'mp4' ? new Mp4OutputFormat({ fastStart: false }) : new WebMOutputFormat();
     const target = new BufferTarget();
@@ -261,6 +268,8 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
         if (i === first) stats.firstFrameMs = performance.now() - a;
       });
       if (i >= from) env.onProgress?.(i + 1 - from);
+      // run-in frames count for nothing, but a part with slow frames must not look dead meanwhile
+      else env.onAlive?.();
       const pause = env.breathe?.();
       if (pause) await pause;
     }

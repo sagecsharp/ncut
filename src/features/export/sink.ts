@@ -63,15 +63,83 @@ async function exportFolder(): Promise<FileSystemDirectoryHandle | null> {
   }
 }
 
-async function removeAll(dir: FileSystemDirectoryHandle, keep?: string): Promise<void> {
+/** the name of the web lock a page holds while it owns an export file */
+export function lockName(file: string): string {
+  return `ncut-export:${file}`;
+}
+
+/** the export file a folder entry belongs to: the swap file of the browser (`<name>.crswap`) belongs to `<name>` */
+export function fileOfEntry(entryName: string): string {
+  return entryName.endsWith('.crswap') ? entryName.slice(0, -'.crswap'.length) : entryName;
+}
+
+/** whether the cleanup may remove a folder entry: not the file to keep, not one that some page holds a lock for */
+export function mayRemove(entryName: string, keep: string | undefined, heldLockNames: ReadonlySet<string>): boolean {
+  const file = fileOfEntry(entryName);
+  if (file === keep || entryName === keep) return false;
+  return !heldLockNames.has(lockName(file));
+}
+
+/** the export files this page owns, with the function that lets go of the lock on each */
+const owned = new Map<string, () => void>();
+
+/**
+ * hold the lock on an export file until the returned function is called (or the page ends: the browser drops locks
+ * of closed and crashed pages, so their files are cleaned up at the next start). without web locks it does nothing.
+ */
+function holdLock(file: string): () => void {
+  let release = (): void => undefined;
+  try {
+    if (typeof navigator === 'undefined' || !navigator.locks) return release;
+    const until = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    navigator.locks.request(lockName(file), () => until).catch(() => undefined);
+  } catch {
+    // no lock: the cleanup then works as it did before
+  }
+  return release;
+}
+
+/** this page lets go of the locks on all its export files except `keep` (they are removed next) */
+function releaseOwned(keep?: string): Set<string> {
+  const released = new Set<string>();
+  for (const [file, release] of owned) {
+    if (file === keep) continue;
+    owned.delete(file);
+    release();
+    released.add(lockName(file));
+  }
+  return released;
+}
+
+/** the names of the locks held right now by any page; null when the browser has no web locks */
+async function heldLocks(ignore: ReadonlySet<string>): Promise<Set<string> | null> {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.locks) return null;
+    const state = await navigator.locks.query();
+    const held = new Set<string>();
+    for (const lock of state.held ?? []) {
+      // a lock this page just let go of may still be listed
+      if (lock.name && !ignore.has(lock.name)) held.add(lock.name);
+    }
+    return held;
+  } catch {
+    return null;
+  }
+}
+
+async function removeAll(dir: FileSystemDirectoryHandle, keep?: string, released: ReadonlySet<string> = new Set()): Promise<void> {
   const names: string[] = [];
   try {
     for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) names.push(name);
   } catch {
     return;
   }
+  // a file another tab or window is writing, or has not saved yet, is not ours to remove
+  const held = (await heldLocks(released)) ?? new Set<string>();
   for (const name of names) {
-    if (name === keep) continue;
+    if (!mayRemove(name, keep, held)) continue;
     try {
       await dir.removeEntry(name);
     } catch {
@@ -110,8 +178,18 @@ export async function openExportSink(expectedBytes: number, extension: string, m
     const dir = await exportFolder();
     if (!dir) return memorySink();
     const name = `export-${Date.now().toString(36)}-${counter++}.${extension}`;
-    const handle = await dir.getFileHandle(name, { create: true });
-    const writable = await handle.createWritable();
+    // owned from here until this page removes the file
+    owned.set(name, holdLock(name));
+    let handle: FileSystemFileHandle;
+    let writable: FileSystemWritableFileStream;
+    try {
+      handle = await dir.getFileHandle(name, { create: true });
+      writable = await handle.createWritable();
+    } catch (e) {
+      owned.get(name)?.();
+      owned.delete(name);
+      throw e;
+    }
     let open = true;
     const target = new StreamTarget(writable as unknown as WritableStream<StreamTargetChunk>, { chunked: true });
     return {
@@ -122,8 +200,8 @@ export async function openExportSink(expectedBytes: number, extension: string, m
         open = false;
         const file = await handle.getFile();
         if (file.size === 0) throw new Error('the encoder produced no data');
-        // the export before this one has been saved or dropped by now
-        void removeAll(dir, name);
+        // the export before this one has been saved or dropped by now, this page lets go of its lock
+        void removeAll(dir, name, releaseOwned(name));
         return file.slice(0, file.size, mime);
       },
       discard: async () => {
@@ -140,6 +218,14 @@ export async function openExportSink(expectedBytes: number, extension: string, m
         } catch {
           // ignore
         }
+        // when the abort was refused the browser still keeps the data in the swap file
+        try {
+          await dir.removeEntry(`${name}.crswap`);
+        } catch {
+          // ignore
+        }
+        owned.get(name)?.();
+        owned.delete(name);
       },
     };
   } catch {

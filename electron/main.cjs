@@ -71,6 +71,35 @@ function releaseBlocker(st) {
  */
 const QOS_HELPER = app.isPackaged ? path.join(process.resourcesPath, 'ncut-qos.exe') : path.join(__dirname, '..', 'build', 'bin', 'ncut-qos.exe');
 let exportSpeedHigh = false;
+// the helper calls run strictly one after another: two at once may finish in the wrong order and leave the
+// processes marked the wrong way. only the newest wanted state is kept while one runs.
+let qosRunning = false;
+let qosPending = null;
+let qosApplied = false;
+
+function runQosQueue() {
+  if (qosRunning || qosPending === null) return;
+  const wanted = qosPending;
+  qosPending = null;
+  // asked for and taken back before the helper ran: nothing to do
+  if (wanted === qosApplied) return;
+  qosApplied = wanted;
+  try {
+    if (!fs.existsSync(QOS_HELPER)) return;
+    const args = shellRules.qosArgs(wanted, app.getAppMetrics().map((m) => m.pid));
+    if (!args) return;
+    qosRunning = true;
+    execFile(QOS_HELPER, args, { windowsHide: true, timeout: 5000 }, () => {
+      /* best effort: without it the export is only slower in the background */
+      qosRunning = false;
+      runQosQueue();
+    });
+  } catch {
+    /* best effort */
+    qosRunning = false;
+    runQosQueue();
+  }
+}
 
 function syncExportSpeed() {
   if (process.platform !== 'win32') return;
@@ -78,16 +107,8 @@ function syncExportSpeed() {
   for (const st of bridge.values()) if (st.blocker !== null) wanted = true;
   if (wanted === exportSpeedHigh) return;
   exportSpeedHigh = wanted;
-  try {
-    if (!fs.existsSync(QOS_HELPER)) return;
-    const args = shellRules.qosArgs(wanted, app.getAppMetrics().map((m) => m.pid));
-    if (!args) return;
-    execFile(QOS_HELPER, args, { windowsHide: true, timeout: 5000 }, () => {
-      /* best effort: without it the export is only slower in the background */
-    });
-  } catch {
-    /* best effort */
-  }
+  qosPending = wanted;
+  runQosQueue();
 }
 
 /** the window an ipc message came from, or null when it is not the top frame of the app itself */
