@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { Eraser, RotateCcw } from 'lucide-react';
+import { ArrowDownToLine, Camera, Eraser, Maximize, RectangleHorizontal, RectangleVertical, RotateCcw } from 'lucide-react';
 import { hasKeyframes, valueAt } from '../../lib/anim';
 import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
@@ -16,6 +16,7 @@ import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { beginEdit, liveOpts, patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
 import { lookTargetOptions } from './parentOptions';
+import { dropToFloor, frameWithCamera, layFlat, putInFrontOfCamera, standUp } from './placeActions';
 
 const actions = () => useEditor.getState();
 
@@ -105,6 +106,44 @@ const LookTargetRow = memo(function LookTargetRow({ id, target }: { id: string; 
   );
 });
 
+/** one row of 3d placement helpers for a clip: camera, floor and tilt shortcuts, each one undo step */
+const PlaceRow = memo(function PlaceRow({ id }: { id: string }) {
+  return (
+    <div className="props-buttons" role="group" aria-label="place">
+      <button
+        type="button"
+        className="btn btn-sm"
+        title="in front of the camera: turns the clip 3d and puts it in the middle of the camera view, facing it. a flat clip gets the distance where it keeps its 2d size, a 3d clip keeps its distance."
+        onClick={() => putInFrontOfCamera([id])}
+      >
+        <Camera size={14} />
+        in front of camera
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm"
+        title="frame with the camera: moves the camera at the playhead so this clip fills about 80% of the frame, seen straight on. adds a camera if there is none. turns the clip 3d."
+        onClick={() => frameWithCamera(id)}
+      >
+        <Maximize size={14} />
+        frame with camera
+      </button>
+      <button type="button" className="btn btn-sm" title="lay flat: tilt the clip 90 degrees, like a floor" onClick={() => layFlat([id])}>
+        <RectangleHorizontal size={14} />
+        lay flat
+      </button>
+      <button type="button" className="btn btn-sm" title="stand up: tilt back to 0 degrees" onClick={() => standUp([id])}>
+        <RectangleVertical size={14} />
+        stand up
+      </button>
+      <button type="button" className="btn btn-sm" title="on the floor: move the clip down so its bottom edge sits on the bottom of the frame" onClick={() => dropToFloor([id])}>
+        <ArrowDownToLine size={14} />
+        on the floor
+      </button>
+    </div>
+  );
+});
+
 interface ThreeDProps {
   id: string;
   threeD: boolean;
@@ -122,6 +161,7 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
       <Row label="3d" title="place this clip in 3d space" wide>
         <Switch checked={threeD} title="3d on or off" onChange={(v) => actions().updateClip(id, { threeD: v })} />
       </Row>
+      <PlaceRow id={id} />
       {threeD ? (
         <>
           <AnimField wide id={id} prop="z" label="depth" title="depth: how far away from the viewer (px)" suffix="px" step={1} precision={0} />
