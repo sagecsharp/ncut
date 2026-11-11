@@ -125,6 +125,13 @@ describe('take off', () => {
       { id: other.id, faces: { side: { color: '#fff' } } },
     ]);
   });
+  it('a solid on a locked track is left alone', () => {
+    const { p, solid, pic } = scene();
+    solid.faces = { top: { clip: pic.id } };
+    p.tracks.find((t) => t.id === solid.trackId)!.locked = true;
+    expect(takeOffPatches(p, pic.id)).toEqual([]);
+    expect(solidsShowing(p, pic.id)).toHaveLength(1);
+  });
   it('nothing left is null, and a clip on no side has no patches', () => {
     const { p, solid, pic, txt } = scene();
     solid.faces = { all: { clip: pic.id }, top: null };

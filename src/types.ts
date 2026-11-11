@@ -242,7 +242,7 @@ export interface Mask {
   radius?: number;
 }
 
-/** how a clip's picture sits on a side of a solid: 'fill' covers it (cut where the proportions differ), 'fit' shows all of it (see-through around), 'stretch' squeezes it to the side */
+/** how a clip's picture sits on a side of a solid: 'fill' covers it (cut where the proportions differ), 'fit' shows all of it (the solid's own picture around it), 'stretch' squeezes it to the side */
 export type FaceFit = 'fill' | 'fit' | 'stretch';
 
 /**

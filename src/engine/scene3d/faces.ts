@@ -9,6 +9,8 @@
  *   solid itself and is not on a hidden track. at a time outside the clip's range the side shows the own picture.
  * - a clip that is shown on a side of some solid is not painted on its own (faceSourceIds): it lives on the solid.
  *   its place, size, turn and opacity are not used, its picture is (look, mask and crop included).
+ * - the clip's picture lies OVER the solid's own picture on that side: where it is see-through (around a picture shown
+ *   whole, between letters) the own picture shows. a solid without a fill of its own (only its line) has nothing under it.
  */
 import { isVisualClip } from '../../types';
 import { CAPSULE_CAP, TORUS_TUBE } from './meshes';

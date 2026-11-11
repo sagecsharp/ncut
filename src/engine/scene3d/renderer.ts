@@ -155,6 +155,12 @@ uniform float u_stack;
 // 1 = the picture is only real inside the rectangle u_clip (u0, v0, u1, v1 of the texture): see-through outside (a side that shows a picture whole)
 uniform float u_clipOn;
 uniform vec4 u_clip;
+// 1 = this side shows a picture of its own and the solid's own picture lies under it (texture unit 1, read through the
+// window u_underUv): where the side's picture is see-through (around a picture that is shown whole, soft letter edges)
+// the own picture shows, not the inside of the solid. mixed here, so the alpha, the passes and the fog see one picture.
+uniform sampler2D u_under;
+uniform float u_underOn;
+uniform vec4 u_underUv;
 out vec4 outColor;
 // 1 inside the real part of the picture, 0 outside (always 1 while u_clipOn is 0)
 float clipMask(vec2 p) {
@@ -210,6 +216,10 @@ void main() {
     }
   } else {
     c = texture(u_tex, tc) * clipMask(tc);
+  }
+  if (u_underOn > 0.5) {
+    vec4 un = texture(u_under, u_underUv.xy + v_uv * u_underUv.zw);
+    c += un * (1.0 - c.a);
   }
   // the texture is premultiplied, so is the output
   c *= u_alpha;
@@ -344,6 +354,8 @@ interface FaceRun {
   clip: [number, number, number, number] | null;
   start: number;
   count: number;
+  /** true = the solid's own picture (a side without a picture of its own) */
+  own: boolean;
 }
 
 const FULL_UV: [number, number, number, number] = [0, 0, 1, 1];
@@ -393,6 +405,11 @@ class SceneRenderer {
   private uStack: WebGLUniformLocation | null;
   private uClipOn: WebGLUniformLocation | null;
   private uClip: WebGLUniformLocation | null;
+  private uUnder: WebGLUniformLocation | null;
+  private uUnderOn: WebGLUniformLocation | null;
+  private uUnderUv: WebGLUniformLocation | null;
+  /** a 1 x 1 see-through texture: what texture unit 1 holds while no side picture is drawn */
+  private blank: WebGLTexture | null = null;
   private fogBuf = new Float32Array(6);
   /** the model-view-projection of the plane being drawn (written per plane, read by the gl call right away) */
   private mvpBuf = new Float32Array(16);
@@ -448,6 +465,9 @@ class SceneRenderer {
     this.uStack = gl.getUniformLocation(this.planeProg, 'u_stack');
     this.uClipOn = gl.getUniformLocation(this.planeProg, 'u_clipOn');
     this.uClip = gl.getUniformLocation(this.planeProg, 'u_clip');
+    this.uUnder = gl.getUniformLocation(this.planeProg, 'u_under');
+    this.uUnderOn = gl.getUniformLocation(this.planeProg, 'u_underOn');
+    this.uUnderUv = gl.getUniformLocation(this.planeProg, 'u_underUv');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -487,6 +507,8 @@ class SceneRenderer {
       for (const e of this.cache.values()) gl.deleteTexture(e.tex);
       this.cache.clear();
       for (const t of this.scratch) if (t) gl.deleteTexture(t);
+      if (this.blank) gl.deleteTexture(this.blank);
+      this.blank = null;
       this.scratch = [];
       for (const m of this.meshes.values()) {
         gl.deleteVertexArray(m.vao);
@@ -795,20 +817,32 @@ class SceneRenderer {
         if (m) r = m;
       }
       const last = runs[runs.length - 1];
-      if (last && last.tex === r.tex && last.uv === r.uv && last.clip === r.clip && last.start + last.count === g.start) last.count += g.count;
-      else runs.push({ tex: r.tex, uv: r.uv, clip: r.clip, start: g.start, count: g.count });
+      const isOwn = r === ownRun;
+      if (last && last.own === isOwn && last.tex === r.tex && last.uv === r.uv && last.clip === r.clip && last.start + last.count === g.start) last.count += g.count;
+      else runs.push({ tex: r.tex, uv: r.uv, clip: r.clip, start: g.start, count: g.count, own: isOwn });
     }
     // a later plane must not take one of these for "the picture uploaded just before"
     this.lastImage = null;
     return runs;
   }
 
-  /** one pass over the runs of a faced solid: each run binds its own texture (faceRuns left another one bound) */
-  private drawRuns(runs: FaceRun[]): void {
+  /**
+   * one pass over the runs of a faced solid: each run binds its own texture (faceRuns left another one bound).
+   * `hollow`: the solid has no fill of its own (only its line): the sides without a picture are not drawn, and nothing
+   * lies under the ones that have one. otherwise a side's picture is mixed over the own picture (texture unit 1).
+   */
+  private drawRuns(runs: FaceRun[], hollow: boolean): void {
     const gl = this.gl;
     let bound: WebGLTexture | null = null;
     let clipOn = false;
+    let underOn = false;
     for (const r of runs) {
+      if (r.own && hollow) continue;
+      const under = !r.own && !hollow;
+      if (under !== underOn) {
+        gl.uniform1f(this.uUnderOn, under ? 1 : 0);
+        underOn = under;
+      }
       if (r.tex !== bound) {
         gl.bindTexture(gl.TEXTURE_2D, r.tex);
         bound = r.tex;
@@ -823,6 +857,23 @@ class SceneRenderer {
       gl.drawElements(gl.TRIANGLES, r.count, gl.UNSIGNED_SHORT, r.start * 2);
     }
     if (clipOn) gl.uniform1f(this.uClipOn, 0);
+    if (underOn) gl.uniform1f(this.uUnderOn, 0);
+  }
+
+  /** texture unit 1 (the own picture under a side's picture): `tex`, or the blank one. unit 0 is the active one after. */
+  private bindUnder(tex: WebGLTexture | null): void {
+    const gl = this.gl;
+    if (!this.blank) {
+      this.blank = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.blank);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+    }
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, tex ?? this.blank);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   private evict(): void {
@@ -865,6 +916,10 @@ class SceneRenderer {
     const order = paintOrder(planes, viewProj, eye);
 
     gl.useProgram(this.planeProg);
+    // the picture under a side's picture reads texture unit 1: it always holds a texture (the blank one between solids)
+    gl.uniform1i(this.uUnder, 1);
+    gl.uniform1f(this.uUnderOn, 0);
+    this.bindUnder(null);
     gl.activeTexture(gl.TEXTURE0);
     this.eyeNow = eye;
     // fog: set once per render. off = one uniform at 0, the shader skips it.
@@ -900,10 +955,11 @@ class SceneRenderer {
       // a line around a solid (nothing to draw for empty pieces, a zero width or a see-through color)
       const ol = plane.outline;
       const line = shape !== 'plane' && ol && ol.width > 0 && ol.color[3] > 0 ? this.outlineGpu(shape, ol) : null;
-      if (line && ol!.hollow) {
-        // no fill: neither the texture nor the solid is drawn, only the line
+      // no fill: neither the texture nor the solid is drawn, only the line (and the pictures on single sides, below)
+      const hollow = !!line && !!ol!.hollow;
+      if (hollow && !(shape !== 'plane' && plane.faces)) {
         mulInto(this.mvpBuf, viewProj, plane.model);
-        this.drawOutline(plane, shape, line, offsetUnits);
+        this.drawOutline(plane, shape, line!, offsetUnits);
         continue;
       }
       const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
@@ -912,6 +968,11 @@ class SceneRenderer {
       const mesh = this.mesh(shape);
       // pictures on single sides: set up before anything is drawn (they change the bound texture)
       const runs = shape !== 'plane' && plane.faces ? this.faceRuns(plane, mesh, ownTex, blurred) : null;
+      if (hollow && !runs) {
+        mulInto(this.mvpBuf, viewProj, plane.model);
+        this.drawOutline(plane, shape, line!, offsetUnits);
+        continue;
+      }
       if (focus) {
         gl.uniform1f(this.uFocusOn, blurred ? 1 : 0);
         if (blurred) {
@@ -935,20 +996,30 @@ class SceneRenderer {
         gl.uniform2f(this.uSize, size[0], size[1]);
       } else gl.uniform1f(this.uRadius, 0);
       gl.bindVertexArray(mesh.vao);
+      if (runs && !hollow) {
+        // the own picture under the pictures of single sides
+        this.bindUnder(ownTex);
+        if (uv) gl.uniform4f(this.uUnderUv, uv[0], uv[1], uv[2], uv[3]);
+        else gl.uniform4f(this.uUnderUv, 0, 0, 1, 1);
+      }
       // a plane that is faded as a whole has no solid pixels
       if (plane.alpha >= 0.98) {
         gl.depthMask(true);
         gl.uniform1f(this.uPass, 1);
-        if (runs) this.drawRuns(runs);
+        if (runs) this.drawRuns(runs, hollow);
         else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
       }
       gl.depthMask(false);
       gl.uniform1f(this.uPass, 2);
       // the solid pass of every side comes before the see-through pass of any (the sides of one solid depth sort
       // against each other through the depth buffer); the runs bind their own texture again
-      if (runs) this.drawRuns(runs);
+      if (runs) this.drawRuns(runs, hollow);
       else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
-      if (runs) this.pinned.clear();
+      if (runs) {
+        this.pinned.clear();
+        // the own picture may be evicted later: unit 1 never keeps a texture that can go away
+        if (!hollow) this.bindUnder(null);
+      }
       if (line) this.drawOutline(plane, shape, line, offsetUnits);
     }
     gl.depthMask(true);

@@ -67,7 +67,7 @@ import {
 } from '../lib/anim';
 import { uid } from '../lib/id';
 import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
-import { faceClipId, remapFaces } from '../engine/scene3d/faces';
+import { faceClipId, faceSourceIds, remapFaces } from '../engine/scene3d/faces';
 import { BPM_MAX, BPM_MIN, type EffectBeat, parseBeatOffset, parseBpm, parseEffectBeat, sameEffectBeat } from '../lib/tempo';
 import { clamp } from '../lib/time';
 import {
@@ -1269,7 +1269,16 @@ export const useEditor = create<EditorState>()((set, get) => {
         const scope = ids ?? (sel.length > 0 ? sel : p.clips.map((c) => c.id));
         const targets = new Set(scope);
         const asked = new Set(scope);
-        const cuts = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId);
+        const cuttable = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId);
+        // a clip that lives on a side of a solid is cut only when every solid that shows it is cut with it (below: what
+        // hangs on a cut clip is cut too). a side names one clip: a half its solid cannot follow (the solid is locked, or
+        // does not reach over the cut) would be left without a solid and start to paint on its own.
+        const onSides = faceSourceIds(p);
+        const cuts = (c: Clip): boolean => {
+          if (!cuttable(c)) return false;
+          const solids = onSides.get(c.id);
+          return !solids || solids.every((id) => p.clips.some((s) => s.id === id && cuttable(s)));
+        };
         // what hangs on a clip that is cut is cut with it, so its right half can follow the right half of that
         // clip: an effect put on it, a clip attached to it or looking at it, a camera aiming at it (and what
         // hangs on those). left uncut they would stay with the left half and freeze at the cut.

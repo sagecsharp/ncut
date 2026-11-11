@@ -124,6 +124,20 @@ describe('splitting', () => {
     const aRight = made.find((id) => id !== sRight.id)!;
     expect(sRight.faces!.front).toEqual({ clip: aRight });
   });
+  it('a picture clip whose solid cannot be cut with it is not cut: a half without its solid would paint on its own', () => {
+    // the solid starts after the cut
+    open((t) => [image(t, 's2', 6, 3, { threeD: true, shape: 'box', faces: { top: { clip: 'p2' } } }), image(t, 'p2', 2, 6)]);
+    expect(ed().splitClips(4, ['p2'])).toHaveLength(0);
+    expect(clipOf('p2').duration).toBe(6);
+    // the solid is on a locked track
+    const track = open();
+    ed().addTrack('video');
+    const lockedTrack = proj().tracks.find((t) => t.id !== track && t.kind === 'video')!.id;
+    useEditor.setState({ project: { ...proj(), clips: proj().clips.map((c) => (c.id === 's' ? { ...c, trackId: lockedTrack } : c)) } });
+    ed().updateTrack(lockedTrack, { locked: true });
+    expect(ed().splitClips(5, ['a'])).toHaveLength(0);
+    expect(clipOf('a').duration).toBe(10);
+  });
   it('splitting only the solid leaves both halves showing the same picture clip', () => {
     open();
     const made = ed().splitClips(5, ['s']);

@@ -107,12 +107,16 @@ export function solidsShowing(project: Project, clipId: string): { id: string; n
   return out;
 }
 
-/** "take off": for each solid that shows the clip, its faces without it (null = nothing left). nothing when it is on no side. */
+/**
+ * "take off": for each solid that shows the clip, its faces without it (null = nothing left). nothing when it is on no side.
+ * a solid on a locked track is left out: the store would refuse the write, and the clip stays on it.
+ */
 export function takeOffPatches(project: Project, clipId: string): { id: string; faces: Faces | null }[] {
   const out: { id: string; faces: Faces | null }[] = [];
   for (const s of solidsShowing(project, clipId)) {
     const solid = project.clips.find((c) => c.id === s.id);
     if (!solid || !isVisualClip(solid)) continue;
+    if (project.tracks.find((t) => t.id === solid.trackId)?.locked) continue;
     out.push({ id: s.id, faces: facesPatch(remapFaces(solid.faces, (id) => (id === clipId ? null : undefined))) });
   }
   return out;

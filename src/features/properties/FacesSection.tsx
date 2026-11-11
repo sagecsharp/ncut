@@ -141,6 +141,8 @@ export const OnSidesNote = memo(function OnSidesNote({ id }: { id: string }) {
           .join(', ')
       : '',
   );
+  // every solid that shows it sits on a locked track: nothing can be taken off
+  const stuck = useEditor((s) => (s.project ? takeOffPatches(s.project, id).length === 0 : true));
   const takeOff = useCallback(() => {
     const p = actions().project;
     if (!p) return;
@@ -154,7 +156,7 @@ export const OnSidesNote = memo(function OnSidesNote({ id }: { id: string }) {
   return (
     <div className="props-stat">
       <span className="props-hint">shown on the sides of {names}. not drawn on its own.</span>
-      <button type="button" className="btn btn-sm" title="stop showing this clip on those sides" onClick={takeOff}>
+      <button type="button" className="btn btn-sm" disabled={stuck} title={stuck ? 'the track of the solid is locked' : 'stop showing this clip on those sides'} onClick={takeOff}>
         take off
       </button>
     </div>

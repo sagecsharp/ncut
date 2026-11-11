@@ -11,6 +11,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip, stretchX, stretchY } from '../../types';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
+import { faceSourceSet } from '../../engine/scene3d/faces';
 import { cameraClipAt, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
 import type { CameraRig } from '../../engine/scene3d/camera';
 import { resolveClip } from '../../lib/anim';
@@ -89,6 +90,8 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
       const track = project.tracks.find((t) => t.id === clip.trackId);
       const time = usePlayback.getState().time;
       if (!track || track.hidden || !inRange(clip, time)) return hide();
+      // a clip that lives on a side of a solid is not painted on its own: no box to grab
+      if (faceSourceSet(project).has(clip.id)) return hide();
       // keyframes move the box, a 3d clip also follows the camera (which may be animated)
       dynamic = !!clip.keyframes || !!clip.threeD || !!clip.parent || project.clips.some((c) => c.type === 'camera');
       const f = view.f;
