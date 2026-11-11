@@ -31,10 +31,42 @@ describe('update_clip', () => {
     expect(ec.name).toBe('my echo');
   });
 
-  it('limits a transform like the inspector does', async () => {
+  it('refuses a value the store would clamp instead of storing another one', async () => {
     const t = await text();
-    await call('update_clip', { id: t, patch: { transform: { opacity: 5 } } });
-    expect((clipOf(t) as any).transform.opacity).toBe(1);
+    await refused('update_clip', { id: t, patch: { transform: { opacity: 5 } } }, /transform\.opacity must be between 0 and 1/);
+    await refused('update_clip', { id: t, patch: { transform: { scale: 5000 } } }, /transform\.scale must be between 0\.01 and 100/);
+    await refused('update_clip', { id: t, patch: { fadeIn: 5 } }, /fadeIn cannot be longer than the clip \(the clip is 2 s long\)/);
+    const v = addVideoClip(video, 5);
+    await refused('update_clip', { id: v, patch: { speed: 100 } }, /speed must be between 0\.25 and 4/);
+    await refused('update_clip', { id: v, patch: { bpm: 5000 } }, /bpm must be between 20 and 400/);
+    const ok1 = await call('update_clip', { id: v, patch: { transform: { x: 99999 }, bpm: 120 } });
+    expect(ok1.ok, ok1.text).toBe(true);
+    const ok2 = await call('update_clip', { id: v, patch: { bpm: null } });
+    expect(ok2.ok, ok2.text).toBe(true);
+  });
+
+  it('refuses a field that is keyed on the clip and names the keyframe tools', async () => {
+    const t = await text();
+    await call('set_keyframe', { id: t, prop: 'x', time: 0, value: -100 });
+    await call('set_keyframe', { id: t, prop: 'fontSize', time: 0, value: 50 });
+    await refused('update_clip', { id: t, patch: { transform: { x: 500 } } }, /x is keyed on this clip.*set_keyframe.*clear_keyframes/);
+    await refused('update_clip', { id: t, patch: { fontSize: 60 } }, /fontSize is keyed/);
+    await refused('update_clip', { id: t, patch: { color: '#ff0000', transform: { y: 3, x: 1 } } }, /x is keyed/);
+    const ok1 = await call('update_clip', { id: t, patch: { transform: { y: 3 } } });
+    expect(ok1.ok, ok1.text).toBe(true);
+    await call('clear_keyframes', { id: t, prop: 'x' });
+    const ok2 = await call('update_clip', { id: t, patch: { transform: { x: 500 } } });
+    expect(ok2.ok, ok2.text).toBe(true);
+    // nested: crop.left keyed, the patch gives crop
+    await call('update_clip', { id: t, patch: { crop: { left: 0.1 } } });
+    await call('set_keyframe', { id: t, prop: 'crop.left', time: 0, value: 0.2 });
+    await refused('update_clip', { id: t, patch: { crop: { left: 0.3 } } }, /crop\.left is keyed/);
+    await refused('update_clip', { id: t, patch: { crop: null } }, /crop\.left is keyed/);
+    const e = (await call('add_effect', { effect: 'echo' })).data.id as string;
+    await call('set_keyframe', { id: e, prop: 'amount', time: 0, value: 0.5 });
+    await call('set_keyframe', { id: e, prop: 'p.count', time: 0, value: 4 });
+    await refused('update_clip', { id: e, patch: { amount: 0.1 } }, /amount is keyed/);
+    await refused('update_clip', { id: e, patch: { params: { count: 8 } } }, /p\.count is keyed/);
   });
 
   it('re-times a video clip through speed', async () => {
@@ -55,6 +87,11 @@ describe('update_clip', () => {
     await refused('update_clip', { id: t, patch: { keyframes: {} } }, /set_keyframes/);
     await refused('update_clip', { id: t, patch: { faces: {} } }, /set_sides/);
     await refused('update_clip', { id: t, patch: { id: 'x' } }, /never changes/);
+    const v = addVideoClip(video, 5);
+    await refused('update_clip', { id: v, patch: { assetId: 'zzz' } }, /replace_media/);
+    await refused('update_clip', { id: v, patch: { group: 'g' } }, /group_clips/);
+    const e = (await call('add_effect', { effect: 'echo' })).data.id as string;
+    await refused('update_clip', { id: e, patch: { effect: 'blur' } }, /add_effect/);
     await refused('update_clip', { id: t, patch: { type: 'shape' } }, /type/);
   });
 
@@ -132,6 +169,43 @@ describe('set_sides', () => {
     await refused('set_sides', { id: eff.data.id, sides: { front: null } }, /no sides/);
     const cam = await call('add_camera', {});
     await refused('set_sides', { id: box, sides: { front: { clip: cam.data.id } } }, /no picture/);
+  });
+});
+
+describe('set_sides aliases and loops', () => {
+  it('a second identical call is an error with no undo step', async () => {
+    const box = (await call('add_shape', { shape3d: 'box', start: 0, duration: 4 })).data.id as string;
+    const r = await call('set_sides', { id: box, sides: { front: { color: '#ff0000' } } });
+    expect(r.ok, r.text).toBe(true);
+    await refused('set_sides', { id: box, sides: { front: { color: '#ff0000' } } }, /nothing changed/);
+  });
+
+  it('stores the one side of a sphere under all, takes its own name as an alias and drops a stale entry', async () => {
+    const ball = (await call('add_shape', { shape3d: 'sphere', start: 0, duration: 4 })).data.id as string;
+    // an entry an older call left under the own name
+    ed().updateClip(ball, { faces: { surface: { color: '#00ff00' } } } as any);
+    const r = await call('set_sides', { id: ball, sides: { surface: { color: '#ff0000' } } });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.sides).toEqual({ all: { color: '#ff0000' } });
+    expect(r.data.names).toEqual(['all']);
+    await refused('set_sides', { id: ball, sides: { surface: { color: '#ff0000' } } }, /nothing changed/);
+    await refused('set_sides', { id: ball, sides: { surface: { color: '#0000ff' }, all: { color: '#ff0000' } } }, /same side/);
+    const r2 = await call('set_sides', { id: ball, sides: { surface: null } });
+    expect(r2.data.sides).toEqual({});
+  });
+
+  it('refuses a source that shows the solid on a side, directly or through a chain', async () => {
+    const a = (await call('add_shape', { shape3d: 'box', start: 0, duration: 4 })).data.id as string;
+    const b = (await call('add_shape', { shape3d: 'box', start: 5, duration: 4 })).data.id as string;
+    const c = (await call('add_shape', { shape3d: 'box', start: 10, duration: 4 })).data.id as string;
+    const r = await call('set_sides', { id: a, sides: { front: { clip: b } } });
+    expect(r.ok, r.text).toBe(true);
+    // b is a solid itself: said, not refused
+    expect(r.data.note).toMatch(/solid with sides itself/);
+    await refused('set_sides', { id: b, sides: { front: { clip: a } } }, /would hide each other/);
+    const r2 = await call('set_sides', { id: b, sides: { front: { clip: c } } });
+    expect(r2.ok, r2.text).toBe(true);
+    await refused('set_sides', { id: c, sides: { top: { clip: a } } }, /would hide each other/);
   });
 });
 

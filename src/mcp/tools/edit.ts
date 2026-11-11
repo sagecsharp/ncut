@@ -1,11 +1,11 @@
-import { faceNames, hasSides, withFace, FACE_ALL } from '../../engine/scene3d/faces';
+import { faceClipId, faceFill, faceNames, hasSides, withFace, FACE_ALL } from '../../engine/scene3d/faces';
 import { useEditor } from '../../store/editorStore';
 import { clipEnd, rangesOverlap } from '../../lib/timelineOps';
-import type { Clip, FaceFill, FaceFit, VisualClip } from '../../types';
+import type { Clip, FaceFill, FaceFit, Project, VisualClip } from '../../types';
 import { isVisualClip, trackKindForClip } from '../../types';
 import { changedSince, clipBrief, idList, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
-import { applyPatch, step } from './editPatch';
+import { applyPatch, MAX_TIME, step } from './editPatch';
 
 const ids = (what: string): { type: 'array'; items: { type: 'string' }; minItems: number; maxItems: number; description: string } => ({
   type: 'array',
@@ -54,6 +54,25 @@ const updateClip: ToolDef = {
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const FITS = ['fill', 'fit', 'stretch'];
 
+/** does `from` show `target` on one of its sides, directly or through the clips it shows? */
+function showsSolid(project: Project, from: Clip, target: string): boolean {
+  const seen = new Set<string>();
+  const walk = (c: Clip): boolean => {
+    if (seen.has(c.id)) return false;
+    seen.add(c.id);
+    if (!isVisualClip(c) || !c.faces || !hasSides(c)) return false;
+    for (const name of faceNames(c.shape)) {
+      const id = faceClipId(faceFill(c, name));
+      if (!id) continue;
+      if (id === target) return true;
+      const next = project.clips.find((x) => x.id === id);
+      if (next && walk(next)) return true;
+    }
+    return false;
+  };
+  return walk(from);
+}
+
 /** a side value from the argument, checked: a clip of another picture, a color, or null */
 function parseFill(solid: VisualClip, key: string, v: unknown): FaceFill | null {
   if (v === null) return null;
@@ -72,6 +91,9 @@ function parseFill(solid: VisualClip, key: string, v: unknown): FaceFill | null 
     const src = needProject().clips.find((c) => c.id === o.clip);
     if (!src) throw new ToolError(`sides.${key}: no clip with the id ${o.clip}. get_project lists the clips`);
     if (!isVisualClip(src)) throw new ToolError(`sides.${key}: a ${src.type} clip has no picture. use a video, image, text or shape clip`);
+    if (showsSolid(needProject(), src, solid.id)) {
+      throw new ToolError(`sides.${key}: ${src.id} shows this solid on one of its own sides (directly or through other clips). a clip on a side is not painted on its own, so the two would hide each other`);
+    }
     if (o.fit !== undefined && !FITS.includes(o.fit as string)) throw new ToolError(`sides.${key}.fit must be one of: ${FITS.join(', ')}`);
     return o.fit === undefined ? { clip: o.clip } : { clip: o.clip, fit: o.fit as FaceFit };
   }
@@ -85,7 +107,7 @@ const setSides: ToolDef = {
     'set what the sides of a 3d solid show, in one undo step. the clip must be a 3d clip with a solid shape (a box, cylinder, cone, pyramid, prism, hexagon, star, heart, sphere, torus or capsule; make one with add_shape shape3d, or set threeD and shape with update_clip). a flat clip or a plane has no sides. ' +
     'sides is an object: the key is a side name or "all" (list_options with kind "shapes" and get_clip give the names, a box has front, back, right, left, top, bottom) and the value is { "clip": id, "fit"?: "fill" | "fit" | "stretch" } (that video, image, text or shape clip is shown on the side, and stops being painted on its own), { "color": "#rrggbb" }, or null (the side shows the solid\'s own picture again). ' +
     'what you give is merged into the sides the solid already has. "all" is applied first, so { "all": {...}, "back": null } means every side but the back. ' +
-    'answers { sides: what is stored now, names: all side names of the shape }.',
+    'a sphere, torus or capsule has one side: it is stored under "all" (its own name, "surface", is taken as the same). a clip that shows this solid on one of its sides (directly or through other clips) cannot be a source. a call that changes nothing is an error. answers { sides: what is stored now, names: the side names to give ("all" for a one sided shape), note?: when a source is a solid itself }.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -106,33 +128,39 @@ const setSides: ToolDef = {
     }
     needUnlocked(clip);
     const sides = args.sides as Record<string, unknown>;
-    const names = faceNames(clip.shape);
-    const keys = Object.keys(sides);
-    if (keys.length === 0) throw new ToolError(`sides is empty. give a side name (${names.join(', ')}) or "all"`);
+    const own = faceNames(clip.shape);
+    // a one sided shape (sphere, torus, capsule) keeps its single side under 'all', like the inspector: its own name is an alias
+    const single = own.length === 1 ? own[0]! : null;
+    const names = single ? [FACE_ALL] : own;
+    if (single && single in sides && FACE_ALL in sides) throw new ToolError(`"${single}" and "all" are the same side of a ${clip.shape}: give one of them`);
+    const given: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(sides)) given[k === single ? FACE_ALL : k] = v;
+    const keys = Object.keys(given);
+    if (keys.length === 0) throw new ToolError(`sides is empty. give a side name (${own.join(', ')}) or "all"`);
     for (const k of keys) {
-      if (k !== FACE_ALL && !names.includes(k)) throw new ToolError(`a ${clip.shape} has no side "${k}". its sides: ${names.join(', ')}, or "all" for every side`);
+      if (k !== FACE_ALL && !own.includes(k)) throw new ToolError(`a ${clip.shape} has no side "${k}". its sides: ${own.join(', ')}, or "all" for every side`);
     }
     // "all" first: a null under a side's name only means something while "all" has a fill
     keys.sort((a, b) => (a === FACE_ALL ? -1 : b === FACE_ALL ? 1 : 0));
-    const fills = new Map(keys.map((k) => [k, parseFill(clip, k, sides[k])] as const));
+    const fills = new Map(keys.map((k) => [k, parseFill(clip, k, given[k])] as const));
     let faces = clip.faces;
+    // an old entry under the shape's own name would win over 'all' in the renderer and hide the inspector's edits
+    if (single) faces = withFace(faces, single, undefined);
     for (const k of keys) faces = withFace(faces, k, fills.get(k));
-    const before = needProject();
+    if (JSON.stringify(clip.faces ?? {}) === JSON.stringify(faces ?? {})) throw new ToolError('nothing changed: the sides already show that');
     step((opts) => useEditor.getState().updateClip(clip.id, { faces: faces ?? {} }, opts));
-    if (!changedSince(before)) {
-      useEditor.getState().rollback();
-      throw new ToolError('nothing changed: the sides already show that');
-    }
     const now = needClip(clip.id) as VisualClip;
     const warnings: string[] = [];
+    const notes: string[] = [];
     for (const [k, f] of fills) {
       if (f && 'clip' in f) {
         const src = needProject().clips.find((c) => c.id === f.clip);
+        if (src && isVisualClip(src) && hasSides(src)) notes.push(`the clip on ${k} (${src.id}) is a solid with sides itself: only its picture is shown on the side, its own sides are not`);
         const track = src && needProject().tracks.find((t) => t.id === src.trackId);
         if (track?.hidden) warnings.push(`the clip on ${k} is on a hidden track: the side shows the solid's own picture until the track is shown`);
       }
     }
-    return ok({ id: clip.id, sides: now.faces ?? {}, names, ...(warnings.length ? { warnings } : {}) });
+    return ok({ id: clip.id, sides: now.faces ?? {}, names, ...(warnings.length ? { warnings } : {}), ...(notes.length ? { note: notes.join('; ') } : {}) });
   },
 };
 
@@ -147,7 +175,7 @@ const moveClip: ToolDef = {
     type: 'object',
     properties: {
       id: { type: 'string', description: 'the clip id' },
-      start: { type: 'number', minimum: 0, description: 'new start on the timeline, seconds' },
+      start: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'new start on the timeline, seconds' },
       track: { type: 'string', description: 'id of the track to move the clip to' },
     },
     required: ['id'],
@@ -190,7 +218,7 @@ const trimClip: ToolDef = {
     properties: {
       id: { type: 'string', description: 'the clip id' },
       edge: { type: 'string', enum: ['start', 'end'], description: 'which edge to move' },
-      time: { type: 'number', minimum: 0, description: 'timeline time in seconds the edge should go to' },
+      time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline time in seconds the edge should go to' },
     },
     required: ['id', 'edge', 'time'],
   },
@@ -225,7 +253,7 @@ const splitClips: ToolDef = {
   inputSchema: {
     type: 'object',
     properties: {
-      time: { type: 'number', minimum: 0, description: 'timeline time in seconds' },
+      time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline time in seconds' },
       ids: ids('clips to cut. default: every clip under the time'),
     },
     required: ['time'],
