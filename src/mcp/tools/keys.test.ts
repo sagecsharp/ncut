@@ -43,6 +43,12 @@ describe('set_keyframe', () => {
     await refused('set_keyframe', { id: e, prop: 'x', time: 1 }, /no animatable property/);
   });
 
+  it('asks for a value when the property has none yet', async () => {
+    const c = (await call('add_camera', { start: 0, duration: 3 })).data.id as string;
+    await refused('set_keyframe', { id: c, prop: 'focusDistance', time: 1 }, /give a value: focusDistance has no value on this clip yet/);
+    await refused('set_keyframe', { id: c, prop: 'fov', time: 99999 }, /at most 86400/);
+  });
+
   it('keys a camera', async () => {
     const c = (await call('add_camera', { start: 0, duration: 3 })).data.id as string;
     const r = await call('set_keyframe', { id: c, prop: 'fov', time: 1, value: 30 });

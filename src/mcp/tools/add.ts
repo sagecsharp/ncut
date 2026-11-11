@@ -7,17 +7,17 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Clip, Shape3D, ShapeClip, ShapeKind, TextClip } from '../../types';
 import { DEFAULT_TRANSFORM, isVisualClip, SHAPE_KINDS, SHAPES_3D } from '../../types';
-import { clipBrief, needClip, needProject, ok, optNumber, optString, ToolError } from '../helpers';
+import { clipBrief, needClip, needProject, ok, optNumber, optString, round, ToolError } from '../helpers';
 import type { JsonSchema, ToolDef } from '../types';
-import { applyPatch, step, videoTrackArg } from './editPatch';
+import { applyPatch, MAX_TIME, step, videoTrackArg } from './editPatch';
 
 const SOLIDS = SHAPES_3D.filter((s) => s !== 'plane');
 
 /** arguments every new clip takes */
 const PLACE: Record<string, JsonSchema> = {
   track: { type: 'string', description: 'id of a video track to put the clip on. default: a track with room at start (a new one when none has)' },
-  start: { type: 'number', minimum: 0, description: 'start on the timeline in seconds. default: the playhead' },
-  duration: { type: 'number', minimum: 0.05, description: 'length in seconds. default depends on the kind (text 4, shape 4, effect 3, camera 5)' },
+  start: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'start on the timeline in seconds. default: the playhead' },
+  duration: { type: 'number', minimum: 0.05, maximum: MAX_TIME, description: 'length in seconds. default depends on the kind (text 4, shape 4, effect 3, camera 5)' },
 };
 
 const FIELDS: JsonSchema = {
@@ -27,6 +27,14 @@ const FIELDS: JsonSchema = {
 
 function startOf(args: Record<string, unknown>): number {
   return optNumber(args.start) ?? usePlayback.getState().time;
+}
+
+/** a note when the clip did not land where it was asked to (the store moves it to free room and says nothing) */
+function landing(clip: Clip, asked: number, track: string | undefined): { note: string } | Record<string, never> {
+  const parts: string[] = [];
+  if (track !== undefined && clip.trackId !== track) parts.push(`it went on the track ${clip.trackId} instead of ${track}`);
+  if (Math.abs(clip.start - asked) > 1e-6) parts.push(`it starts at ${round(clip.start)} s instead of ${round(asked)} s`);
+  return parts.length > 0 ? { note: `${parts.join(' and ')}: the spot asked for was taken by another clip` } : {};
 }
 
 /** the new clip, after the optional fields were applied. a failing field takes the whole add back (step) */
@@ -70,7 +78,7 @@ const addText: ToolDef = {
       finish(made, args.fields, opts);
       return made;
     });
-    return ok(clipBrief(needClip(id)));
+    return ok({ ...clipBrief(needClip(id)), ...landing(needClip(id), start, track) });
   },
 };
 
@@ -125,7 +133,7 @@ const addShape: ToolDef = {
       finish(made, args.fields, opts);
       return made;
     });
-    return ok(clipBrief(needClip(id)));
+    return ok({ ...clipBrief(needClip(id)), ...landing(needClip(id), start, track) });
   },
 };
 
@@ -161,6 +169,7 @@ const addEffect: ToolDef = {
     if (args.amount !== undefined) patch.amount = args.amount;
     if (args.params !== undefined) patch.params = args.params;
     const duration = optNumber(args.duration);
+    const asked = target ? (optNumber(args.start) ?? target.start) : startOf(args);
     const id = step((opts) => {
       const st = useEditor.getState();
       let made: string | null | undefined;
@@ -179,7 +188,7 @@ const addEffect: ToolDef = {
       return made;
     });
     const clip = needClip(id);
-    return ok({ ...clipBrief(clip), ...(clip.type === 'effect' ? { amount: clip.amount, params: clip.params } : {}) });
+    return ok({ ...clipBrief(clip), ...landing(clip, asked, track), ...(clip.type === 'effect' ? { amount: clip.amount, params: clip.params } : {}) });
   },
 };
 
@@ -193,13 +202,14 @@ const addCamera: ToolDef = {
   run(args) {
     needProject();
     const track = videoTrackArg(args.track);
+    const start = startOf(args);
     const id = step((opts) => {
-      const made = useEditor.getState().addCamera({ ...opts, trackId: track, start: startOf(args), duration: optNumber(args.duration) });
+      const made = useEditor.getState().addCamera({ ...opts, trackId: track, start, duration: optNumber(args.duration) });
       if (!made) throw new ToolError('the camera could not be added');
       finish(made, args.fields, opts);
       return made;
     });
-    return ok(clipBrief(needClip(id)));
+    return ok({ ...clipBrief(needClip(id)), ...landing(needClip(id), start, track) });
   },
 };
 

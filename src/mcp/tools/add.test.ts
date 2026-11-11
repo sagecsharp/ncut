@@ -43,6 +43,29 @@ describe('add_text', () => {
   });
 });
 
+describe('where a new clip lands', () => {
+  it('says so when the asked start was taken, and when the asked track was', async () => {
+    await call('add_text', { text: 'a', track: video, start: 0, duration: 4 });
+    const r = await call('add_text', { text: 'b', track: video, start: 1, duration: 2 });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.start).not.toBe(1);
+    expect(r.data.note).toMatch(/starts at .* instead of 1 s.*taken/);
+    const ok1 = await call('add_text', { text: 'c', track: video, start: 20, duration: 2 });
+    expect(ok1.data.note).toBeUndefined();
+    const s = await call('add_shape', { kind: 'rect', track: video, start: 1, duration: 2 });
+    expect(s.data.note).toMatch(/taken/);
+    const cam = await call('add_camera', { track: video, start: 1, duration: 2 });
+    expect(cam.data.note).toMatch(/taken/);
+    const e = await call('add_effect', { effect: 'echo', track: video, start: 1, duration: 2 });
+    expect(e.data.note).toMatch(/instead of/);
+  });
+
+  it('takes no time beyond a day', async () => {
+    await refused('add_text', { start: 1e9, duration: 5 }, /at most 86400/);
+    await refused('add_text', { duration: 1e9 }, /at most 86400/);
+  });
+});
+
 describe('add_shape', () => {
   it('adds a preset', async () => {
     const r = await oneStepOf(() => call('add_shape', { preset: 'circle', start: 0 }));

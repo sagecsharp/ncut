@@ -1,11 +1,11 @@
 import { getEffect } from '../../engine/effects/registry';
-import { animProps, canKey, EASINGS, keyIndexAt } from '../../lib/anim';
+import { animProps, canKey, EASINGS, keyIndexAt, valueAt } from '../../lib/anim';
 import { usePlayback } from '../../store/playback';
 import { useEditor } from '../../store/editorStore';
 import type { Clip, Easing, Keyframes } from '../../types';
 import { changedSince, needClip, needProject, needUnlocked, ok, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
-import { step } from './editPatch';
+import { MAX_TIME, step } from './editPatch';
 
 const EASE_IDS = EASINGS.map((e) => e.id);
 
@@ -51,7 +51,7 @@ const setKeyframe: ToolDef = {
     properties: {
       id: { type: 'string', description: 'the clip id' },
       prop: { type: 'string', description: 'the property, for example "x", "opacity", "p.radius"' },
-      time: { type: 'number', minimum: 0, description: 'timeline time in seconds, inside the clip' },
+      time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline time in seconds, inside the clip' },
       value: { type: 'number', description: 'the value at that time (default: the current value there)' },
       ease: { type: 'string', enum: EASE_IDS, description: 'how the value moves on to the next key' },
     },
@@ -74,6 +74,8 @@ const setKeyframe: ToolDef = {
     step((opts) => useEditor.getState().setKeyframe(clip.id, prop, time, value, optString(args.ease) as Easing | undefined, opts));
     if (JSON.stringify(needClip(clip.id).keyframes?.[prop] ?? null) === was) {
       useEditor.getState().rollback();
+      // no value given and none to take: the store wrote nothing, which is not the same as a key that already exists
+      if (value === undefined && valueAt(needClip(clip.id), prop, time) === undefined) throw new ToolError(`give a value: ${prop} has no value on this clip yet`);
       throw new ToolError('nothing changed: that key already exists with that value and ease');
     }
     return ok({ id: clip.id, prop, keys: keysOf(needClip(clip.id), prop) });
@@ -91,7 +93,7 @@ const removeKeyframe: ToolDef = {
     properties: {
       id: { type: 'string', description: 'the clip id' },
       prop: { type: 'string', description: 'the property' },
-      time: { type: 'number', minimum: 0, description: 'timeline time of the key, seconds' },
+      time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline time of the key, seconds' },
     },
     required: ['id', 'prop', 'time'],
   },

@@ -6,6 +6,7 @@
 import { CLIP_MOTIONS_IN, CLIP_MOTIONS_LOOP, DEFAULT_CLIP_MOTION_IN, DEFAULT_CLIP_MOTION_LOOP } from '../../engine/clipAnim';
 import { DEFAULT_TEXT_ANIM_IN, DEFAULT_TEXT_ANIM_LOOP, TEXT_ANIMS_IN, TEXT_ANIMS_LOOP } from '../../engine/textAnim';
 import { DEFAULT_TRANSITION_DURATION, getTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
+import { BPM_MAX, BPM_MIN } from '../../lib/tempo';
 import { BLEND_MODES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
 import { needProject, ToolError } from '../helpers';
 
@@ -20,7 +21,7 @@ function kindOf(v: unknown): string {
   return v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
 }
 
-function num(min?: number, max?: number, int = false): Check {
+export function num(min?: number, max?: number, int = false): Check {
   return (v, path) => {
     if (typeof v !== 'number' || !Number.isFinite(v)) throw new ToolError(`${path} must be a number, got ${kindOf(v)}`);
     if (int && !Number.isInteger(v)) throw new ToolError(`${path} must be a whole number`);
@@ -153,15 +154,24 @@ const PICTURE: Record<string, Check> = {
   ),
 };
 
+/** a fade cannot be longer than the clip (the store would cut it back and say nothing) */
+const fade: Check = (v, path, _cur, clip) => {
+  num(0)(v, path, undefined, clip);
+  if ((v as number) > clip.duration + 1e-6) throw new ToolError(`${path} cannot be longer than the clip (the clip is ${Math.round(clip.duration * 1000) / 1000} s long), got ${v as number}`);
+  return v;
+};
+
 const BASE: Record<string, Check> = {
   name: str(200),
-  fadeIn: num(0),
-  fadeOut: num(0),
+  fadeIn: fade,
+  fadeOut: fade,
 };
 
 const SOUND: Record<string, Check> = {
   volume: num(0, 2),
   muted: bool,
+  // null takes the tempo away
+  bpm: orNull(num(BPM_MIN, BPM_MAX)),
 };
 
 const TEXT: Record<string, Check> = {
@@ -274,4 +284,9 @@ export function knowsField(type: ClipType, key: string): boolean {
 export function checkField(clip: Clip, key: string, value: unknown): unknown {
   const check = BY_TYPE[clip.type][key];
   return check(value, key, (clip as unknown as Record<string, unknown>)[key], clip);
+}
+
+/** a number for a field that has no entry in the tables above (a transform field, the speed) */
+export function checkNumber(v: unknown, path: string, min?: number, max?: number): number {
+  return num(min, max)(v, path, undefined, undefined as unknown as Clip) as number;
 }

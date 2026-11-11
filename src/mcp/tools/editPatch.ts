@@ -5,9 +5,12 @@
 import { getEffect } from '../../engine/effects/registry';
 import { useEditor, type ActionOpts, type ClipPatch } from '../../store/editorStore';
 import type { Clip, Transform } from '../../types';
-import { isTimedClip, isVisualClip } from '../../types';
+import { isTimedClip, isVisualClip, MAX_SCALE, MAX_SPEED, MIN_SCALE, MIN_SPEED } from '../../types';
 import { needClip, needProject, needTrack, needUnlocked, oneStep, ToolError } from '../helpers';
-import { checkField, knowsField } from './editCheck';
+import { checkField, checkNumber, knowsField } from './editCheck';
+
+/** the longest time a tool takes: a day. a bigger one would make a timeline nobody can use */
+export const MAX_TIME = 86400;
 
 /** fields that have a tool of their own: update_clip refuses them and names the tool */
 const OTHER_TOOL: Record<string, string> = {
@@ -19,6 +22,18 @@ const OTHER_TOOL: Record<string, string> = {
   trimStart: 'trim_clip (the start edge)',
   keyframes: 'set_keyframe / set_keyframes / clear_keyframes',
   faces: 'set_sides',
+  assetId: 'replace_media (it checks the kind and fixes the length)',
+  group: 'group_clips / ungroup_clips',
+  effect: 'add_effect (the effect of a clip cannot change: make a new effect clip)',
+};
+
+/** transform fields with a range (the store clamps these, so a value outside is refused instead of changed). the rest: any finite number */
+const TRANSFORM_RANGE: Record<string, [number, number]> = {
+  scale: [MIN_SCALE, MAX_SCALE],
+  scaleX: [MIN_SCALE, MAX_SCALE],
+  scaleY: [MIN_SCALE, MAX_SCALE],
+  scaleZ: [MIN_SCALE, MAX_SCALE],
+  opacity: [0, 1],
 };
 
 const TRANSFORM_KEYS = ['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY'] as const;
@@ -72,6 +87,13 @@ function checkParent(clip: Clip, value: unknown): void {
   }
 }
 
+/** the keyframe names a plain field stands for: itself, or parent.key for every key of an object the patch gives (null: the whole object, so every keyed prop under it) */
+function touchedBy(out: string[], key: string, value: unknown): void {
+  if (isObject(value)) for (const k of Object.keys(value)) out.push(`${key}.${k}`);
+  else if (value === null) out.push(`${key}.*`);
+  else out.push(key);
+}
+
 /**
  * apply a patch to one clip. returns the names of the fields that changed (it can be empty: every value was
  * already what it is, or was clamped to it). throws a ToolError for anything that cannot be done, BEFORE the
@@ -86,6 +108,8 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   let transform: Record<string, unknown> | undefined;
   let params: Record<string, unknown> | undefined;
   let speed: unknown;
+  // the keyframe names of every property this patch sets
+  const touched: string[] = [];
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
     if (key in OTHER_TOOL) throw new ToolError(`${key} cannot be set here: use ${OTHER_TOOL[key]}`);
@@ -95,6 +119,9 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
       for (const [k, v] of Object.entries(value)) {
         if (!(TRANSFORM_KEYS as readonly string[]).includes(k)) throw new ToolError(`transform.${k} is not a transform field (known: ${TRANSFORM_KEYS.join(', ')})`);
         if (typeof v !== 'number' || !Number.isFinite(v)) throw new ToolError(`transform.${k} must be a number`);
+        const range = TRANSFORM_RANGE[k];
+        if (range) checkNumber(v, `transform.${k}`, range[0], range[1]);
+        touched.push(k);
       }
       transform = value;
       continue;
@@ -108,24 +135,34 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
       for (const [k, v] of Object.entries(value)) {
         if (!keys.includes(k)) throw new ToolError(`the effect ${def.id} has no param ${k} (it has: ${keys.join(', ') || 'none'})`);
         if (typeof v !== 'number' || !Number.isFinite(v)) throw new ToolError(`params.${k} must be a number`);
+        touched.push(`p.${k}`);
       }
       params = value;
       continue;
     }
     if (key === 'speed') {
       if (!isTimedClip(before)) throw new ToolError('speed only exists on video and audio clips');
-      if (typeof value !== 'number' || !Number.isFinite(value)) throw new ToolError('speed must be a number (0.25 to 4)');
-      speed = value;
+      speed = checkNumber(value, 'speed', MIN_SPEED, MAX_SPEED);
       continue;
     }
     if (key === 'parent') checkParent(before, value);
     // a field this file knows the shape of is checked (and a partial object completed) before it is stored
     if (knowsField(before.type, key)) {
       rest[key] = checkField(before, key, value);
+      touchedBy(touched, key, value);
       continue;
     }
     checkKind(key, (before as unknown as Record<string, unknown>)[key], value);
     rest[key] = value;
+    touchedBy(touched, key, value);
+  }
+  // a keyed property takes its value from the keys: a static value set here would change nothing on screen
+  const keyed = before.keyframes ?? {};
+  for (const t of touched) {
+    const prop = t.endsWith('.*') ? Object.keys(keyed).find((k) => k.startsWith(t.slice(0, -1)) && (keyed[k]?.length ?? 0) > 0) : (keyed[t]?.length ?? 0) > 0 ? t : undefined;
+    if (prop) {
+      throw new ToolError(`${prop} is keyed on this clip, the keys decide its value. use set_keyframe to change a key or clear_keyframes to drop them`);
+    }
   }
 
   if (transform) st.updateTransform(id, transform as Partial<Transform>, opts);
