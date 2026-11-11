@@ -242,6 +242,15 @@ export interface Mask {
   radius?: number;
 }
 
+/** how a clip's picture sits on a side of a solid: 'fill' covers it (cut where the proportions differ), 'fit' shows all of it (see-through around), 'stretch' squeezes it to the side */
+export type FaceFit = 'fill' | 'fit' | 'stretch';
+
+/**
+ * what a side of a 3d solid shows instead of the clip's own picture: another clip's picture (by id; `fit` missing =
+ * 'fill' for a video / image, 'fit' for text / a shape) or a plain color ('#rrggbb'). the rules are in engine/scene3d/faces.ts.
+ */
+export type FaceFill = { clip: string; fit?: FaceFit } | { color: string };
+
 /** shared by the clips that draw a picture (video, image, text, shape) */
 interface Spatial {
   transform: Transform;
@@ -261,6 +270,13 @@ interface Spatial {
    * (a text's outline, shadow or animation room does not count).
    */
   shapeDepth?: number;
+  /**
+   * 3d solids only: what single sides show instead of the clip's own picture, by side name (engine/scene3d/faces.ts
+   * faceNames(shape); 'all' = every side without an entry of its own; null under a side's name = the own picture there
+   * even when 'all' is set). missing / a name the shape does not have / an unknown clip id = the clip's own picture.
+   * a clip that is shown on a side is not painted on its own.
+   */
+  faces?: Record<string, FaceFill | null>;
   /** transition into this clip. null / missing = a plain cut. */
   transition?: Transition | null;
   /** missing = 'normal' */
