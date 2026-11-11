@@ -116,8 +116,8 @@ describe('look table: every property', () => {
 
   it('the old properties keep their place and the audio / effect / camera lists are untouched', () => {
     const v = animProps(video()).map((p) => p.prop);
-    expect(v.slice(0, 9)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'volume']);
-    expect(animProps(shape()).map((p) => p.prop).slice(0, 10)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'drawStart', 'drawEnd']);
+    expect(v.slice(0, 12)).toEqual(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'volume']);
+    expect(animProps(shape()).map((p) => p.prop).slice(0, 13)).toEqual(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'drawStart', 'drawEnd']);
     for (const p of animProps(text())) expect(p.label.length).toBeGreaterThan(0);
   });
 

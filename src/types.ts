@@ -48,6 +48,9 @@ export interface Track {
  * x/y: offset of the element center from the canvas center, in canvas pixels.
  * scale: 1 means "contain" fit for media (largest size that fits fully inside the canvas),
  *        and natural size for text.
+ * scaleX / scaleY / scaleZ: a stretch of one axis on top of scale (missing = 1). the clip's box is
+ *        (size at scale 1) x scale x scaleX wide and x scale x scaleY high. scaleZ is the depth of a 3d solid
+ *        or of extruded text. a stretch is the clip's own: clips attached to it follow scale only.
  * rotation: degrees, clockwise.
  * opacity: 0..1
  */
@@ -55,6 +58,12 @@ export interface Transform {
   x: number;
   y: number;
   scale: number;
+  /** stretch along the clip's own x axis, on top of scale. missing = 1. read it with stretchX. */
+  scaleX?: number;
+  /** stretch along the clip's own y axis, on top of scale. missing = 1. read it with stretchY. */
+  scaleY?: number;
+  /** stretch of the depth of a 3d solid / extruded text, on top of scale. missing = 1. read it with stretchZ. */
+  scaleZ?: number;
   rotation: number;
   opacity: number;
   /** 3d only (clip.threeD). depth in project pixels: + is away from the viewer, 0 = the canvas plane. */
@@ -686,6 +695,30 @@ export interface ProjectSummary {
 }
 
 export const DEFAULT_TRANSFORM: Transform = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
+
+/** the smallest and the largest value of scale and of each stretch */
+export const MIN_SCALE = 0.01;
+export const MAX_SCALE = 100;
+
+function stretchOf(v: number | undefined): number {
+  return v === undefined || !(v > 0) || !isFinite(v) ? 1 : v;
+}
+/** the stretch of a transform along x (1 = none). multiply it onto scale for the width. */
+export function stretchX(t: { scaleX?: number }): number {
+  return stretchOf(t.scaleX);
+}
+/** the stretch of a transform along y (1 = none) */
+export function stretchY(t: { scaleY?: number }): number {
+  return stretchOf(t.scaleY);
+}
+/** the stretch of a transform along z: the depth of a solid or of extruded text (1 = none) */
+export function stretchZ(t: { scaleZ?: number }): number {
+  return stretchOf(t.scaleZ);
+}
+/** true when a transform is stretched on any axis */
+export function isStretched(t: { scaleX?: number; scaleY?: number; scaleZ?: number }): boolean {
+  return stretchOf(t.scaleX) !== 1 || stretchOf(t.scaleY) !== 1 || stretchOf(t.scaleZ) !== 1;
+}
 
 export const MIN_CLIP_DURATION = 0.05;
 export const MIN_SPEED = 0.25;

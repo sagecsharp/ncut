@@ -8,7 +8,7 @@
  * every property has its OWN key list: a key on one property never adds, moves or removes a key of another.
  *
  * property names (animProps gives labels and ranges):
- *   visual clips (video, image, text, shape): x y scale rotation opacity z rotX rotY
+ *   visual clips (video, image, text, shape): x y scale scaleX scaleY scaleZ rotation opacity z rotX rotY
  *   video / audio clips:               volume
  *   effect clips:                      amount, and p.<key> for every effect param
  *   shape clips:                       drawStart drawEnd (draw on, 0..1)
@@ -183,6 +183,9 @@ const VISUAL_PROPS: AnimPropInfo[] = [
   { prop: 'x', label: 'x', unit: 'px' },
   { prop: 'y', label: 'y', unit: 'px' },
   { prop: 'scale', label: 'scale', min: 0.01, max: 100 },
+  { prop: 'scaleX', label: 'scale x', min: 0.01, max: 100 },
+  { prop: 'scaleY', label: 'scale y', min: 0.01, max: 100 },
+  { prop: 'scaleZ', label: 'scale z', min: 0.01, max: 100 },
   { prop: 'rotation', label: 'rotation', unit: 'deg' },
   { prop: 'opacity', label: 'opacity', min: 0, max: 1 },
   { prop: 'z', label: 'z', unit: 'px' },
@@ -210,7 +213,9 @@ const SHAPE_PROPS: AnimPropInfo[] = [
 ];
 const DRAW_KEYS = new Set(['drawStart', 'drawEnd']);
 
-const TRANSFORM_KEYS = new Set(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
+const TRANSFORM_KEYS = new Set(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
+/** transform values that are 1 when they are missing (every other one is 0) */
+const TRANSFORM_ONES = new Set(['scaleX', 'scaleY', 'scaleZ']);
 const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focusDistance', 'focusStrength']);
 
 /* ---------- the look table: every other number of a visual clip ---------- */
@@ -404,7 +409,7 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
     case 'image':
     case 'text':
     case 'shape':
-      if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? 0;
+      if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? (TRANSFORM_ONES.has(prop) ? 1 : 0);
       if (prop === 'volume' && clip.type === 'video') return clip.volume;
       if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return prop === 'drawStart' ? (clip.drawStart ?? 0) : (clip.drawEnd ?? 1);
       {

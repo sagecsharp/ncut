@@ -356,11 +356,11 @@ describe('animProps', () => {
   const names = (c: Clip) => animProps(c).map((p) => p.prop);
   // the look values come after these (animLook.test.ts has them)
   it('video: transform props + z/tilt/turn + volume', () => {
-    expect(names(video()).slice(0, 9)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'volume']);
+    expect(names(video()).slice(0, 12)).toEqual(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'volume']);
   });
   it('image and text: transform props, no volume', () => {
-    expect(names(image()).slice(0, 8)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
-    expect(names(text()).slice(0, 8)).toEqual(names(image()).slice(0, 8));
+    expect(names(image()).slice(0, 11)).toEqual(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY']);
+    expect(names(text()).slice(0, 11)).toEqual(names(image()).slice(0, 11));
     expect(names(image())).not.toContain('volume');
   });
   it('audio: volume only', () => {
@@ -705,7 +705,7 @@ describe('shape draw on', () => {
   const sh = (o: Partial<ShapeClip> = {}) => createShapeClip('t', 2, { duration: 4, ...o });
   it('lists drawStart and drawEnd after the transform props', () => {
     const p = animProps(sh());
-    expect(p.map((a) => a.prop).slice(0, 10)).toEqual(['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'drawStart', 'drawEnd']);
+    expect(p.map((a) => a.prop).slice(0, 13)).toEqual(['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY', 'drawStart', 'drawEnd']);
     expect(p.find((a) => a.prop === 'drawEnd')).toMatchObject({ min: 0, max: 1 });
     expect(animProps(image()).some((a) => a.prop === 'drawEnd')).toBe(false);
   });
