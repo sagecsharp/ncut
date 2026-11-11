@@ -25,6 +25,8 @@ const LIST_TIMEOUT_MS = 10 * 1000;
 const CALL_TIMEOUT_MS = 180 * 1000;
 const MAX_FILES = 16;
 const MAX_FILE_BYTES_PER_CALL = 1024 * 1024 * 1024;
+/** all calls together: the bytes main holds while files wait for the page */
+const MAX_BYTES_IN_FLIGHT = 1024 * 1024 * 1024;
 const TICKET_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_TICKETS = 8;
 const ARM_TIMEOUT_MS = 60 * 1000;
@@ -362,6 +364,19 @@ function savedFileName(file) {
   return shellRules.safeFileName(file).slice(0, MAX_NAME_CHARS);
 }
 
+/** the only extensions a ticket download may have: what export_video makes. nothing else is saved without a dialog */
+const TICKET_EXTS = ['mp4', 'webm', 'gif', 'wav', 'ogg'];
+
+function ticketExtOk(name) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(String(name ?? ''));
+  return m !== null && TICKET_EXTS.includes(m[1].toLowerCase());
+}
+
+/** the clipboard gets the token only for a known kind and only while the window is the one in use */
+function copyAllowed(kind, focused) {
+  return focused === true && (kind === 'claude' || kind === 'http' || kind === 'stdio');
+}
+
 /**
  * the first of `name`, `name (2).ext`, `name (3).ext` ... that `taken` does not know. null when 9999 are taken.
  * `taken(candidate)` may reserve the name it returns false for.
@@ -392,6 +407,10 @@ module.exports = {
   CALL_TIMEOUT_MS,
   MAX_FILES,
   MAX_FILE_BYTES_PER_CALL,
+  MAX_BYTES_IN_FLIGHT,
+  TICKET_EXTS,
+  ticketExtOk,
+  copyAllowed,
   TICKET_TTL_MS,
   MAX_TICKETS,
   ARM_TIMEOUT_MS,

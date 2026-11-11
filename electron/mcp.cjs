@@ -23,10 +23,12 @@ const rules = require('./mcpRules.cjs');
  * @param {(file: string) => void} [opts.onSaved] a ticket file was saved to this path
  * @param {{ list?: number, call?: number, arm?: number, ttl?: number }} [opts.timing] in ms, for tests
  * @param {{ first?: number, tries?: number }} [opts.ports] for tests
+ * @param {{ inFlight?: number }} [opts.limits] for tests
  */
 function createMcp(opts) {
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   const timing = { list: rules.LIST_TIMEOUT_MS, call: rules.CALL_TIMEOUT_MS, arm: rules.ARM_TIMEOUT_MS, ttl: rules.TICKET_TTL_MS, ...(opts.timing ?? {}) };
+  const limits = { inFlight: rules.MAX_BYTES_IN_FLIGHT, ...(opts.limits ?? {}) };
   const configFile = path.join(opts.userDataDir, 'mcp.json');
   const bridgeFile = path.join(opts.userDataDir, 'mcp-bridge.cjs');
 
@@ -37,6 +39,10 @@ function createMcp(opts) {
   let error = null;
   let bridgeOk = false;
   let disposed = false;
+  /** bumped when the server stops: a call that began before does not go on after */
+  let epoch = 0;
+  /** bytes of files read for calls that have not settled yet */
+  let inFlightBytes = 0;
   const sockets = new Set();
   const listeners = new Set();
 
@@ -168,8 +174,21 @@ function createMcp(opts) {
     }
   }
 
-  function failAllPending() {
-    for (const id of [...pending.keys()]) settle(id, { gone: true });
+  const OFF_TEXT = 'the mcp server was turned off while this ran';
+  const RELOADED_TEXT = 'the ncut window was reloaded or closed while this ran';
+
+  /** every call the page holds ends now. `why` is what the client reads */
+  function failAllPending(why) {
+    for (const id of [...pending.keys()]) settle(id, { gone: why });
+  }
+
+  /** the page was reloaded or is gone: nothing will answer the calls that wait on it */
+  function failPending(reason) {
+    try {
+      failAllPending(typeof reason === 'string' && reason !== '' ? reason : RELOADED_TEXT);
+    } catch (e) {
+      log(`mcp: failing the waiting calls went wrong (${e && e.message ? e.message : 'error'})`);
+    }
   }
 
   // ---------- save tickets ----------
@@ -195,7 +214,17 @@ function createMcp(opts) {
 
   function grantTicket(ticket) {
     pruneTickets();
-    while (tickets.size >= rules.MAX_TICKETS) dropTicket(tickets.keys().next().value);
+    // the oldest ticket that was never armed goes first: a running export's ticket is armed
+    while (tickets.size >= rules.MAX_TICKETS) {
+      let victim;
+      for (const [k, t] of tickets) {
+        if (!t.armed) {
+          victim = k;
+          break;
+        }
+      }
+      dropTicket(victim === undefined ? tickets.keys().next().value : victim);
+    }
     tickets.set(ticket, { at: Date.now(), armed: false, resolve: null, timer: null });
     return ticket;
   }
@@ -225,17 +254,24 @@ function createMcp(opts) {
   /** a file made now, named like the wanted one but never over another: ` (2)`, ` (3)` ... */
   function reserveName(folder, wanted) {
     let made = null;
-    const name = rules.uniqueName(wanted, (candidate) => {
-      const full = path.join(folder, candidate);
-      try {
-        fs.closeSync(fs.openSync(full, 'wx'));
-        made = full;
-        return false;
-      } catch {
-        return true;
-      }
-    });
-    return name === null || made === null ? null : { name, path: made };
+    try {
+      const name = rules.uniqueName(wanted, (candidate) => {
+        const full = path.join(folder, candidate);
+        try {
+          fs.closeSync(fs.openSync(full, 'wx'));
+          made = full;
+          return false;
+        } catch (e) {
+          // only a name that exists is taken. any other error (no folder, no rights) would fail 9999 times
+          if (e && e.code === 'EEXIST') return true;
+          throw e;
+        }
+      });
+      return name === null || made === null ? null : { name, path: made };
+    } catch (e) {
+      log(`mcp: could not make a file for a ticket download (${e && e.code ? e.code : 'error'})`);
+      return null;
+    }
   }
 
   function dropEmpty(file) {
@@ -271,7 +307,14 @@ function createMcp(opts) {
       // a ticket works once
       tickets.delete(mark.ticket);
       clearTimeout(t.timer);
-      target = reserveName(opts.saveFolder(), rules.savedFileName(mark.file));
+      const clean = rules.savedFileName(mark.file);
+      // only what export_video makes is saved without a dialog
+      if (!rules.ticketExtOk(clean)) {
+        item.cancel();
+        t.resolve(failed());
+        return true;
+      }
+      target = reserveName(opts.saveFolder(), clean);
       if (!target) {
         item.cancel();
         t.resolve(failed());
@@ -318,7 +361,7 @@ function createMcp(opts) {
   }
 
   /** read the checked paths: plain files only, 1 gib in total. { ok, files } or { ok: false, error } */
-  async function readFiles(paths) {
+  async function readFiles(paths, budget) {
     const sizes = [];
     let total = 0;
     for (const p of paths) {
@@ -333,6 +376,12 @@ function createMcp(opts) {
       if (total > rules.MAX_FILE_BYTES_PER_CALL) return { ok: false, error: 'the files together are bigger than 1 gib, import fewer at a time' };
       sizes.push(st.size);
     }
+    // one budget for all calls: many big imports at once must not fill main's memory
+    if (inFlightBytes + total > limits.inFlight) {
+      return { ok: false, error: 'other imports are still being read, try again in a moment' };
+    }
+    inFlightBytes += total;
+    budget.held = total;
     const files = [];
     let read = 0;
     for (let i = 0; i < paths.length; i++) {
@@ -359,30 +408,52 @@ function createMcp(opts) {
     if (out.value) return rules.rpcResult(id, out.value);
     if (out.notReady) return rules.rpcError(id, rules.SERVER_ERROR, STARTING);
     if (out.timeout) return rules.rpcError(id, rules.SERVER_ERROR, 'ncut did not answer in time. try again in a moment');
+    if (out.gone) return rules.rpcError(id, rules.SERVER_ERROR, out.gone);
     return rules.rpcError(id, rules.SERVER_ERROR, 'ncut could not list its tools');
   }
 
+  /** a ticket whose call ended without the page arming it is of no use to anyone */
+  function dropUnarmed(ticket) {
+    const t = ticket === null ? undefined : tickets.get(ticket);
+    if (t && !t.armed) dropTicket(ticket);
+  }
+
+  /** the bytes of the files stay counted until the call settles */
   async function relayCall(id, name, args) {
+    const budget = { held: 0 };
+    try {
+      return await relayCallInner(id, name, args, budget);
+    } finally {
+      inFlightBytes -= budget.held;
+    }
+  }
+
+  async function relayCallInner(id, name, args, budget) {
+    const gen = epoch;
     let files = [];
     let sendArgs = args;
     const spec = rules.fileSpec(name);
     if (spec) {
       const plan = rules.planFiles(spec, args);
       if (!plan.ok) return rules.rpcResult(id, rules.textResult(plan.error, true));
-      const read = await readFiles(plan.paths);
+      const read = await readFiles(plan.paths, budget);
       if (!read.ok) return rules.rpcResult(id, rules.textResult(read.error, true));
+      // switched off while the files were read: nothing goes to the page now
+      if (gen !== epoch || !running) return rules.rpcResult(id, rules.textResult(OFF_TEXT, true));
       files = read.files;
       sendArgs = rules.withoutPathArg(spec, args);
     }
     const callId = nextId++;
     const ticket = rules.wantsTicket(name) ? grantTicket(callId) : null;
     const out = await ask({ id: callId, kind: 'call', name, args: sendArgs, files, ticket }, timing.call);
+    // an error answer, or none at all: the export never started, so its ticket is not needed
+    if (out.notReady || out.gone || out.bad || (out.value && out.value.isError === true)) dropUnarmed(ticket);
     if (out.notReady) return rules.rpcResult(id, rules.textResult(STARTING, true));
     if (out.timeout) {
       const secs = Math.round(timing.call / 1000);
       return rules.rpcResult(id, rules.textResult(`${name} did not finish within ${secs} seconds. ncut may be busy: call get_state and try again`, true));
     }
-    if (out.gone) return rules.rpcResult(id, rules.textResult('the mcp server was turned off while this ran', true));
+    if (out.gone) return rules.rpcResult(id, rules.textResult(out.gone, true));
     if (!out.value) return rules.rpcResult(id, rules.textResult('ncut sent an answer that could not be used', true));
     if (out.value.unknown) return rules.rpcError(id, rules.INVALID_PARAMS, `unknown tool: ${name}`);
     const result = { content: [...out.value.content] };
@@ -521,7 +592,9 @@ function createMcp(opts) {
     return new Promise((resolve, reject) => {
       const s = http.createServer({ maxHeaderSize: 16 * 1024 }, (req, res) => onHttp(req, res, false));
       s.maxConnections = rules.MAX_SOCKETS;
-      s.headersTimeout = 10 * 1000;
+      // short and checked often: a local client that trickles bytes must not hold all the sockets
+      s.connectionsCheckingInterval = 2000;
+      s.headersTimeout = 3000;
       s.requestTimeout = 30 * 1000;
       s.keepAliveTimeout = 5 * 1000;
       s.on('checkContinue', (req, res) => onHttp(req, res, true));
@@ -566,6 +639,11 @@ function createMcp(opts) {
     }
     const addr = server.address();
     livePort = addr && typeof addr === 'object' ? addr.port : 0;
+    // the saved port was not free: old client configs point there, and what sits there now must not get a token that works
+    if (livePort > 0 && config.port > 0 && livePort !== config.port) {
+      config.token = newToken();
+      log('mcp: the port moved, a new token was made');
+    }
     running = livePort > 0;
     config.port = livePort;
     saveConfig();
@@ -575,7 +653,8 @@ function createMcp(opts) {
     const s = server;
     server = null;
     running = false;
-    failAllPending();
+    epoch++;
+    failAllPending(OFF_TEXT);
     if (!s) return;
     await new Promise((resolve) => {
       try {
@@ -662,7 +741,7 @@ function createMcp(opts) {
     }).catch(() => {});
   }
 
-  return { init, state, setEnabled, rotate, copy, reply, armSave, claimDownload, onChange, dispose };
+  return { init, state, setEnabled, rotate, copy, reply, armSave, claimDownload, failPending, onChange, dispose };
 }
 
 module.exports = { createMcp };

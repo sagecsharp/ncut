@@ -39,7 +39,7 @@ no sessions, no sse, no batches: every POST carries one json-rpc message and a r
 `application/json` body.
 
 - listens on `127.0.0.1` only. port: kept in `<userData>/mcp.json` (`{ enabled, port, token }`); first run tries
-  `41713`, then the next 20, then any free one. a saved port that is taken -> another one is picked and saved.
+  `41713`, then the next 20, then any free one. a saved port that is taken -> another one is picked and saved, and a new token is made with it (old client configs point at the old port, whatever sits there now must not get a working token).
 - token: 32 random bytes, base64url, made on first enable, kept in `mcp.json`.
 - every request, in this order (first failure answers):
   1. path is `/mcp`, else 404. method is POST, else 405 with `Allow: POST`.
@@ -56,9 +56,9 @@ no sessions, no sse, no batches: every POST carries one json-rpc message and a r
 - `tools/list` and `tools/call` are relayed to the page. no window, the page not ready, or no answer in time
   (10 s for a list, 180 s for a call): a call gets a tool result with `isError` that says so, a list gets error -32000
   (a list answer has to hold a tool list). the page says the tool name is unknown -> error -32602.
-  at most 8 calls wait at once (-32000 beyond). a reload or a crash of the page fails the calls that wait on it at once.
+  at most 8 calls wait at once (-32000 beyond). a reload, a crash or the closing of the window fails the calls that wait on it at once (a tool result with isError "the ncut window was reloaded or closed while this ran", a list gets -32000). turning the server off does the same, also for a call that is still reading files.
 - batches are refused for every version (2025-03-26 allowed them; no client in use sends them).
-- no cors headers, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, at most 16 sockets, sane timeouts.
+- no cors headers, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, at most 16 sockets, a header that takes more than 3 s ends the connection (checked every 2 s), a request more than 30 s.
 - nothing about a request is logged with its token.
 
 ## ipc (preload: `window.ncutShell.mcp`, page wrapper: `shell.mcp` in src/lib/shell.ts)
@@ -69,7 +69,7 @@ page -> main, invoke:
 - `ncut:mcp-state` () -> McpState `{ enabled, running, port, error, bridge }` (never the token)
 - `ncut:mcp-enable` (on: boolean) -> McpState. on: makes the token when missing, writes the bridge script, listens. off: closes the server.
 - `ncut:mcp-rotate` () -> McpState. new token.
-- `ncut:mcp-copy` (kind: 'claude' | 'http' | 'stdio') -> boolean. main builds the text and writes the clipboard. any other kind -> false.
+- `ncut:mcp-copy` (kind: 'claude' | 'http' | 'stdio') -> boolean. main builds the text and writes the clipboard, only while the main window is focused (else false, the clipboard is never cleared afterwards). any other kind -> false.
 - `ncut:mcp-save` (ticket: number) -> `{ ok, name }`. see "files a tool makes".
 
 page -> main, send:
@@ -92,7 +92,7 @@ two tools take paths. main checks and reads them, removes the argument, and pass
 - `import_project` `{ path: string }`: one `.ncut` file.
 
 a path has to be absolute with a drive letter (`C:\...` or `C:/...`). no unc (`\\server\share`), no device paths
-(`\\?\`, `\\.\`), no nul. it has to be a plain file. at most 1 GiB per call. a bad path -> a tool result with
+(`\\?\`, `\\.\`), no nul. it has to be a plain file. at most 1 GiB per call and 1 GiB for all calls together (counted from the file sizes until the call settles; above it a tool result with isError says other imports are still being read). a bad path -> a tool result with
 `isError` naming the path and the reason; the page is not asked.
 
 ### files a tool makes (main saves them)
@@ -100,10 +100,10 @@ a path has to be absolute with a drive letter (`C:\...` or `C:/...`). no unc (`\
 `export_video` gets a `ticket` (the call's id) with its call. when the file is ready the page calls
 `shell.mcp.save(ticket)` and then starts a normal download named `ncut-mcp-<ticket>-<file name>`
 (`mcpDownloadName` in src/lib/shell.ts). main's download handler sees the marker: an armed ticket -> the file goes to
-the save folder (the last folder the user saved to, else Downloads) under `<file name>` (cleaned like every download,
+the save folder only for the extensions export_video makes (mp4 webm gif wav ogg, any case; anything else is cancelled and the invoke resolves not ok) (the last folder the user saved to, else Downloads) under `<file name>` (cleaned like every download,
 never over an existing file: ` (2)`, ` (3)` ... are added), no dialog. the invoke resolves with `{ ok, name }` when the
 download ended. a marked download without an armed ticket is cancelled. a ticket works once, is only given to
-`export_video`, and lapses after 12 hours; at most 8 are open. main remembers the full path per ticket so a later
+`export_video`, and lapses after 12 hours; at most 8 are open (a full map drops the oldest unarmed ticket first, an armed one only when there is none). a ticket whose call ended in an error before it was armed is dropped at once. main remembers the full path per ticket so a later
 `export_status` answer with `saved: <ticket>` gets the path added.
 
 ## the tools (src/mcp/**)
