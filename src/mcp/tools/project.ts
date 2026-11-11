@@ -105,7 +105,7 @@ export const projectTools: ToolDef[] = [
     name: 'open_project',
     title: 'open a project',
     description:
-      'opens a stored project in the editor window (the open one is saved first). undo history starts empty. ' +
+      'opens a stored project in the editor window (the open one is saved first). undo history starts empty. the id of the project that is already open changes nothing: it answers the summary with a note. ' +
       'ids come from list_projects. refused while an export runs. answers a short summary of the project; get_project has the contents.',
     inputSchema: {
       type: 'object',
@@ -116,6 +116,9 @@ export const projectTools: ToolDef[] = [
     async run(args) {
       refuseWhileBusy('open another project');
       const id = String(args.id);
+      // reopening the open project would throw its undo history away for nothing
+      const open = useEditor.getState().project;
+      if (open && open.id === id) return ok({ ...projectBrief(open), note: 'this project is already open, so nothing was reopened and the undo history stays' });
       if (!(await openProjectById(id))) throw new ToolError(`no stored project with the id ${id}. list_projects lists them`);
       return ok(projectBrief(needProject()));
     },
@@ -279,7 +282,7 @@ export const projectTools: ToolDef[] = [
       'answers the time it landed on. render_frame can take a time of its own, seek is for what the user sees in the window.',
     inputSchema: {
       type: 'object',
-      properties: { time: { type: 'number', minimum: 0, description: 'timeline seconds' } },
+      properties: { time: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds' } },
       required: ['time'],
     },
     run(args) {
@@ -414,7 +417,7 @@ export const projectTools: ToolDef[] = [
     title: 'remove a track',
     description:
       'removes a track and every clip on it (also effects aimed at those clips). one undo step, so undo brings it back. ' +
-      'answers how many clips went with it. to keep the clips, move_clip them to another track first.',
+      'answers how many clips went with it. to keep the clips, move_clip them to another track first. a locked track is refused: unlock it with update_track first.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'track id' } },
@@ -424,6 +427,7 @@ export const projectTools: ToolDef[] = [
     run(args) {
       const before = needProject();
       const track = needTrack(args.id);
+      if (track.locked) throw new ToolError(`the track ${track.id} (${track.name}) is locked. unlock it with update_track first`);
       useEditor.getState().removeTrack(track.id);
       if (!changedSince(before)) throw new ToolError(`the track ${track.id} could not be removed`);
       return ok({ removed: track.id, name: track.name, clipsRemoved: before.clips.length - needProject().clips.length });
@@ -438,7 +442,7 @@ export const projectTools: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        time: { type: 'number', minimum: 0, description: 'timeline seconds' },
+        time: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds' },
         name: { type: 'string', maxLength: 200 },
       },
       required: ['time'],

@@ -96,6 +96,17 @@ describe('projects', () => {
     expect(session.openProjectById).toHaveBeenLastCalledWith('x');
   });
 
+  it('open_project with the open id does not reopen it and keeps the undo history', async () => {
+    useEditor.getState().addText();
+    const before = past();
+    session.openProjectById.mockClear();
+    const r = await call('open_project', { id: project().id });
+    expect(r.json!.note).toMatch(/already open/);
+    expect(session.openProjectById).not.toHaveBeenCalled();
+    expect(past()).toBe(before);
+    expect(project().clips).toHaveLength(1);
+  });
+
   it('create_project: the final size is in the answer and history is empty', async () => {
     const r = await call('create_project', { name: ' reel ', preset: '9:16', width: 1000, fps: 24 });
     expect(r.json).toMatchObject({ name: 'reel', width: 1000, height: 1920, fps: 24 });
@@ -242,6 +253,23 @@ describe('tracks', () => {
     expect((await call('update_track', { id: v!.id })).text).toMatch(/nothing to change/);
     expect((await call('update_track', { id: 'ghost', muted: true })).text).toMatch(/no track with the id ghost/);
     expect(past()).toBe(before + 1);
+  });
+
+  it('remove_track refuses a locked track, empty or not', async () => {
+    const trackId = project().tracks[0]!.id;
+    useEditor.getState().addText();
+    useEditor.getState().updateTrack(trackId, { locked: true });
+    const r = await call('remove_track', { id: trackId });
+    expect(r.text).toMatch(/is locked. unlock it with update_track first/);
+    expect(project().tracks.some((t) => t.id === trackId)).toBe(true);
+    const empty = project().tracks.find((t) => t.id !== trackId && !project().clips.some((c) => c.trackId === t.id))!;
+    useEditor.getState().updateTrack(empty.id, { locked: true });
+    expect((await call('remove_track', { id: empty.id })).error).toBe(true);
+  });
+
+  it('seek and add_marker have a day as the maximum', async () => {
+    expect((await call('seek', { time: 86401 })).error).toBe(true);
+    expect((await call('add_marker', { time: 86401 })).error).toBe(true);
   });
 
   it('remove_track takes its clips along as one step and undo brings them back', async () => {

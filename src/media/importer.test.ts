@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { detectKind } from './importer';
 
 describe('detectKind', () => {
@@ -23,5 +23,23 @@ describe('detectKind', () => {
     expect(detectKind({ type: 'text/plain', name: 'notes.txt' })).toBeNull();
     expect(detectKind({ type: '', name: 'noextension' })).toBeNull();
     expect(detectKind({ type: 'application/zip', name: 'project.ncut' })).toBeNull();
+  });
+});
+
+describe('importFiles skips', () => {
+  it('names an unsupported file and shows no toast when quiet', async () => {
+    const { createProject } = await import('../lib/factory');
+    const { useEditor } = await import('../store/editorStore');
+    const { useUi } = await import('../store/ui');
+    const { importFiles } = await import('./importer');
+    useEditor.getState().openProject(createProject('x'));
+    const toast = vi.spyOn(useUi.getState(), 'toast');
+    const skipped: [string, string][] = [];
+    const file = new File(['x'], 'notes.txt');
+    expect(await importFiles([file], { quiet: true, onSkip: (n, w) => skipped.push([n, w]) })).toEqual([]);
+    expect(skipped).toEqual([['notes.txt', 'unsupported file type']]);
+    expect(toast).not.toHaveBeenCalled();
+    await importFiles([file]);
+    expect(toast).toHaveBeenCalledWith('unsupported file type', 'error');
   });
 });

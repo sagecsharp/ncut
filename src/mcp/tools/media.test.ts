@@ -64,13 +64,20 @@ describe('import_media', () => {
     expect(r.json!.skipped).toBeUndefined();
   });
 
-  it('counts skipped files and fails when nothing came in', async () => {
-    mocks.importFiles.mockResolvedValueOnce([asset('n1', 'video', 2, 'a.mp4')]);
+  it('names the skipped files and why, quietly, and fails naming them when nothing came in', async () => {
+    mocks.importFiles.mockImplementationOnce(async (_f: File[], o: { onSkip: (n: string, w: string) => void }) => {
+      o.onSkip('x.txt', 'unsupported file type');
+      return [asset('n1', 'video', 2, 'a.mp4')];
+    });
     const some = await call('import_media', {}, { files: [{ name: 'a.mp4', bytes }, { name: 'x.txt', bytes }], ticket: null });
-    expect(some.json!.skipped).toBe(1);
-    mocks.importFiles.mockResolvedValueOnce([]);
-    const none = await call('import_media', {}, { files: [{ name: 'x.txt', bytes }], ticket: null });
-    expect(none.text).toMatch(/none of the files could be imported/);
+    expect(some.json!.skipped).toEqual([{ name: 'x.txt', why: 'unsupported file type' }]);
+    expect(mocks.importFiles.mock.calls[0]![1]).toMatchObject({ quiet: true });
+    mocks.importFiles.mockImplementationOnce(async (_f: File[], o: { onSkip: (n: string, w: string) => void }) => {
+      o.onSkip('empty.mp3', 'unreadable');
+      return [];
+    });
+    const none = await call('import_media', {}, { files: [{ name: 'empty.mp3', bytes }], ticket: null });
+    expect(none.text).toContain('none of the files could be imported: empty.mp3 (unreadable)');
   });
 
   it('needs an open project and a sane argument', async () => {
@@ -92,10 +99,17 @@ describe('import_project', () => {
     expect(project().name).toBe('media');
   });
 
-  it('says why a file is not a project, and is desktop only', async () => {
-    mocks.importProjectFile.mockRejectedValue(new Error('not a ncut project file'));
+  it('does not blame the file for a storage failure', async () => {
+    mocks.importProjectFile.mockRejectedValue(new Error('QuotaExceededError'));
     const r = await call('import_project', {}, { files: [{ name: 'a.ncut', bytes: new ArrayBuffer(4) }], ticket: null });
-    expect(r.text).toMatch(/a\.ncut is not a project ncut can read \(not a ncut project file\)/);
+    expect(r.text).toMatch(/could not import a.ncut: QuotaExceededError/);
+    expect(r.text).not.toMatch(/not a project ncut can read/);
+  });
+
+  it('says why a file is not a project, and is desktop only', async () => {
+    mocks.importProjectFile.mockRejectedValue(new Error('not an ncut project file'));
+    const r = await call('import_project', {}, { files: [{ name: 'a.ncut', bytes: new ArrayBuffer(4) }], ticket: null });
+    expect(r.text).toMatch(/could not import a.ncut: not an ncut project file. the file is not a project ncut can read/);
     expect((await call('import_project', { path: 'C:/a.ncut' })).text).toMatch(/desktop app/);
   });
 });

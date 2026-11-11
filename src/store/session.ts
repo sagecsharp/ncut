@@ -77,11 +77,17 @@ let prefetched: Prefetch | null = null;
 const PREFETCH_MAX_AGE_MS = 15000;
 
 async function doOpen(id: string): Promise<boolean> {
+  // the open project goes to the database first: when it is the one being opened, a read made before the
+  // write would bring back the copy without its latest edits
+  await flushAutosave();
   const early = prefetched;
   prefetched = null;
-  const read = early && early.id === id && Date.now() - early.at < PREFETCH_MAX_AGE_MS ? early : startPrefetch(id);
+  // a prefetch started before the flush may hold that old copy, so it only counts for another project
+  const reusable = early && early.id === id && useEditor.getState().project?.id !== id && Date.now() - early.at < PREFETCH_MAX_AGE_MS;
+  const read = reusable ? early : startPrefetch(id);
   const project = await read.project;
   if (!project) return false;
+  // edits made while the project was being read
   await flushAutosave();
   releaseAllAssets();
   releaseAllDerived();

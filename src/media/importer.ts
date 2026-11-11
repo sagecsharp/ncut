@@ -283,13 +283,17 @@ function storeInBackground(asset: MediaAsset, blob: Blob, projectId: string): vo
 
 /**
  * import files into the open project. unsupported / unreadable files are skipped (with a toast).
- * resolves with the assets that were added.
+ * resolves with the assets that were added. quiet = no toasts from this call, onSkip hears about every skipped file and why
+ * (the mcp tool answers with them).
  */
-export async function importFiles(files: File[] | FileList): Promise<MediaAsset[]> {
+export async function importFiles(files: File[] | FileList, opts: { quiet?: boolean; onSkip?: (name: string, why: string) => void } = {}): Promise<MediaAsset[]> {
   const project = useEditor.getState().project;
   const ui = useUi.getState();
+  const toast = (text: string): void => {
+    if (!opts.quiet) ui.toast(text, 'error');
+  };
   if (!project) {
-    ui.toast('open a project first', 'error');
+    toast('open a project first');
     return [];
   }
   const list = Array.from(files);
@@ -298,7 +302,10 @@ export async function importFiles(files: File[] | FileList): Promise<MediaAsset[
   for (const file of list) {
     const kind = detectKind(file);
     if (kind) supported.push({ file, kind });
-    else unsupported++;
+    else {
+      unsupported++;
+      opts.onSkip?.(file.name, 'unsupported file type');
+    }
   }
   const added: (MediaAsset | undefined)[] = new Array<MediaAsset | undefined>(supported.length);
   const failed: string[] = [];
@@ -313,7 +320,10 @@ export async function importFiles(files: File[] | FileList): Promise<MediaAsset[
         added[i] = await importOne(item.file, item.kind, project.id);
       } catch (e) {
         const why = e instanceof Error ? e.message : 'unreadable';
-        if (why !== 'project closed') failed.push(`${item.file.name} (${why})`);
+        if (why !== 'project closed') {
+          failed.push(`${item.file.name} (${why})`);
+          opts.onSkip?.(item.file.name, why);
+        }
       } finally {
         bump(-1);
       }
@@ -324,9 +334,9 @@ export async function importFiles(files: File[] | FileList): Promise<MediaAsset[
   const result = added.filter((a): a is MediaAsset => !!a);
   const skipped = unsupported + failed.length;
   if (skipped > 0) {
-    if (failed.length === 1 && unsupported === 0) ui.toast(`could not import ${failed[0]}`, 'error');
-    else if (result.length === 0 && failed.length === 0) ui.toast('unsupported file type', 'error');
-    else ui.toast(`skipped ${skipped} file${skipped === 1 ? '' : 's'} (unsupported or unreadable)`, 'error');
+    if (failed.length === 1 && unsupported === 0) toast(`could not import ${failed[0]}`);
+    else if (result.length === 0 && failed.length === 0) toast('unsupported file type');
+    else toast(`skipped ${skipped} file${skipped === 1 ? '' : 's'} (unsupported or unreadable)`);
   }
   return result;
 }
