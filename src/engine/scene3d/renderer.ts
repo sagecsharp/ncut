@@ -9,7 +9,7 @@ import type { Mat4, Vec3 } from './math';
 import { mulInto } from './math';
 import { fogOn, writeFogUniforms } from './fog';
 import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
-import { interleave, knownShape, shapeMesh } from './meshes';
+import { type MeshGroup, interleave, knownShape, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 import { solidOutline } from './outline3d';
 
@@ -56,6 +56,25 @@ export interface Plane3D {
    * outline3d.ts. ignored on a plane.
    */
   outline?: PlaneOutline;
+  /**
+   * pictures for single sides of a solid, by side name (meshes.ts groups, faces.ts faceNames). a side with no entry shows
+   * `image` / `uv` as usual. missing or empty = the plain path: one draw for the whole mesh. ignored on a plane.
+   */
+  faces?: Record<string, FacePicture>;
+}
+
+/** the picture of one side of a solid */
+export interface FacePicture {
+  image: TexImageSource;
+  /** like Plane3D.cacheKey: set for a picture that stays the same (uploaded once per key). a video frame has none. */
+  cacheKey?: string;
+  /** the window into the picture that the side's uv 0..1 shows, like Plane3D.uv. it may reach outside 0..1 (a picture shown whole inside a bigger side) */
+  uv?: [number, number, number, number];
+  /**
+   * [u0, v0, du, dv] of the texture: outside this rectangle the side is see-through instead of the smeared edge of the
+   * picture (the picture's crop, for a side that shows it whole). missing = no cut.
+   */
+  clip?: [number, number, number, number];
 }
 
 export interface PlaneOutline {
@@ -133,7 +152,15 @@ uniform float u_edge;
 uniform float u_wrapU;
 // number of planes that share this picture (a 3d text's side stack). 1 = a plain plane.
 uniform float u_stack;
+// 1 = the picture is only real inside the rectangle u_clip (u0, v0, u1, v1 of the texture): see-through outside (a side that shows a picture whole)
+uniform float u_clipOn;
+uniform vec4 u_clip;
 out vec4 outColor;
+// 1 inside the real part of the picture, 0 outside (always 1 while u_clipOn is 0)
+float clipMask(vec2 p) {
+  if (u_clipOn < 0.5) return 1.0;
+  return (p.x >= u_clip.x && p.y >= u_clip.y && p.x <= u_clip.z && p.y <= u_clip.w) ? 1.0 : 0.0;
+}
 // a vogel disc of taps (radius r in screen pixels), each read at the mip level that matches the tap spacing
 vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
   float s = max(1.0, r * 0.6);
@@ -142,7 +169,7 @@ vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
   vec2 lo = u_uv.xy;
   vec2 hi = u_uv.xy + u_uv.zw;
   vec2 size = max(u_uv.zw, vec2(1e-6));
-  vec4 sum = textureGrad(u_tex, tc, gx, gy);
+  vec4 sum = textureGrad(u_tex, tc, gx, gy) * clipMask(tc);
   for (int i = 0; i < 12; i++) {
     float a = float(i) * 2.399963;
     float rad = r * sqrt((float(i) + 0.5) / 12.0);
@@ -153,7 +180,8 @@ vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
       p.x = lo.x + fract((p.x - lo.x) / size.x) * size.x;
       p.y = clamp(p.y, lo.y, hi.y);
     } else p = clamp(p, lo, hi);
-    sum += textureGrad(u_tex, p, gx, gy);
+    // a tap outside the real part of the picture counts as see-through, not as the smeared edge
+    sum += textureGrad(u_tex, p, gx, gy) * clipMask(p);
   }
   return sum / 13.0;
 }
@@ -178,10 +206,10 @@ void main() {
       }
     } else {
       blur = 0.0;
-      c = texture(u_tex, tc);
+      c = texture(u_tex, tc) * clipMask(tc);
     }
   } else {
-    c = texture(u_tex, tc);
+    c = texture(u_tex, tc) * clipMask(tc);
   }
   // the texture is premultiplied, so is the output
   c *= u_alpha;
@@ -309,9 +337,22 @@ export function planeNeedsBlur(model: ArrayLike<number>, viewProj: ArrayLike<num
   return dc - ext < f.distance - f.range || dc + ext > f.distance + f.range;
 }
 
+/** one run of indices of a faced solid with the picture it shows */
+interface FaceRun {
+  tex: WebGLTexture;
+  uv: [number, number, number, number];
+  clip: [number, number, number, number] | null;
+  start: number;
+  count: number;
+}
+
+const FULL_UV: [number, number, number, number] = [0, 0, 1, 1];
+
 interface Mesh {
   vao: WebGLVertexArrayObject | null;
   count: number;
+  /** the index range of each side (empty for a plane) */
+  groups: MeshGroup[];
   buffers: (WebGLBuffer | null)[];
 }
 
@@ -350,6 +391,8 @@ class SceneRenderer {
   private uEdge: WebGLUniformLocation | null;
   private uWrapU: WebGLUniformLocation | null;
   private uStack: WebGLUniformLocation | null;
+  private uClipOn: WebGLUniformLocation | null;
+  private uClip: WebGLUniformLocation | null;
   private fogBuf = new Float32Array(6);
   /** the model-view-projection of the plane being drawn (written per plane, read by the gl call right away) */
   private mvpBuf = new Float32Array(16);
@@ -363,6 +406,12 @@ class SceneRenderer {
   /** scratch textures that currently have a mip filter (only while a mesh is blurred) */
   private scratchMips: boolean[] = [];
   private frame = 0;
+  /** scratch slots used so far in this render, and the key-less picture uploaded last (see ownTexture) */
+  private slot = 0;
+  private lastImage: TexImageSource | null = null;
+  private lastMips = false;
+  /** textures of the sides of the solid being drawn: not evicted before it is drawn */
+  private pinned = new Set<WebGLTexture>();
   private aniso: { ext: EXT_texture_filter_anisotropic; max: number } | null = null;
   dead = false;
 
@@ -397,6 +446,8 @@ class SceneRenderer {
     this.uEdge = gl.getUniformLocation(this.planeProg, 'u_edge');
     this.uWrapU = gl.getUniformLocation(this.planeProg, 'u_wrapU');
     this.uStack = gl.getUniformLocation(this.planeProg, 'u_stack');
+    this.uClipOn = gl.getUniformLocation(this.planeProg, 'u_clipOn');
+    this.uClip = gl.getUniformLocation(this.planeProg, 'u_clip');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -494,7 +545,7 @@ class SceneRenderer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
-    const mesh: Mesh = { vao, count: data.indices.length, buffers: [vbo, ibo] };
+    const mesh: Mesh = { vao, count: data.indices.length, groups: data.groups, buffers: [vbo, ibo] };
     this.meshes.set(shape, mesh);
     return mesh;
   }
@@ -639,27 +690,30 @@ class SceneRenderer {
     return tex;
   }
 
-  /** bind the texture for a plane, uploading when needed. false when the upload failed. */
-  private bindPlaneTexture(plane: Plane3D, slot: number, mips = false): boolean {
+  /**
+   * bind the texture of a picture, uploading when needed, and give it back (null when the upload failed). a picture with
+   * a key is uploaded once (and gets mips); one without uploads into the scratch texture `slot` every time.
+   */
+  private acquire(image: TexImageSource, cacheKey: string | undefined, slot: number, mips: boolean): WebGLTexture | null {
     const gl = this.gl;
-    if (plane.cacheKey !== undefined) {
-      const hit = this.cache.get(plane.cacheKey);
+    if (cacheKey !== undefined) {
+      const hit = this.cache.get(cacheKey);
       if (hit) {
         hit.used = this.frame;
         gl.bindTexture(gl.TEXTURE_2D, hit.tex);
-        return true;
+        return hit.tex;
       }
       const tex = this.newTexture(true);
       try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, plane.image);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
         gl.generateMipmap(gl.TEXTURE_2D);
       } catch {
         gl.deleteTexture(tex);
-        return false;
+        return null;
       }
-      this.cache.set(plane.cacheKey, { tex, used: this.frame });
+      this.cache.set(cacheKey, { tex, used: this.frame });
       if (this.cache.size > CACHE_LIMIT) this.evict();
-      return true;
+      return tex;
     }
     let tex = this.scratch[slot];
     if (!tex) {
@@ -669,7 +723,7 @@ class SceneRenderer {
       gl.bindTexture(gl.TEXTURE_2D, tex);
     }
     try {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, plane.image);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
       // a blurred video frame reads smaller mip levels: build them for this frame only
       if (mips !== (this.scratchMips[slot] === true)) {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
@@ -677,15 +731,106 @@ class SceneRenderer {
       }
       if (mips) gl.generateMipmap(gl.TEXTURE_2D);
     } catch {
-      return false;
+      return null;
     }
-    return true;
+    return tex;
+  }
+
+  /** the texture of a plane's own picture, bound. the same image object as the plane before it (the planes of a stack) is not uploaded again. */
+  private ownTexture(plane: Plane3D, blurred: boolean): WebGLTexture | null {
+    const gl = this.gl;
+    if (plane.cacheKey === undefined && this.slot > 0 && plane.image === this.lastImage && blurred === this.lastMips && this.scratch[this.slot - 1]) {
+      const tex = this.scratch[this.slot - 1]!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      return tex;
+    }
+    this.lastImage = null;
+    const tex = this.acquire(plane.image, plane.cacheKey, this.slot, blurred);
+    if (tex && plane.cacheKey === undefined) {
+      this.lastImage = plane.image;
+      this.lastMips = blurred;
+      this.slot++;
+    }
+    return tex;
+  }
+
+  /**
+   * the draws of a solid with pictures on some of its sides: one run of indices per side (neighbours that show the own
+   * picture are one run), each with its texture and uv window. null = no side has a picture of its own, or the mesh has
+   * no sides: the plain path. a side whose picture cannot be uploaded shows the own picture.
+   * a key-less picture (a video frame) takes a scratch slot of its own for the frame, one image object shared by several
+   * sides takes one. textures made here are held back from eviction until the plane is drawn (`pinned`).
+   */
+  private faceRuns(plane: Plane3D, mesh: Mesh, own: WebGLTexture, blurred: boolean): FaceRun[] | null {
+    const faces = plane.faces;
+    if (!faces || mesh.groups.length === 0) return null;
+    let any = false;
+    for (const g of mesh.groups) if (faces[g.name]) any = true;
+    if (!any) return null;
+    const ownRun = { tex: own, uv: plane.uv ?? FULL_UV, clip: null as FaceRun['clip'] };
+    this.pinned.add(own);
+    const byImage = new Map<TexImageSource, WebGLTexture | null>();
+    const made = new Map<FacePicture, typeof ownRun>();
+    const runs: FaceRun[] = [];
+    for (const g of mesh.groups) {
+      const pic = faces[g.name];
+      let r = ownRun;
+      if (pic) {
+        let m = made.get(pic);
+        if (!m) {
+          let tex: WebGLTexture | null | undefined = pic.cacheKey === undefined ? byImage.get(pic.image) : undefined;
+          if (tex === undefined) {
+            tex = this.acquire(pic.image, pic.cacheKey, this.slot, blurred);
+            if (pic.cacheKey === undefined) {
+              if (tex) this.slot++;
+              byImage.set(pic.image, tex);
+            }
+          }
+          if (tex) {
+            this.pinned.add(tex);
+            m = { tex, uv: pic.uv ?? FULL_UV, clip: pic.clip ?? null };
+            made.set(pic, m);
+          }
+        }
+        if (m) r = m;
+      }
+      const last = runs[runs.length - 1];
+      if (last && last.tex === r.tex && last.uv === r.uv && last.clip === r.clip && last.start + last.count === g.start) last.count += g.count;
+      else runs.push({ tex: r.tex, uv: r.uv, clip: r.clip, start: g.start, count: g.count });
+    }
+    // a later plane must not take one of these for "the picture uploaded just before"
+    this.lastImage = null;
+    return runs;
+  }
+
+  /** one pass over the runs of a faced solid: each run binds its own texture (faceRuns left another one bound) */
+  private drawRuns(runs: FaceRun[]): void {
+    const gl = this.gl;
+    let bound: WebGLTexture | null = null;
+    let clipOn = false;
+    for (const r of runs) {
+      if (r.tex !== bound) {
+        gl.bindTexture(gl.TEXTURE_2D, r.tex);
+        bound = r.tex;
+      }
+      gl.uniform4f(this.uUv, r.uv[0], r.uv[1], r.uv[2], r.uv[3]);
+      const on = r.clip !== null;
+      if (on) gl.uniform4f(this.uClip, r.clip![0], r.clip![1], r.clip![0] + r.clip![2], r.clip![1] + r.clip![3]);
+      if (on !== clipOn) {
+        gl.uniform1f(this.uClipOn, on ? 1 : 0);
+        clipOn = on;
+      }
+      gl.drawElements(gl.TRIANGLES, r.count, gl.UNSIGNED_SHORT, r.start * 2);
+    }
+    if (clipOn) gl.uniform1f(this.uClipOn, 0);
   }
 
   private evict(): void {
     // drop the least recently used half
     const entries = [...this.cache.entries()].sort((a, b) => a[1].used - b[1].used);
     for (let i = 0; i < entries.length / 2; i++) {
+      // the sides of the solid being set up are still to be drawn
+      if (this.pinned.has(entries[i]![1].tex)) continue;
       this.gl.deleteTexture(entries[i]![1].tex);
       this.cache.delete(entries[i]![0]);
     }
@@ -737,11 +882,12 @@ class SceneRenderer {
       gl.uniform4f(this.uFocus, focus.distance, focus.range, blurReach(focus), focus.strength * MAX_BLUR);
       gl.uniform1f(this.uFrameH, h);
     } else gl.uniform1f(this.uFocusOn, 0);
-    let slot = 0;
-    // the last key-less picture that was uploaded, and whether it got mips: the next plane with the same image object
+    // the key-less picture that was uploaded last, and whether it got mips: the next plane with the same image object
     // (the planes of a stack share their picture) binds that texture again instead of uploading it once more
-    let lastImage: TexImageSource | null = null;
-    let lastMips = false;
+    this.slot = 0;
+    this.lastImage = null;
+    this.lastMips = false;
+    this.pinned.clear();
     // planes at the same depth (flat 3d layers stacked like 2d ones) must keep their layer order:
     // nudge each one toward the viewer by a few depth steps per layer
     gl.enable(gl.POLYGON_OFFSET_FILL);
@@ -761,17 +907,11 @@ class SceneRenderer {
         continue;
       }
       const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
-      if (plane.cacheKey === undefined && slot > 0 && plane.image === lastImage && blurred === lastMips && this.scratch[slot - 1]) {
-        gl.bindTexture(gl.TEXTURE_2D, this.scratch[slot - 1]!);
-      } else {
-        lastImage = null;
-        if (!this.bindPlaneTexture(plane, slot, blurred)) continue;
-        if (plane.cacheKey === undefined) {
-          lastImage = plane.image;
-          lastMips = blurred;
-          slot++;
-        }
-      }
+      const ownTex = this.ownTexture(plane, blurred);
+      if (!ownTex) continue;
+      const mesh = this.mesh(shape);
+      // pictures on single sides: set up before anything is drawn (they change the bound texture)
+      const runs = shape !== 'plane' && plane.faces ? this.faceRuns(plane, mesh, ownTex, blurred) : null;
       if (focus) {
         gl.uniform1f(this.uFocusOn, blurred ? 1 : 0);
         if (blurred) {
@@ -794,17 +934,21 @@ class SceneRenderer {
         gl.uniform1f(this.uRadius, plane.radius);
         gl.uniform2f(this.uSize, size[0], size[1]);
       } else gl.uniform1f(this.uRadius, 0);
-      const mesh = this.mesh(shape);
       gl.bindVertexArray(mesh.vao);
       // a plane that is faded as a whole has no solid pixels
       if (plane.alpha >= 0.98) {
         gl.depthMask(true);
         gl.uniform1f(this.uPass, 1);
-        gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+        if (runs) this.drawRuns(runs);
+        else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
       }
       gl.depthMask(false);
       gl.uniform1f(this.uPass, 2);
-      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+      // the solid pass of every side comes before the see-through pass of any (the sides of one solid depth sort
+      // against each other through the depth buffer); the runs bind their own texture again
+      if (runs) this.drawRuns(runs);
+      else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+      if (runs) this.pinned.clear();
       if (line) this.drawOutline(plane, shape, line, offsetUnits);
     }
     gl.depthMask(true);

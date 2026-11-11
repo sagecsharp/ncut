@@ -11,6 +11,7 @@
  *   its place, size, turn and opacity are not used, its picture is (look, mask and crop included).
  */
 import { isVisualClip } from '../../types';
+import { CAPSULE_CAP, TORUS_TUBE } from './meshes';
 import type { Clip, FaceFill, FaceFit, Project, Shape3D, VisualClip } from '../../types';
 
 /** the name that stands for every side that has no fill of its own */
@@ -163,4 +164,121 @@ export function remapFaces(faces: Record<string, FaceFill | null> | undefined, m
   if (!out) return faces;
   if (!out[FACE_ALL]) for (const k of Object.keys(out)) if (out[k] === null) delete out[k];
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** the length round an ellipse with these two axis lengths (ramanujan's approximation) */
+function ellipseRound(w: number, d: number): number {
+  const a = Math.abs(w) / 2;
+  const b = Math.abs(d) / 2;
+  return Math.PI * (3 * (a + b) - Math.sqrt((3 * a + b) * (a + 3 * b)));
+}
+
+/**
+ * the width and height in pixels that uv 0..1 spans on one side of a solid of size w x h x d (what meshes.ts builds).
+ * round shapes give a rough but sensible number (the length round the shape, the length over it). it drives the fit.
+ * an unknown side or a plane gives w x h.
+ */
+export function faceArea(shape: Shape3D | undefined, name: string, w: number, h: number, d: number): [number, number] {
+  w = Math.abs(w);
+  h = Math.abs(h);
+  d = Math.abs(d);
+  switch (shape) {
+    case 'box':
+      return name === 'right' || name === 'left' ? [d, h] : name === 'top' || name === 'bottom' ? [w, d] : [w, h];
+    case 'cylinder':
+      return name === 'side' ? [ellipseRound(w, d), h] : [w, d];
+    case 'cone':
+      return name === 'side' ? [ellipseRound(w, d), Math.hypot(h, (w + d) / 4)] : [w, d];
+    case 'pyramid':
+      if (name === 'bottom') return [w, d];
+      // the whole picture lies on a slope: the base edge across, the way up the slope from its middle to the tip
+      return name === 'right' || name === 'left' ? [d, Math.hypot(h, w / 2)] : [w, Math.hypot(h, d / 2)];
+    case 'sphere':
+      return [ellipseRound(w, d), (Math.PI * h) / 2];
+    case 'torus': {
+      // ring radius is the outer radius over (1 + tube), the tube radius a share of it
+      const ring = (w + h) / 4 / (1 + TORUS_TUBE);
+      return [2 * Math.PI * ring, 2 * Math.PI * ring * TORUS_TUBE];
+    }
+    case 'capsule': {
+      // the straight part plus a quarter of an ellipse at each end
+      const a = Math.max(w, d) / 2;
+      const b = h * CAPSULE_CAP;
+      return [ellipseRound(w, d), h * (1 - 2 * CAPSULE_CAP) + Math.PI * Math.sqrt((a * a + b * b) / 2)];
+    }
+    default:
+      // prism, hexagon, star, heart: uv is the bounding box of the outline on the front, the back and the wall
+      return [w, h];
+  }
+}
+
+/**
+ * the window into a picture (0..1 of it) that the uv 0..1 of a side maps to: [u0, v0, du, dv].
+ * - 'stretch': the whole picture, squeezed onto the side.
+ * - 'fill': the side is covered, the picture is cut at the center where the proportions differ.
+ * - 'fit': the whole picture shows inside the side; the window reaches outside 0..1 and that part is see-through.
+ * sizes that are not positive give the whole picture.
+ */
+export function fitWindow(pictureW: number, pictureH: number, sideW: number, sideH: number, fit: FaceFit): [number, number, number, number] {
+  if (fit === 'stretch' || !(pictureW > 0 && pictureH > 0 && sideW > 0 && sideH > 0)) return [0, 0, 1, 1];
+  const pa = pictureW / pictureH;
+  const sa = sideW / sideH;
+  const wider = pa > sa;
+  if (fit === 'fill') {
+    if (wider) {
+      const du = sa / pa;
+      return [(1 - du) / 2, 0, du, 1];
+    }
+    const dv = pa / sa;
+    return [0, (1 - dv) / 2, 1, dv];
+  }
+  if (wider) {
+    const dv = pa / sa;
+    return [0, (1 - dv) / 2, 1, dv];
+  }
+  const du = sa / pa;
+  return [(1 - du) / 2, 0, du, 1];
+}
+
+/**
+ * the window into the TEXTURE for a picture whose visible part is `crop` ([u0, v0, du, dv] of the texture, missing = all):
+ * the fit window of the cropped picture, moved into the crop. `clip` is the crop rectangle when the window reaches
+ * outside it (fit): outside it the side is see-through instead of the smeared edge. fill and stretch never need it.
+ */
+export function faceWindow(
+  crop: [number, number, number, number] | undefined,
+  texW: number,
+  texH: number,
+  sideW: number,
+  sideH: number,
+  fit: FaceFit,
+): { uv: [number, number, number, number]; clip?: [number, number, number, number] } {
+  const c = crop ?? [0, 0, 1, 1];
+  const win = fitWindow(texW * c[2], texH * c[3], sideW, sideH, fit);
+  const uv: [number, number, number, number] = [c[0] + win[0] * c[2], c[1] + win[1] * c[3], win[2] * c[2], win[3] * c[3]];
+  const reaches = win[0] < -1e-6 || win[1] < -1e-6 || win[0] + win[2] > 1 + 1e-6 || win[1] + win[3] > 1 + 1e-6;
+  return reaches ? { uv, clip: [c[0], c[1], c[2], c[3]] } : { uv };
+}
+
+const sourceCache = new WeakMap<object, { clips: readonly Clip[]; tracks: unknown; n: number; map: Map<string, string[]> }>();
+const NO_SOURCES: Map<string, string[]> = new Map();
+
+/**
+ * faceSourceIds, kept per project object. the lists that run every frame ask this. the store replaces the project on
+ * every change; the clips array, the tracks array and the clip count are checked too, so a project edited in place
+ * (a test, a drag that pushes into the array) is not served a stale answer.
+ */
+export function faceSourceSet(project: Project): ReadonlyMap<string, string[]> {
+  const hit = sourceCache.get(project);
+  if (hit && hit.clips === project.clips && hit.tracks === project.tracks && hit.n === project.clips.length) return hit.map;
+  let any = false;
+  for (const c of project.clips) {
+    if (isVisualClip(c) && c.faces) {
+      any = true;
+      break;
+    }
+  }
+  const map = any ? faceSourceIds(project) : NO_SOURCES;
+  sourceCache.set(project, { clips: project.clips, tracks: project.tracks, n: project.clips.length, map });
+  return map;
 }

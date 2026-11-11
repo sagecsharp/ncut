@@ -26,8 +26,9 @@ import { releaseEffectRunner, renderEffects, renderEffectsPremul } from './effec
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
 import { mul, scaling, translation } from './scene3d/math';
+import { faceArea, faceClipId, faceColor, faceFill, faceFit, faceSource, faceSourceSet, faceWindow, filledFaces, hasSides } from './scene3d/faces';
 import { clipModelMatrix } from './scene3d/model';
-import { type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
+import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
 import { drawShape, lineOnSolid, shapeSignature, shapeSpill } from './shape';
 import { parseHexColor } from './clipLook';
 import { drawText, finite, measureText, textSignature, textSpill } from './text';
@@ -351,11 +352,13 @@ function resolveVisual<T extends VisualClip>(raw: T, time: number, project: Proj
 /** visual clips under a time in paint order (bottom layer first). skips hidden tracks. */
 export function visibleClipsAt(project: Project, time: number): VisualClip[] {
   const out: VisualClip[] = [];
+  // a clip that is shown on a side of a solid is not painted on its own (faces.ts)
+  const onSides = faceSourceSet(project);
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
     for (const clip of clipsOnTrack(project, track.id)) {
-      if (!isVisualClip(clip)) continue;
+      if (!isVisualClip(clip) || onSides.has(clip.id)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -369,6 +372,8 @@ export function visibleClipsAt(project: Project, time: number): VisualClip[] {
  */
 export function neededClipsAt(project: Project, time: number): VisualClip[] {
   const out = visibleClipsAt(project, time);
+  // the time each solid is drawn at (a frozen side of a transition is drawn at its edge frame)
+  const solids: [VisualClip, number][] = out.map((c) => [c, time]);
   for (const clip of project.clips) {
     if (!isVisualClip(clip) || !clip.transition) continue;
     const span = transitionSpan(project, clip);
@@ -377,6 +382,27 @@ export function neededClipsAt(project: Project, time: number): VisualClip[] {
     if (!track || track.hidden) continue;
     if (!out.includes(span.to)) out.push(span.to);
     if (span.from && !out.includes(span.from)) out.push(span.from);
+    solids.push([span.to, Math.max(time, span.to.start)]);
+    if (span.from) solids.push([span.from, Math.min(time, clipEnd(span.from) - 1e-4)]);
+  }
+  // the pictures on the sides of the solids: their media must be ready like a visible clip's.
+  const onSides = faceSourceSet(project);
+  if (onSides.size > 0) {
+    // every clip that lives on a solid, while it plays, whether or not its solid is on screen right now: the export decodes
+    // a video one frame after the other, so a source that is skipped for a while would come back showing old frames
+    for (const clip of project.clips) {
+      if (!isVisualClip(clip) || !onSides.has(clip.id) || time < clip.start - 1e-6 || time >= clipEnd(clip) - 1e-6 || out.includes(clip)) continue;
+      const track = project.tracks.find((t) => t.id === clip.trackId);
+      if (track && track.kind === 'video' && !track.hidden) out.push(clip);
+    }
+    // and, at the edge frame a transition holds a solid on, what its sides show then
+    for (const [solid, at] of solids) {
+      if (!solid.faces || !hasSides(solid)) continue;
+      for (const name of filledFaces(solid)) {
+        const src = faceSource(project, solid, name);
+        if (src && at >= src.start - 1e-6 && at < clipEnd(src) - 1e-6 && !out.includes(src)) out.push(src);
+      }
+    }
   }
   return out;
 }
@@ -387,11 +413,13 @@ export function neededClipsAt(project: Project, time: number): VisualClip[] {
  */
 export function paintListAt(project: Project, time: number): (VisualClip | EffectClip)[] {
   const out: (VisualClip | EffectClip)[] = [];
+  const onSides = faceSourceSet(project);
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
     for (const clip of clipsOnTrack(project, track.id)) {
       if (clip.type !== 'effect' && !isVisualClip(clip)) continue;
+      if (onSides.has(clip.id)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -565,6 +593,11 @@ export interface Layer3D {
   time: number;
   /** the time its parents / look target are read at, when not `time` (the sub-times of a motion blur). default `time`. */
   poseTime?: number;
+  /**
+   * where the pictures of video / image clips come from. a solid whose sides show other clips needs it (planeFor); missing
+   * = those sides show the solid's own picture.
+   */
+  resolve?: SourceResolver;
 }
 
 interface TextTexture {
@@ -1156,6 +1189,148 @@ function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexIm
   return st.planes;
 }
 
+/** a plain color as a tiny canvas, kept per color: its texture key is 'facecolor:#rrggbb' (uploaded once) */
+const colorCanvases = new Map<string, AnyCanvas>();
+
+/** the picture of a color side, or null (not a color the project can read, no canvas here) */
+function colorPicture(color: string): FacePicture | null {
+  const rgb = parseHexColor(color);
+  if (!rgb) return null;
+  const key = '#' + rgb.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
+  let canvas = colorCanvases.get(key);
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(2, 2);
+    else if (typeof document !== 'undefined') canvas = createCanvas(2, 2);
+    else return null;
+    const c = canvas.getContext('2d') as Ctx | null;
+    if (!c) return null;
+    c.fillStyle = key;
+    c.fillRect(0, 0, 2, 2);
+    colorCanvases.set(key, canvas);
+  }
+  return { image: canvas as TexImageSource, cacheKey: 'facecolor:' + key };
+}
+
+/** the picture of a clip that is shown on a side of a solid, before the fit */
+interface SidePicture {
+  image: TexImageSource;
+  key: string | undefined;
+  /** pixel size of the whole picture */
+  w: number;
+  h: number;
+  /** the part of the picture that shows, as a window into it (the clip's crop) */
+  crop?: [number, number, number, number];
+}
+
+/**
+ * the picture of a clip at a time, the way a painted clip's 3d plane gets it (keyed values, text animation and counters
+ * applied; look and mask included), without its place, size, turn, opacity or fades. null = it cannot be had right now
+ * (no resolver, a source that is not ready, a picture that cannot be made): the side shows the solid's own picture.
+ */
+function sidePicture(project: Project, raw: VisualClip, time: number, layer: Layer3D, channel: Channel): SidePicture | null {
+  const clip = resolveVisual(raw, time, project);
+  let source: DrawSource | null = null;
+  if (raw.type === 'video' || raw.type === 'image') {
+    source = layer.resolve ? layer.resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0) : null;
+    if (!source) return null;
+  }
+  const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
+  let image: TexImageSource;
+  let key: string | undefined;
+  let lw: number;
+  let lh: number;
+  let padX = 0;
+  let padY = 0;
+  if (clip.type === 'text') {
+    const t = textTexture(clip, time);
+    if (!t) return null;
+    const room = padAxes(clip, t.margin);
+    padX = room.x;
+    padY = room.y;
+    image = t.canvas;
+    key = t.key;
+    lw = t.canvas.width;
+    lh = t.canvas.height;
+  } else if (clip.type === 'shape') {
+    const t = shapeTexture(clip);
+    if (!t) return null;
+    const room = padAxes(clip, t.margin);
+    padX = room.x;
+    padY = room.y;
+    image = t.canvas;
+    key = t.key;
+    lw = t.canvas.width;
+    lh = t.canvas.height;
+  } else {
+    if (!source) return null;
+    lw = source.width;
+    lh = source.height;
+    image = source.image as TexImageSource;
+    const px = image as { width?: number; height?: number };
+    key = clip.type === 'image' ? `img:${clip.assetId}:${px.width || source.width}x${px.height || source.height}` : undefined;
+  }
+  if (key !== undefined && animatesPicture(clip)) key = undefined;
+  if (lw > 0 && lh > 0 && hasClipLook(clip)) {
+    const looked = lookedTexture(clip, image, lw, lh, key, channel);
+    image = looked.image;
+    key = looked.key;
+  }
+  if (lw > 0 && lh > 0 && hasMask(clip)) {
+    const masked = maskedTexture(clip, image, lw, lh, key, channel);
+    image = masked.image;
+    key = masked.key;
+  }
+  const out: SidePicture = { image, key, w: lw, h: lh };
+  const crop = normalizeCrop(clip.crop);
+  if (crop) {
+    const c = padX > 0 || padY > 0 ? paddedCrop(crop, box.width, box.height, padX, padY) : crop;
+    out.crop = [c.left, c.top, 1 - c.left - c.right, 1 - c.top - c.bottom];
+  }
+  return out;
+}
+
+/**
+ * the pictures of the sides of a solid that do not show its own picture (a color, or another clip). a side that names a
+ * clip shows it only while the layer's time is inside that clip's range, and only when its picture can be had: any
+ * other side is left out and the renderer gives it the solid's own picture. never throws. `w` x `h` x `d` = the solid's size.
+ */
+function facePictures(project: Project, layer: Layer3D, clip: VisualClip, w: number, h: number, d: number, channel: Channel): Record<string, FacePicture> | undefined {
+  if (!clip.faces || !hasSides(clip)) return undefined;
+  let out: Record<string, FacePicture> | undefined;
+  // a clip on two sides is made once
+  const made = new Map<string, SidePicture | null>();
+  for (const name of filledFaces(clip)) {
+    const fill = faceFill(clip, name);
+    const color = faceColor(fill);
+    if (color) {
+      const pic = colorPicture(color);
+      if (pic) (out ??= {})[name] = pic;
+      continue;
+    }
+    if (!faceClipId(fill)) continue;
+    const src = faceSource(project, clip, name);
+    if (!src || layer.time < src.start - 1e-6 || layer.time >= clipEnd(src) - 1e-6) continue;
+    let pic = made.get(src.id);
+    if (pic === undefined) {
+      try {
+        pic = sidePicture(project, src, layer.time, layer, channel);
+      } catch (err) {
+        reportClipError(src.id, err);
+        pic = null;
+      }
+      made.set(src.id, pic);
+    }
+    if (!pic) continue;
+    const [aw, ah] = faceArea(clip.shape, name, w, h, d);
+    const win = faceWindow(pic.crop, pic.w, pic.h, aw, ah, faceFit(fill, src));
+    const fp: FacePicture = { image: pic.image, uv: win.uv };
+    if (pic.key !== undefined) fp.cacheKey = pic.key;
+    if (win.clip) fp.clip = win.clip;
+    (out ??= {})[name] = fp;
+  }
+  return out;
+}
+
 /**
  * the plane of a 3d clip. a 3d text with an extrude (textDepth.ts hasTextDepth) is a stack: pass `sides` and the
  * side planes are pushed into it, farthest first (the plane returned is the face, the one at the clip's own position).
@@ -1293,6 +1468,10 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
       hollow: clip.filled === false,
     };
   }
+  if (shape !== 'plane' && !stacked && clip.faces) {
+    const faces = facePictures(project, layer, clip, box.width, box.height, solidDepth, channel);
+    if (faces) plane.faces = faces;
+  }
   if (uv) plane.uv = uv;
   if (radius && size) {
     plane.radius = radius;
@@ -1415,6 +1594,7 @@ type PaintItem =
  */
 function paintItemsAt(project: Project, time: number, above: number): PaintItem[] {
   const out: PaintItem[] = [];
+  const onSides = faceSourceSet(project);
   for (let i = project.tracks.length - 1; i > above; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
@@ -1427,10 +1607,12 @@ function paintItemsAt(project: Project, time: number, above: number): PaintItem[
         if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
         continue;
       }
-      if (!isVisualClip(clip)) continue;
+      // a clip that is shown on a side of a solid is not painted on its own, and a transition into it does nothing
+      if (!isVisualClip(clip) || onSides.has(clip.id)) continue;
       if (clip.transition && !span) {
         const sp = transitionSpan(project, clip);
-        if (sp && time >= sp.start - 1e-6 && time < sp.end - 1e-6 && getTransition(sp.id)) span = sp;
+        // an outgoing clip that lives on a solid is not blended in: the transition runs from nothing
+        if (sp && time >= sp.start - 1e-6 && time < sp.end - 1e-6 && getTransition(sp.id)) span = sp.from && onSides.has(sp.from.id) ? { ...sp, from: null } : sp;
       }
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
     }
@@ -1688,7 +1870,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
     clearScratch(copy);
-    if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t }], rig, env.channel);
+    if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t, resolve: env.resolve }], rig, env.channel);
     else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1819,7 +2001,7 @@ function paintAloneRaw(ctx: Ctx, project: Project, raw: VisualClip, time: number
   const blurRaw = frozen && (raw.motionIn || raw.motionOut) ? ({ ...raw, motionIn: null, motionOut: null } as VisualClip) : raw;
   if (clip.threeD) {
     const run = (c: Ctx) => {
-      if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, rig()))) draw3d(c, project, [{ clip, source, alpha, time }], rig(), env.channel);
+      if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, rig()))) draw3d(c, project, [{ clip, source, alpha, time, resolve: env.resolve }], rig(), env.channel);
     };
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
   } else {
@@ -2056,7 +2238,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
           // a 3d clip with effects on it is a run of its own (like a blended one): its picture is rendered alone, the
           // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
           flush3d();
-          const layer: Layer3D = { clip, source, alpha, time };
+          const layer: Layer3D = { clip, source, alpha, time, resolve: env.resolve };
           const run = (c: Ctx) => {
             if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, getRig()))) draw3d(c, project, [layer], getRig(), env.channel);
           };
@@ -2074,10 +2256,10 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
           // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
           // depth-test against the 3d clips around it.
           flush3d();
-          draw3d(ctx, project, [{ clip, source, alpha, time }], getRig(), env.channel, NO_LINES, bop);
+          draw3d(ctx, project, [{ clip, source, alpha, time, resolve: env.resolve }], getRig(), env.channel, NO_LINES, bop);
           return;
         }
-        bin.push({ clip, source, alpha, time });
+        bin.push({ clip, source, alpha, time, resolve: env.resolve });
         return;
       }
       flush3d();
@@ -2143,7 +2325,7 @@ export function renderSceneView(
       source = resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
       if (!source) continue;
     }
-    layers.push({ clip, source, alpha, time });
+    layers.push({ clip, source, alpha, time, resolve });
   }
 
   const seg = (out: number[], a: readonly number[], b: readonly number[]) => out.push(a[0]!, a[1]!, a[2]!, b[0]!, b[1]!, b[2]!);

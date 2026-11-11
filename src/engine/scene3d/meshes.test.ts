@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SHAPES_3D } from '../../types';
+import { faceNames } from './faces';
 import { outlineFor } from './outline2d';
 import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, interleave, knownShape, shapeMesh } from './meshes';
 
@@ -162,9 +163,11 @@ describe('shape meshes', () => {
       const ar = (a: number, b: number, c: number) =>
         (m.positions[b * 3]! - m.positions[a * 3]!) * (m.positions[c * 3 + 1]! - m.positions[a * 3 + 1]!) -
         (m.positions[b * 3 + 1]! - m.positions[a * 3 + 1]!) * (m.positions[c * 3]! - m.positions[a * 3]!);
-      for (let t = 0; t < o.triangles.length * 2; t += 6) {
+      // the front triangles come first, then the back ones (one index range per side, see groups)
+      const half = o.triangles.length;
+      for (let t = 0; t < half; t += 3) {
         expect(ar(m.indices[t]!, m.indices[t + 1]!, m.indices[t + 2]!)).toBeGreaterThan(0);
-        expect(ar(m.indices[t + 3]!, m.indices[t + 4]!, m.indices[t + 5]!)).toBeLessThan(0);
+        expect(ar(m.indices[half + t]!, m.indices[half + t + 1]!, m.indices[half + t + 2]!)).toBeLessThan(0);
       }
     });
   }
@@ -193,5 +196,79 @@ describe('shape meshes', () => {
   it('segment counts are clamped and cached separately', () => {
     expect(shapeMesh('cone', 6)).not.toBe(shapeMesh('cone', 24));
     expect(shapeMesh('torus', 1).positions.length).toBeGreaterThan(0);
+  });
+
+  describe('groups (one index range per side)', () => {
+    for (const shape of SHAPES_3D) {
+      it(`${shape}: the ranges follow each other, cover every index once, names equal faceNames`, () => {
+        const m = shapeMesh(shape);
+        expect(m.groups.map((g) => g.name)).toEqual([...faceNames(shape)]);
+        let at = 0;
+        for (const g of m.groups) {
+          expect(g.start).toBe(at);
+          expect(g.count).toBeGreaterThan(0);
+          expect(g.count % 3).toBe(0);
+          at += g.count;
+        }
+        if (m.groups.length > 0) expect(at).toBe(m.indices.length);
+      });
+    }
+
+    /** the middle of the triangles of one group */
+    const center = (shape: string, name: string): [number, number, number] => {
+      const m = shapeMesh(shape);
+      const g = m.groups.find((x) => x.name === name)!;
+      const c: [number, number, number] = [0, 0, 0];
+      for (let i = g.start; i < g.start + g.count; i++) for (let k = 0; k < 3; k++) c[k]! += m.positions[m.indices[i]! * 3 + k]! / g.count;
+      return c;
+    };
+
+    it('box sides are where their names say', () => {
+      expect(center('box', 'front')[2]).toBeCloseTo(-0.5, 6);
+      expect(center('box', 'back')[2]).toBeCloseTo(0.5, 6);
+      expect(center('box', 'right')[0]).toBeCloseTo(0.5, 6);
+      expect(center('box', 'left')[0]).toBeCloseTo(-0.5, 6);
+      expect(center('box', 'top')[1]).toBeCloseTo(-0.5, 6);
+      expect(center('box', 'bottom')[1]).toBeCloseTo(0.5, 6);
+    });
+
+    it('cylinder and cone: the caps are the ends, the side is round', () => {
+      expect(center('cylinder', 'top')[1]).toBeCloseTo(-0.5, 6);
+      expect(center('cylinder', 'bottom')[1]).toBeCloseTo(0.5, 6);
+      expect(center('cone', 'bottom')[1]).toBeCloseTo(0.5, 6);
+      // the side of a cone reaches the tip (y = -0.5), a cap does not
+      const m = shapeMesh('cone');
+      const side = m.groups.find((g) => g.name === 'side')!;
+      let low = 0;
+      for (let i = side.start; i < side.start + side.count; i++) low = Math.min(low, m.positions[m.indices[i]! * 3 + 1]!);
+      expect(low).toBeCloseTo(-0.5, 6);
+    });
+
+    it('pyramid: front faces the viewer, then right, back, left, base at the bottom', () => {
+      expect(center('pyramid', 'front')[2]).toBeLessThan(-0.1);
+      expect(center('pyramid', 'right')[0]).toBeGreaterThan(0.1);
+      expect(center('pyramid', 'back')[2]).toBeGreaterThan(0.1);
+      expect(center('pyramid', 'left')[0]).toBeLessThan(-0.1);
+      expect(center('pyramid', 'bottom')[1]).toBeCloseTo(0.5, 6);
+    });
+
+    it('extruded shapes: front at z = -0.5, back at z = 0.5, the wall between', () => {
+      for (const kind of ['prism', 'hexagon', 'star', 'heart'] as const) {
+        const m = shapeMesh(kind);
+        const z = (name: string): number[] => {
+          const g = m.groups.find((x) => x.name === name)!;
+          const out = new Set<number>();
+          for (let i = g.start; i < g.start + g.count; i++) out.add(m.positions[m.indices[i]! * 3 + 2]!);
+          return [...out].sort();
+        };
+        expect(z('front')).toEqual([-0.5]);
+        expect(z('back')).toEqual([0.5]);
+        expect(z('side')).toEqual([-0.5, 0.5]);
+      }
+    });
+
+    it('a plane has no groups', () => {
+      expect(shapeMesh('plane').groups).toEqual([]);
+    });
   });
 });
