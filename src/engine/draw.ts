@@ -28,7 +28,8 @@ import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, 
 import { mul, scaling, translation } from './scene3d/math';
 import { clipModelMatrix } from './scene3d/model';
 import { type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
-import { drawShape, shapeSignature, shapeSpill } from './shape';
+import { drawShape, lineOnSolid, shapeSignature, shapeSpill } from './shape';
+import { parseHexColor } from './clipLook';
 import { drawText, finite, measureText, textSignature, textSpill } from './text';
 import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSignature } from './textDepth';
 import { textAnimActive } from './textAnim';
@@ -718,7 +719,29 @@ const shapeTextures = new Map<string, ShapeTexture>();
 let shapeTextureSerial = 0;
 const SHAPE_TEXTURE_MAX = 2048;
 
-function shapeTexture(clip: ShapeClip): ShapeTexture | null {
+/**
+ * a picture that only changes because its outline or draw on keys do is not live when `bare` (neither is in the picture).
+ * the clip's other keys decide as before (animatesPicture).
+ */
+function bareAnimates(clip: ShapeClip): boolean {
+  const kf = clip.keyframes;
+  if (!kf) return false;
+  let rest: Record<string, (typeof kf)[string]> | null = null;
+  for (const prop in kf) {
+    if (prop === 'drawStart' || prop === 'drawEnd' || prop.startsWith('stroke')) continue;
+    (rest ??= {})[prop] = kf[prop]!;
+  }
+  return rest !== null && animatesPicture({ ...clip, keyframes: rest });
+}
+
+/**
+ * `bare`: the figure alone, without its outline and without draw on, and without the texture room for the outline. that
+ * is the picture of a solid whose line is real geometry (lineOnSolid). the signature says so: the same clip id can be
+ * asked for either one over time.
+ */
+function shapeTexture(clip: ShapeClip, bare = false): ShapeTexture | null {
+  const keys = clip.keyframes;
+  if (bare) clip = { ...clip, stroke: null, drawStart: undefined, drawEnd: undefined };
   const margin = Math.ceil(shapeSpill(clip));
   const fullW = Math.max(1, clip.width) + margin * 2;
   const fullH = Math.max(1, clip.height) + margin * 2;
@@ -726,7 +749,7 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   const q = Math.min(2, SHAPE_TEXTURE_MAX / Math.max(fullW, fullH));
   const w = Math.max(1, Math.ceil(fullW * q));
   const h = Math.max(1, Math.ceil(fullH * q));
-  const sig = shapeSignature(clip) + '|' + w + 'x' + h;
+  const sig = shapeSignature(clip) + '|' + w + 'x' + h + (bare ? '|bare' : '');
   const hit = shapeTextures.get(clip.id);
   if (hit && hit.sig === sig) {
     shapeTextures.delete(clip.id);
@@ -751,7 +774,7 @@ function shapeTexture(clip: ShapeClip): ShapeTexture | null {
   // an outline that is being drawn on changes every frame: no key, so the gpu side reuses one scratch texture
   // instead of keeping a mipmapped copy of every frame
   // (so does a keyed width, corner count, gradient angle ... of the figure)
-  const live = !!(clip.keyframes?.drawStart?.length || clip.keyframes?.drawEnd?.length) || animatesPicture(clip);
+  const live = bare ? bareAnimates(clip) : !!(keys?.drawStart?.length || keys?.drawEnd?.length) || animatesPicture(clip);
   const entry: ShapeTexture = { sig, canvas, key: live ? undefined : 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
   shapeTextures.delete(clip.id);
   shapeTextures.set(clip.id, entry);
@@ -1144,7 +1167,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     lw = t.canvas.width;
     lh = t.canvas.height;
   } else if (clip.type === 'shape') {
-    const t = shapeTexture(clip);
+    // a line around a solid is geometry (plane.outline below), so the picture is the bare figure on the unpadded box
+    const t = shapeTexture(clip, lineOnSolid(clip));
     if (!t) return null;
     pad = t.margin * clip.transform.scale;
     box.width += pad * 2;
@@ -1211,13 +1235,25 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     radius = radiusPx(clip.radius, kw, kh);
     size = [kw, kh];
   }
+  let solidDepth = 1;
   if (shape !== 'plane') {
     // thickness: a box is as deep as the clip is tall unless set, round shapes are as deep as they are wide
     const fallback = shape === 'box' ? ownH : ownW;
     const depth = clip.shapeDepth !== undefined && clip.shapeDepth > 0 && shape !== 'sphere' ? clip.shapeDepth * clip.transform.scale : fallback;
-    model = mul(model, scaling(1, 1, Math.max(1, depth)));
+    solidDepth = Math.max(1, depth);
+    model = mul(model, scaling(1, 1, solidDepth));
   }
   const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
+  if (clip.type === 'shape' && shape !== 'plane' && lineOnSolid(clip)) {
+    // the box is not padded here (the bare picture has no room around it), so it is the size the solid is scaled by
+    const rgb = parseHexColor(clip.stroke!.color) ?? [1, 1, 1];
+    plane.outline = {
+      color: [rgb[0], rgb[1], rgb[2], 1],
+      width: clip.stroke!.width * clip.transform.scale,
+      size: [box.width, box.height, solidDepth],
+      hollow: clip.filled === false,
+    };
+  }
   if (uv) plane.uv = uv;
   if (radius && size) {
     plane.radius = radius;

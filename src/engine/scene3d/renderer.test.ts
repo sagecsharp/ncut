@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { meshNeedsBlur } from './focus';
 import { identity, mul, scaling, translation } from './math';
-import { planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
+import { OUTLINE_CACHE_LIMIT, lruOverflow, outlineKey, planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
 
 // a camera at the origin looking down +z: depth = z (w = z), no perspective needed for the depth test
 const viewProj = (() => {
@@ -69,5 +69,22 @@ describe('stackedTexelAlpha', () => {
     const o = 0.5;
     const a = 0.8;
     expect(composite(stackedTexelAlpha(a * o, 20), 20)).toBeCloseTo(0.4, 9);
+  });
+});
+
+describe('outline cache', () => {
+  it('the key tells shape, the three sizes and the width apart', () => {
+    const k = outlineKey('box', 100, 50, 25, 4);
+    expect(outlineKey('box', 100, 50, 25, 4)).toBe(k);
+    expect(outlineKey('sphere', 100, 50, 25, 4)).not.toBe(k);
+    expect(outlineKey('box', 101, 50, 25, 4)).not.toBe(k);
+    expect(outlineKey('box', 100, 51, 25, 4)).not.toBe(k);
+    expect(outlineKey('box', 100, 50, 26, 4)).not.toBe(k);
+    expect(outlineKey('box', 100, 50, 25, 4.5)).not.toBe(k);
+  });
+  it('drops the oldest keys past the limit and nothing below it', () => {
+    const keys = Array.from({ length: OUTLINE_CACHE_LIMIT + 3 }, (_, i) => 'k' + i);
+    expect(lruOverflow(keys, keys.length, OUTLINE_CACHE_LIMIT)).toEqual(['k0', 'k1', 'k2']);
+    expect(lruOverflow(keys.slice(0, OUTLINE_CACHE_LIMIT), OUTLINE_CACHE_LIMIT, OUTLINE_CACHE_LIMIT)).toEqual([]);
   });
 });

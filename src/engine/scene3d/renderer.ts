@@ -11,6 +11,7 @@ import { fogOn, writeFogUniforms } from './fog';
 import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
 import { interleave, knownShape, shapeMesh } from './meshes';
 import { paintOrder } from './order';
+import { solidOutline } from './outline3d';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -221,7 +222,71 @@ void main() {
   outColor = vec4(u_color.rgb * u_color.a, u_color.a);
 }`;
 
+// the line around a solid (see outline3d.ts): flat color, position only. the fog math is the plane shader's (keep in sync).
+const OUTLINE_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+uniform mat4 u_mvp;
+// only read while fog is on (u_fogOn > 0)
+uniform mat4 u_model;
+uniform float u_fogOn;
+out vec3 v_world;
+void main() {
+  v_world = u_fogOn > 0.0 ? (u_model * vec4(a_pos, 1.0)).xyz : vec3(0.0);
+  gl_Position = u_mvp * vec4(a_pos, 1.0);
+}`;
+const OUTLINE_FS = `#version 300 es
+precision highp float;
+in vec3 v_world;
+// premultiplied
+uniform vec4 u_color;
+uniform float u_fogOn;
+uniform vec3 u_fogColor;
+uniform vec3 u_fogRange;
+uniform vec3 u_eye;
+out vec4 outColor;
+void main() {
+  vec4 c = u_color;
+  if (u_fogOn > 0.0) {
+    // FOG MATH: must match the plane shader (and fog.ts). un-premultiply, mix, premultiply again; alpha is kept.
+    float f = clamp((distance(v_world, u_eye) - u_fogRange.x) / u_fogRange.y, 0.0, 1.0) * u_fogRange.z;
+    vec3 rgb = c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
+    c.rgb = mix(rgb, u_fogColor, f) * c.a;
+  }
+  outColor = c;
+}`;
+
 const CACHE_LIMIT = 48;
+/** how many outline piece sets stay on the gpu. an animated width or size makes a new one per frame, the oldest go. */
+export const OUTLINE_CACHE_LIMIT = 24;
+
+/** the cache key of the outline pieces of a solid: shape, the three sizes and the line width (to a thousandth) */
+export function outlineKey(shape: string, sx: number, sy: number, sz: number, width: number): string {
+  return `${shape}|${sx.toFixed(3)}|${sy.toFixed(3)}|${sz.toFixed(3)}|${width.toFixed(3)}`;
+}
+
+/**
+ * the least recently used entry goes first when a map ordered by use grows past `limit`: returns the keys to drop.
+ * (a map keeps insertion order, a hit is moved to the end by the caller.)
+ */
+export function lruOverflow(keys: Iterable<string>, size: number, limit: number): string[] {
+  const out: string[] = [];
+  let over = size - limit;
+  for (const k of keys) {
+    if (over-- <= 0) break;
+    out.push(k);
+  }
+  return out;
+}
+
+/** the gpu side of one solidOutline: three vaos (hull and core share the index buffer) and their draw counts */
+interface OutlineGpu {
+  hullVao: WebGLVertexArrayObject | null;
+  coreVao: WebGLVertexArrayObject | null;
+  stripVao: WebGLVertexArrayObject | null;
+  indexCount: number;
+  stripCount: number;
+  buffers: (WebGLBuffer | null)[];
+}
 
 /** shapes whose picture wraps round the mesh in u (the seam sits at u = 0 / 1): see meshes.ts */
 const WRAPS_U = new Set<Shape3D>(['sphere', 'cylinder', 'cone', 'capsule', 'torus']);
@@ -254,6 +319,19 @@ class SceneRenderer {
   private gl: WebGL2RenderingContext;
   private planeProg: WebGLProgram;
   private lineProg: WebGLProgram;
+  private outlineProg: WebGLProgram;
+  private oMvp: WebGLUniformLocation | null;
+  private oModel: WebGLUniformLocation | null;
+  private oColor: WebGLUniformLocation | null;
+  private oFogOn: WebGLUniformLocation | null;
+  private oFogColor: WebGLUniformLocation | null;
+  private oFogRange: WebGLUniformLocation | null;
+  private oEye: WebGLUniformLocation | null;
+  /** the fog and eye of the render in progress, for the outline program (its uniforms are its own) */
+  private fogging = false;
+  private eyeNow: Vec3 = [0, 0, 0];
+  /** least recently used first (map order): a hit moves the entry to the end. null = pieces were empty. */
+  private outlines = new Map<string, OutlineGpu | null>();
   private uMvp: WebGLUniformLocation | null;
   private uAlpha: WebGLUniformLocation | null;
   private uUv: WebGLUniformLocation | null;
@@ -292,6 +370,15 @@ class SceneRenderer {
     this.gl = gl;
     this.planeProg = this.link(PLANE_VS, PLANE_FS);
     this.lineProg = this.link(LINE_VS, LINE_FS);
+    this.outlineProg = this.link(OUTLINE_VS, OUTLINE_FS);
+    const op = this.outlineProg;
+    this.oMvp = gl.getUniformLocation(op, 'u_mvp');
+    this.oModel = gl.getUniformLocation(op, 'u_model');
+    this.oColor = gl.getUniformLocation(op, 'u_color');
+    this.oFogOn = gl.getUniformLocation(op, 'u_fogOn');
+    this.oFogColor = gl.getUniformLocation(op, 'u_fogColor');
+    this.oFogRange = gl.getUniformLocation(op, 'u_fogRange');
+    this.oEye = gl.getUniformLocation(op, 'u_eye');
     this.uMvp = gl.getUniformLocation(this.planeProg, 'u_mvp');
     this.uAlpha = gl.getUniformLocation(this.planeProg, 'u_alpha');
     this.uUv = gl.getUniformLocation(this.planeProg, 'u_uv');
@@ -354,10 +441,13 @@ class SceneRenderer {
         for (const b of m.buffers) gl.deleteBuffer(b);
       }
       this.meshes.clear();
+      for (const o of this.outlines.values()) this.freeOutline(o);
+      this.outlines.clear();
       gl.deleteVertexArray(this.lineVao);
       gl.deleteBuffer(this.lineBuf);
       gl.deleteProgram(this.planeProg);
       gl.deleteProgram(this.lineProg);
+      gl.deleteProgram(this.outlineProg);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
       // the antialiased depth + color buffer goes with a 1x1 canvas
       this.canvas.width = 1;
@@ -406,6 +496,130 @@ class SceneRenderer {
     const mesh: Mesh = { vao, count: data.indices.length, buffers: [vbo, ibo] };
     this.meshes.set(shape, mesh);
     return mesh;
+  }
+
+  private freeOutline(o: OutlineGpu | null): void {
+    if (!o) return;
+    const gl = this.gl;
+    gl.deleteVertexArray(o.hullVao);
+    gl.deleteVertexArray(o.coreVao);
+    gl.deleteVertexArray(o.stripVao);
+    for (const b of o.buffers) gl.deleteBuffer(b);
+  }
+
+  /** the gpu pieces of the line around a solid, built on first use. null = nothing to draw (empty pieces). */
+  private outlineGpu(shape: Shape3D, o: PlaneOutline): OutlineGpu | null {
+    const key = outlineKey(shape, o.size[0], o.size[1], o.size[2], o.width);
+    if (this.outlines.has(key)) {
+      const hit = this.outlines.get(key)!;
+      this.outlines.delete(key);
+      this.outlines.set(key, hit);
+      return hit;
+    }
+    const gl = this.gl;
+    const data = solidOutline(shape, o.size[0], o.size[1], o.size[2], o.width);
+    let gpu: OutlineGpu | null = null;
+    if (data.indices.length > 0 && data.hull.length > 0 && data.core.length > 0) {
+      const buf = (target: number, src: ArrayBufferView) => {
+        const b = gl.createBuffer();
+        gl.bindBuffer(target, b);
+        gl.bufferData(target, src, gl.STATIC_DRAW);
+        return b;
+      };
+      const positions = (b: WebGLBuffer | null, ibo: WebGLBuffer | null) => {
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, b);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        if (ibo) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        return vao;
+      };
+      const hull = buf(gl.ARRAY_BUFFER, data.hull);
+      const core = buf(gl.ARRAY_BUFFER, data.core);
+      const ibo = buf(gl.ELEMENT_ARRAY_BUFFER, data.indices);
+      const strips = data.strips.length > 0 ? buf(gl.ARRAY_BUFFER, data.strips) : null;
+      gpu = {
+        hullVao: positions(hull, ibo),
+        coreVao: positions(core, ibo),
+        stripVao: strips ? positions(strips, null) : null,
+        indexCount: data.indices.length,
+        stripCount: data.strips.length / 3,
+        buffers: [hull, core, ibo, strips],
+      };
+      gl.bindVertexArray(null);
+    }
+    this.outlines.set(key, gpu);
+    // really delete the evicted ones: an animated width or size makes a new entry every frame
+    for (const k of lruOverflow(this.outlines.keys(), this.outlines.size, OUTLINE_CACHE_LIMIT)) {
+      this.freeOutline(this.outlines.get(k) ?? null);
+      this.outlines.delete(k);
+    }
+    return gpu;
+  }
+
+  /**
+   * the line around one solid, drawn after the solid itself: core into the stencil, hull where the core is not (the
+   * silhouette line), strips along the hard edges inside. stencil bit 0 = the core, bit 1 = something was painted
+   * already (the hull has a front and a back, the strips lie on both faces: every pixel is painted once).
+   * the depth of field blur does not apply to the line: it stays sharp.
+   * expects this.mvpBuf to hold the plane's mvp. gives the gl state back the way the plane loop needs it.
+   */
+  private drawOutline(plane: Plane3D, shape: Shape3D, gpu: OutlineGpu, offsetUnits: number): void {
+    const gl = this.gl;
+    const o = plane.outline!;
+    const ca = o.color[3];
+    const a = ca * Math.min(1, plane.alpha);
+    gl.useProgram(this.outlineProg);
+    gl.uniformMatrix4fv(this.oMvp, false, this.mvpBuf);
+    gl.uniform1f(this.oFogOn, this.fogging ? 1 : 0);
+    if (this.fogging) {
+      gl.uniformMatrix4fv(this.oModel, false, plane.model);
+      gl.uniform3f(this.oFogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
+      gl.uniform3f(this.oFogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
+      gl.uniform3f(this.oEye, this.eyeNow[0], this.eyeNow[1], this.eyeNow[2]);
+    }
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    gl.clearStencil(0);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+
+    // the core only marks the stencil
+    gl.colorMask(false, false, false, false);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.stencilFunc(gl.ALWAYS, 1, 0xff);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+    gl.stencilMask(0x01);
+    gl.bindVertexArray(gpu.coreVao);
+    gl.drawElements(gl.TRIANGLES, gpu.indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.colorMask(true, true, true, true);
+    gl.enable(gl.DEPTH_TEST);
+
+    gl.uniform4f(this.oColor, o.color[0] * a, o.color[1] * a, o.color[2] * a, a);
+    // the silhouette: hull minus core
+    gl.stencilFunc(gl.EQUAL, 0, 0x03);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
+    gl.stencilMask(0x02);
+    gl.depthMask(plane.alpha >= 0.98 && ca >= 0.98);
+    gl.bindVertexArray(gpu.hullVao);
+    gl.drawElements(gl.TRIANGLES, gpu.indexCount, gl.UNSIGNED_SHORT, 0);
+
+    // the hard edges inside: they lie exactly on the faces, so pull them a bit more toward the viewer
+    if (gpu.stripVao && gpu.stripCount > 0) {
+      gl.stencilFunc(gl.EQUAL, 0, 0x02);
+      gl.depthMask(false);
+      gl.polygonOffset(-1, offsetUnits - 8);
+      gl.bindVertexArray(gpu.stripVao);
+      gl.drawArrays(gl.TRIANGLES, 0, gpu.stripCount);
+    }
+
+    gl.disable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    gl.polygonOffset(0, offsetUnits);
+    gl.depthMask(false);
+    gl.useProgram(this.planeProg);
+    gl.bindVertexArray(this.mesh(shape).vao);
   }
 
   private newTexture(mips: boolean): WebGLTexture {
@@ -487,7 +701,9 @@ class SceneRenderer {
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.depthMask(true);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.clearStencil(0);
+    gl.stencilMask(0xff);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.CULL_FACE);
@@ -500,8 +716,10 @@ class SceneRenderer {
 
     gl.useProgram(this.planeProg);
     gl.activeTexture(gl.TEXTURE0);
+    this.eyeNow = eye;
     // fog: set once per render. off = one uniform at 0, the shader skips it.
     const fogging = fogOn(fog);
+    this.fogging = fogging;
     writeFogUniforms(fog, this.fogBuf);
     gl.uniform1f(this.uFogOn, fogging ? 1 : 0);
     if (fogging) {
@@ -525,8 +743,18 @@ class SceneRenderer {
     for (const index of order) {
       const plane = planes[index]!;
       if (!(plane.alpha > 0.001)) continue;
-      gl.polygonOffset(0, -4 * (plane.layer ?? index));
+      const offsetUnits = -4 * (plane.layer ?? index);
+      gl.polygonOffset(0, offsetUnits);
       const shape = knownShape(plane.shape);
+      // a line around a solid (nothing to draw for empty pieces, a zero width or a see-through color)
+      const ol = plane.outline;
+      const line = shape !== 'plane' && ol && ol.width > 0 && ol.color[3] > 0 ? this.outlineGpu(shape, ol) : null;
+      if (line && ol!.hollow) {
+        // no fill: neither the texture nor the solid is drawn, only the line
+        mulInto(this.mvpBuf, viewProj, plane.model);
+        this.drawOutline(plane, shape, line, offsetUnits);
+        continue;
+      }
       const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
       if (plane.cacheKey === undefined && slot > 0 && plane.image === lastImage && blurred === lastMips && this.scratch[slot - 1]) {
         gl.bindTexture(gl.TEXTURE_2D, this.scratch[slot - 1]!);
@@ -572,6 +800,7 @@ class SceneRenderer {
       gl.depthMask(false);
       gl.uniform1f(this.uPass, 2);
       gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+      if (line) this.drawOutline(plane, shape, line, offsetUnits);
     }
     gl.depthMask(true);
     gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -630,7 +859,7 @@ function getRenderer(channel: string): SceneRenderer | null {
         premultipliedAlpha: true,
         antialias: true,
         depth: true,
-        stencil: false,
+        stencil: true,
         preserveDrawingBuffer: false,
         powerPreference: 'high-performance',
       }) as WebGL2RenderingContext | null)

@@ -1,5 +1,6 @@
 /** drawing of shape clips (types.ts ShapeClip). pure canvas 2d, shared by the flat and the 3d path. */
 import type { ShapeClip } from '../types';
+import { knownShape } from './scene3d/meshes';
 import { drawRange, flatten, fromPoints, trimPolyline } from './shapeTrim';
 import type { PathRecorder, Polyline } from './shapeTrim';
 
@@ -131,6 +132,24 @@ function fillStyle(ctx: Ctx, clip: ShapeClip, w: number, h: number): string | Ca
 /** how far the outline reaches outside the shape's box (canvas pixels at scale 1) */
 export function shapeSpill(clip: ShapeClip): number {
   return clip.stroke && clip.stroke.width > 0 ? clip.stroke.width / 2 + 1 : 0;
+}
+
+/**
+ * true when the outline of this shape clip is a line around a 3d solid instead of a stroke in the picture: a plain rect
+ * (no rounded corners) wrapped on a solid, with an outline. every other figure (ellipse, star, a rounded rect ...)
+ * keeps its outline in the picture, because there the line belongs to the figure that is drawn on the faces.
+ */
+export function lineOnSolid(clip: { type?: string; kind?: string; threeD?: boolean; shape?: string; stroke?: { width: number } | null; radius?: number | null }): boolean {
+  return (
+    clip.type === 'shape' &&
+    !!clip.threeD &&
+    clip.shape !== undefined &&
+    knownShape(clip.shape) !== 'plane' &&
+    !!clip.stroke &&
+    clip.stroke.width > 0 &&
+    clip.kind === 'rect' &&
+    !(clip.radius !== undefined && clip.radius !== null && clip.radius > 0)
+  );
 }
 
 const OUTLINE_CACHE_MAX = 32;
