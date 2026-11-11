@@ -278,12 +278,13 @@ export function lruOverflow(keys: Iterable<string>, size: number, limit: number)
   return out;
 }
 
-/** the gpu side of one solidOutline: three vaos (hull and core share the index buffer) and their draw counts */
+/** the gpu side of one solidOutline: three vaos (the core is indexed, the hull and the strips are plain triangles) and their draw counts */
 interface OutlineGpu {
   hullVao: WebGLVertexArrayObject | null;
   coreVao: WebGLVertexArrayObject | null;
   stripVao: WebGLVertexArrayObject | null;
   indexCount: number;
+  hullCount: number;
   stripCount: number;
   buffers: (WebGLBuffer | null)[];
 }
@@ -543,10 +544,11 @@ class SceneRenderer {
       const ibo = buf(gl.ELEMENT_ARRAY_BUFFER, data.indices);
       const strips = data.strips.length > 0 ? buf(gl.ARRAY_BUFFER, data.strips) : null;
       gpu = {
-        hullVao: positions(hull, ibo),
+        hullVao: positions(hull, null),
         coreVao: positions(core, ibo),
         stripVao: strips ? positions(strips, null) : null,
         indexCount: data.indices.length,
+        hullCount: data.hull.length / 3,
         stripCount: data.strips.length / 3,
         buffers: [hull, core, ibo, strips],
       };
@@ -606,7 +608,7 @@ class SceneRenderer {
     gl.stencilMask(0x02);
     gl.depthMask(plane.alpha >= 0.98 && ca >= 0.98);
     gl.bindVertexArray(gpu.hullVao);
-    gl.drawElements(gl.TRIANGLES, gpu.indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, gpu.hullCount);
 
     // the hard edges inside: they lie exactly on the faces, so pull them a bit more toward the viewer
     if (gpu.stripVao && gpu.stripCount > 0) {
