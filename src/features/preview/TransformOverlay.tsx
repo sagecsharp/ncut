@@ -9,7 +9,7 @@
 import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
-import { isVisualClip } from '../../types';
+import { isVisualClip, stretchX, stretchY } from '../../types';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { cameraClipAt, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
 import type { CameraRig } from '../../engine/scene3d/camera';
@@ -19,7 +19,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeResize, hasCrop, hitTestKept, keptBox, pointInQuad, projectRig, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, pointInQuad, projectRig, rotateValue, snapAxis, unwrapStep } from './overlayMath';
 import { localDelta, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
 import { movableClipsAt } from './nudge';
@@ -47,6 +47,10 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
   const polyRef = useRef<SVGPolygonElement>(null);
   const underRef = useRef<SVGPolygonElement>(null);
   const cornerRefs = useRef<Array<HTMLDivElement | null>>([null, null, null, null]);
+  // a shape's edges change its width / height, every other clip's edges stretch it
+  const isShape = useEditor((s) => s.project?.clips.find((c) => c.id === clipId)?.type === 'shape');
+  const wTitle = isShape ? 'width' : 'stretch';
+  const hTitle = isShape ? 'height' : 'stretch';
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -130,8 +134,8 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
       // (the crop as it is at this time: it may be keyed)
       const shown = worldClip(project, clip, time);
       const box = keptBox(getClipBox(project, shown), shown.crop);
-      // edge handles change a shape's own width / height (scale cannot): only for a plain, uncropped shape
-      const edges = clip.type === 'shape' && !hasCrop(shown.crop) ? '1' : '0';
+      // edge handles: a plain shape's own width / height, a stretch for anything else. not on a cropped clip.
+      const edges = edgeMode(shown) ? '1' : '0';
       if (el.dataset.edges !== edges) el.dataset.edges = edges;
       const w = box.width * f;
       const h = box.height * f;
@@ -171,10 +175,10 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         <div className="preview-handle preview-handle-ne" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-sw" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-se" data-handle="scale" data-clip={clipId} title="scale" />
-        <div className="preview-handle preview-handle-edge preview-handle-w" data-handle="edge" data-edge="l" data-clip={clipId} title="width" />
-        <div className="preview-handle preview-handle-edge preview-handle-e" data-handle="edge" data-edge="r" data-clip={clipId} title="width" />
-        <div className="preview-handle preview-handle-edge preview-handle-n" data-handle="edge" data-edge="t" data-clip={clipId} title="height" />
-        <div className="preview-handle preview-handle-edge preview-handle-s" data-handle="edge" data-edge="b" data-clip={clipId} title="height" />
+        <div className="preview-handle preview-handle-edge preview-handle-w" data-handle="edge" data-edge="l" data-clip={clipId} title={wTitle} />
+        <div className="preview-handle preview-handle-edge preview-handle-e" data-handle="edge" data-edge="r" data-clip={clipId} title={wTitle} />
+        <div className="preview-handle preview-handle-edge preview-handle-n" data-handle="edge" data-edge="t" data-clip={clipId} title={hTitle} />
+        <div className="preview-handle preview-handle-edge preview-handle-s" data-handle="edge" data-edge="b" data-clip={clipId} title={hTitle} />
         <div className="preview-rotate-stem" />
         <div className="preview-handle preview-handle-rotate" data-handle="rotate" data-clip={clipId} title="rotate (shift = 15 degree steps)" />
       </div>
@@ -278,6 +282,8 @@ type Gesture =
       id: string;
       edge: Edge;
       start: EdgeStart;
+      /** a stretch drag (not a shape's own size): the prop it writes and its value at the grab */
+      stretch: { prop: 'scaleX' | 'scaleY'; s0: number } | null;
       x0: number;
       y0: number;
       started: boolean;
@@ -489,6 +495,16 @@ function OutputOverlay() {
       g.started = true;
       store.pushHistory();
     }
+    if (g.kind === 'edge' && g.stretch) {
+      // the stretch follows the pointer (new box side / side at the grab); x / y move so the opposite edge stays put
+      const r = edgeStretch(g.start, g.edge, g.stretch.s0, px, py, MIN_SHAPE_PX);
+      store.setClipValue(g.id, g.stretch.prop, time, r.value, { skipHistory: true });
+      const rawClip = project.clips.find((c) => c.id === g.id);
+      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, r.dx, r.dy) : { x: r.dx, y: r.dy };
+      store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
+      store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
+      return;
+    }
     if (g.kind === 'edge') {
       const r = edgeResize(g.start, g.edge, px, py, MIN_SHAPE_PX);
       // width / height go through setClipValue like x / y: a keyed size gets its key at the playhead
@@ -561,7 +577,9 @@ function OutputOverlay() {
         }
         if (handle.dataset.handle === 'edge') {
           const edge = handle.dataset.edge as Edge | undefined;
-          if (clip.type !== 'shape' || clip.threeD || !edge) return;
+          const mode = edge ? edgeMode(clip) : null;
+          if (!edge || !mode) return;
+          const horizontal = edge === 'l' || edge === 'r';
           gestureRef.current = {
             kind: 'edge',
             pointerId: e.pointerId,
@@ -570,6 +588,7 @@ function OutputOverlay() {
             id: clip.id,
             edge,
             start: { cx: box.cx, cy: box.cy, rotation: box.rotation, bw: box.width, bh: box.height, scale: world.transform.scale },
+            stretch: mode === 'stretch' ? { prop: horizontal ? 'scaleX' : 'scaleY', s0: horizontal ? stretchX(clip.transform) : stretchY(clip.transform) } : null,
             x0: clip.transform.x,
             y0: clip.transform.y,
             started: false,

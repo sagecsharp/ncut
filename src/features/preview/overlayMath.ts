@@ -6,7 +6,7 @@ import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from
 import { clipModelMatrix, clipWorldModel, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
 import { resolveShown, worldClip } from './attached';
-import { isVisualClip } from '../../types';
+import { MAX_SCALE, MIN_SCALE, isVisualClip } from '../../types';
 import type { Clip } from '../../types';
 import { homeDistance } from '../../engine/scene3d/camera';
 import type { Crop, Project, VisualClip } from '../../types';
@@ -287,6 +287,44 @@ export function edgeResize(s: EdgeStart, edge: Edge, px: number, py: number, min
     height = nb / sc;
   }
   return { width, height, dx: shiftX * c - shiftY * sn, dy: shiftX * sn + shiftY * c };
+}
+
+/** what the edge handles of a 2d clip do: change a plain shape's own size, stretch anything else, or nothing (cropped, 3d) */
+export function edgeMode(clip: { type: string; threeD?: boolean; crop?: Crop | null }): 'size' | 'stretch' | null {
+  if (clip.threeD || hasCrop(clip.crop)) return null;
+  return clip.type === 'shape' ? 'size' : 'stretch';
+}
+
+export interface StretchResult {
+  /** the new stretch of the dragged axis (3 decimals, inside MIN_SCALE..MAX_SCALE) */
+  value: number;
+  /** move the clip's transform x / y by this much (canvas px) so the opposite edge stays put */
+  dx: number;
+  dy: number;
+}
+
+/**
+ * drag one edge of a rotated box to the canvas point (px, py) as a stretch: the new stretch is the stretch at the grab
+ * times (new box side / box side at the grab), clamped and rounded. the box side comes from the rounded value, so the
+ * opposite edge stays exactly where it was in canvas space, also when the clamp bites. `s.scale` is not used.
+ */
+export function edgeStretch(s: EdgeStart, edge: Edge, stretch0: number, px: number, py: number, minPx = 4): StretchResult {
+  const horizontal = edge === 'l' || edge === 'r';
+  const side = horizontal ? s.bw : s.bh;
+  const grab = Math.max(1e-6, Number.isFinite(stretch0) && stretch0 > 0 ? stretch0 : 1);
+  const r = edgeResize({ ...s, scale: 1 }, edge, px, py, minPx);
+  const nb = (horizontal ? r.width : r.height) ?? side;
+  const raw = (grab * nb) / Math.max(1e-6, side);
+  const value = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, raw)) * 1000) / 1000;
+  // the box side the rounded value really gives, so the far edge does not drift
+  const nbs = (side * value) / grab;
+  const shift = ((edge === 'r' || edge === 'b' ? 1 : -1) * (nbs - side)) / 2;
+  const rad = (s.rotation * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const sn = Math.sin(rad);
+  const sx = horizontal ? shift : 0;
+  const sy = horizontal ? 0 : shift;
+  return { value, dx: sx * c - sy * sn, dy: sx * sn + sy * c };
 }
 
 /* ---------- rotation drag ---------- */

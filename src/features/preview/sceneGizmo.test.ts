@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { cameraRig } from '../../engine/scene3d/camera';
 import { type Vec3, cross, dot, length, sub } from '../../engine/scene3d/math';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
-import { nearestPolyline, perpendicular, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
+import { STRETCH_PROPS, axisPull, hasDepth, nearestPolyline, ownAxes, perpendicular, ringAxes, ringPoints, ringValueSign, scaleFromDrag, scaledValue, stretchesToClear } from './sceneGizmo';
 
 const box = { cx: 500, cy: 300, width: 200, height: 100, rotation: 0 };
 const eye: Vec3 = [0, 0, -1000];
@@ -102,5 +102,85 @@ describe('scale drag', () => {
     expect(scaleFromDrag(2, 100, 150, 0.01, 100)).toBeCloseTo(3);
     expect(scaleFromDrag(2, 100, 0, 0.01, 100)).toBe(0.01);
     expect(scaleFromDrag(50, 10, 100, 0.01, 100)).toBe(100);
+  });
+});
+
+describe('stretch per axis', () => {
+  it('the own axes of a flat clip are the canvas axes, a roll turns x and y but not z', () => {
+    const [x, y, z] = ownAxes(box, { z: 0 }, undefined, eye);
+    expect(x[0]).toBeCloseTo(1);
+    expect(y[1]).toBeCloseTo(1);
+    expect(z[2]).toBeCloseTo(1);
+    const [rx, ry, rz] = ownAxes({ ...box, rotation: 90 }, { z: 0 }, undefined, eye);
+    expect(rx[1]).toBeCloseTo(1);
+    expect(ry[0]).toBeCloseTo(-1);
+    expect(rz[2]).toBeCloseTo(1);
+  });
+
+  it('own axes stay a unit, perpendicular basis under turn, tilt and roll', () => {
+    const [x, y, z] = ownAxes({ ...box, rotation: 35 }, { z: 20, rotX: 25, rotY: -40 }, undefined, eye);
+    for (const a of [x, y, z]) expect(length(a)).toBeCloseTo(1, 5);
+    expect(dot(x, y)).toBeCloseTo(0, 5);
+    expect(dot(x, z)).toBeCloseTo(0, 5);
+    expect(dot(y, z)).toBeCloseTo(0, 5);
+  });
+
+  it('own x follows the width of the plane', () => {
+    const t = { z: 0, rotY: 50 };
+    const c = planeCorners(clipModelMatrix(box, { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, ...t }, undefined, eye));
+    const w = sub(c[1], c[0]);
+    const x = ownAxes(box, t, undefined, eye)[0];
+    expect(dot(x, [w[0] / length(w), w[1] / length(w), w[2] / length(w)])).toBeCloseTo(1, 5);
+  });
+
+  it('depth only exists on a solid or on extruded 3d text', () => {
+    expect(hasDepth({ type: 'image', threeD: true })).toBe(false);
+    expect(hasDepth({ type: 'image', threeD: true, shape: 'plane' })).toBe(false);
+    expect(hasDepth({ type: 'image', threeD: true, shape: 'box' })).toBe(true);
+    expect(hasDepth({ type: 'shape', threeD: true, shape: 'sphere' })).toBe(true);
+    expect(hasDepth({ type: 'image', threeD: false, shape: 'box' })).toBe(false);
+    expect(hasDepth({ type: 'text', threeD: true, extrude: { depth: 0.3 } })).toBe(true);
+    expect(hasDepth({ type: 'text', threeD: true, extrude: { depth: 0 } })).toBe(false);
+    expect(hasDepth({ type: 'text', threeD: true, extrude: null })).toBe(false);
+    expect(hasDepth({ type: 'text', threeD: false, extrude: { depth: 0.3 } })).toBe(false);
+  });
+
+  it('the props follow the axes', () => {
+    expect(STRETCH_PROPS).toEqual(['scaleX', 'scaleY', 'scaleZ']);
+  });
+
+  it('the pull is the distance along the handle, signed', () => {
+    // handle pointing right from (100, 100)
+    expect(axisPull(100, 100, 160, 100, 200, 100)).toBeCloseTo(100);
+    expect(axisPull(100, 100, 160, 100, 200, 300)).toBeCloseTo(100);
+    expect(axisPull(100, 100, 160, 100, 40, 100)).toBeCloseTo(-60);
+    // a diagonal handle
+    expect(axisPull(0, 0, 30, 30, 50, 50)).toBeCloseTo(Math.hypot(50, 50));
+    // no handle length: no pull
+    expect(axisPull(5, 5, 5, 5, 50, 50)).toBe(0);
+  });
+
+  it('the value is the grab value times the ratio, clamped and rounded', () => {
+    expect(scaledValue(2, 60, 90, null, 0.01, 100)).toBe(3);
+    expect(scaledValue(1, 60, 20, null, 0.01, 100)).toBe(0.333);
+    expect(scaledValue(1, 60, -20, null, 0.01, 100)).toBe(0.01);
+    expect(scaledValue(50, 10, 1000, null, 0.01, 100)).toBe(100);
+    expect(scaledValue(1, 0, 10, null, 0.01, 100)).toBe(100);
+  });
+
+  it('a typed factor takes over from the pointer, a bad one does not', () => {
+    expect(scaledValue(2, 60, 600, 1.5, 0.01, 100)).toBe(3);
+    expect(scaledValue(2, 60, 120, 0, 0.01, 100)).toBe(4);
+    expect(scaledValue(2, 60, 120, -3, 0.01, 100)).toBe(4);
+    expect(scaledValue(2, 60, 120, 1e9, 0.01, 100)).toBe(100);
+  });
+
+  it('alt + s only writes the axes that are stretched or keyed', () => {
+    expect(stretchesToClear({}, undefined)).toEqual([]);
+    expect(stretchesToClear({ scaleX: 1, scaleY: 1 }, {})).toEqual([]);
+    expect(stretchesToClear({ scaleX: 2 }, undefined)).toEqual(['scaleX']);
+    expect(stretchesToClear({ scaleX: 2, scaleZ: 0.5 }, undefined)).toEqual(['scaleX', 'scaleZ']);
+    expect(stretchesToClear({ scaleY: 1 }, { scaleY: [{}, {}] })).toEqual(['scaleY']);
+    expect(stretchesToClear({}, { scaleZ: [] })).toEqual([]);
   });
 });

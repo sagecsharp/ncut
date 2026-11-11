@@ -46,6 +46,7 @@ describe('which controls the scene view uses', () => {
   it('has a help line for both, and they differ', () => {
     expect(SCENE_HINTS.blender).toContain('g r s');
     expect(SCENE_HINTS.blender).toContain('middle drag');
+    expect(SCENE_HINTS.blender).toContain('stretch');
     expect(SCENE_HINTS.unity).toContain('w e r');
     expect(SCENE_HINTS.unity).not.toContain('g r s');
   });
