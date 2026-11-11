@@ -16,6 +16,8 @@ import { preloadEditor } from './features/editor/loadEditor';
 import { attachShellOpenFile } from './features/shell/openShellFile';
 import { initAppearance } from './lib/appearance';
 import { watchFocusSource } from './lib/pressKey';
+import { startMcp } from './mcp/dispatch';
+import { callTool, listTools } from './mcp/registry';
 import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
 import { usePlayback } from './store/playback';
@@ -44,6 +46,8 @@ attachShellOpenFile(
   },
   preloadEditor,
 );
+// the desktop app's mcp server relays its tool requests to this page (docs/MCP.md). nothing in a browser
+startMcp();
 
 // handy for poking at the app from the devtools console (dev builds only)
 if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
@@ -57,6 +61,7 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
     useUi,
     session,
     importFiles,
+    mcp: { listTools, callTool },
     fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern, TRANSITIONS, checkTransitions, renderTransition },
   };
 }
