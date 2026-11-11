@@ -141,6 +141,9 @@ export function shapeSpill(clip: ShapeClip): number {
  * keeps its outline in the picture, because there the line belongs to the figure that is drawn on the faces.
  * so does a clip with a mask, a color correction or a color key: those act on the picture, and a line that is not in
  * the picture would stay unmasked and uncorrected.
+ * the answer has to be the same on every frame of a clip (the two kinds of line look different, a switch in the middle
+ * of an animation would pop), so keys on the corners, the color correction or the color key count like a value that is
+ * set: the line stays in the picture for the whole clip, also on the frames where the keyed value is neutral.
  */
 export function lineOnSolid(clip: {
   type?: string;
@@ -152,7 +155,15 @@ export function lineOnSolid(clip: {
   mask?: unknown;
   adjust?: unknown;
   chromaKey?: unknown;
+  keyframes?: Record<string, unknown[] | undefined> | null;
 }): boolean {
+  const kf = clip.keyframes;
+  if (kf) {
+    for (const prop in kf) {
+      if (!kf[prop]?.length) continue;
+      if (prop === 'radius' || prop.startsWith('adjust.') || prop.startsWith('chromaKey.')) return false;
+    }
+  }
   return (
     clip.type === 'shape' &&
     !!clip.threeD &&

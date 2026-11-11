@@ -362,4 +362,56 @@ describe('solidOutline review fixes', () => {
       expect(flipped, `${shape} ${S.join('x')} w${width}`).toBe(0);
     }
   });
+
+  it('the rim of a ring squashed flat is a tube all the way round, not a string of balls', () => {
+    for (const [sz, width] of [[3, 14], [40, 18]] as const) {
+      const S = [260, 260, sz];
+      const h = width / 2;
+      const o = solidOutline('torus', 260, 260, sz, width);
+      // triangles that lie on the outside of the rim (130 from the middle) and span from one rim vertex to the next
+      const hit = new Set<number>();
+      for (let t = 0; t < o.hull.length / 9; t++) {
+        const p = [at(o.hull, t * 3, S), at(o.hull, t * 3 + 1, S), at(o.hull, t * 3 + 2, S)];
+        if (!p.every((q) => Math.hypot(q[0]!, q[1]!) > 130 + 0.8 * h)) continue;
+        const span = Math.max(...[0, 1, 2].map((i) => Math.hypot(p[i]![0]! - p[(i + 1) % 3]![0]!, p[i]![1]! - p[(i + 1) % 3]![1]!)));
+        if (span < 12) continue;
+        const mx = (p[0]![0]! + p[1]![0]! + p[2]![0]!) / 3, my = (p[0]![1]! + p[1]![1]! + p[2]![1]!) / 3;
+        hit.add(Math.floor(((Math.atan2(my, mx) + Math.PI) / (2 * Math.PI)) * 24) % 24);
+      }
+      expect(hit.size, `depth ${sz}`).toBe(24);
+      // and nothing reaches further out than the line is wide
+      for (let i = 0; i < o.hull.length / 3; i++) {
+        const q = at(o.hull, i, S);
+        expect(Math.hypot(q[0]!, q[1]!)).toBeLessThan(130 + h * 1.01);
+      }
+    }
+  });
+
+  it('the core of a very thin solid stays inside it and keeps its side out (proportions between the steps of the room)', () => {
+    const volume = (pos: Float32Array, idx: ArrayLike<number>, S: number[]): number => {
+      let v = 0;
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = at(pos, idx[t]!, S), b = at(pos, idx[t + 1]!, S), c = at(pos, idx[t + 2]!, S);
+        v += a[0]! * (b[1]! * c[2]! - b[2]! * c[1]!) + a[1]! * (b[2]! * c[0]! - b[0]! * c[2]!) + a[2]! * (b[0]! * c[1]! - b[1]! * c[0]!);
+      }
+      return v / 6;
+    };
+    for (const shape of ['sphere', 'torus', 'capsule']) {
+      for (const z of [0.4, 1.2, 1.6, 2, 2.7, 7.3]) {
+        for (const width of [12, 40]) {
+          const S = [1000, 1000, z];
+          const o = solidOutline(shape, S[0]!, S[1]!, S[2]!, width);
+          const solid = solidOutline(shape, S[0]!, S[1]!, S[2]!, 1e-6);
+          const label = `${shape} z${z} w${width}`;
+          const [lo, hi] = range(solid.core, 2, z);
+          const [cl, ch] = range(o.core, 2, z);
+          expect(cl, label).toBeGreaterThanOrEqual(lo - 1e-6);
+          expect(ch, label).toBeLessThanOrEqual(hi + 1e-6);
+          const full = volume(solid.core, solid.indices, S);
+          expect(full, label).toBeGreaterThan(0);
+          expect(volume(o.core, o.indices, S) / full, label).toBeGreaterThan(0.001);
+        }
+      }
+    }
+  });
 });

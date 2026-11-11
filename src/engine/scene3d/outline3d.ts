@@ -66,6 +66,9 @@ const HARD_COS = Math.cos((35 * Math.PI) / 180);
 const WELD = 1e5;
 /** smallest size the scaled space is allowed to collapse to */
 const MIN_SIZE = 1e-3;
+/** a curved group whose normal makes less than this with one of its faces (cos) gets its direction searched, see computeOffsets */
+const LEAN_BELOW = 0.5;
+const LEAN_STEPS = 64;
 /** more than a scene has outlined solids: with fewer slots than solids every frame would rebuild them all */
 const CACHE_LIMIT = 64;
 /** a group is flat when all its faces at the vertex are within about half a degree of each other */
@@ -451,6 +454,59 @@ function computeOffsets(tp: Topology, sx: number, sy: number, sz: number, h: num
       const dot = gn[i * 3]! * tnu[t * 3]! + gn[i * 3 + 1]! * tnu[t * 3 + 1]! + gn[i * 3 + 2]! * tnu[t * 3 + 2]!;
       if (dot < gmin[i]!) gmin[i] = dot;
     }
+    // the sum of the faces is a poor direction where the group is bent sharply: on the rim of a ball squashed flat the
+    // faces above and below are huge and nearly opposite, what is left of their sum points up or down instead of
+    // sideways, and a pull along it leaves the solid at once. there the direction that is best for its worst face is
+    // searched. that is the point nearest to the origin among all mixes of the face normals: start on one normal, walk
+    // toward the normal the point is worst for, as far as it brings the point closer to the origin, and again.
+    for (let i = 0; i < g; i++) {
+      if (gflat[i] || !(gmin[i]! < LEAN_BELOW)) continue;
+      let x = 0, y = 0, z = 0, bx = 0, by = 0, bz = 0, best = -Infinity, started = false;
+      for (let it = 0; it <= LEAN_STEPS; it++) {
+        const len = Math.hypot(x, y, z);
+        // (the origin is among the mixes: no direction is good for every face)
+        if (started && !(len > 1e-9)) break;
+        let md = Infinity, mt = -1;
+        for (let s = s0; s < s1; s++) {
+          if (slotGroup[s] !== i) continue;
+          const t = vTri[s]!;
+          if (tnu[t * 3] === 0 && tnu[t * 3 + 1] === 0 && tnu[t * 3 + 2] === 0) continue;
+          if (!started) {
+            mt = t;
+            break;
+          }
+          const dot = (x * tnu[t * 3]! + y * tnu[t * 3 + 1]! + z * tnu[t * 3 + 2]!) / len;
+          if (dot < md) {
+            md = dot;
+            mt = t;
+          }
+        }
+        if (mt < 0) break;
+        const nx = tnu[mt * 3]!, ny = tnu[mt * 3 + 1]!, nz = tnu[mt * 3 + 2]!;
+        if (!started) {
+          x = nx; y = ny; z = nz;
+          started = true;
+          continue;
+        }
+        if (md > best) {
+          best = md;
+          bx = x / len; by = y / len; bz = z / len;
+        }
+        if (it === LEAN_STEPS) break;
+        const ex = x - nx, ey = y - ny, ez = z - nz;
+        const ee = ex * ex + ey * ey + ez * ez;
+        if (!(ee > 1e-18)) break;
+        const f = Math.min(1, Math.max(0, (x * ex + y * ey + z * ez) / ee));
+        if (f === 0) break;
+        x -= ex * f; y -= ey * f; z -= ez * f;
+      }
+      if (best > gmin[i]!) {
+        gn[i * 3] = bx;
+        gn[i * 3 + 1] = by;
+        gn[i * 3 + 2] = bz;
+        gmin[i] = best;
+      }
+    }
     // the reach of every valid group, the hull push of every corner, the curved groups for the core
     let c = 0;
     for (let i = 0; i < g; i++) {
@@ -554,7 +610,8 @@ const roomCache = new Map<string, Float64Array>();
  * point p stays outside it while r <= |p - v|^2 / (2 (v - p) . n). the smallest of those over all vertices is the room:
  * on a round surface it is the radius of curvature, on a thin solid half the way to the far side. a surface pulled in by
  * less than its room does not fold and does not meet the other side.
- * linear in a uniform scale, so it is cached per shape and ratio (a new line width or clip scale costs nothing).
+ * linear in a uniform scale, so it is cached per shape and ratio (a new line width or clip scale costs nothing). the
+ * caller rounds the ratios to steps, see build.
  */
 function roomOf(tp: Topology, shape: Shape3D, rx: number, ry: number, rz: number): Float64Array {
   const key = `${shape}|${rx}|${ry}|${rz}`;
@@ -581,7 +638,7 @@ function roomOf(tp: Topology, shape: Shape3D, rx: number, ry: number, rz: number
     out[v] = best;
   }
   roomCache.set(key, out);
-  if (roomCache.size > 32) roomCache.delete(roomCache.keys().next().value as string);
+  if (roomCache.size > 96) roomCache.delete(roomCache.keys().next().value as string);
   return out;
 }
 
@@ -679,7 +736,35 @@ function unitBall(): Float32Array {
 
 /** the hull: pushed faces, tubes round the hard edges and balls on the vertices (see the header) */
 function buildHull(tp: Topology, o: Offsets, sx: number, sy: number, sz: number, h: number): Float32Array {
-  const { nv, nt, tris, cornerSlot, hardEdges, hardDeg, hardNb } = tp;
+  const { nv, nt, tris, cornerSlot, hardDeg, hardNb } = tp;
+  // tips in a row (the rim of a ring or a ball squashed flat) are a ridge: the faces on its two sides go out along their
+  // own normals and leave the rim open, balls alone would make it a string of beads. an edge between two tips gets a
+  // tube like a hard edge, so the rim is round and exactly h outside.
+  let hardEdges: ArrayLike<number> = tp.hardEdges;
+  if (o.tip.includes(1)) {
+    const seen = new Set<number>();
+    for (let i = 0; i < tp.hardEdges.length; i += 2) {
+      const a = tp.hardEdges[i]!, b = tp.hardEdges[i + 1]!;
+      seen.add(Math.min(a, b) * nv + Math.max(a, b));
+    }
+    const ridge: number[] = [];
+    for (let t = 0; t < nt; t++) {
+      for (let k = 0; k < 3; k++) {
+        const a = tris[t * 3 + k]!, b = tris[t * 3 + ((k + 1) % 3)]!;
+        if (!o.tip[a] || !o.tip[b]) continue;
+        const key = Math.min(a, b) * nv + Math.max(a, b);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ridge.push(a, b);
+      }
+    }
+    if (ridge.length > 0) {
+      const all = new Int32Array(tp.hardEdges.length + ridge.length);
+      all.set(tp.hardEdges);
+      all.set(ridge, tp.hardEdges.length);
+      hardEdges = all;
+    }
+  }
   const ps = o.ps, push = o.push!;
 
   // bends: the extra length of the two tubes there, -1 for a vertex that is not a bend
@@ -806,7 +891,14 @@ function build(tp: Topology, shape: Shape3D, sx: number, sy: number, sz: number,
   // of a squashed tube, a thin wall or a tight curve are pulled less, so the core never folds or meets its other side.
   // the room changes smoothly from vertex to vertex, so the triangles between neighbours keep their side.
   const m = Math.max(sx, sy, sz);
-  const ratio = (s: number): number => Math.max(Math.round((s / m) * 1000) / 1000, MIN_SIZE);
+  // the proportions the room is measured at: rounded down to a step of 2^(1/16) (4 percent). down, because a side taken
+  // too thick gives too much room and the core of a very thin solid then goes through its far side (a rounding to 1/1000
+  // did that at 600 : 1). a little too thin only costs a little of the pull. the steps also let a solid whose proportions
+  // change slowly reuse one entry for many frames (measuring is the slow part, every vertex against every vertex).
+  const ratio = (s: number): number => {
+    const r = s / m;
+    return r >= 1 ? 1 : Math.max(2 ** (Math.floor(Math.log2(r) * 16) / 16), 1e-9);
+  };
   const hull = buildHull(tp, o, sx, sy, sz, h);
   const core = new Float32Array(nv * 3);
   const s = [sx, sy, sz];

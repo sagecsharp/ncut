@@ -141,4 +141,17 @@ describe('planeFor: the line around a solid', () => {
     const plain = shape({ adjust: { brightness: 0 } } as Partial<ShapeClip>);
     expect(lineOnSolid(plain)).toBe(true);
   });
+
+  it('keys on the corners, the color correction or the color key keep the line in the picture on every frame', () => {
+    const keyed = (prop: string): ShapeClip => shape({ keyframes: { [prop]: [{ time: 0, value: 0 }, { time: 2, value: 0.5 }] } } as unknown as Partial<ShapeClip>);
+    // the value is neutral on the first frame: the kind of line must not depend on the frame
+    expect(lineOnSolid(keyed('radius'))).toBe(false);
+    expect(lineOnSolid(keyed('adjust.brightness'))).toBe(false);
+    expect(lineOnSolid(keyed('chromaKey.tolerance'))).toBe(false);
+    expect(lineOnSolid(keyed('stroke.width'))).toBe(true);
+    expect(lineOnSolid(keyed('opacity'))).toBe(true);
+    expect(lineOnSolid(shape({ keyframes: { radius: [] } } as unknown as Partial<ShapeClip>))).toBe(true);
+    const c = keyed('radius');
+    expect(planeFor(project([c]), layer(c), rig)!.outline).toBeUndefined();
+  });
 });
