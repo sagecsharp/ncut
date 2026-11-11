@@ -520,7 +520,10 @@ class SceneRenderer {
     const data = solidOutline(shape, o.size[0], o.size[1], o.size[2], o.width);
     let gpu: OutlineGpu | null = null;
     if (data.indices.length > 0 && data.hull.length > 0 && data.core.length > 0) {
-      const buf = (target: number, src: ArrayBufferView) => {
+      // the index buffer binding belongs to the bound vao: with a mesh's vao still bound (the plane loop leaves the last
+      // one bound) the new index buffer would replace that mesh's own
+      gl.bindVertexArray(null);
+      const buf =(target: number, src: ArrayBufferView) => {
         const b = gl.createBuffer();
         gl.bindBuffer(target, b);
         gl.bufferData(target, src, gl.STATIC_DRAW);
