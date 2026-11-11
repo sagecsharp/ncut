@@ -7,6 +7,7 @@ import { useEditor, type ActionOpts, type ClipPatch } from '../../store/editorSt
 import type { Clip, Transform } from '../../types';
 import { isTimedClip, isVisualClip } from '../../types';
 import { needClip, needProject, needTrack, needUnlocked, oneStep, ToolError } from '../helpers';
+import { checkField, knowsField } from './editCheck';
 
 /** fields that have a tool of their own: update_clip refuses them and names the tool */
 const OTHER_TOOL: Record<string, string> = {
@@ -118,6 +119,11 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
       continue;
     }
     if (key === 'parent') checkParent(before, value);
+    // a field this file knows the shape of is checked (and a partial object completed) before it is stored
+    if (knowsField(before.type, key)) {
+      rest[key] = checkField(before, key, value);
+      continue;
+    }
     checkKind(key, (before as unknown as Record<string, unknown>)[key], value);
     rest[key] = value;
   }

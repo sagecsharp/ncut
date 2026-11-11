@@ -319,7 +319,8 @@ const jobDeps: JobDeps = {
   working(on) {
     // closing the window asks first, the machine stays awake, playback stops (like the dialog's export)
     if (on) usePlayback.getState().pause();
-    setBusy('export', on ? 'an export is still running' : null);
+    // its own key: the dialog's export clears 'export' when it ends
+    setBusy('mcp-export', on ? 'an export is still running' : null);
     shell.keepAwake(on);
   },
   progress: (p) => exportProgressToShell(p),
