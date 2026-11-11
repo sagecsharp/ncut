@@ -2,6 +2,7 @@ import { ArrowLeftRight, RotateCcw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
+import { McpSettings } from '../../components/ui/McpSettings';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
@@ -125,6 +126,8 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
           onChange={(on) => setSceneScheme(on ? 'unity' : 'blender')}
         />
       </div>
+
+      <McpSettings />
 
       <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>
       <label className="field">

@@ -1,0 +1,239 @@
+import { describe, expect, it } from 'vitest';
+import type { Project } from '../types';
+import type { ExportHooks, ExportOptions } from '../features/export/exporter';
+import { cleanFileName, createExportJob, EXPORT_BUSY, planMcpExport } from './exportJob';
+import type { JobDeps } from './exportJob';
+
+function project(over: Partial<Project> = {}): Project {
+  return {
+    id: 'p1',
+    name: 'my: film',
+    createdAt: 0,
+    updatedAt: 0,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    background: '#000',
+    assets: [],
+    tracks: [],
+    clips: [{ id: 'c', type: 'effect', start: 0, duration: 10, trackId: 't' }] as unknown as Project['clips'],
+    ...over,
+  };
+}
+
+describe('cleanFileName', () => {
+  it('drops what a file system refuses and falls back when nothing is left', () => {
+    expect(cleanFileName('a/b:c?.mp4', 'x')).toBe('abc.mp4');
+    expect(cleanFileName('  ..  ', 'fb')).toBe('fb');
+    expect(cleanFileName('x'.repeat(200), 'fb')).toHaveLength(80);
+  });
+});
+
+describe('planMcpExport', () => {
+  it('uses the defaults: mp4, high, scale 1, project fps, whole project', () => {
+    const p = planMcpExport(project(), {});
+    expect(p.options).toMatchObject({ container: 'mp4', quality: 'high', scale: 1, fps: 30, includeAudio: true });
+    expect(p.range).toEqual({ start: 0, end: 10 });
+    expect(p.frames).toBe(300);
+    expect(p.width).toBe(1920);
+    expect(p.fileName).toBe('my film.mp4');
+  });
+  it('takes a part, a scale, a name and a frame rate', () => {
+    const p = planMcpExport(project(), { start: 2, end: 4, scale: 0.5, fps: 60, name: 'cut', format: 'webm', audio: false });
+    expect(p.range).toEqual({ start: 2, end: 4 });
+    expect(p.frames).toBe(120);
+    expect(p.height).toBe(540);
+    expect(p.fileName).toBe('cut.webm');
+    expect(p.options.includeAudio).toBe(false);
+  });
+  it('caps a gif at 50 fps and drops its sound, and keeps the sound of an audio file', () => {
+    const g = planMcpExport(project(), { format: 'gif', fps: 120, audio: true });
+    expect(g.fps).toBeLessThanOrEqual(50);
+    expect(g.options.includeAudio).toBe(false);
+    expect(g.notes.length).toBe(2);
+    const w = planMcpExport(project(), { format: 'wav', audio: false });
+    expect(w.options.includeAudio).toBe(true);
+  });
+  it('refuses an empty project and an empty range', () => {
+    expect(() => planMcpExport(project({ clips: [] }), {})).toThrow(/empty/);
+    expect(() => planMcpExport(project(), { start: 5, end: 5 })).toThrow(/holds nothing/);
+    expect(() => planMcpExport(project(), { start: 20 })).toThrow(/holds nothing/);
+  });
+});
+
+interface Fake {
+  deps: JobDeps;
+  log: string[];
+  finish(blob?: Blob): void;
+  fail(e: unknown): void;
+  hooks(): ExportHooks;
+  options(): ExportOptions;
+  saveDone(r: { ok: boolean; name: string | null }): void;
+  other: { runs: boolean };
+  open: { id: string | null };
+}
+
+function fake(): Fake {
+  const log: string[] = [];
+  let resolve: (b: Blob) => void = () => {};
+  let reject: (e: unknown) => void = () => {};
+  let hooks: ExportHooks = {};
+  let options!: ExportOptions;
+  let saveResolve: (r: { ok: boolean; name: string | null }) => void = () => {};
+  let clock = 0;
+  const other = { runs: false };
+  const open = { id: 'p1' as string | null };
+  const deps: JobDeps = {
+    exportFn: (_p, o, h) => {
+      options = o;
+      hooks = h;
+      h.signal?.addEventListener('abort', () => reject(new DOMException('export cancelled', 'AbortError')));
+      return new Promise<Blob>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+    },
+    save: (t) => {
+      log.push(`save ${t}`);
+      return new Promise((res) => {
+        saveResolve = res;
+      });
+    },
+    download: (_b, name) => {
+      log.push(`download ${name}`);
+    },
+    otherExportRuns: () => other.runs,
+    projectId: () => open.id,
+    working: (on) => {
+      log.push(on ? 'work on' : 'work off');
+    },
+    progress: (p) => {
+      log.push(`progress ${p}`);
+    },
+    attention: () => {
+      log.push('attention');
+    },
+    now: () => (clock += 1000),
+  };
+  return {
+    deps,
+    log,
+    finish: (b = new Blob(['abcd'])) => resolve(b),
+    fail: (e) => reject(e),
+    hooks: () => hooks,
+    options: () => options,
+    saveDone: (r) => saveResolve(r),
+    other,
+    open,
+  };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+describe('the export job', () => {
+  it('starts at once and reports progress', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    expect(job.status()).toEqual({ state: 'none' });
+    const info = job.start(project(), { name: 'x' }, null);
+    expect(info).toMatchObject({ status: 'started', file: 'x.mp4', frames: 300, width: 1920, height: 1080 });
+    expect(job.running()).toBe(true);
+    expect(f.options().container).toBe('mp4');
+    f.hooks().onProgress?.({ phase: 'video', progress: 0.4, frame: 120, totalFrames: 300 });
+    expect(job.status()).toMatchObject({ state: 'running', phase: 'video', progress: 0.4, frame: 120, totalFrames: 300 });
+    f.finish();
+    await job.settled();
+  });
+
+  it('with a ticket: arms the save first, then downloads under the marked name, then reports saved', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), { name: 'x' }, 7);
+    f.finish(new Blob(['12345']));
+    await tick();
+    expect(f.log.indexOf('save 7')).toBeGreaterThanOrEqual(0);
+    expect(f.log.indexOf('save 7')).toBeLessThan(f.log.indexOf('download ncut-mcp-7-x.mp4'));
+    expect(job.status().state).toBe('running');
+    f.saveDone({ ok: true, name: 'x (2).mp4' });
+    await job.settled();
+    expect(job.status()).toMatchObject({ state: 'done', fileName: 'x (2).mp4', bytes: 5, saved: 7 });
+    expect(job.running()).toBe(false);
+    expect(f.log.slice(-2)).toEqual(['work off', 'progress null']);
+  });
+
+  it('with a ticket and a save that fails: failed, not done', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, 3);
+    f.finish();
+    await tick();
+    f.saveDone({ ok: false, name: null });
+    await job.settled();
+    expect(job.status().state).toBe('failed');
+  });
+
+  it('without a ticket: keeps the blob in memory and says it was not written', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), { name: 'y' }, null);
+    f.finish(new Blob(['xyz']));
+    await job.settled();
+    const s = job.status();
+    expect(s).toMatchObject({ state: 'done', fileName: 'y.mp4', bytes: 3, saved: null });
+    expect(s.state === 'done' && s.note).toMatch(/not written/);
+    expect(job.lastFile()?.name).toBe('y.mp4');
+    expect(f.log.some((l) => l.startsWith('save') || l.startsWith('download'))).toBe(false);
+  });
+
+  it('a failing export is failed with its message and the job is free again', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, null);
+    f.fail(new Error('no encoder'));
+    await job.settled();
+    expect(job.status()).toEqual({ state: 'failed', message: 'no encoder' });
+    expect(job.running()).toBe(false);
+    expect(f.log).toContain('work off');
+    expect(() => job.start(project(), {}, null)).not.toThrow();
+  });
+
+  it('cancel aborts through the signal and ends cancelled', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    expect(job.cancel()).toBe(false);
+    job.start(project(), {}, 1);
+    expect(job.cancel()).toBe(true);
+    await job.settled();
+    expect(job.status()).toEqual({ state: 'cancelled' });
+    expect(job.running()).toBe(false);
+  });
+
+  it('refuses a second start while one runs, and while the dialog exports', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, null);
+    expect(() => job.start(project(), {}, null)).toThrow(EXPORT_BUSY);
+    f.finish();
+    await job.settled();
+    f.other.runs = true;
+    expect(() => job.start(project(), {}, null)).toThrow(EXPORT_BUSY);
+  });
+
+  it('a start that cannot plan leaves nothing running', () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    expect(() => job.start(project({ clips: [] }), {}, null)).toThrow(/empty/);
+    expect(job.running()).toBe(false);
+    expect(f.log).toEqual([]);
+  });
+
+  it('another project opened mid export stops it', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, null);
+    f.open.id = 'p2';
+    f.hooks().onProgress?.({ phase: 'video', progress: 0.1, frame: 1, totalFrames: 300 });
+    await job.settled();
+    expect(job.status()).toEqual({ state: 'cancelled' });
+  });
+});

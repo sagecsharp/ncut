@@ -29,3 +29,4 @@ the long list. the short one is in the [readme](../README.md).
 - everything stays on your machine: projects and media live in indexeddb. save a project as one `.ncut` file (project + media + the font files you imported for it) to back it up or move it to another computer. an export tells you when a font of the project is missing on this machine
 - monochrome, high contrast, flat ui in kode mono. follows your system: black at night, white by day. optional color tint in settings. no glow.
 - a small fps counter in the corner so you can see how the editor is performing
+- mcp server (desktop app only, off by default): lets claude code and other mcp clients work in the open window, add and edit clips, look at a frame and export. turn it on in the settings (or the appearance button on the projects screen) and copy the connect command from there. see [docs/MCP.md](MCP.md)
