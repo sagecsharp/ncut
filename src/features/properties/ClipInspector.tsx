@@ -23,6 +23,7 @@ import { BeatSyncSection, TempoSection } from './BeatSections';
 import { hasKeys } from './keyActions';
 import { LookSection } from './LookSection';
 import { ColorSection } from './ColorSection';
+import { OnSidesNote } from './FacesSection';
 import { MaskSection } from './MaskSection';
 import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
@@ -493,6 +494,7 @@ export function ClipInspector({ id }: { id: string }) {
       <InspectorTabs tabs={tabs} active={tab} onPick={pick} />
       <div className="panel-body" ref={body}>
         <InspectedClip.Provider value={clip}>
+        {isVisualClip(clip) ? <OnSidesNote id={clip.id} /> : null}
         {show('clip') ? (
         <ClipSection
           id={clip.id}

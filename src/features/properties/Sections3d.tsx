@@ -15,6 +15,8 @@ import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
 import { patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
+import { FacesSection } from './FacesSection';
+import { faceNames } from '../../engine/scene3d/faces';
 import { lookTargetOptions } from './parentOptions';
 import { currentLabel } from './selectModel';
 import { copyKeysAction, fitKeysAction, pasteKeysAction, repeatKeysAction, reverseKeysAction, wiggleAction, wiggleDefault, wiggleProps } from './keyActions';
@@ -267,6 +269,7 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
           {shape !== 'plane' ? (
             <AnimField wide id={id} prop="scaleZ" label="scale z" title="stretch the depth only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
           ) : null}
+          {faceNames(shape).length > 0 ? <FacesSection id={id} shape={shape} /> : null}
         </>
       ) : null}
       <div className="props-hint">3d clips share one space and one camera. add a camera clip to move through it.</div>

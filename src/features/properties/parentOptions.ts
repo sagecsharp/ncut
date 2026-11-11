@@ -12,7 +12,7 @@ export interface ParentOption {
 
 const MAX_LABEL = 24;
 
-function baseName(c: Clip): string {
+export function baseName(c: Clip): string {
   if (c.type === 'text') {
     const line = c.text.split('\n').find((l) => l.trim() !== '')?.trim() ?? '';
     if (line) return line.length > MAX_LABEL ? `${line.slice(0, MAX_LABEL - 1)}...` : line;
@@ -44,6 +44,19 @@ export function lookTargetOptions(project: { readonly clips: readonly Clip[] }, 
   if (from.length === 0) return [];
   return labelOptions(
     project.clips.filter((c) => canBeParent(c) && c.id !== id),
+    from,
+  );
+}
+
+/**
+ * the clips a side of a 3d solid can show ("sides"): picture clips (video, image, text, shape) except the solid itself.
+ * same labels and order as parentOptions.
+ */
+export function faceClipOptions(project: { readonly clips: readonly Clip[] }, id: string): ParentOption[] {
+  const from = project.clips.filter((c) => c.id === id && isVisualClip(c));
+  if (from.length === 0) return [];
+  return labelOptions(
+    project.clips.filter((c) => isVisualClip(c) && c.id !== id),
     from,
   );
 }
