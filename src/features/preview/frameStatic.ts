@@ -32,7 +32,7 @@ const SHAPE = [
 /** fields that only mean "static" while they are empty: any value makes the picture depend on the time */
 const MUST_BE_EMPTY = ['threeD', 'motionIn', 'motionOut', 'motionLoop', 'motionBlur', 'animIn', 'animOut', 'animLoop', 'highlight', 'counter'];
 /** the keys of a transform (all plain numbers) */
-const TRANSFORM = ['x', 'y', 'scale', 'rotation', 'opacity', 'z', 'rotX', 'rotY'];
+const TRANSFORM = ['x', 'y', 'scale', 'scaleX', 'scaleY', 'scaleZ', 'rotation', 'opacity', 'z', 'rotX', 'rotY'];
 
 function allowedFor(extra: string[]): Set<string> {
   return new Set([...COMMON, ...SPATIAL, ...extra]);

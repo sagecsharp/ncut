@@ -6,6 +6,7 @@
 import { ensureFont, fontsVersion } from '../lib/fonts';
 import { isExporting } from './exportState';
 import type { TextAlign, TextClip, TextGradient, TextStroke } from '../types';
+import { stretchX, stretchY } from '../types';
 import type { CounterMark, DigitRange } from './counter';
 import { type GlyphState, REST, blockState, glyphState, scrambleChar, textAnimActive, textAnimUnits } from './textAnim';
 import { createCanvas } from '../lib/canvas';
@@ -923,19 +924,21 @@ export interface DrawTextOptions {
 
 /**
  * draw a text clip centered on the origin of the context (the caller already moved / rotated it).
- * applies transform.scale. `local` = seconds since the clip started (drives the text animations);
+ * applies transform.scale and the stretch of x / y (scaleX / scaleY: the letters are stretched with the box). `local` = seconds since the clip started (drives the text animations);
  * leave it out for a still picture of the text at rest.
  */
 export function drawText(ctx: Ctx, clip: TextClip, local?: number, opts?: DrawTextOptions): void {
   const m = measureText(clip);
   const s = clip.transform.scale;
+  const sx = s * stretchX(clip.transform);
+  const sy = s * stretchY(clip.transform);
   const fs = clip.fontSize;
   const animated = local !== undefined && textAnimActive(clip, local);
   const block = animated ? blockState(clip, local!) : REST;
   if (block.alpha <= 0.001) return;
 
   ctx.save();
-  ctx.scale(s, s);
+  ctx.scale(sx, sy);
   if (block !== REST) {
     ctx.translate(block.dx * fs, block.dy * fs);
     if (block.pivotY !== 0) ctx.translate(0, block.pivotY * m.height);

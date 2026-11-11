@@ -4,6 +4,7 @@
  * pure helpers only: how many planes, where they sit, how they fade, the cache key of the silhouette.
  */
 import type { VisualClip } from '../types';
+import { stretchZ } from '../types';
 import { finite } from './text';
 
 /** about one plane per this many project pixels of depth */
@@ -16,10 +17,10 @@ export function hasTextDepth(clip: VisualClip): boolean {
   return clip.type === 'text' && !!clip.threeD && !!clip.extrude && clip.extrude.depth > 0 && (clip.shape ?? 'plane') === 'plane';
 }
 
-/** how far the side reaches back, in project pixels: depth x font size x the clip's scale (depth is capped at 1 like the texture room) */
+/** how far the side reaches back, in project pixels: depth x font size x the clip's scale x its depth stretch (scaleZ) (depth is capped at 1 like the texture room) */
 export function depthPixels(clip: VisualClip): number {
   if (clip.type !== 'text' || !clip.extrude) return 0;
-  return finite(Math.max(0, Math.min(1, finite(clip.extrude.depth))) * finite(clip.fontSize) * finite(clip.transform.scale));
+  return finite(Math.max(0, Math.min(1, finite(clip.extrude.depth))) * finite(clip.fontSize) * finite(clip.transform.scale) * stretchZ(clip.transform));
 }
 
 /** number of side planes for a depth in pixels: one per SIDE_PX, at least SIDE_MIN, at most SIDE_MAX (0 for no depth) */

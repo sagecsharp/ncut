@@ -14,6 +14,8 @@
  *   follows x / y / rotation / scale.
  * - a camera parent (3d children only): the child is fixed to the camera like a hud. its transform
  *   is where it would sit seen from the home camera. 2d children ignore a camera parent.
+ * - a stretch (scaleX / scaleY / scaleZ) is never inherited: a child follows the parent's uniform scale only and
+ *   keeps its own stretch (the frame matrices have no size, the stretch lives in the clip's box).
  * - lookAt is applied last, in the world.
  */
 import { resolveClip } from '../lib/anim';
@@ -159,6 +161,7 @@ function entryFor(project: Project, time: number): PoseEntry {
 
 /* ---------- 2d ---------- */
 
+/** the child's pose in the world: scale multiplies, a stretch is not inherited (`...c` keeps the child's own) */
 function compose2d(p: Transform, c: Transform): Transform {
   const rad = p.rotation * DEG;
   const cos = Math.cos(rad);

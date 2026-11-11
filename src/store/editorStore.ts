@@ -32,7 +32,7 @@ import type {
   Transform,
   VideoClip,
 } from '../types';
-import { MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isCameraClip, isTimedClip, isVisualClip, trackKindForClip } from '../types';
+import { MAX_SCALE, MAX_SPEED, MIN_CLIP_DURATION, MIN_SCALE, MIN_SPEED, isCameraClip, isTimedClip, isVisualClip, stretchX, stretchY, stretchZ, trackKindForClip } from '../types';
 import {
   DEFAULT_CAMERA_DURATION,
   DEFAULT_EFFECT_DURATION,
@@ -537,7 +537,7 @@ export function removeClipsKeepingPose(p: Project, gone: ReadonlySet<string>): C
     const t = clamp(clamp(c.start, parent.start, clipEnd(parent)), c.start, clipEnd(c));
     const tr = reparentTransform(p, c, null, t);
     if (tr === c.transform) return c;
-    return { ...c, transform: { ...tr, scale: clamp(tr.scale, 0.01, 100) } } as Clip;
+    return { ...c, transform: { ...tr, scale: clamp(tr.scale, MIN_SCALE, MAX_SCALE) } } as Clip;
   });
   return unlinkRemoved(placed, gone);
 }
@@ -1098,12 +1098,19 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (!clip || !isVisualClip(clip) || isLocked(p, clip.trackId)) return null;
         const transform = { ...clip.transform, ...patch };
         transform.opacity = clamp(transform.opacity, 0, 1);
-        transform.scale = clamp(transform.scale, 0.01, 100);
+        transform.scale = clamp(transform.scale, MIN_SCALE, MAX_SCALE);
+        // a stretch is only clamped when it is set (a missing one stays missing, it reads as 1)
+        if (transform.scaleX !== undefined) transform.scaleX = clamp(transform.scaleX, MIN_SCALE, MAX_SCALE);
+        if (transform.scaleY !== undefined) transform.scaleY = clamp(transform.scaleY, MIN_SCALE, MAX_SCALE);
+        if (transform.scaleZ !== undefined) transform.scaleZ = clamp(transform.scaleZ, MIN_SCALE, MAX_SCALE);
         const cur = clip.transform;
         if (
           transform.x === cur.x &&
           transform.y === cur.y &&
           transform.scale === cur.scale &&
+          stretchX(transform) === stretchX(cur) &&
+          stretchY(transform) === stretchY(cur) &&
+          stretchZ(transform) === stretchZ(cur) &&
           transform.rotation === cur.rotation &&
           transform.opacity === cur.opacity &&
           (transform.z ?? 0) === (cur.z ?? 0) &&

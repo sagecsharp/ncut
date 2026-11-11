@@ -6,7 +6,7 @@
  * current image for a video/image clip (a <video>, <img>, ImageBitmap, VideoFrame, canvas...).
  */
 import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Project, ShapeClip, TextClip, Transform, VideoClip, VisualClip } from '../types';
-import { isVisualClip } from '../types';
+import { isVisualClip, stretchX, stretchY, stretchZ } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
 import { animatesPicture, resolveClip } from '../lib/anim';
@@ -159,6 +159,7 @@ export function containSize(srcW: number, srcH: number, canvasW: number, canvasH
 /**
  * where a visual clip sits on the canvas. for video/image clips pass the asset's natural size
  * (falls back to the asset metadata in the project, then to the full canvas).
+ * the box is the size at scale 1 x scale x the stretch of each axis (scaleX / scaleY).
  */
 export function getClipBox(project: Project, clip: VisualClip, natural?: { width: number; height: number }): ClipBox {
   const t: Transform = clip.transform;
@@ -166,11 +167,11 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
   let height: number;
   if (clip.type === 'text') {
     const m = measureText(clip);
-    width = m.width * t.scale;
-    height = m.height * t.scale;
+    width = m.width * t.scale * stretchX(t);
+    height = m.height * t.scale * stretchY(t);
   } else if (clip.type === 'shape') {
-    width = Math.max(1, clip.width) * t.scale;
-    height = Math.max(1, clip.height) * t.scale;
+    width = Math.max(1, clip.width) * t.scale * stretchX(t);
+    height = Math.max(1, clip.height) * t.scale * stretchY(t);
   } else {
     let nat = natural;
     if (!nat) {
@@ -178,8 +179,8 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
       if (asset && asset.width > 0 && asset.height > 0) nat = { width: asset.width, height: asset.height };
     }
     const fit = containSize(nat?.width ?? project.width, nat?.height ?? project.height, project.width, project.height);
-    width = fit.width * t.scale;
-    height = fit.height * t.scale;
+    width = fit.width * t.scale * stretchX(t);
+    height = fit.height * t.scale * stretchY(t);
   }
   return { cx: project.width / 2 + t.x, cy: project.height / 2 + t.y, width, height, rotation: t.rotation };
 }
@@ -590,6 +591,22 @@ export function textureQuality(scale: number, fullW: number, fullH: number): num
   return Math.min(step, TEXTURE_MAX / Math.max(finite(fullW), finite(fullH), 1));
 }
 
+/**
+ * a text / shape picture is drawn at the unit size (scale 1, no stretch) and the plane or the 2d draw stretches it, so the
+ * room around the box is per axis: the margin x scale across (x stretch for text, none for a shape: its outline keeps an
+ * even width) and down.
+ */
+export function padAxes(clip: VisualClip, margin: number): { x: number; y: number } {
+  const t = clip.transform;
+  const k = margin * t.scale;
+  return clip.type === 'text' ? { x: k * stretchX(t), y: k * stretchY(t) } : { x: k, y: k };
+}
+
+/** the clip with its size and stretch taken out of the transform: the picture of a text at scale 1 (the plane puts the size back) */
+function unitClip<T extends VisualClip>(clip: T): T {
+  return { ...clip, transform: { ...clip.transform, scale: 1, scaleX: 1, scaleY: 1 } };
+}
+
 /** the largest side of a text texture, in pixels */
 export const TEXTURE_MAX = 4096;
 
@@ -612,7 +629,8 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   const fullW = finite(m.width + margin * 2);
   const fullH = finite(m.height + margin * 2);
   // enough pixels for the size it is shown at, within reason
-  const q = textureQuality(clip.transform.scale, fullW, fullH);
+  // (the larger of the two shown scales, the picture is stretched on one axis)
+  const q = textureQuality(clip.transform.scale * Math.max(stretchX(clip.transform), stretchY(clip.transform)), fullW, fullH);
   const { w, h } = textureSize(fullW, fullH, q);
   // stacked: the face does not depend on the extrude (its depth, angle and colour), so dragging them does not redraw it
   const sig = animated ? '' : textSignature(clip, stacked) + '|' + w + '|' + h + (stacked ? '|d' : '');
@@ -637,7 +655,7 @@ function textTexture(clip: TextClip, time: number, stacked = false): TextTexture
   c.clearRect(0, 0, w, h);
   c.translate(w / 2, h / 2);
   c.scale(q, q);
-  drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, animated ? local : undefined, stacked ? { noExtrude: true } : undefined);
+  drawText(c, unitClip(clip), animated ? local : undefined, stacked ? { noExtrude: true } : undefined);
   // a counter text changes all the time: no cache key (the gl side uploads it every frame and keeps no copy),
   // so the changing numbers cannot fill the texture cache. the 2d canvas here is replaced per clip id as before.
   // (a keyed text style makes a new picture every frame too: no key, or every frame would add a gl texture)
@@ -693,7 +711,7 @@ function textSide(t: TextTexture, clip: TextClip, time: number, color: string): 
     const local = time - clip.start;
     c.translate(w / 2, h / 2);
     c.scale(t.q, t.q);
-    drawText(c, { ...clip, transform: { ...clip.transform, scale: 1 } }, textAnimActive(clip, local) ? local : undefined, { noExtrude: true, bare: true });
+    drawText(c, unitClip(clip), textAnimActive(clip, local) ? local : undefined, { noExtrude: true, bare: true });
     c.setTransform(1, 0, 0, 1, 0, 0);
   }
   c.globalCompositeOperation = 'source-in';
@@ -743,13 +761,16 @@ function shapeTexture(clip: ShapeClip, bare = false): ShapeTexture | null {
   const keys = clip.keyframes;
   if (bare) clip = { ...clip, stroke: null, drawStart: undefined, drawEnd: undefined };
   const margin = Math.ceil(shapeSpill(clip));
-  const fullW = Math.max(1, clip.width) + margin * 2;
-  const fullH = Math.max(1, clip.height) + margin * 2;
+  // the figure is stretched with the clip's box, the room for the outline is not (its width follows the uniform scale only)
+  const figW = Math.max(1, clip.width) * stretchX(clip.transform);
+  const figH = Math.max(1, clip.height) * stretchY(clip.transform);
+  const fullW = figW + margin * 2;
+  const fullH = figH + margin * 2;
   // drawn at the size it has on screen at scale 1, capped so a huge shape stays a sane texture
   const q = Math.min(2, SHAPE_TEXTURE_MAX / Math.max(fullW, fullH));
   const w = Math.max(1, Math.ceil(fullW * q));
   const h = Math.max(1, Math.ceil(fullH * q));
-  const sig = shapeSignature(clip) + '|' + w + 'x' + h + (bare ? '|bare' : '');
+  const sig = shapeSignature(clip) + '|' + w + 'x' + h + '|' + figW + 'x' + figH + (bare ? '|bare' : '');
   const hit = shapeTextures.get(clip.id);
   if (hit && hit.sig === sig) {
     shapeTextures.delete(clip.id);
@@ -770,7 +791,7 @@ function shapeTexture(clip: ShapeClip, bare = false): ShapeTexture | null {
   c.clearRect(0, 0, w, h);
   c.translate(w / 2, h / 2);
   c.scale(q, q);
-  drawShape(c, clip, Math.max(1, clip.width), Math.max(1, clip.height), 1);
+  drawShape(c, clip, figW, figH, 1);
   // an outline that is being drawn on changes every frame: no key, so the gpu side reuses one scratch texture
   // instead of keeping a mipmapped copy of every frame
   // (so does a keyed width, corner count, gradient angle ... of the figure)
@@ -1141,7 +1162,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   let image: TexImageSource;
   let cacheKey: string | undefined;
   // extra texture room around the clip box (text / shape), in canvas pixels
-  let pad = 0;
+  let padX = 0;
+  let padY = 0;
   // size in pixels of the picture, for the clip look (0 = unknown)
   let lw = 0;
   let lh = 0;
@@ -1149,8 +1171,9 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   // a shape whose line goes around the solid: its picture is the bare figure
   let bareShape = false;
   // the clip's own box before the texture room of a text / shape is added: the default thickness of a solid follows this
-  const ownW = box.width;
-  const ownH = box.height;
+  // (without the stretch of that side: stretching x or y alone never changes the depth, scaleZ does)
+  const ownW = box.width / stretchX(clip.transform);
+  const ownH = box.height / stretchY(clip.transform);
   // a keyed picture (chroma key) cannot be put on the silhouette cheaply: such a clip keeps the flat extrude baked into its
   // picture (look and key act on all of it) instead of the stack of side planes
   const stacked = clip.type === 'text' && hasTextDepth(clip) && !isKeyActive(clip.chromaKey);
@@ -1161,9 +1184,11 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     if (!t) return null;
     if (stacked && sides) sideTex = textSide(t, clip, layer.time, clip.extrude!.color);
     // the texture has room around the text for outlines, shadows and moving letters
-    pad = t.margin * clip.transform.scale;
-    box.width += pad * 2;
-    box.height += pad * 2;
+    const room = padAxes(clip, t.margin);
+    padX = room.x;
+    padY = room.y;
+    box.width += padX * 2;
+    box.height += padY * 2;
     image = t.canvas;
     cacheKey = t.key;
     lw = t.canvas.width;
@@ -1173,9 +1198,11 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     bareShape = lineOnSolid(clip);
     const t = shapeTexture(clip, bareShape);
     if (!t) return null;
-    pad = t.margin * clip.transform.scale;
-    box.width += pad * 2;
-    box.height += pad * 2;
+    const room = padAxes(clip, t.margin);
+    padX = room.x;
+    padY = room.y;
+    box.width += padX * 2;
+    box.height += padY * 2;
     image = t.canvas;
     cacheKey = t.key;
     lw = t.canvas.width;
@@ -1219,9 +1246,9 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   const crop = normalizeCrop(clip.crop);
   if (crop) {
     let c = crop;
-    if (pad > 0) {
+    if (padX > 0 || padY > 0) {
       // the texture has room around the clip box: crop relative to the clip box, not to the texture
-      c = paddedCrop(crop, box.width - pad * 2, box.height - pad * 2, pad, pad);
+      c = paddedCrop(crop, box.width - padX * 2, box.height - padY * 2, padX, padY);
     }
     uv = [c.left, c.top, 1 - c.left - c.right, 1 - c.top - c.bottom];
     // a plane shrinks to the kept rectangle, offset inside its local box so it stays in place under
@@ -1244,7 +1271,7 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     // thickness: a box is as deep as the clip is tall unless set, round shapes are as deep as they are wide
     const fallback = shape === 'box' ? ownH : ownW;
     const depth = clip.shapeDepth !== undefined && clip.shapeDepth > 0 && shape !== 'sphere' ? clip.shapeDepth * clip.transform.scale : fallback;
-    solidDepth = Math.max(1, depth);
+    solidDepth = Math.max(1, depth * stretchZ(clip.transform));
     model = mul(model, scaling(1, 1, solidDepth));
   }
   const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
@@ -1527,8 +1554,8 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
     if (source && source.pad !== undefined) {
       // a text / shape picture that went through a look or a mask (a texture with room around the box)
       try {
-        const p = source.pad * clip.transform.scale;
-        ctx.drawImage(source.image, -box.width / 2 - p, -box.height / 2 - p, box.width + p * 2, box.height + p * 2);
+        const p = padAxes(clip, source.pad);
+        ctx.drawImage(source.image, -box.width / 2 - p.x, -box.height / 2 - p.y, box.width + p.x * 2, box.height + p.y * 2);
       } catch {
         // not drawable: skipped
       }
@@ -1567,6 +1594,9 @@ export function samePose(a: Transform, aa: number, b: Transform, ba: number): bo
     Math.abs(a.x - b.x) < 1e-4 &&
     Math.abs(a.y - b.y) < 1e-4 &&
     Math.abs(a.scale - b.scale) < 1e-6 &&
+    Math.abs(stretchX(a) - stretchX(b)) < 1e-6 &&
+    Math.abs(stretchY(a) - stretchY(b)) < 1e-6 &&
+    Math.abs(stretchZ(a) - stretchZ(b)) < 1e-6 &&
     Math.abs(a.rotation - b.rotation) < 1e-4 &&
     Math.abs((a.z ?? 0) - (b.z ?? 0)) < 1e-4 &&
     Math.abs((a.rotX ?? 0) - (b.rotX ?? 0)) < 1e-4 &&
