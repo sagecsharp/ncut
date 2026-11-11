@@ -66,7 +66,7 @@ describe('the key tools work on look properties like on any other', () => {
     expect(typeof loop).toBe('object');
   });
   it('wiggle still offers the transform only for visual clips', () => {
-    expect(wiggleProps(video()).map((w) => w.prop)).toEqual(['x', 'y', 'rotation', 'scale']);
+    expect(wiggleProps(video()).map((w) => w.prop)).toEqual(['x', 'y', 'rotation', 'scale', 'scaleX', 'scaleY']);
   });
 });
 

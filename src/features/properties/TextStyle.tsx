@@ -199,6 +199,9 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         <>
           <Pct id={id} prop="extrude.depth" label="length" title="how far the side reaches (% of the font size)" value={extrude.depth} min={1} max={100} onChange={(v) => setExtrude({ depth: v })} />
           <AnimField id={id} prop="extrude.angle" label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)" suffix="deg" min={0} max={360} step={1} precision={0} />
+          {clip.threeD ? (
+            <AnimField id={id} prop="scaleZ" label="scale z" title="stretch the depth of the letters in 3d only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+          ) : null}
         </>
       ) : null}
 

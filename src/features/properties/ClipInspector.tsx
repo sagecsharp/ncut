@@ -36,7 +36,7 @@ import { TransitionSection } from './TransitionSection';
 import { setValuesNow } from './animEdit';
 import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
-import { coverScale } from './shapeLogic';
+import { STRETCH_REST, coverScale, thicknessAtRest } from './shapeLogic';
 import { InspectorTabs, rememberTab, rememberedTab } from './TabBar';
 import { onTab, resolveTab, sectionsOf, tabsFor } from './clipTabs';
 import type { InspectorTab, SectionId } from './clipTabs';
@@ -171,6 +171,8 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
       <AnimField id={id} prop="x" label="pos x" title="x offset from the canvas center (px)" suffix="px" step={1} precision={0} />
       <AnimField id={id} prop="y" label="pos y" title="y offset from the canvas center (px)" suffix="px" step={1} precision={0} />
       <AnimField id={id} prop="scale" label="scale" title="scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+      <AnimField id={id} prop="scaleX" label="scale x" title="stretch the width only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+      <AnimField id={id} prop="scaleY" label="scale y" title="stretch the height only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
       <AnimField id={id} prop="rotation" label="rotation" title="rotation (degrees)" suffix="deg" min={-3600} max={3600} step={1} precision={1} />
       <AnimField id={id} prop="opacity" label="opacity" title="opacity (%)" scale={100} suffix="%" min={0} max={100} step={1} precision={0} slider />
       <AlignButtons ids={ids} />
@@ -179,11 +181,11 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
           <Crosshair size={14} />
           center
         </button>
-        <button type="button" className="btn btn-sm" title="scale 100%, centered" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1 })}>
+        <button type="button" className="btn btn-sm" title="scale 100%, no stretch, centered" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1, ...STRETCH_REST })}>
           <Minimize size={14} />
           fit
         </button>
-        <button type="button" className="btn btn-sm" title="scale to cover the whole canvas" onClick={fill}>
+        <button type="button" className="btn btn-sm" title="scale to cover the whole canvas (a stretch stays)" onClick={fill}>
           <Maximize size={14} />
           fill
         </button>
@@ -191,7 +193,7 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
           type="button"
           className="btn btn-sm"
           title="reset the transform"
-          onClick={() => setValuesNow(id, { x: 0, y: 0, scale: DEFAULT_TRANSFORM.scale, rotation: 0, opacity: 1 })}
+          onClick={() => setValuesNow(id, { x: 0, y: 0, scale: DEFAULT_TRANSFORM.scale, ...STRETCH_REST, rotation: 0, opacity: 1 })}
         >
           <RotateCcw size={14} />
           reset
@@ -439,9 +441,7 @@ function defaultThickness(stored: VisualClip): number {
   const p = useEditor.getState().project;
   if (!p) return 100;
   const clip = clipNow(stored);
-  const box = getClipBox(p, clip);
-  const side = clip.shape === 'box' ? box.height : box.width;
-  return Math.max(1, Math.round(side / Math.max(0.01, clip.transform.scale)));
+  return thicknessAtRest(clip.shape, getClipBox(p, clip), clip.transform);
 }
 
 function typeLabel(clip: Clip): string {

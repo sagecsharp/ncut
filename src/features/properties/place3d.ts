@@ -6,6 +6,7 @@
 import { DEFAULT_FOV, homeDistance } from '../../engine/scene3d/camera';
 import { DEG, cross, dot, normalize, rotateAround } from '../../engine/scene3d/math';
 import type { Vec3 } from '../../engine/scene3d/math';
+import { stretchX, stretchY, stretchZ } from '../../types';
 
 type M = Float64Array;
 
@@ -332,3 +333,25 @@ export function floorCenterY(projectHeight: number, w: number, h: number, right:
 }
 
 export const normalizeVec = normalize;
+
+/**
+ * thickness of a 3d solid in the world: shapeDepth x scale x the depth stretch. while no thickness is set the solid is
+ * as deep as it is wide (a box: tall) at scale 100% and no stretch, so the depth stretch comes on top of the side's own
+ * stretch. size is the world size of the box (stretch and parents in it), extra the scale the parents add.
+ */
+export function solidDepthOf(
+  c: {
+    threeD?: boolean;
+    shape?: string;
+    shapeDepth?: number;
+    transform: { scale: number; scaleX?: number; scaleY?: number; scaleZ?: number };
+  },
+  size: { w: number; h: number },
+  extra: number,
+): number {
+  const shape = c.shape ?? 'plane';
+  if (!c.threeD || shape === 'plane') return 0;
+  const sz = stretchZ(c.transform);
+  if (c.shapeDepth !== undefined && c.shapeDepth > 0 && shape !== 'sphere') return c.shapeDepth * c.transform.scale * sz * extra;
+  return shape === 'box' ? (size.h / stretchY(c.transform)) * sz : (size.w / stretchX(c.transform)) * sz;
+}

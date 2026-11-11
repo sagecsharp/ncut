@@ -28,6 +28,7 @@ import {
   tiltedAxes,
   worldMatrix,
 } from './place3d';
+import { solidDepthOf } from './place3d';
 import type { PoseValues } from './place3d';
 
 const SKIP = { skipHistory: true } as const;
@@ -182,12 +183,8 @@ function worldSize(p: Project, it: Target): { w: number; h: number } {
 
 /** thickness of a 3d solid along its normal in the world (0 for a plane or a flat clip), like engine/draw.ts planeFor picks it */
 function solidDepth(it: Target, size: { w: number; h: number }): number {
-  const c = it.now;
-  const shape = c.shape ?? 'plane';
-  if (!c.threeD || shape === 'plane') return 0;
   const extra = it.parent ? frameScale(it.parent) : 1;
-  if (c.shapeDepth !== undefined && c.shapeDepth > 0 && shape !== 'sphere') return c.shapeDepth * c.transform.scale * extra;
-  return shape === 'box' ? size.h : size.w;
+  return solidDepthOf(it.now, size, extra);
 }
 
 /**
