@@ -8,11 +8,12 @@
  * the page never sends a path, url, command or html. the csp, permissions and navigation guards are unchanged.
  * commonjs on purpose (package.json is "type": "module" for vite, electron's main entry stays simple).
  */
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const shellRules = require('./rules.cjs');
+const { createMcp } = require('./mcp.cjs');
 
 const DIST = path.join(__dirname, '..', 'dist');
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
@@ -246,6 +247,62 @@ async function openProjectFile(w, file) {
   flushPending(w);
 }
 
+// ---------- the mcp server (docs/MCP.md) ----------
+
+/** @type {ReturnType<typeof createMcp> | null} */
+let mcp = null;
+const MCP_OFF = { enabled: false, running: false, port: 0, error: null, bridge: false };
+
+/** the main window when its page can take a call, else null */
+function readyWindow() {
+  if (!win || win.isDestroyed()) return null;
+  return bridgeState(win.webContents.id).ready ? win : null;
+}
+
+function readBridgeSource() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'mcpBridge.cjs'), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function setupMcp() {
+  mcp = createMcp({
+    userDataDir: app.getPath('userData'),
+    appVersion: app.getVersion(),
+    bridgeSource: readBridgeSource(),
+    sendCall(call) {
+      const w = readyWindow();
+      if (!w) return false;
+      w.webContents.send('ncut:mcp-call', call);
+      return true;
+    },
+    writeClipboard: (text) => clipboard.writeText(text),
+    saveFolder: () => existingDir(saveDir) ?? app.getPath('downloads'),
+    // "show in folder" works for a file a tool saved, the page is not told (the tool answer carries the path)
+    onSaved(file) {
+      if (win && !win.isDestroyed()) bridgeState(win.webContents.id).lastSave = file;
+    },
+    log: (message) => console.error(message),
+  });
+  onRequest('ncut:mcp-state', MCP_OFF, () => mcp.state());
+  onRequest('ncut:mcp-enable', MCP_OFF, (_w, on) => mcp.setEnabled(on === true));
+  onRequest('ncut:mcp-rotate', MCP_OFF, () => mcp.rotate());
+  onRequest('ncut:mcp-copy', false, (_w, kind) => (kind === 'claude' || kind === 'http' || kind === 'stdio' ? mcp.copy(kind) : false));
+  onRequest('ncut:mcp-save', { ok: false, name: null }, (_w, ticket) =>
+    Number.isSafeInteger(ticket) ? mcp.armSave(ticket) : { ok: false, name: null },
+  );
+  onMessage('ncut:mcp-reply', (w, id, json) => {
+    if (w === win && typeof id === 'number' && typeof json === 'string') mcp.reply(id, json);
+  });
+  mcp.onChange((state) => {
+    const w = readyWindow();
+    if (w) w.webContents.send('ncut:mcp-changed', state);
+  });
+  void mcp.init();
+}
+
 // ---------- serving dist/ ----------
 
 function notFound() {
@@ -322,6 +379,8 @@ function onDownload(event, item, contents) {
     event.preventDefault();
     return;
   }
+  // a file an mcp tool made: saved without a dialog when its ticket was armed, cancelled when not
+  if (mcp && mcp.claimDownload(item)) return;
   const name = shellRules.safeFileName(item.getFilename());
   const dir = existingDir(saveDir) ?? app.getPath('downloads');
   item.setSaveDialogOptions({
@@ -548,6 +607,7 @@ if (!app.requestSingleInstanceLock()) {
     ses.on('will-download', onDownload);
 
     setupBridge();
+    setupMcp();
     const first = createWindow();
     const startFile = shellRules.projectFileFromArgs(process.argv, app.isPackaged);
     if (startFile) void openProjectFile(first, startFile);
@@ -556,5 +616,8 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
+  app.on('before-quit', () => {
+    if (mcp) void mcp.dispose();
+  });
   app.on('window-all-closed', () => app.quit());
 }
