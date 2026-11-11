@@ -190,14 +190,15 @@ function at(base: PieceBase, prop: string, fallback: number, time: number): numb
 }
 
 /**
- * the piece's offset in the world: (cx, cy) scaled by the clip's scale, turned by its spin, and for a 3d clip
+ * the piece's offset in the world: (cx, cy) scaled by the clip's scale and stretch, turned by its spin, and for a 3d clip
  * tilted and turned the way the 3d renderer does (scene3d/model.ts: turn * tilt * spin, tilt = -rotX, turn = -rotY).
  */
 export function pieceOffset(base: PieceBase, piece: Pick<SplitPiece, 'cx' | 'cy'>, time: number): { dx: number; dy: number; dz: number } {
   const s = at(base, 'scale', 1, time);
   const spin = at(base, 'rotation', 0, time) * RAD;
-  const px = piece.cx * s;
-  const py = piece.cy * s;
+  // the stretch of a side is the clip's own and the pieces keep it: the letters sit where the stretched text shows them
+  const px = piece.cx * s * at(base, 'scaleX', 1, time);
+  const py = piece.cy * s * at(base, 'scaleY', 1, time);
   const cs = Math.cos(spin);
   const sn = Math.sin(spin);
   let x = cs * px - sn * py;
@@ -295,7 +296,7 @@ export function splitNotes(clip: TextClip, mode?: SplitMode): string[] {
   // one box around the whole text becomes a box per piece (a box per line split into lines looks the same)
   if (clip.background && mode && keepsBackground(mode) && !(mode === 'lines' && clip.backgroundPerLine)) notes.push('the background is now a box per piece');
   const keyed = (prop: string) => (clip.keyframes?.[prop]?.length ?? 0) > 0;
-  const moving = ['scale', 'rotation', ...(clip.threeD ? ['rotX', 'rotY'] : [])].filter(keyed);
+  const moving = ['scale', 'scaleX', 'scaleY', 'rotation', ...(clip.threeD ? ['rotX', 'rotY'] : [])].filter(keyed);
   if (moving.length > 0) notes.push('the size / turn is animated: the pieces match at the playhead only');
   const looks: string[] = [];
   if (clip.gradient) looks.push('gradient');

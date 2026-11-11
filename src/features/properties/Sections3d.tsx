@@ -264,6 +264,9 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
           {shape !== 'plane' && shape !== 'sphere' ? (
             <AnimField wide id={id} prop="shapeDepth" label="thickness" title="thickness of the shape (px)" suffix="px" min={1} max={10000} step={1} precision={0} fallback={defaultDepth} />
           ) : null}
+          {shape !== 'plane' ? (
+            <AnimField wide id={id} prop="scaleZ" label="scale z" title="stretch the depth only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+          ) : null}
         </>
       ) : null}
       <div className="props-hint">3d clips share one space and one camera. add a camera clip to move through it.</div>

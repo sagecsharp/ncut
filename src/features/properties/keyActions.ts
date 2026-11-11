@@ -104,7 +104,7 @@ export interface WiggleChoice {
 export function wiggleProps(clip: Clip): WiggleChoice[] {
   const all = animProps(clip);
   if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
-    const want = ['x', 'y', 'rotation', 'scale'];
+    const want = ['x', 'y', 'rotation', 'scale', 'scaleX', 'scaleY'];
     if (clip.threeD) want.push('z', 'rotX', 'rotY');
     return want.map((p) => all.find((a) => a.prop === p)).filter((a) => !!a).map((a) => ({ prop: a!.prop, label: a!.label }));
   }
@@ -115,11 +115,11 @@ export function wiggleProps(clip: Clip): WiggleChoice[] {
 export function wiggleDefault(clip: Clip, prop: string): number {
   const info = animProps(clip).find((a) => a.prop === prop);
   // scale is a factor around 1: a tenth is a visible shake, more would collapse the clip
-  if (prop === 'scale') return 0.1;
+  if (prop === 'scale' || prop === 'scaleX' || prop === 'scaleY' || prop === 'scaleZ') return 0.1;
   if (info?.unit === 'px') return 20;
   if (info?.unit === 'deg') return 5;
   if (info && info.max !== undefined && info.min !== undefined) return Math.round((info.max - info.min) * 10) / 100;
-  return prop === 'scale' ? 0.1 : 1;
+  return 1;
 }
 
 export function wiggleAction(id: string, prop: string, amount: number, perSecond: number): void {

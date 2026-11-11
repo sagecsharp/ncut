@@ -2,8 +2,8 @@
  * the single table of keyboard shortcuts. useShortcuts() dispatches from it and ShortcutsDialog
  * renders it, so the two can never drift.
  */
-import { isTimedClip, isVisualClip } from '../../types';
-import type { TimedClip } from '../../types';
+import { isTimedClip, isVisualClip, stretchX, stretchY, stretchZ } from '../../types';
+import type { TimedClip, VisualClip } from '../../types';
 import { animProps, keyTimes } from '../../lib/anim';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -136,6 +136,22 @@ function seekKeyframe(dir: -1 | 1): void {
 
 const KEY_PROPS_VISUAL = ['x', 'y', 'scale', 'rotation', 'opacity'];
 
+/**
+ * what the key-everything shortcut keys on a visual clip: the usual props, plus a stretch only on an axis the clip is
+ * stretched on or already has keys on (a clip nobody stretched does not get stretch keys it never asked for)
+ */
+export function visualKeyProps(c: VisualClip): string[] {
+  const t = c.transform;
+  const props = [...KEY_PROPS_VISUAL];
+  const keyed = (p: string) => !!c.keyframes?.[p]?.length;
+  if (stretchX(t) !== 1 || keyed('scaleX')) props.splice(3, 0, 'scaleX');
+  if (stretchY(t) !== 1 || keyed('scaleY')) props.splice(props.includes('scaleX') ? 4 : 3, 0, 'scaleY');
+  // depth only means something on a solid or on extruded 3d text
+  const solid = c.threeD && (c.type === 'text' ? !!c.extrude : !!c.shape && c.shape !== 'plane');
+  if (solid && (stretchZ(t) !== 1 || keyed('scaleZ'))) props.splice(props.indexOf('rotation'), 0, 'scaleZ');
+  return props;
+}
+
 /** key position, scale, rotation and opacity of the selected visual clips (every prop for cameras) at the playhead */
 function addKeyframes(): void {
   const { project, selection, setKeyframe } = useEditor.getState();
@@ -145,7 +161,7 @@ function addKeyframes(): void {
   let outside = false;
   for (const c of project.clips) {
     if (!selection.includes(c.id)) continue;
-    const props = c.type === 'camera' ? animProps(c).map((p) => p.prop) : isVisualClip(c) ? KEY_PROPS_VISUAL : [];
+    const props = c.type === 'camera' ? animProps(c).map((p) => p.prop) : isVisualClip(c) ? visualKeyProps(c) : [];
     if (props.length === 0) continue;
     if (time < c.start - 1e-6 || time > c.start + c.duration + 1e-6) {
       outside = true;

@@ -1,4 +1,5 @@
 import type { ShapeKind } from '../../types';
+import { stretchX, stretchY } from '../../types';
 
 export const SHAPE_LABELS: [ShapeKind, string][] = [
   ['rect', 'rectangle'],
@@ -43,3 +44,21 @@ export function coverScale(scale: number, boxW: number, boxH: number, canvasW: n
   if (boxW <= 0 || boxH <= 0) return scale;
   return scale * Math.max(canvasW / boxW, canvasH / boxH);
 }
+
+/**
+ * thickness of a solid at scale 100% and no stretch, worked out from its box on the canvas: a box is as deep as it is
+ * tall, the others as deep as they are wide. the box already has the scale and the stretch of its side in it.
+ */
+export function thicknessAtRest(
+  shape: string | undefined,
+  box: { width: number; height: number },
+  t: { scale: number; scaleX?: number; scaleY?: number },
+): number {
+  const tall = shape === 'box';
+  const side = tall ? box.height : box.width;
+  const factor = Math.max(0.01, t.scale) * (tall ? stretchY(t) : stretchX(t));
+  return Math.max(1, Math.round(side / factor));
+}
+
+/** the values fit and reset write to put the stretch back (writing 1 to a missing stretch changes nothing, see setValuesNow) */
+export const STRETCH_REST = { scaleX: 1, scaleY: 1, scaleZ: 1 } as const;

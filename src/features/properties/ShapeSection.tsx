@@ -48,8 +48,8 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         options={SHAPE_LABELS}
         onChange={(v) => patchClip(id, { kind: v as ShapeKind })}
       />
-      <AnimField id={id} prop="width" label="width" title="width of the figure (px, at scale 100%)" suffix="px" min={1} max={20000} step={1} precision={0} />
-      <AnimField id={id} prop="height" label="height" title="height of the figure (px, at scale 100%)" suffix="px" min={1} max={20000} step={1} precision={0} />
+      <AnimField id={id} prop="width" label="width" title="width of the figure (px, at scale 100% and no stretch)" suffix="px" min={1} max={20000} step={1} precision={0} />
+      <AnimField id={id} prop="height" label="height" title="height of the figure (px, at scale 100% and no stretch)" suffix="px" min={1} max={20000} step={1} precision={0} />
       {hasPoints(clip.kind) ? (
         <AnimField id={id} prop="points" label="points" title="number of corners (3 to 12)" min={3} max={12} step={1} precision={0} />
       ) : null}
