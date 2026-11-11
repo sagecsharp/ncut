@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, frameSize, LIMIT_MAX_SIZE } from './frame';
+import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, fontWarning, frameSize, LIMIT_MAX_SIZE } from './frame';
+
+describe('fontWarning', () => {
+  it('names the family and the fallback', () => {
+    expect(fontWarning('Foo')).toBe('font "Foo" could not be loaded, its text is drawn in a fallback font');
+  });
+});
 
 describe('clampFrameTime', () => {
   it('keeps a time inside the project', () => {
-    expect(clampFrameTime(3, 10)).toBe(3);
-    expect(clampFrameTime(-2, 10)).toBe(0);
-    expect(clampFrameTime(99, 10)).toBe(10);
+    expect(clampFrameTime(3, 10, 30)).toBe(3);
+    expect(clampFrameTime(-2, 10, 30)).toBe(0);
+  });
+  it('shows the last frame for the end and for a time past it', () => {
+    expect(clampFrameTime(10, 10, 30)).toBeCloseTo(10 - 1 / 30, 9);
+    expect(clampFrameTime(99, 10, 30)).toBeCloseTo(10 - 1 / 30, 9);
+    expect(clampFrameTime(99, 0.01, 30)).toBe(0);
   });
   it('counts a time that is not a number as 0, and an empty project as 0', () => {
-    expect(clampFrameTime(Number.NaN, 10)).toBe(0);
-    expect(clampFrameTime(Infinity, 10)).toBe(0);
-    expect(clampFrameTime(5, 0)).toBe(0);
+    expect(clampFrameTime(Number.NaN, 10, 30)).toBe(0);
+    expect(clampFrameTime(Infinity, 10, 30)).toBe(0);
+    expect(clampFrameTime(5, 0, 30)).toBe(0);
   });
 });
 

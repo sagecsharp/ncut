@@ -11,14 +11,24 @@ import { ensureProjectFonts } from '../lib/fonts';
 import { projectDuration } from '../lib/timelineOps';
 import { getAssetBlob, getAssetUrl } from '../media/registry';
 import type { Project } from '../types';
+import { ToolError } from './helpers';
 
 export const DEFAULT_MAX_SIZE = 960;
 export const LIMIT_MAX_SIZE = 1920;
 
-/** a time inside the project: not before 0, not after the end. a time that is not a number counts as 0 */
-export function clampFrameTime(time: number, duration: number): number {
+/**
+ * a time that shows a picture: not before 0, not after the start of the last frame (every clip is only visible
+ * before its end, so the end itself is empty). a time that is not a number counts as 0
+ */
+export function clampFrameTime(time: number, duration: number, fps: number): number {
   if (!Number.isFinite(time)) return 0;
-  return Math.max(0, Math.min(Math.max(0, duration), time));
+  const last = Math.max(0, duration - 1 / (fps > 0 ? fps : 30));
+  return Math.max(0, Math.min(last, time));
+}
+
+/** the same words the exporter uses for a font that did not load */
+export function fontWarning(family: string): string {
+  return `font "${family}" could not be loaded, its text is drawn in a fallback font`;
 }
 
 /** the size of the picture: the longest side is at most `maxSize`, the shape stays, a small project is not blown up */
@@ -65,10 +75,12 @@ async function loadImageElement(assetId: string): Promise<DrawSource | null> {
  * scratch resources with it). nothing it opens stays open.
  */
 export async function renderFramePng(project: Project, time: number, maxSize: number = DEFAULT_MAX_SIZE): Promise<FramePng> {
-  const t = clampFrameTime(time, projectDuration(project));
+  const duration = projectDuration(project);
+  if (!(duration > 0)) throw new ToolError('the project is empty, there is no picture to draw. add clips first');
+  const t = clampFrameTime(time, duration, project.fps);
   const { width, height } = frameSize(project.width, project.height, maxSize);
   const warnings: string[] = [];
-  await ensureProjectFonts(project);
+  for (const family of await ensureProjectFonts(project)) warnings.push(fontWarning(family));
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('2d canvas is not available');

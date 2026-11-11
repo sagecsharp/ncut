@@ -3,8 +3,11 @@ import { mcpAddress, mcpCopyButtons, mcpStatusText } from './mcpText';
 
 describe('mcpAddress', () => {
   it('is the local mcp url, and empty without a port', () => {
-    expect(mcpAddress({ port: 41713 })).toBe('http://127.0.0.1:41713/mcp');
-    expect(mcpAddress({ port: 0 })).toBe('');
+    expect(mcpAddress({ port: 41713, running: true })).toBe('http://127.0.0.1:41713/mcp');
+    expect(mcpAddress({ port: 0, running: true })).toBe('');
+  });
+  it('is empty while the server does not run, the saved port is no address', () => {
+    expect(mcpAddress({ port: 41713, running: false })).toBe('');
   });
 });
 
@@ -19,7 +22,10 @@ describe('mcpStatusText', () => {
 
 describe('mcpCopyButtons', () => {
   it('shows the stdio copy only with the bridge', () => {
-    expect(mcpCopyButtons({ bridge: false }).map((b) => b.kind)).toEqual(['claude', 'http']);
-    expect(mcpCopyButtons({ bridge: true }).map((b) => b.kind)).toEqual(['claude', 'http', 'stdio']);
+    expect(mcpCopyButtons({ bridge: false, running: true }).map((b) => b.kind)).toEqual(['claude', 'http']);
+    expect(mcpCopyButtons({ bridge: true, running: true }).map((b) => b.kind)).toEqual(['claude', 'http', 'stdio']);
+  });
+  it('shows none while the server does not run', () => {
+    expect(mcpCopyButtons({ bridge: true, running: false })).toEqual([]);
   });
 });

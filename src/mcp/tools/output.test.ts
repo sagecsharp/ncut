@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { mcpExportJob } from '../exportJob';
 import { callTool } from '../registry';
 import { outputTools, statusResult } from './output';
 
@@ -23,6 +24,14 @@ describe('the output tools', () => {
     expect('isError' in bad && bad.isError).toBe(true);
     const typo = await callTool('render_frame', { size: 100 });
     expect('isError' in typo && typo.isError).toBe(true);
+  });
+
+  it('export_cancel says it is too late while the file is saved', async () => {
+    const spy = vi.spyOn(mcpExportJob, 'saving').mockReturnValue(true);
+    const r = await callTool('export_cancel', {});
+    spy.mockRestore();
+    expect('isError' in r && r.isError).toBe(true);
+    expect(text(r as { content: Array<{ type: string; text?: string }> })).toMatch(/too late/);
   });
 
   it('export_cancel with nothing running says so', async () => {
