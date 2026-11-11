@@ -54,7 +54,7 @@ export const outputTools: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        time: { type: 'number', description: 'timeline time in seconds, default the playhead. clamped into the project', minimum: 0 },
+        time: { type: 'number', description: 'timeline time in seconds, default the playhead. clamped into the project, a time at or after the end shows the last frame', minimum: 0 },
         max_size: { type: 'integer', description: `longest side in pixels, default ${DEFAULT_MAX_SIZE}`, minimum: 16, maximum: LIMIT_MAX_SIZE },
       },
     },
@@ -136,6 +136,9 @@ export const outputTools: ToolDef[] = [
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     run() {
+      if (mcpExportJob.saving()) {
+        throw new ToolError('too late to cancel: the export is done and the file is being saved. export_status tells where it went');
+      }
       if (!mcpExportJob.cancel()) {
         throw new ToolError(isExporting() ? 'the running export was started in the export dialog, only its user can stop it' : 'no export is running');
       }

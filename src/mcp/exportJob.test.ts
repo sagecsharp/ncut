@@ -54,6 +54,10 @@ describe('planMcpExport', () => {
     const w = planMcpExport(project(), { format: 'wav', audio: false });
     expect(w.options.includeAudio).toBe(true);
   });
+  it('notes a start or end cut to the project, and says nothing when they fit', () => {
+    expect(planMcpExport(project(), { end: 25 }).notes.join(' ')).toMatch(/cut to the project.*0 to 10 s/);
+    expect(planMcpExport(project(), { start: 1, end: 10 }).notes).toEqual([]);
+  });
   it('refuses an empty project and an empty range', () => {
     expect(() => planMcpExport(project({ clips: [] }), {})).toThrow(/empty/);
     expect(() => planMcpExport(project(), { start: 5, end: 5 })).toThrow(/holds nothing/);
@@ -161,15 +165,43 @@ describe('the export job', () => {
     expect(f.log.slice(-2)).toEqual(['work off', 'progress null']);
   });
 
-  it('with a ticket and a save that fails: failed, not done', async () => {
+  it('with a ticket and a save that fails: the file is downloaded plainly, done without a ticket', async () => {
     const f = fake();
     const job = createExportJob(f.deps);
-    job.start(project(), {}, 3);
-    f.finish();
+    job.start(project(), { name: 'x' }, 3);
+    f.finish(new Blob(['abc']));
     await tick();
     f.saveDone({ ok: false, name: null });
     await job.settled();
-    expect(job.status().state).toBe('failed');
+    const s = job.status();
+    expect(s).toMatchObject({ state: 'done', fileName: 'x.mp4', bytes: 3, saved: null });
+    expect(s.state === 'done' && s.note).toMatch(/asked the user/);
+    expect(f.log).toContain('download x.mp4');
+    expect(job.lastFile()?.name).toBe('x.mp4');
+  });
+
+  it('cancel while the file is saved is too late and the job still ends done', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, 5);
+    expect(job.saving()).toBe(false);
+    f.finish();
+    await tick();
+    expect(job.saving()).toBe(true);
+    expect(job.cancel()).toBe(false);
+    f.saveDone({ ok: true, name: 'a.mp4' });
+    await job.settled();
+    expect(job.status().state).toBe('done');
+    expect(job.saving()).toBe(false);
+  });
+
+  it('a sound file start answer has no picture fields, a cut range is noted', () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    const info = job.start(project(), { format: 'wav', end: 99 }, null);
+    expect(info).not.toHaveProperty('width');
+    expect(info).not.toHaveProperty('frames');
+    expect(info.notes.join(' ')).toMatch(/0 to 10 s/);
   });
 
   it('without a ticket: keeps the blob in memory and says it was not written', async () => {

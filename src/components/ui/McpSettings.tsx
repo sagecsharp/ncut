@@ -52,10 +52,16 @@ function McpSettingsInner() {
   const copy = (kind: McpCopyKind) => {
     void shell.mcp.copy(kind).then((done) => useUi.getState().toast(done ? 'copied' : 'could not copy'));
   };
+  const disarm = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setConfirming(false);
+  };
   const newToken = () => {
     if (!confirming) {
       // every set up client stops working: ask once, with a second click
       setConfirming(true);
+      if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => setConfirming(false), CONFIRM_MS);
       return;
     }
@@ -110,7 +116,7 @@ function McpSettingsInner() {
               className={`btn btn-sm${confirming ? ' btn-primary' : ''}`}
               title="make a new token. every client that was set up stops working"
               onClick={newToken}
-              onBlur={() => setConfirming(false)}
+              onBlur={disarm}
             >
               {confirming ? 'sure? every client stops working' : 'new token'}
             </button>

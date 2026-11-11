@@ -18,6 +18,8 @@ import { useEditor } from '../store/editorStore';
 import type { Project } from '../types';
 import { ToolError } from './helpers';
 
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
 export const EXPORT_BUSY = 'an export is already running (the export dialog or an earlier export_video). export_status tells how far it is, export_cancel stops it';
 
 /** what export_video takes (validate.ts already checked the types and enums) */
@@ -70,6 +72,8 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
     );
   }
   const notes: string[] = [];
+  const cut = (args.start !== undefined && args.start !== range.start) || (args.end !== undefined && args.end !== range.end);
+  if (cut) notes.push(`start / end were cut to the project, the part that is exported is ${round3(range.start)} to ${round3(range.end)} s`);
   const gif = isGifContainer(container);
   const audioOnly = isAudioContainer(container);
   let fps = args.fps ?? project.fps;
@@ -142,10 +146,11 @@ export interface StartInfo {
   status: 'started';
   file: string;
   format: ExportContainer;
-  width: number;
-  height: number;
-  fps: number;
-  frames: number;
+  /** not for wav / ogg: a sound file has no picture */
+  width?: number;
+  height?: number;
+  fps?: number;
+  frames?: number;
   seconds: number;
   notes: string[];
 }
@@ -156,6 +161,8 @@ export interface ExportJob {
   status(): JobState;
   /** false when nothing runs */
   cancel(): boolean;
+  /** the finished file is being handed to the shell: too late to cancel */
+  saving(): boolean;
   running(): boolean;
   /** resolves when the current (or last) run has ended, for tests and the dev console */
   settled(): Promise<void>;
@@ -169,8 +176,10 @@ export function createExportJob(deps: JobDeps): ExportJob {
   let run: Promise<void> = Promise.resolve();
   let file: { name: string; blob: Blob } | null = null;
   let startedAt = 0;
+  let saving = false;
 
   const finish = (next: JobState) => {
+    saving = false;
     state = next;
     live = null;
     deps.working(false);
@@ -222,16 +231,32 @@ export function createExportJob(deps: JobDeps): ExportJob {
           warnings,
         });
       }
+      // from here on the file is on its way to disk, a cancel can not stop that
+      saving = true;
       // arm the shell first, then start the download it is waiting for
-      const saving = deps.save(ticket);
+      const armed = deps.save(ticket);
       try {
         deps.download(blob, mcpDownloadName(ticket, planned.fileName));
       } catch (e) {
-        void saving.catch(() => {});
+        void armed.catch(() => {});
         throw e;
       }
-      const result = await saving;
-      if (!result.ok) return finish({ state: 'failed', message: 'the export finished but the shell could not save the file' });
+      const result = await armed;
+      if (!result.ok) {
+        // the render is not thrown away: a plain download makes the app ask the user where to put it
+        file = { name: planned.fileName, blob };
+        deps.download(blob, planned.fileName);
+        deps.attention();
+        return finish({
+          state: 'done',
+          fileName: planned.fileName,
+          bytes: blob.size,
+          seconds,
+          saved: null,
+          note: 'the shell could not save the file by itself, so the app asked the user where to save it. there is no known path, do not assume one',
+          warnings,
+        });
+      }
       deps.attention();
       finish({
         state: 'done',
@@ -268,15 +293,15 @@ export function createExportJob(deps: JobDeps): ExportJob {
       };
       deps.working(true);
       run = execute(project, planned, ticket, ac, t0);
+      const picture = isAudioContainer(planned.container)
+        ? {}
+        : { width: planned.width, height: planned.height, fps: planned.fps, frames: planned.frames };
       return {
         status: 'started',
         file: planned.fileName,
         format: planned.container,
-        width: planned.width,
-        height: planned.height,
-        fps: planned.fps,
-        frames: planned.frames,
-        seconds: Math.round((planned.range.end - planned.range.start) * 1000) / 1000,
+        ...picture,
+        seconds: round3(planned.range.end - planned.range.start),
         notes: planned.notes,
       };
     },
@@ -286,10 +311,11 @@ export function createExportJob(deps: JobDeps): ExportJob {
       return state;
     },
     cancel() {
-      if (!live) return false;
+      if (!live || saving) return false;
       live.ac.abort();
       return true;
     },
+    saving: () => saving,
     running: () => live !== null,
     settled: () => run,
     lastFile: () => file,

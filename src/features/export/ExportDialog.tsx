@@ -25,6 +25,7 @@ import {
 } from './gifPlan';
 import { loadExportSettings, saveExportSettings } from './settings';
 import { isExporting } from '../../engine/exportState';
+import { mcpExportJob } from '../../mcp/exportJob';
 import { setBusy } from '../../lib/busy';
 import { useUi } from '../../store/ui';
 import './export.css';
@@ -314,7 +315,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const start = useCallback(async () => {
     if (!project || phase === 'exporting' || !range) return;
     // an export started by an mcp client (src/mcp/exportJob.ts) is still at it: two at once would fight over the encoder
-    if (isExporting()) {
+    if (isExporting() || mcpExportJob.running()) {
       useUi.getState().toast('another export is still running', 'error');
       return;
     }
