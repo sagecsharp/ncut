@@ -5,6 +5,7 @@ import type { ShapeClip, ShapeKind } from '../../types';
 import { AnimField } from './AnimField';
 import { ColorField, Row, SelectRow, Section, Switch } from './controls';
 import { patchClip } from './edit';
+import { lineOnSolid } from '../../engine/shape';
 import {
   DEFAULT_SHAPE_STROKE,
   SHAPE_LABELS,
@@ -35,6 +36,8 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
   const { stroke, color2 } = clip;
   const radial = !!clip.gradientRadial;
   const set = (patch: Record<string, unknown>) => patchClip(id, patch, true);
+  // on a solid the line is geometry around it: there is nothing to draw on
+  const solidLine = lineOnSolid(clip);
 
   return (
     <Section id="shape" title="shape">
@@ -93,7 +96,11 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         <AnimField id={id} prop="stroke.width" label="width" title="outline width (px)" suffix="px" min={0.5} max={500} step={0.5} precision={1} />
       ) : null}
 
-      {stroke || clip.kind === 'line' || clip.kind === 'arrow' ? (
+      {solidLine ? (
+        <Row label="draw on" title="draw the outline of the figure over time">
+          <span className="props-hint">the line goes around the solid</span>
+        </Row>
+      ) : stroke || clip.kind === 'line' || clip.kind === 'arrow' ? (
         <>
           <AnimField
             wide

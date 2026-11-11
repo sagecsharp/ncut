@@ -16,6 +16,7 @@ the long list. the short one is in the [readme](../README.md).
 - per-clip color (brightness, contrast, saturation, warmth, hue), green screen with spill cleanup, masks with a soft edge (box, oval, half, strip, star, heart), blend modes, crop, rounded corners. split screen in one click: side by side, stacked, grid, one big, picture in picture
 - text: 29 bundled fonts plus system fonts and your own font files, outline, second outline, hollow letters, shadow, gradient, block depth (real thickness when the text stands in 3d), underline and strike, a box per line, curved and wrapped text, per-letter animations in, out and looping, karaoke highlighting, split a text into letters, words or lines (every piece becomes its own clip, right where it stood, ready to be arranged in 3d), and running numbers that count up or down, as plain numbers or as a timer (m:ss) with steady digits
 - captions: import .srt / .vtt, split a long text into captions, export .srt
+- an outline on a 3d solid goes around the solid and along its edges
 - shapes with outlines that draw themselves on, and ready-made clip motions in, out and looping (some just for 3d: turntable, tumble, fly in)
 - fades, per-clip volume, speed and opacity. swap the media of a clip and keep everything else
 - cascade a selection: start the clips one after the other (left to right, middle outwards, random ...) and let them fly in or out (scatter, rise, fall, zoom, spin, from the depth). made for a text split into letters

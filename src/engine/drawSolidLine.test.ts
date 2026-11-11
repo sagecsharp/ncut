@@ -1,0 +1,113 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { Project, ShapeClip, Track } from '../types';
+import { DEFAULT_TRANSFORM } from '../types';
+import { planeFor } from './draw';
+import type { Layer3D } from './draw';
+import { lineOnSolid } from './shape';
+
+let seq = 0;
+function shape(over: Partial<ShapeClip> = {}): ShapeClip {
+  return {
+    id: `sl${++seq}`,
+    type: 'shape',
+    trackId: 't',
+    start: 0,
+    duration: 5,
+    name: 's',
+    fadeIn: 0,
+    fadeOut: 0,
+    kind: 'rect',
+    width: 400,
+    height: 200,
+    color: '#ffffff',
+    threeD: true,
+    shape: 'box',
+    stroke: { color: '#ff0000', width: 10 },
+    transform: { ...DEFAULT_TRANSFORM },
+    ...over,
+  };
+}
+const tracks: Track[] = [{ id: 't', kind: 'video', name: 't', muted: false, hidden: false, locked: false }];
+function project(clips: ShapeClip[]): Project {
+  return { id: 'p', name: 'p', createdAt: 0, updatedAt: 0, width: 1920, height: 1080, fps: 30, tracks, clips, assets: [] } as unknown as Project;
+}
+const rig = { eye: [960, 540, -1500] } as unknown as Parameters<typeof planeFor>[2];
+const layer = (clip: ShapeClip): Layer3D => ({ clip, source: null, alpha: 1, time: 0 }) as unknown as Layer3D;
+
+// a canvas that accepts every call and remembers its size
+class FakeCanvas {
+  constructor(
+    public width: number,
+    public height: number,
+  ) {}
+  getContext() {
+    return new Proxy({}, { get: () => () => ({ addColorStop() {} }), set: () => true });
+  }
+}
+
+describe('lineOnSolid', () => {
+  it('is true for a plain rect with an outline on a 3d solid', () => {
+    expect(lineOnSolid(shape())).toBe(true);
+    expect(lineOnSolid(shape({ shape: 'sphere' }))).toBe(true);
+    expect(lineOnSolid(shape({ radius: 0 }))).toBe(true);
+  });
+  it('is false without 3d, a solid, an outline or a plain rect', () => {
+    expect(lineOnSolid(shape({ threeD: false }))).toBe(false);
+    expect(lineOnSolid(shape({ shape: undefined }))).toBe(false);
+    expect(lineOnSolid(shape({ shape: 'plane' }))).toBe(false);
+    expect(lineOnSolid(shape({ stroke: null }))).toBe(false);
+    expect(lineOnSolid(shape({ stroke: { color: '#fff', width: 0 } }))).toBe(false);
+    expect(lineOnSolid(shape({ kind: 'ellipse' }))).toBe(false);
+    expect(lineOnSolid(shape({ kind: 'star' }))).toBe(false);
+    expect(lineOnSolid(shape({ radius: 0.3 }))).toBe(false);
+  });
+});
+
+describe('planeFor: the line around a solid', () => {
+  beforeAll(() => vi.stubGlobal('OffscreenCanvas', FakeCanvas));
+  afterAll(() => vi.unstubAllGlobals());
+
+  it('a rect on a box gets an outline and an unpadded picture', () => {
+    const c = shape({ transform: { ...DEFAULT_TRANSFORM, scale: 2 } });
+    const p = planeFor(project([c]), layer(c), rig)!;
+    expect(p.outline).toBeDefined();
+    expect(p.outline!.width).toBe(20);
+    expect(p.outline!.color).toEqual([1, 0, 0, 1]);
+    expect(p.outline!.hollow).toBe(false);
+    // box is as deep as it is tall; the box is the clip box (800 x 400 at scale 2), not grown by the line
+    expect(p.outline!.size).toEqual([800, 400, 400]);
+    const img = p.image as unknown as { width: number; height: number };
+    expect(img.width).toBe(400 * 2);
+    expect(img.height).toBe(200 * 2);
+  });
+
+  it('is hollow without a fill', () => {
+    const c = shape({ filled: false });
+    expect(planeFor(project([c]), layer(c), rig)!.outline!.hollow).toBe(true);
+  });
+
+  it('an ellipse or a rounded rect keeps its outline in the padded picture', () => {
+    for (const c of [shape({ kind: 'ellipse' }), shape({ radius: 0.4 })]) {
+      const p = planeFor(project([c]), layer(c), rig)!;
+      expect(p.outline).toBeUndefined();
+      const img = p.image as unknown as { width: number };
+      expect(img.width).toBeGreaterThan(400 * 2);
+    }
+  });
+
+  it('a plane shape has no outline', () => {
+    const c = shape({ shape: 'plane' });
+    expect(planeFor(project([c]), layer(c), rig)!.outline).toBeUndefined();
+  });
+
+  it('the bare and the outlined picture of one clip do not share a texture key', () => {
+    const c = shape();
+    const a = planeFor(project([c]), layer(c), rig)!;
+    const flat = { ...c, shape: 'plane' as const };
+    const b = planeFor(project([flat]), layer(flat), rig)!;
+    const a2 = planeFor(project([c]), layer(c), rig)!;
+    expect(a.cacheKey).toBeDefined();
+    expect(b.cacheKey).not.toBe(a.cacheKey);
+    expect(a2.image).not.toBe(b.image);
+  });
+});
