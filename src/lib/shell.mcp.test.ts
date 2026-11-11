@@ -14,7 +14,8 @@ describe('shell.mcp in a plain browser or an older shell', () => {
     g.window = { ncutShell: { version: '1' } };
     expect(shell.mcp.available).toBe(false);
     expect(await shell.mcp.state()).toEqual({ enabled: false, running: false, port: 0, error: null, bridge: false });
-    expect(await shell.mcp.setEnabled(true)).toEqual({ enabled: false, running: false, port: 0, error: null, bridge: false });
+    expect(await shell.mcp.setEnabled(true)).toBeNull();
+    expect(await shell.mcp.rotate()).toBeNull();
     expect(await shell.mcp.copy('claude')).toBe(false);
     expect(await shell.mcp.save(3)).toEqual({ ok: false, name: null });
     expect(() => shell.mcp.reply(1, '{}')).not.toThrow();

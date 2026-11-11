@@ -52,3 +52,26 @@ describe('answerCall', () => {
     expect(JSON.parse(json)).toEqual({ unknown: true });
   });
 });
+
+describe('answerCall under a budget', () => {
+  it('answers a tool that does not finish in time as failed, and a quick one as it is', async () => {
+    const call = { id: 3, kind: 'call' as const, name: 'slow_tool', args: {}, files: [], ticket: null };
+    const never = () => new Promise<never>(() => {});
+    const slow = JSON.parse(await answerCall(call, 20, never));
+    expect(slow.isError).toBe(true);
+    expect(slow.content[0].text).toMatch(/slow_tool did not finish in time/);
+    const quick = JSON.parse(await answerCall(call, 1000, async () => ({ content: [{ type: 'text', text: 'ok' }] })));
+    expect(quick).toEqual({ content: [{ type: 'text', text: 'ok' }] });
+  });
+
+  it('a tool that throws is an error answer, not a crash', async () => {
+    const call = { id: 4, kind: 'call' as const, name: 'bad_tool', args: {}, files: [], ticket: null };
+    const out = JSON.parse(
+      await answerCall(call, 1000, async () => {
+        throw new Error('boom');
+      }),
+    );
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toMatch(/boom/);
+  });
+});

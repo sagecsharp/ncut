@@ -219,13 +219,13 @@ export const shell = {
     state(): Promise<McpState> {
       return ask<unknown>(null, (s) => s.mcp?.state?.()).then(cleanMcpState);
     },
-    /** turn the server on or off. the answer is the new state */
-    setEnabled(on: boolean): Promise<McpState> {
-      return ask<unknown>(null, (s) => s.mcp?.setEnabled?.(on === true)).then(cleanMcpState);
+    /** turn the server on or off. the answer is the new state, null when the shell did not answer (nothing is known to have changed) */
+    setEnabled(on: boolean): Promise<McpState | null> {
+      return ask<unknown>(null, (s) => s.mcp?.setEnabled?.(on === true)).then((v) => (v === null ? null : cleanMcpState(v)));
     },
-    /** a new token: every client has to be set up again */
-    rotate(): Promise<McpState> {
-      return ask<unknown>(null, (s) => s.mcp?.rotate?.()).then(cleanMcpState);
+    /** a new token: every client has to be set up again. null when the shell did not answer */
+    rotate(): Promise<McpState | null> {
+      return ask<unknown>(null, (s) => s.mcp?.rotate?.()).then((v) => (v === null ? null : cleanMcpState(v)));
     },
     /** the shell puts the connect text on the clipboard (it holds the token, the page never sees it) */
     copy(kind: McpCopyKind): Promise<boolean> {

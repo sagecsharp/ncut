@@ -53,9 +53,11 @@ no sessions, no sse, no batches: every POST carries one json-rpc message and a r
 - methods: `initialize` (answers the asked version when it is one of ours, else `2025-06-18`; capabilities
   `{ tools: { listChanged: false } }`; serverInfo `{ name: 'ncut', title: 'ncut', version }`; instructions),
   `ping`, `tools/list`, `tools/call`. anything else -> error -32601.
-- `tools/list` and `tools/call` are relayed to the page. no window or the page not ready -> a tool result with
-  `isError` saying ncut is still starting. the page says the tool name is unknown -> error -32602.
-  no answer within 10 s (list) / 180 s (call) -> a tool result with `isError`. at most 8 calls wait at once (-32000 beyond).
+- `tools/list` and `tools/call` are relayed to the page. no window, the page not ready, or no answer in time
+  (10 s for a list, 180 s for a call): a call gets a tool result with `isError` that says so, a list gets error -32000
+  (a list answer has to hold a tool list). the page says the tool name is unknown -> error -32602.
+  at most 8 calls wait at once (-32000 beyond). a reload or a crash of the page fails the calls that wait on it at once.
+- batches are refused for every version (2025-03-26 allowed them; no client in use sends them).
 - no cors headers, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, at most 16 sockets, sane timeouts.
 - nothing about a request is logged with its token.
 
@@ -108,7 +110,8 @@ download ended. a marked download without an armed ticket is cancelled. a ticket
 
 `src/mcp/types.ts` (ToolDef), `validate.ts` (arguments against the schema, unknown fields are errors), `helpers.ts`
 (ok / fail / ToolError / needProject / needClip / oneStep ...), `registry.ts` (TOOLS, listTools, callTool),
-`dispatch.ts` (startMcp: answers the relayed calls one at a time). in a dev build `window.__ncut.mcp` has
+`dispatch.ts` (startMcp: tool calls run one at a time in the order they came, the tool list is answered at once,
+a call that waited or ran past 170 s is answered as failed). in a dev build `window.__ncut.mcp` has
 `listTools` and `callTool` for trying tools without the exe.
 
 rules for every tool:
