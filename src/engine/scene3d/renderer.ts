@@ -50,6 +50,22 @@ export interface Plane3D {
    * blurred halos and faded letters stay soft. missing or <= 1 = a plain plane. see stackedTexelAlpha.
    */
   stack?: number;
+  /**
+   * a line around a solid (a shape other than 'plane'): centered on its silhouette and on its hard edges, see
+   * outline3d.ts. ignored on a plane.
+   */
+  outline?: PlaneOutline;
+}
+
+export interface PlaneOutline {
+  /** straight rgba, 0..1 */
+  color: [number, number, number, number];
+  /** line width in the units the mesh has after `size` (canvas pixels of the clip) */
+  width: number;
+  /** the lengths the unit mesh is scaled by inside `model`: x, y, z */
+  size: [number, number, number];
+  /** true = the solid itself is not drawn (a figure without a fill): only the line shows */
+  hollow?: boolean;
 }
 
 /**
