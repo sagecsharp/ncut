@@ -89,8 +89,8 @@ describe('box', () => {
   });
 
   it('has strips on the 12 hard edges, lying on the surface, 5 wide', () => {
-    // 12 edges x 2 faces x 2 triangles, plus a join triangle in each of the 8 x 3 face corners
-    expect(o.strips.length / 9).toBe(12 * 2 * 2 + 24);
+    // 12 edges x 2 faces x 2 triangles, plus a round join (a fan of 6) in each of the 8 x 3 face corners
+    expect(o.strips.length / 9).toBe(12 * 2 * 2 + 24 * 6);
     let inner = 0;
     for (let i = 0; i < o.strips.length / 3; i++) {
       const p = at(o.strips, i, S);
@@ -98,10 +98,9 @@ describe('box', () => {
       for (const c of p) {
         const a = Math.abs(c);
         expect(a <= 50 + 1e-3).toBe(true);
-        if (a < 49) {
-          expect(a).toBeCloseTo(45, 3);
-          inner++;
-        }
+        // nothing reaches further than 5 into a face (the round joins end between 45 and 50)
+        expect(a >= 45 - 1e-3 || a < 1e-3).toBe(true);
+        if (Math.abs(a - 45) < 1e-3) inner++;
       }
     }
     expect(inner).toBeGreaterThan(0);
@@ -186,6 +185,33 @@ describe('round shapes', () => {
     const [y0] = range(o.hull, 1, 100);
     expect(-50 - y0).toBeGreaterThan(5);
     expect(o.strips.length).toBeGreaterThan(0);
+  });
+
+  it('cone: the faces around the tip leave no crack, every pushed tip point is shared with the next face', () => {
+    const S = [100, 100, 100];
+    const o = solidOutline('cone', 100, 100, 100, 10);
+    const key = (p: number[]): string => p.map((c) => c.toFixed(3)).join(',');
+    const seen = new Map<string, number>();
+    for (let i = 0; i < o.hull.length / 3; i++) {
+      const k = key(at(o.hull, i, S));
+      seen.set(k, (seen.get(k) ?? 0) + 1);
+    }
+    // the caps: triangles that start on the tip itself
+    let caps = 0;
+    for (let t = 0; t < o.hull.length / 9; t++) {
+      const a = at(o.hull, t * 3, S);
+      if (Math.hypot(a[0]!, a[1]! + 50, a[2]!) > 1e-3) continue;
+      caps++;
+      for (const j of [1, 2]) {
+        const p = at(o.hull, t * 3 + j, S);
+        const d = Math.hypot(p[0]!, p[1]! + 50, p[2]!);
+        expect(d).toBeGreaterThan(4.9);
+        expect(d).toBeLessThan(7.6);
+        // three corners on one face (two in the quad, one in the cap) and two on the face next to it
+        expect(seen.get(key(p))).toBeGreaterThanOrEqual(5);
+      }
+    }
+    expect(caps).toBeGreaterThanOrEqual(8);
   });
 
   it('torus: no strips, finite, a thinner core and a thicker hull', () => {
@@ -283,4 +309,57 @@ describe('every solid', () => {
       }
     }
   }
+});
+
+describe('solidOutline review fixes', () => {
+  /** width of every strip quad (6 vertices: a, b, b + o, a, b + o, a + o), in scaled space; the join triangles come after the quads */
+  function quadWidths(shape: string, S: number[], width: number): number[] {
+    const o = solidOutline(shape, S[0]!, S[1]!, S[2]!, width);
+    const out: number[] = [];
+    // a quad is two triangles that share a, and b + o: recognise it by vertex 0 = vertex 3 and vertex 2 = vertex 4
+    for (let i = 0; i + 6 <= o.strips.length / 3; i += 3) {
+      const p = (k: number) => at(o.strips, i + k, S);
+      const same = (x: number[], y: number[]) => Math.hypot(x[0]! - y[0]!, x[1]! - y[1]!, x[2]! - y[2]!) < 1e-3;
+      if (same(p(0), p(3)) && same(p(2), p(4))) {
+        const a = p(0), ao = p(5);
+        out.push(Math.hypot(ao[0]! - a[0]!, ao[1]! - a[1]!, ao[2]! - a[2]!));
+        i += 3;
+      }
+    }
+    return out;
+  }
+
+  it('the bands along the hard edges are half the width everywhere, also on faces cut into slivers', () => {
+    for (const shape of ['heart', 'star', 'hexagon', 'prism', 'box', 'cylinder']) {
+      const w = quadWidths(shape, [300, 300, 100], 20);
+      expect(w.length, shape).toBeGreaterThan(0);
+      for (const x of w) expect(x, shape).toBeCloseTo(10, 2);
+    }
+  });
+
+  it('the core never turns inside out where the solid curves tighter than the line is wide', () => {
+    const cases: [string, number[], number][] = [
+      ['torus', [300, 300, 100], 10],
+      ['cylinder', [300, 300, 100], 40],
+      ['sphere', [300, 300, 100], 40],
+      ['capsule', [100, 400, 30], 60],
+      ['torus', [400, 400, 400], 200],
+    ];
+    for (const [shape, S, width] of cases) {
+      const o = solidOutline(shape, S[0]!, S[1]!, S[2]!, width);
+      const solid = solidOutline(shape, S[0]!, S[1]!, S[2]!, 1e-6);
+      let flipped = 0;
+      for (let t = 0; t < o.indices.length; t += 3) {
+        const n = (pos: Float32Array) => {
+          const p0 = at(pos, o.indices[t]!, S), p1 = at(pos, o.indices[t + 1]!, S), p2 = at(pos, o.indices[t + 2]!, S);
+          const u = [p1[0]! - p0[0]!, p1[1]! - p0[1]!, p1[2]! - p0[2]!];
+          const v = [p2[0]! - p0[0]!, p2[1]! - p0[1]!, p2[2]! - p0[2]!];
+          return [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+        };
+        const a = n(o.core), b = n(solid.core);
+        if (a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]! < 0) flipped++;
+      }
+      expect(flipped, `${shape} ${S.join('x')} w${width}`).toBe(0);
+    }
+  });
 });

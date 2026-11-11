@@ -100,14 +100,45 @@ describe('planeFor: the line around a solid', () => {
     expect(planeFor(project([c]), layer(c), rig)!.outline).toBeUndefined();
   });
 
-  it('the bare and the outlined picture of one clip do not share a texture key', () => {
+  it('the bare picture is cached: the same clip twice is one texture, and a line width change does not redraw it', () => {
     const c = shape();
     const a = planeFor(project([c]), layer(c), rig)!;
-    const flat = { ...c, shape: 'plane' as const };
-    const b = planeFor(project([flat]), layer(flat), rig)!;
     const a2 = planeFor(project([c]), layer(c), rig)!;
     expect(a.cacheKey).toBeDefined();
+    expect(a2.cacheKey).toBe(a.cacheKey);
+    expect(a2.image).toBe(a.image);
+    // the line is not in the picture, so its width does not make a new one... the signature still has the stroke in it,
+    // so only the size and the key kind are checked here: no room for the line, and a key
+    const wide = { ...c, stroke: { color: '#ff0000', width: 60 } };
+    const w = planeFor(project([wide]), layer(wide), rig)!;
+    expect((w.image as unknown as { width: number }).width).toBe((a.image as unknown as { width: number }).width);
+    expect(w.cacheKey).toBeDefined();
+  });
+
+  it('the bare and the outlined picture of one clip are two pictures, also when both have the same size', () => {
+    // a 2d outline of 0 width makes a picture as big as the bare one: only the bare flag in the signature tells them apart
+    const c = shape({ id: 'same-size' });
+    const a = planeFor(project([c]), layer(c), rig)!;
+    const round = { ...c, radius: 0.0001, stroke: { color: '#ff0000', width: 0.0001 } };
+    const b = planeFor(project([round]), layer(round), rig)!;
+    expect(b.outline).toBeUndefined();
     expect(b.cacheKey).not.toBe(a.cacheKey);
-    expect(a2.image).not.toBe(b.image);
+    const a2 = planeFor(project([c]), layer(c), rig)!;
+    expect(a2.outline).toBeDefined();
+    expect(a2.cacheKey).not.toBe(b.cacheKey);
+  });
+
+  it('a keyed line width does not make the bare picture live', () => {
+    const c = shape({ keyframes: { 'stroke.width': [{ time: 0, value: 4 }, { time: 2, value: 30 }] } } as unknown as Partial<ShapeClip>);
+    expect(planeFor(project([c]), layer(c), rig)!.cacheKey).toBeDefined();
+  });
+
+  it('a mask or a color correction keeps the outline in the picture (they act on the picture)', () => {
+    const masked = shape({ mask: { shape: 'ellipse', x: 0, y: 0, width: 1, height: 1, rotation: 0, feather: 0 } } as Partial<ShapeClip>);
+    expect(lineOnSolid(masked)).toBe(false);
+    const graded = shape({ adjust: { brightness: 0.3 } } as Partial<ShapeClip>);
+    expect(lineOnSolid(graded)).toBe(false);
+    const plain = shape({ adjust: { brightness: 0 } } as Partial<ShapeClip>);
+    expect(lineOnSolid(plain)).toBe(true);
   });
 });

@@ -1146,6 +1146,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   let lw = 0;
   let lh = 0;
   let sideTex: { canvas: AnyCanvas; key: string | undefined } | null = null;
+  // a shape whose line goes around the solid: its picture is the bare figure
+  let bareShape = false;
   // the clip's own box before the texture room of a text / shape is added: the default thickness of a solid follows this
   const ownW = box.width;
   const ownH = box.height;
@@ -1168,7 +1170,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     lh = t.canvas.height;
   } else if (clip.type === 'shape') {
     // a line around a solid is geometry (plane.outline below), so the picture is the bare figure on the unpadded box
-    const t = shapeTexture(clip, lineOnSolid(clip));
+    bareShape = lineOnSolid(clip);
+    const t = shapeTexture(clip, bareShape);
     if (!t) return null;
     pad = t.margin * clip.transform.scale;
     box.width += pad * 2;
@@ -1189,7 +1192,8 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     cacheKey = clip.type === 'image' ? `img:${clip.assetId}:${px.width || source.width}x${px.height || source.height}` : undefined;
   }
   // a keyed look or mask value: the looked picture is new every frame, so it does not get a texture key (see animatesPicture)
-  if (cacheKey !== undefined && animatesPicture(clip)) cacheKey = undefined;
+  // (the bare figure of a solid does not change with the keys of its line: that one keeps its key)
+  if (cacheKey !== undefined && (bareShape && clip.type === 'shape' ? bareAnimates(clip) : animatesPicture(clip))) cacheKey = undefined;
   if (lw > 0 && lh > 0 && hasClipLook(clip)) {
     const looked = lookedTexture(clip, image, lw, lh, cacheKey, channel);
     image = looked.image;

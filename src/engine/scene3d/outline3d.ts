@@ -37,11 +37,12 @@
  *      and have any winding: the renderer paints every pixel once through the stencil.
  *   3. the core is the solid itself, moved only at vertices with curved groups: the pull solves N . d = q over those
  *      groups (one group: N q, two: a 2x2 system, more: least squares, at most 4 h). a flat group at the vertex never
- *      lets the pull poke out through its face (the rim of a cone base stays on the base). the pull is scaled by k, which
- *      keeps the core from turning inside out on thin solids (measured against the longest pull). a solid with only flat
- *      faces has the solid itself as core: the inner half of its line is made by the strips.
- *   4. the strips lie on the faces next to every hard edge, plus a small join triangle at each vertex where a group has
- *      two hard edges (the inward corners of a star would otherwise show a notch).
+ *      lets the pull poke out through its face (the rim of a cone base stays on the base). a vertex is pulled at most 0.8 of
+ *      the room the solid has there (the largest ball that fits inside and touches the surface at the vertex), so the
+ *      core never folds on a tight curve or meets its own far side on a thin solid. a solid with only flat faces has the
+ *      solid itself as core: the inner half of its line is made by the strips.
+ *   4. the strips lie on the faces next to every hard edge, h wide, plus a small join triangle at each vertex where a
+ *      group has two hard edges (the inward corners of a star would otherwise show a notch).
  */
 import { shapeMesh, knownShape } from './meshes';
 import type { Shape3D } from '../../types';
@@ -65,7 +66,8 @@ const HARD_COS = Math.cos((35 * Math.PI) / 180);
 const WELD = 1e5;
 /** smallest size the scaled space is allowed to collapse to */
 const MIN_SIZE = 1e-3;
-const CACHE_LIMIT = 24;
+/** more than a scene has outlined solids: with fewer slots than solids every frame would rebuild them all */
+const CACHE_LIMIT = 64;
 /** a group is flat when all its faces at the vertex are within about half a degree of each other */
 const FLAT_COS = Math.cos((0.5 * Math.PI) / 180);
 /** a vertex with two hard edges is a bend when the line turns by at most this angle there */
@@ -75,6 +77,8 @@ const BALL_Q = 1.15;
 /** a curved group pushes its faces out by at most this many half widths */
 const PUSH_MAX = 1.5;
 const TUBE_SIDES = 12;
+/** triangles of the round join between the two bands that meet at a corner of a face */
+const JOIN_STEPS = 6;
 
 interface Topology {
   nv: number;
@@ -358,7 +362,7 @@ interface Offsets {
   ps: Float64Array;
   /** per triangle unit normal, scaled space */
   tnu: Float64Array;
-  /** the core's offset of every vertex (the core is the vertex minus k times this), scaled space */
+  /** the core's offset of every vertex (the core is the vertex minus this, shortened where the solid has no room), scaled space */
   d: Float64Array;
   dmax: number;
   /** how far each corner of each triangle is pushed out for the hull, per csr slot (only when asked for), scaled space */
@@ -541,48 +545,44 @@ function computeOffsets(tp: Topology, sx: number, sy: number, sz: number, h: num
   return { ps, tnu, d, dmax, push, tip };
 }
 
-const thicknessCache = new Map<string, number>();
+const roomCache = new Map<string, Float64Array>();
 
 /**
- * how far a ray going inward from a (spread) sample of vertices travels before it hits the solid again, at the
- * proportions rx : ry : rz (largest side 1). linear in a uniform scale, so it is cached per shape and ratio.
+ * per vertex: the radius of the largest ball that fits inside the solid and touches the surface at that vertex, on the
+ * side its pull goes to, at the proportions rx : ry : rz (largest side 1). Infinity for a vertex that is not pulled.
+ * a ball of radius r that touches the surface at v (outward direction n) has its center at v - r n; another surface
+ * point p stays outside it while r <= |p - v|^2 / (2 (v - p) . n). the smallest of those over all vertices is the room:
+ * on a round surface it is the radius of curvature, on a thin solid half the way to the far side. a surface pulled in by
+ * less than its room does not fold and does not meet the other side.
+ * linear in a uniform scale, so it is cached per shape and ratio (a new line width or clip scale costs nothing).
  */
-function thicknessOf(tp: Topology, shape: Shape3D, rx: number, ry: number, rz: number): number {
+function roomOf(tp: Topology, shape: Shape3D, rx: number, ry: number, rz: number): Float64Array {
   const key = `${shape}|${rx}|${ry}|${rz}`;
-  const hit = thicknessCache.get(key);
+  const hit = roomCache.get(key);
   if (hit !== undefined) return hit;
-  // the direction of an offset does not depend on the width, so any h will do
+  // the direction of a pull does not depend on the width, so any h will do
   const { ps, d } = computeOffsets(tp, rx, ry, rz, 1, false);
-  const { nv, nt, tris } = tp;
-  const step = Math.max(1, Math.floor(nv / 64));
-  let best = Infinity;
-  for (let v = 0; v < nv; v += step) {
+  const { nv } = tp;
+  const out = new Float64Array(nv).fill(Infinity);
+  for (let v = 0; v < nv; v++) {
     const len = Math.hypot(d[v * 3]!, d[v * 3 + 1]!, d[v * 3 + 2]!);
     if (!(len > 1e-9)) continue;
     const ox = ps[v * 3]!, oy = ps[v * 3 + 1]!, oz = ps[v * 3 + 2]!;
-    const dx = -d[v * 3]! / len, dy = -d[v * 3 + 1]! / len, dz = -d[v * 3 + 2]! / len;
-    for (let t = 0; t < nt; t++) {
-      const a = tris[t * 3]!, b = tris[t * 3 + 1]!, c = tris[t * 3 + 2]!;
-      if (a === v || b === v || c === v) continue;
-      const e1x = sub(ps, b, a, 0), e1y = sub(ps, b, a, 1), e1z = sub(ps, b, a, 2);
-      const e2x = sub(ps, c, a, 0), e2y = sub(ps, c, a, 1), e2z = sub(ps, c, a, 2);
-      // moller trumbore, both sides of the triangle
-      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
-      const det = e1x * px + e1y * py + e1z * pz;
-      if (Math.abs(det) < 1e-14) continue;
-      const inv = 1 / det;
-      const tx = ox - ps[a * 3]!, ty = oy - ps[a * 3 + 1]!, tz = oz - ps[a * 3 + 2]!;
-      const u = (tx * px + ty * py + tz * pz) * inv;
-      if (u < 0 || u > 1) continue;
-      const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
-      const w = (dx * qx + dy * qy + dz * qz) * inv;
-      if (w < 0 || u + w > 1) continue;
-      const dist = (e2x * qx + e2y * qy + e2z * qz) * inv;
-      if (dist > 1e-9 && dist < best) best = dist;
+    const nx = d[v * 3]! / len, ny = d[v * 3 + 1]! / len, nz = d[v * 3 + 2]! / len;
+    let best = Infinity;
+    for (let p = 0; p < nv; p++) {
+      const ex = ox - ps[p * 3]!, ey = oy - ps[p * 3 + 1]!, ez = oz - ps[p * 3 + 2]!;
+      // how far p lies below the tangent plane at v
+      const below = ex * nx + ey * ny + ez * nz;
+      if (below < 1e-9) continue;
+      const r = (ex * ex + ey * ey + ez * ez) / (2 * below);
+      if (r < best) best = r;
     }
+    out[v] = best;
   }
-  thicknessCache.set(key, best);
-  return best;
+  roomCache.set(key, out);
+  if (roomCache.size > 32) roomCache.delete(roomCache.keys().next().value as string);
+  return out;
 }
 
 const resultCache = new Map<string, SolidOutline>();
@@ -614,7 +614,12 @@ export function solidOutline(shape: Shape3D | string | undefined, sx: number, sy
 
 const dirScratch = new Float64Array(3);
 
-/** the band on triangle t next to the edge a-w: its direction (in the face, away from the edge) goes to dirScratch, the reach is returned */
+/**
+ * the band on triangle t next to the edge a-w: its direction (in the face, away from the edge) goes to dirScratch, the
+ * reach is returned. the reach is always h: the triangle next to the edge only gives the plane and the side. (a face cut
+ * into slivers, like the front of a heart, has triangles much lower than h over their edge; a band capped at that
+ * height left gaps in the line. a band that runs past its face stays within h of its edge, so it is under the hull.)
+ */
 function bandOf(o: Offsets, t: number, a: number, w: number, c: number, h: number): number {
   const { ps, tnu } = o;
   const ex = sub(ps, w, a, 0), ey = sub(ps, w, a, 1), ez = sub(ps, w, a, 2);
@@ -626,15 +631,14 @@ function bandOf(o: Offsets, t: number, a: number, w: number, c: number, h: numbe
     return 0;
   }
   tx /= len; ty /= len; tz /= len;
-  let dot = tx * sub(ps, c, a, 0) + ty * sub(ps, c, a, 1) + tz * sub(ps, c, a, 2);
+  const dot = tx * sub(ps, c, a, 0) + ty * sub(ps, c, a, 1) + tz * sub(ps, c, a, 2);
   if (dot < 0) {
     tx = -tx; ty = -ty; tz = -tz;
-    dot = -dot;
   }
   dirScratch[0] = tx;
   dirScratch[1] = ty;
   dirScratch[2] = tz;
-  return Math.min(h, dot);
+  return h;
 }
 
 /** the unit ball: an octahedron cut twice (8 -> 32 -> 128 triangles), 9 numbers per triangle, built on first use */
@@ -701,7 +705,13 @@ function buildHull(tp: Topology, o: Offsets, sx: number, sy: number, sz: number,
     if (Math.hypot(sub(ps, hardEdges[i + 1]!, hardEdges[i]!, 0), sub(ps, hardEdges[i + 1]!, hardEdges[i]!, 1), sub(ps, hardEdges[i + 1]!, hardEdges[i]!, 2)) > 1e-12) tubes++;
   }
 
-  const hull = new Float32Array((nt + tubes * TUBE_SIDES * 2 + balls.length * BALL_TRIS) * 9);
+  // a face with one corner on a tip is a quad and a cap there (two more triangles)
+  let fans = 0;
+  for (let t = 0; t < nt; t++) {
+    if (o.tip[tris[t * 3]!]! + o.tip[tris[t * 3 + 1]!]! + o.tip[tris[t * 3 + 2]!]! === 1) fans++;
+  }
+
+  const hull = new Float32Array((nt + fans * 2 + tubes * TUBE_SIDES * 2 + balls.length * BALL_TRIS) * 9);
   let n = 0;
   const put = (x: number, y: number, z: number): void => {
     hull[n++] = x / sx;
@@ -711,8 +721,33 @@ function buildHull(tp: Topology, o: Offsets, sx: number, sy: number, sz: number,
 
   // faces
   for (let t = 0; t < nt; t++) {
+    const tips = o.tip[tris[t * 3]!]! + o.tip[tris[t * 3 + 1]!]! + o.tip[tris[t * 3 + 2]!]!;
+    if (tips === 1) {
+      // at a tip the averaged normal points along the axis: pushed along it the faces would hardly move sideways and
+      // the line would thin out toward the tip, with the ball sitting on it like a knob. the surface around a tip is
+      // made of straight lines that end in it, and pushed out each of them keeps its direction: the tip goes out once
+      // with each of the two other corners, the face becomes a quad. the next face shares that line, so there is no
+      // crack between them. a small cap back to the tip closes the ring, the ball rounds it.
+      const k = o.tip[tris[t * 3]!] ? 0 : o.tip[tris[t * 3 + 1]!] ? 1 : 2;
+      const v = tris[t * 3 + k]!, b1 = tris[t * 3 + ((k + 1) % 3)]!, b2 = tris[t * 3 + ((k + 2) % 3)]!;
+      const s1 = cornerSlot[t * 3 + ((k + 1) % 3)]! * 3, s2 = cornerSlot[t * 3 + ((k + 2) % 3)]! * 3;
+      const vx = ps[v * 3]!, vy = ps[v * 3 + 1]!, vz = ps[v * 3 + 2]!;
+      const t1x = vx + push[s1]!, t1y = vy + push[s1 + 1]!, t1z = vz + push[s1 + 2]!;
+      const t2x = vx + push[s2]!, t2y = vy + push[s2 + 1]!, t2z = vz + push[s2 + 2]!;
+      const b1x = ps[b1 * 3]! + push[s1]!, b1y = ps[b1 * 3 + 1]! + push[s1 + 1]!, b1z = ps[b1 * 3 + 2]! + push[s1 + 2]!;
+      const b2x = ps[b2 * 3]! + push[s2]!, b2y = ps[b2 * 3 + 1]! + push[s2 + 1]!, b2z = ps[b2 * 3 + 2]! + push[s2 + 2]!;
+      put(t1x, t1y, t1z); put(b1x, b1y, b1z); put(b2x, b2y, b2z);
+      put(t1x, t1y, t1z); put(b2x, b2y, b2z); put(t2x, t2y, t2z);
+      put(vx, vy, vz); put(t1x, t1y, t1z); put(t2x, t2y, t2z);
+      continue;
+    }
     for (let k = 0; k < 3; k++) {
       const v = tris[t * 3 + k]!, s = cornerSlot[t * 3 + k]! * 3;
+      if (o.tip[v]) {
+        // more than one tip on a face (a ball squashed flat): every corner keeps the face's own normal
+        put(ps[v * 3]! + o.tnu[t * 3]! * h, ps[v * 3 + 1]! + o.tnu[t * 3 + 1]! * h, ps[v * 3 + 2]! + o.tnu[t * 3 + 2]! * h);
+        continue;
+      }
       put(ps[v * 3]! + push[s]!, ps[v * 3 + 1]! + push[s + 1]!, ps[v * 3 + 2]! + push[s + 2]!);
     }
   }
@@ -767,18 +802,50 @@ function build(tp: Topology, shape: Shape3D, sx: number, sy: number, sz: number,
   const h = width / 2;
   const o = computeOffsets(tp, sx, sy, sz, h, true);
   const { nv } = tp;
-  // the core is pulled in by k * d: k keeps it from crossing the far side of a thin solid
+  // the core is pulled in by kv * d per vertex, at most 0.8 of the room the solid has there (see roomOf): the thin ends
+  // of a squashed tube, a thin wall or a tight curve are pulled less, so the core never folds or meets its other side.
+  // the room changes smoothly from vertex to vertex, so the triangles between neighbours keep their side.
   const m = Math.max(sx, sy, sz);
   const ratio = (s: number): number => Math.max(Math.round((s / m) * 1000) / 1000, MIN_SIZE);
-  const T = thicknessOf(tp, shape, ratio(sx), ratio(sy), ratio(sz)) * m;
-  const k = o.dmax > 0 && isFinite(T) ? Math.min(1, (0.45 * T) / o.dmax) : 1;
   const hull = buildHull(tp, o, sx, sy, sz, h);
   const core = new Float32Array(nv * 3);
   const s = [sx, sy, sz];
-  for (let v = 0; v < nv; v++) {
-    for (let a = 0; a < 3; a++) core[v * 3 + a] = (o.ps[v * 3 + a]! - o.d[v * 3 + a]! * k) / s[a]!;
+  const kv = new Float64Array(nv).fill(1);
+  if (o.dmax > 0) {
+    const room = roomOf(tp, shape, ratio(sx), ratio(sy), ratio(sz));
+    for (let v = 0; v < nv; v++) {
+      const dl = Math.hypot(o.d[v * 3]!, o.d[v * 3 + 1]!, o.d[v * 3 + 2]!);
+      if (dl > 0 && isFinite(room[v]!)) kv[v] = Math.min(1, (0.8 * room[v]! * m) / dl);
+    }
   }
-  const strips = new Float32Array((tp.hard.length / 4) * 18 + (tp.joins.length / 7) * 9);
+  // what is left after that (it should be nothing): halve the pull of the vertices of every triangle that flipped
+  const cs = new Float64Array(nv * 3);
+  const stamp = new Int32Array(nv).fill(-1);
+  for (let pass = 0; pass < 7; pass++) {
+    for (let v = 0; v < nv; v++) {
+      for (let a = 0; a < 3; a++) cs[v * 3 + a] = o.ps[v * 3 + a]! - o.d[v * 3 + a]! * kv[v]!;
+    }
+    if (pass === 6 || o.dmax === 0) break;
+    let flipped = false;
+    for (let t = 0; t < tp.nt; t++) {
+      const a = tp.tris[t * 3]!, b = tp.tris[t * 3 + 1]!, c = tp.tris[t * 3 + 2]!;
+      const ux = sub(cs, b, a, 0), uy = sub(cs, b, a, 1), uz = sub(cs, b, a, 2);
+      const vx = sub(cs, c, a, 0), vy = sub(cs, c, a, 1), vz = sub(cs, c, a, 2);
+      const dot = (uy * vz - uz * vy) * o.tnu[t * 3]! + (uz * vx - ux * vz) * o.tnu[t * 3 + 1]! + (ux * vy - uy * vx) * o.tnu[t * 3 + 2]!;
+      if (dot >= 0) continue;
+      flipped = true;
+      for (const v of [a, b, c]) {
+        if (stamp[v] === pass) continue;
+        stamp[v] = pass;
+        kv[v] = kv[v]! / 2;
+      }
+    }
+    if (!flipped) break;
+  }
+  for (let v = 0; v < nv; v++) {
+    for (let a = 0; a < 3; a++) core[v * 3 + a] = cs[v * 3 + a]! / s[a]!;
+  }
+  const strips = new Float32Array((tp.hard.length / 4) * 18 + (tp.joins.length / 7) * 9 * JOIN_STEPS);
   let n = 0;
   const put = (x: number, y: number, z: number): void => {
     strips[n++] = x / sx;
@@ -799,10 +866,27 @@ function build(tp: Topology, shape: Shape3D, sx: number, sy: number, sz: number,
     const a = tp.joins[i]!;
     const ax = ps[a * 3]!, ay = ps[a * 3 + 1]!, az = ps[a * 3 + 2]!;
     const r1 = bandOf(o, tp.joins[i + 1]!, a, tp.joins[i + 2]!, tp.joins[i + 3]!, h);
-    const x1 = ax + dirScratch[0]! * r1, y1 = ay + dirScratch[1]! * r1, z1 = az + dirScratch[2]! * r1;
+    const d1x = dirScratch[0]!, d1y = dirScratch[1]!, d1z = dirScratch[2]!;
     const r2 = bandOf(o, tp.joins[i + 4]!, a, tp.joins[i + 5]!, tp.joins[i + 6]!, h);
-    const x2 = ax + dirScratch[0]! * r2, y2 = ay + dirScratch[1]! * r2, z2 = az + dirScratch[2]! * r2;
-    put(ax, ay, az); put(x1, y1, z1); put(x2, y2, z2);
+    const d2x = dirScratch[0]!, d2y = dirScratch[1]!, d2z = dirScratch[2]!;
+    const r = Math.min(r1, r2);
+    // a fan from the first band's direction to the second's, round like the join of a 2d stroke (one flat triangle
+    // left a notch at the inward corners of a star)
+    let px = ax + d1x * r, py = ay + d1y * r, pz = az + d1z * r;
+    for (let k = 1; k <= JOIN_STEPS; k++) {
+      const f = k / JOIN_STEPS;
+      let ux = d1x + (d2x - d1x) * f, uy = d1y + (d2y - d1y) * f, uz = d1z + (d2z - d1z) * f;
+      const len = Math.hypot(ux, uy, uz);
+      // the two bands point opposite ways (a hairpin): nothing sensible lies between them, keep the last point
+      if (len > 1e-9) {
+        ux /= len; uy /= len; uz /= len;
+      } else {
+        ux = (px - ax) / (r || 1); uy = (py - ay) / (r || 1); uz = (pz - az) / (r || 1);
+      }
+      const qx = ax + ux * r, qy = ay + uy * r, qz = az + uz * r;
+      put(ax, ay, az); put(px, py, pz); put(qx, qy, qz);
+      px = qx; py = qy; pz = qz;
+    }
   }
   return { indices: tp.tris, hull, core, strips };
 }

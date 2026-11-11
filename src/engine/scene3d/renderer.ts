@@ -257,7 +257,7 @@ void main() {
 
 const CACHE_LIMIT = 48;
 /** how many outline piece sets stay on the gpu. an animated width or size makes a new one per frame, the oldest go. */
-export const OUTLINE_CACHE_LIMIT = 24;
+export const OUTLINE_CACHE_LIMIT = 64;
 
 /** the cache key of the outline pieces of a solid: shape, the three sizes and the line width (to a thousandth) */
 export function outlineKey(shape: string, sx: number, sy: number, sz: number, width: number): string {

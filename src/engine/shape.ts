@@ -1,5 +1,6 @@
 /** drawing of shape clips (types.ts ShapeClip). pure canvas 2d, shared by the flat and the 3d path. */
-import type { ShapeClip } from '../types';
+import type { ShapeClip, VisualClip } from '../types';
+import { hasClipLook } from './clipLook';
 import { knownShape } from './scene3d/meshes';
 import { drawRange, flatten, fromPoints, trimPolyline } from './shapeTrim';
 import type { PathRecorder, Polyline } from './shapeTrim';
@@ -138,8 +139,20 @@ export function shapeSpill(clip: ShapeClip): number {
  * true when the outline of this shape clip is a line around a 3d solid instead of a stroke in the picture: a plain rect
  * (no rounded corners) wrapped on a solid, with an outline. every other figure (ellipse, star, a rounded rect ...)
  * keeps its outline in the picture, because there the line belongs to the figure that is drawn on the faces.
+ * so does a clip with a mask, a color correction or a color key: those act on the picture, and a line that is not in
+ * the picture would stay unmasked and uncorrected.
  */
-export function lineOnSolid(clip: { type?: string; kind?: string; threeD?: boolean; shape?: string; stroke?: { width: number } | null; radius?: number | null }): boolean {
+export function lineOnSolid(clip: {
+  type?: string;
+  kind?: string;
+  threeD?: boolean;
+  shape?: string;
+  stroke?: { width: number } | null;
+  radius?: number | null;
+  mask?: unknown;
+  adjust?: unknown;
+  chromaKey?: unknown;
+}): boolean {
   return (
     clip.type === 'shape' &&
     !!clip.threeD &&
@@ -148,7 +161,9 @@ export function lineOnSolid(clip: { type?: string; kind?: string; threeD?: boole
     !!clip.stroke &&
     clip.stroke.width > 0 &&
     clip.kind === 'rect' &&
-    !(clip.radius !== undefined && clip.radius !== null && clip.radius > 0)
+    !(clip.radius !== undefined && clip.radius !== null && clip.radius > 0) &&
+    !clip.mask &&
+    !hasClipLook(clip as unknown as VisualClip)
   );
 }
 
