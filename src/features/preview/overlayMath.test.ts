@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boxBounds, edgeResize, hasCrop, hitTestKept, keptBox, keptPlaneModel, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { boxBounds, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptPlaneModel, rotateValue, snapAxis, unwrapStep } from './overlayMath';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import type { ClipBox } from '../../engine/draw';
 
@@ -90,6 +90,87 @@ describe('edgeResize', () => {
     expect(r.width).toBeCloseTo(125);
     expect(r.dx).toBeCloseTo(0);
     expect(r.dy).toBeCloseTo(25);
+  });
+});
+
+describe('edgeMode', () => {
+  it('sizes a plain shape and stretches everything else', () => {
+    expect(edgeMode({ type: 'shape' })).toBe('size');
+    expect(edgeMode({ type: 'image' })).toBe('stretch');
+    expect(edgeMode({ type: 'video', crop: null })).toBe('stretch');
+    expect(edgeMode({ type: 'text', crop: { left: 0, top: 0, right: 0, bottom: 0 } })).toBe('stretch');
+  });
+  it('has no edge handles on a cropped or a 3d clip', () => {
+    expect(edgeMode({ type: 'image', crop: { left: 0.1, top: 0, right: 0, bottom: 0 } })).toBeNull();
+    expect(edgeMode({ type: 'shape', crop: { left: 0, top: 0, right: 0, bottom: 0.2 } })).toBeNull();
+    expect(edgeMode({ type: 'image', threeD: true })).toBeNull();
+  });
+});
+
+describe('edgeStretch', () => {
+  // a 200 x 100 box that is already stretched 2 on x
+  const start = { cx: 500, cy: 300, rotation: 0, bw: 200, bh: 100, scale: 3 };
+  it('right edge: the stretch follows the box side and the left edge stays', () => {
+    const r = edgeStretch(start, 'r', 2, 700, 300);
+    // right edge from 600 to 700: the box is 300 wide = 1.5 x the side at the grab
+    expect(r.value).toBeCloseTo(3);
+    expect(r.dx).toBeCloseTo(50);
+    expect(r.dy).toBeCloseTo(0);
+    expect(500 + r.dx - 300 / 2).toBeCloseTo(400);
+  });
+  it('does not depend on the uniform scale', () => {
+    expect(edgeStretch({ ...start, scale: 0.5 }, 'r', 2, 700, 300)).toEqual(edgeStretch(start, 'r', 2, 700, 300));
+  });
+  it('top edge: moving down shrinks the height and keeps the bottom edge', () => {
+    const r = edgeStretch(start, 't', 1, 500, 300);
+    expect(r.value).toBeCloseTo(0.5);
+    expect(r.dy).toBeCloseTo(25);
+    expect(300 + r.dy + 50 / 2).toBeCloseTo(350);
+  });
+  it('left edge: the right edge stays', () => {
+    const r = edgeStretch(start, 'l', 1, 300, 300);
+    expect(r.value).toBeCloseTo(1.5);
+    expect(r.dx).toBeCloseTo(-50);
+    expect(500 + r.dx + 300 / 2).toBeCloseTo(600);
+  });
+  it('works in a rotated frame', () => {
+    // 90 degrees clockwise: local +x points to canvas +y. the right edge dragged to y = 450 widens 200 to 250
+    const r = edgeStretch({ ...start, rotation: 90 }, 'r', 1, 500, 450);
+    expect(r.value).toBeCloseTo(1.25);
+    expect(r.dx).toBeCloseTo(0);
+    expect(r.dy).toBeCloseTo(25);
+  });
+  it('keeps the opposite edge fixed in a 30 degree frame', () => {
+    const rad = (30 * Math.PI) / 180;
+    const s = { ...start, rotation: 30 };
+    // the left edge middle in canvas space
+    const leftX = 500 - Math.cos(rad) * 100;
+    const leftY = 300 - Math.sin(rad) * 100;
+    const r = edgeStretch(s, 'r', 1, 500 + Math.cos(rad) * 250, 300 + Math.sin(rad) * 250);
+    const nw = 200 * r.value;
+    const cx = 500 + r.dx;
+    const cy = 300 + r.dy;
+    expect(cx - Math.cos(rad) * (nw / 2)).toBeCloseTo(leftX, 1);
+    expect(cy - Math.sin(rad) * (nw / 2)).toBeCloseTo(leftY, 1);
+  });
+  it('clamps to 0.01..100 and the far edge follows the clamp', () => {
+    const lo = edgeStretch(start, 'r', 1, -5000, 300, 0.001);
+    expect(lo.value).toBe(0.01);
+    // the box is now 2 wide: the left edge (400) did not move
+    expect(500 + lo.dx - 2 / 2).toBeCloseTo(400);
+    const hi = edgeStretch(start, 'r', 50, 900, 300);
+    // the minimum box side (4 px) wins over the clamp when it is larger
+    expect(edgeStretch(start, 'r', 1, -5000, 300).value).toBeCloseTo(0.02);
+    expect(hi.value).toBe(100);
+  });
+  it('rounds to 3 decimals', () => {
+    const r = edgeStretch(start, 'r', 1, 633, 300);
+    expect(r.value).toBe(Math.round(r.value * 1000) / 1000);
+    expect(r.value).toBeCloseTo(1.165, 3);
+  });
+  it('treats a broken stretch at the grab as 1', () => {
+    expect(edgeStretch(start, 'r', 0, 700, 300).value).toBeCloseTo(1.5);
+    expect(edgeStretch(start, 'r', NaN, 700, 300).value).toBeCloseTo(1.5);
   });
 });
 

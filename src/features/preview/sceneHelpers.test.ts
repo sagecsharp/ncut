@@ -18,6 +18,7 @@ import {
   isTypingTarget,
   parseGridOn,
   rotateReadout,
+  scaleLock,
   scaleReadout,
   sectionCorners,
   signed,
@@ -180,6 +181,28 @@ describe('readouts', () => {
     expect(rotateReadout('tilt', 15)).toBe('tilt +15deg');
     expect(rotateReadout('roll', -7.5)).toBe('roll -7.5deg');
     expect(scaleReadout(1.254)).toBe('scale 1.25x');
+  });
+
+  it('says which axis a stretch is on', () => {
+    expect(scaleReadout(1.25, 0)).toBe('scale x 1.25x');
+    expect(scaleReadout(0.5, 1)).toBe('scale y 0.5x');
+    expect(scaleReadout(2, 2)).toBe('scale z 2x');
+    expect(scaleReadout(2, null)).toBe('scale 2x');
+    expect(scaleReadout(NaN, 0)).toBe('scale x 1x');
+  });
+});
+
+describe('the axis lock of a scale', () => {
+  it('x y z pick an axis, the same key goes back to every side', () => {
+    expect(scaleLock(null, 0, false)).toBe(0);
+    expect(scaleLock(0, 0, false)).toBeNull();
+    expect(scaleLock(0, 1, false)).toBe(1);
+    expect(scaleLock(null, 2, true)).toBe(2);
+    expect(scaleLock(2, 2, true)).toBeNull();
+  });
+  it('z does nothing when no clip has a depth', () => {
+    expect(scaleLock(null, 2, false)).toBeNull();
+    expect(scaleLock(0, 2, false)).toBe(0);
   });
 });
 

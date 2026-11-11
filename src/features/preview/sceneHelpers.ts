@@ -263,10 +263,19 @@ export function rotateReadout(label: string, delta: number): string {
   return `${label} ${signed(delta)}deg`;
 }
 
-/** a scale: "scale 1.25x" (the factor since the grab) */
-export function scaleReadout(factor: number): string {
+/** a scale: "scale 1.25x" (the factor since the grab), "scale x 1.25x" when one axis is stretched */
+export function scaleReadout(factor: number, lock: AxisLock = null): string {
   const f = Number.isFinite(factor) ? Math.round(factor * 100) / 100 : 1;
-  return `scale ${f}x`;
+  return lock === null ? `scale ${f}x` : `scale ${AXIS_LETTERS[lock]} ${f}x`;
+}
+
+/**
+ * the axis lock of a running scale after a key: like a move lock, but z only counts when some clip has a depth to
+ * stretch (`anyDepth`), so on flat clips the key does nothing
+ */
+export function scaleLock(cur: AxisLock, pressed: 0 | 1 | 2, anyDepth: boolean): AxisLock {
+  if (pressed === 2 && !anyDepth) return cur;
+  return nextLock(cur, pressed);
 }
 
 /* ---------- remembered grid switch ---------- */

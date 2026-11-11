@@ -4,7 +4,7 @@ import { parentModelMatrix, worldDeltaToLocal, worldTransform } from '../../engi
 import type { Vec3 } from '../../engine/scene3d/math';
 import { resolveClip } from '../../lib/anim';
 import { parentChain } from '../../lib/links';
-import type { Clip, Project, VisualClip } from '../../types';
+import type { Clip, Project, Transform, VisualClip } from '../../types';
 
 /** true when the clip is attached to something (a parent id is set; the engine ignores unknown ids on its own) */
 export function isAttached(clip: VisualClip): boolean {
@@ -27,7 +27,23 @@ export function resolveShown<T extends Clip>(raw: T, time: number): T {
 export function worldClip<T extends VisualClip>(project: Project, raw: T, time: number): T {
   const resolved = resolveShown(raw, time);
   if (!raw.parent) return resolved;
-  return { ...resolved, transform: worldTransform(project, raw, time) };
+  return { ...resolved, transform: withOwnStretch(worldTransform(project, raw, time), resolved.transform) };
+}
+
+/**
+ * a stretch is the clip's own: a parent only hands down its uniform scale. the world pose keeps the clip's own scaleX /
+ * scaleY / scaleZ whatever the composing did, so a box measured from it is the one that is drawn.
+ */
+export function withOwnStretch(world: Transform, own: Transform): Transform {
+  if (own.scaleX === world.scaleX && own.scaleY === world.scaleY && own.scaleZ === world.scaleZ) return world;
+  const out: Transform = { ...world };
+  if (own.scaleX === undefined) delete out.scaleX;
+  else out.scaleX = own.scaleX;
+  if (own.scaleY === undefined) delete out.scaleY;
+  else out.scaleY = own.scaleY;
+  if (own.scaleZ === undefined) delete out.scaleZ;
+  else out.scaleZ = own.scaleZ;
+  return out;
 }
 
 /** a world movement (canvas px) as the change of the clip's own x / y. same numbers for a clip without a parent. */

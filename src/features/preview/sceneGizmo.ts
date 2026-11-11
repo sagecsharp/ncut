@@ -107,3 +107,67 @@ export function ringValueSign(prop: RingProp, axis: Vec3, forward: Vec3): 1 | -1
 export function scaleFromDrag(s0: number, d0: number, d: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, (s0 * d) / Math.max(1e-6, d0)));
 }
+
+/* ---------- stretch per axis ---------- */
+
+export type ScaleProp = 'scale' | 'scaleX' | 'scaleY' | 'scaleZ';
+/** the property of the stretch along the clip's own x, y and z axis */
+export const STRETCH_PROPS: readonly ['scaleX', 'scaleY', 'scaleZ'] = ['scaleX', 'scaleY', 'scaleZ'];
+
+/** the projected axis handles are hidden when the axis points (nearly) at the viewer: its length on screen, css px */
+export const MIN_STRETCH_HANDLE_PX = 14;
+
+/**
+ * depth means something only for a 3d solid (a shape other than the plane) and for 3d text with a side (extrude):
+ * scaleZ does nothing on a flat plane, so its handle and the z key are left out there
+ */
+export function hasDepth(c: { type: string; threeD?: boolean; shape?: string; extrude?: { depth: number } | null }): boolean {
+  if (!c.threeD) return false;
+  if (c.shape && c.shape !== 'plane') return true;
+  return c.type === 'text' && !!c.extrude && c.extrude.depth > 0;
+}
+
+/**
+ * the clip's OWN x, y and z axes in the world (unit vectors): the plane's right, down and normal after turn, tilt and
+ * roll, so a handle along one of them follows what the stretch of that axis does. for a clip attached to a parent pass the
+ * parent's matrix and the clip's own x / y / z (like ringAxes). `box.rotation` is the roll.
+ */
+export function ownAxes(box: ClipBox, t: Partial<Transform>, lookAt: LookAt | undefined, eye: Vec3, parent?: Mat4 | null): [Vec3, Vec3, Vec3] {
+  const m = clipModelMatrix(
+    { cx: box.cx, cy: box.cy, width: 1, height: 1, rotation: box.rotation },
+    { x: parent ? (t.x ?? 0) : 0, y: parent ? (t.y ?? 0) : 0, scale: 1, rotation: 0, opacity: 1, z: t.z ?? 0, rotX: t.rotX ?? 0, rotY: t.rotY ?? 0 },
+    lookAt,
+    eye,
+    parent,
+  );
+  return [dir(m, 1, 0, 0), dir(m, 0, 1, 0), dir(m, 0, 0, 1)];
+}
+
+/**
+ * how far the pointer is from the center along the screen direction of an axis handle (css px, signed: the far side of
+ * the center is negative). the handle's direction is (tx - cx, ty - cy).
+ */
+export function axisPull(cx: number, cy: number, tx: number, ty: number, px: number, py: number): number {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const l = Math.hypot(dx, dy);
+  if (l < 1e-6) return 0;
+  return ((px - cx) * dx + (py - cy) * dy) / l;
+}
+
+/**
+ * the value a scale drag writes: the grab value times the typed factor, or times the ratio of the pointer's distance from
+ * the center now and at the grab. clamped to min..max and rounded to 3 decimals.
+ */
+export function scaledValue(v0: number, d0: number, d: number, typed: number | null, min: number, max: number): number {
+  const v = typed !== null && typed > 0 ? Math.min(max, Math.max(min, v0 * typed)) : scaleFromDrag(v0, d0, d, min, max);
+  return Math.round(v * 1000) / 1000;
+}
+
+/**
+ * the stretch props an alt + s puts back to 1: the ones that are not 1 now, or that are keyed (a keyed one is set at
+ * this time too, so the playhead shows 1). nothing is written for a clip that was never stretched.
+ */
+export function stretchesToClear(t: { scaleX?: number; scaleY?: number; scaleZ?: number }, keyed: Readonly<Record<string, ReadonlyArray<unknown> | undefined>> | undefined): Array<'scaleX' | 'scaleY' | 'scaleZ'> {
+  return STRETCH_PROPS.filter((p) => (t[p] !== undefined && t[p] !== 1) || (keyed?.[p]?.length ?? 0) > 0);
+}

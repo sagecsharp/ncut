@@ -1,7 +1,8 @@
 /**
  * overlay of the scene view: orbit / pan / dolly navigation of the free editor camera, click to select a
  * 3d plane, and a gizmo for the selected clip or camera clip with three tools:
- * move (x, y, z arrows), rotate (three rings: tilt, turn, roll) and scale (one handle).
+ * move (x, y, z arrows), rotate (three rings: tilt, turn, roll) and scale (one handle for all sides, three along the
+ * clip's own axes to stretch one).
  *
  * like the output overlay nothing renders per frame in react: the svg is rewritten imperatively from store
  * subscriptions, and pointer moves are coalesced to one update per animation frame.
@@ -20,13 +21,30 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import type { Project, VisualClip } from '../../types';
-import { isVisualClip } from '../../types';
+import { MAX_SCALE, MIN_SCALE, isVisualClip, stretchX, stretchY, stretchZ } from '../../types';
 import { floorY } from '../properties/place3d';
 import { isAttached, localDelta, localDelta3, resolveShown, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
 import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
-import { RING_LABELS, RING_PROPS, type RingProp, type SceneTool, nearestPolyline, ringAxes, ringPoints, ringValueSign, scaleFromDrag } from './sceneGizmo';
+import {
+  MIN_STRETCH_HANDLE_PX,
+  RING_LABELS,
+  RING_PROPS,
+  type RingProp,
+  STRETCH_PROPS,
+  type ScaleProp,
+  type SceneTool,
+  axisPull,
+  hasDepth,
+  nearestPolyline,
+  ownAxes,
+  ringAxes,
+  ringPoints,
+  ringValueSign,
+  scaledValue,
+  stretchesToClear,
+} from './sceneGizmo';
 import {
   type AxisLock,
   clipPolygonNear,
@@ -39,6 +57,7 @@ import {
   moveReadout,
   nextLock,
   rotateReadout,
+  scaleLock,
   scaleReadout,
   sectionCorners,
   shouldWriteAxis,
@@ -74,8 +93,9 @@ const SCALE_OFFSET_PX = 60;
 const CAMERA_HIT_PX = 12;
 const DRAG_THRESHOLD_PX = 3;
 const ORBIT_DEG_PER_PX = 0.3;
-const MIN_SCALE = 0.01;
-const MAX_SCALE = 100;
+/** how far along its axis a stretch handle reaches, of the move arrow's length */
+const STRETCH_LEN = 0.75;
+const STRETCH_HIT_PX = 9;
 const AXES: Vec3[] = [
   [1, 0, 0],
   [0, 1, 0],
@@ -87,7 +107,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const TOOLS: ReadonlyArray<{ tool: SceneTool; label: string; key: string; Icon: typeof Move; hint: string }> = [
   { tool: 'move', label: 'move', key: 'w', Icon: Move, hint: 'drag an arrow to move along x, y or z' },
   { tool: 'rotate', label: 'rotate', key: 'e', Icon: RotateCw, hint: 'drag a ring to tilt, turn or roll' },
-  { tool: 'scale', label: 'scale', key: 'r', Icon: Maximize2, hint: 'drag the square away from the center to grow' },
+  { tool: 'scale', label: 'scale', key: 'r', Icon: Maximize2, hint: 'drag the square away from the center to grow, a small square on an axis stretches only that axis' },
 ];
 
 interface Target {
@@ -102,11 +122,17 @@ interface Target {
   /** current tilt, turn and roll (clips) */
   rot: [number, number, number];
   scale: number;
+  /** the clip's own stretch along x, y and z (1 = none) */
+  st: [number, number, number];
+  /** depth means something here (a 3d solid, extruded 3d text): the z stretch exists */
+  depth: boolean;
   /** world axes of the tilt, turn and roll rings */
   axes: [Vec3, Vec3, Vec3];
+  /** the clip's own x, y and z axes in the world (the stretch handles lie along them) */
+  own: [Vec3, Vec3, Vec3];
 }
 
-type Hover = { kind: 'axis' | 'ring' | 'scale' | 'center' | 'focus'; i: number } | null;
+type Hover = { kind: 'axis' | 'ring' | 'scale' | 'stretch' | 'center' | 'focus'; i: number } | null;
 
 interface GizmoState {
   visible: boolean;
@@ -118,6 +144,8 @@ interface GizmoState {
   /** flat x y arrays per ring (null = not fully in front of the camera) */
   rings: Array<number[] | null>;
   scaleTip: { x: number; y: number };
+  /** the ends of the three stretch handles (css px); ok = shown (long enough on screen, z only with a depth) */
+  stretchTips: Array<{ x: number; y: number; ok: boolean }>;
   target: Target | null;
 }
 
@@ -143,7 +171,12 @@ interface RingItem {
 
 interface ScaleItem {
   id: string;
-  s0: number;
+  /** the values at the grab: scale and the three stretches */
+  v0: Record<ScaleProp, number>;
+  /** the z stretch means something for this clip */
+  depth: boolean;
+  /** props this gesture has written, so a lock pressed later sends the others back to their grab values */
+  written: Set<ScaleProp>;
 }
 
 /**
@@ -217,7 +250,23 @@ type SceneGesture =
       /** the clips that are turned, the one with the gizmo first */
       items: RingItem[];
     }
-  | { kind: 'scale'; pointerId: number; startX: number; startY: number; started: boolean; modal: boolean; typed: string; cx: number; cy: number; d0: number; items: ScaleItem[] };
+  | {
+      kind: 'scale';
+      pointerId: number;
+      startX: number;
+      startY: number;
+      started: boolean;
+      modal: boolean;
+      typed: string;
+      cx: number;
+      cy: number;
+      d0: number;
+      items: ScaleItem[];
+      /** null = every side (scale), 0 / 1 / 2 = only that axis of the clip (scaleX / scaleY / scaleZ) */
+      lock: AxisLock;
+      /** a dragged axis handle: its direction on screen, the pull along it counts. null = the distance from the center */
+      dir: { x: number; y: number } | null;
+    };
 
 type ModalMode = 'grab' | 'rotate' | 'scale';
 const MODAL_TOOL: Readonly<Record<ModalMode, SceneTool>> = { grab: 'move', rotate: 'rotate', scale: 'scale' };
@@ -302,7 +351,10 @@ function targetOf(project: Project, id: string, time: number, rig: CameraRig): T
         v: [r.x, r.y, r.z],
         rot: [0, 0, 0],
         scale: 1,
+        st: [1, 1, 1],
+        depth: false,
         axes: AXES as [Vec3, Vec3, Vec3],
+        own: AXES as [Vec3, Vec3, Vec3],
       };
     }
     if (isVisualClip(clip)) {
@@ -321,7 +373,10 @@ function targetOf(project: Project, id: string, time: number, rig: CameraRig): T
           v: [r.transform.x, r.transform.y, r.transform.z ?? 0],
           rot: [r.transform.rotX ?? 0, r.transform.rotY ?? 0, r.transform.rotation],
           scale: r.transform.scale,
+          st: [stretchX(r.transform), stretchY(r.transform), stretchZ(r.transform)],
+          depth: hasDepth(clip),
           axes: ringAxes(getClipBox(project, r), { x: r.transform.x, y: r.transform.y, z: r.transform.z ?? 0, rotX: r.transform.rotX ?? 0, rotY: r.transform.rotY ?? 0 }, clip.lookAt, rig.eye, parent),
+          own: ownAxes(getClipBox(project, r), { x: r.transform.x, y: r.transform.y, z: r.transform.z ?? 0, rotX: r.transform.rotX ?? 0, rotY: r.transform.rotY ?? 0 }, clip.lookAt, rig.eye, parent),
         };
       }
       const w = worldClip(project, clip, time);
@@ -337,7 +392,10 @@ function targetOf(project: Project, id: string, time: number, rig: CameraRig): T
         v: [r.transform.x, r.transform.y, threeD ? (r.transform.z ?? 0) : 0],
         rot: [threeD ? (r.transform.rotX ?? 0) : 0, threeD ? (r.transform.rotY ?? 0) : 0, r.transform.rotation],
         scale: r.transform.scale,
+        st: [stretchX(r.transform), stretchY(r.transform), stretchZ(r.transform)],
+        depth: hasDepth(clip),
         axes: ringAxes(box, { z, rotX, rotY }, threeD ? clip.lookAt : undefined, rig.eye),
+        own: ownAxes(box, { z, rotX, rotY }, threeD ? clip.lookAt : undefined, rig.eye),
       };
     }
   }
@@ -371,7 +429,10 @@ function ringItems(targets: readonly Target[], ring: number, forward: Vec3): Rin
     .map((t) => ({ id: t.id, v0: t.rot[ring]!, sign: ringValueSign(prop, t.axes[ring]!, forward), to3d: !t.threeD && ring < 2 }));
 }
 
-const scaleItems = (targets: readonly Target[]): ScaleItem[] => targets.filter((t) => t.kind === 'clip').map((t) => ({ id: t.id, s0: t.scale }));
+const scaleItems = (targets: readonly Target[]): ScaleItem[] =>
+  targets
+    .filter((t) => t.kind === 'clip')
+    .map((t) => ({ id: t.id, v0: { scale: t.scale, scaleX: t.st[0], scaleY: t.st[1], scaleZ: t.st[2] }, depth: t.depth, written: new Set<ScaleProp>() }));
 
 /** what a click or a selection box can pick in the scene view: the camera in charge and the 3d planes on open tracks */
 function sceneCandidates(project: Project, time: number): { camera: string | null; clips: VisualClip[] } {
@@ -446,6 +507,11 @@ export function SceneOverlay() {
   const scaleUnder = useRef<SVGLineElement>(null);
   const scaleLine = useRef<SVGLineElement>(null);
   const scaleRect = useRef<SVGRectElement>(null);
+  const stretchGroup = useRef<Array<SVGGElement | null>>([null, null, null]);
+  const stretchUnder = useRef<Array<SVGLineElement | null>>([null, null, null]);
+  const stretchLine = useRef<Array<SVGLineElement | null>>([null, null, null]);
+  const stretchRect = useRef<Array<SVGRectElement | null>>([null, null, null]);
+  const stretchText = useRef<Array<SVGTextElement | null>>([null, null, null]);
   const centerDot = useRef<SVGCircleElement>(null);
   const targetUnder = useRef<SVGLineElement>(null);
   const targetLine = useRef<SVGLineElement>(null);
@@ -476,6 +542,7 @@ export function SceneOverlay() {
     tips: [0, 1, 2].map(() => ({ x: 0, y: 0, ok: false })),
     rings: [null, null, null],
     scaleTip: { x: 0, y: 0 },
+    stretchTips: [0, 1, 2].map(() => ({ x: 0, y: 0, ok: false })),
     target: null,
   });
   const hover = useRef<Hover>(null);
@@ -710,6 +777,22 @@ export function SceneOverlay() {
             } else {
               gz.scaleTip.x = gz.cx + SCALE_OFFSET_PX;
               gz.scaleTip.y = gz.cy - SCALE_OFFSET_PX;
+              for (let a = 0; a < 3; a++) {
+                const ax = target.own[a]!;
+                const t = projectPoint(
+                  rig,
+                  target.center[0] + ax[0] * len * STRETCH_LEN,
+                  target.center[1] + ax[1] * len * STRETCH_LEN,
+                  target.center[2] + ax[2] * len * STRETCH_LEN,
+                  project.width,
+                  project.height,
+                );
+                const tip = gz.stretchTips[a]!;
+                tip.x = t.x * f;
+                tip.y = t.y * f;
+                // an axis that points at the viewer would be a dot: no handle. z only where depth means something.
+                tip.ok = t.visible && Math.hypot(tip.x - gz.cx, tip.y - gz.cy) >= MIN_STRETCH_HANDLE_PX && (a < 2 || target.depth);
+              }
             }
           }
         }
@@ -805,9 +888,13 @@ export function SceneOverlay() {
       // a handle is "hover" under the pointer and "active" while it is being dragged
       const g = gestureRef.current;
       const hv = hover.current;
-      const stateOf = (kind: 'axis' | 'ring' | 'scale', i: number): [boolean, boolean] => {
+      const stateOf = (kind: 'axis' | 'ring' | 'scale' | 'stretch', i: number): [boolean, boolean] => {
         if (g) {
-          const act = (g.kind === 'axis' && kind === 'axis' && g.axis === i) || (g.kind === 'ring' && kind === 'ring' && g.ring === i) || (g.kind === 'scale' && kind === 'scale');
+          const act =
+            (g.kind === 'axis' && kind === 'axis' && g.axis === i) ||
+            (g.kind === 'ring' && kind === 'ring' && g.ring === i) ||
+            (g.kind === 'scale' && kind === 'scale' && g.lock === null) ||
+            (g.kind === 'scale' && kind === 'stretch' && g.lock === i);
           return [false, act];
         }
         return [hv?.kind === kind && hv.i === i, false];
@@ -884,7 +971,39 @@ export function SceneOverlay() {
         rg.classList.toggle('is-active', act);
       }
 
-      // scale: one handle
+      // scale: a handle along each of the clip's own axes (stretch one axis)
+      for (let a = 0; a < 3; a++) {
+        const stg = stretchGroup.current[a];
+        if (!stg) continue;
+        const tip = gz.stretchTips[a]!;
+        if (!gz.visible || gz.tool !== 'scale' || !tip.ok) {
+          stg.style.display = 'none';
+          continue;
+        }
+        stg.style.display = '';
+        for (const ln of [stretchUnder.current[a], stretchLine.current[a]]) {
+          if (!ln) continue;
+          ln.setAttribute('x1', String(gz.cx));
+          ln.setAttribute('y1', String(gz.cy));
+          ln.setAttribute('x2', String(tip.x));
+          ln.setAttribute('y2', String(tip.y));
+        }
+        stretchRect.current[a]?.setAttribute('x', String(tip.x - 4));
+        stretchRect.current[a]?.setAttribute('y', String(tip.y - 4));
+        const text = stretchText.current[a];
+        if (text) {
+          const dx = tip.x - gz.cx;
+          const dy = tip.y - gz.cy;
+          const l = Math.hypot(dx, dy) || 1;
+          text.setAttribute('x', String(tip.x + (dx / l) * 12));
+          text.setAttribute('y', String(tip.y + (dy / l) * 12 + 4));
+        }
+        const [h, act] = stateOf('stretch', a);
+        stg.classList.toggle('is-hover', h);
+        stg.classList.toggle('is-active', act);
+      }
+
+      // scale: one handle for every side
       const sg = scaleGroup.current;
       if (sg) {
         if (!gz.visible || gz.tool !== 'scale') sg.style.display = 'none';
@@ -1055,8 +1174,21 @@ export function SceneOverlay() {
       return r ? { kind: 'ring', i: r.index } : null;
     }
     const tip = gz.scaleTip;
-    const hit = Math.hypot(x - tip.x, y - tip.y) <= SCALE_HIT_PX || segDist(x, y, gz.cx, gz.cy, tip.x, tip.y) <= 5;
-    return hit ? { kind: 'scale', i: 0 } : null;
+    // the square of the uniform handle first, then the axis handles (nearest), then the uniform handle's line
+    if (Math.hypot(x - tip.x, y - tip.y) <= SCALE_HIT_PX) return { kind: 'scale', i: 0 };
+    let best = -1;
+    let bestD = STRETCH_HIT_PX;
+    for (let a = 0; a < 3; a++) {
+      const st = gz.stretchTips[a]!;
+      if (!st.ok) continue;
+      const d = Math.min(Math.hypot(x - st.x, y - st.y), segDist(x, y, gz.cx, gz.cy, st.x, st.y) + 3);
+      if (d <= bestD) {
+        best = a;
+        bestD = d;
+      }
+    }
+    if (best >= 0) return { kind: 'stretch', i: best };
+    return segDist(x, y, gz.cx, gz.cy, tip.x, tip.y) <= 5 ? { kind: 'scale', i: 0 } : null;
   };
 
   /** the selection box of the blender controls, css px relative to the overlay. null hides it */
@@ -1235,12 +1367,23 @@ export function SceneOverlay() {
       return;
     }
     if (g.kind === 'scale') {
-      const d = Math.hypot(lx - g.cx, ly - g.cy);
-      const sized = (it: ScaleItem) =>
-        Math.round((typed !== null && typed > 0 ? Math.min(MAX_SCALE, Math.max(MIN_SCALE, it.s0 * typed)) : scaleFromDrag(it.s0, g.d0, d, MIN_SCALE, MAX_SCALE)) * 1000) / 1000;
-      const first = g.items[0];
-      if (first) readout.current = scaleReadout(sized(first) / Math.max(1e-6, first.s0));
-      for (const it of g.items) store.setClipValue(it.id, 'scale', time, sized(it), { skipHistory: true });
+      // a dragged axis handle counts the pull along its direction, the s key the distance from the center
+      const d = g.dir ? axisPull(g.cx, g.cy, g.cx + g.dir.x, g.cy + g.dir.y, lx, ly) : Math.hypot(lx - g.cx, ly - g.cy);
+      const prop: ScaleProp = g.lock === null ? 'scale' : STRETCH_PROPS[g.lock];
+      // the z stretch only goes to clips that have a depth
+      const writes = g.items.filter((it) => g.lock !== 2 || it.depth);
+      const first = writes[0];
+      if (first) readout.current = scaleReadout(scaledValue(first.v0[prop], g.d0, d, typed, MIN_SCALE, MAX_SCALE) / Math.max(1e-6, first.v0[prop]), g.lock);
+      for (const it of writes) {
+        store.setClipValue(it.id, prop, time, scaledValue(it.v0[prop], g.d0, d, typed, MIN_SCALE, MAX_SCALE), { skipHistory: true });
+        // a lock pressed mid drag: what was written before goes back to the grab value
+        for (const p of Array.from(it.written)) {
+          if (p === prop) continue;
+          store.setClipValue(it.id, p, time, it.v0[p], { skipHistory: true });
+          it.written.delete(p);
+        }
+        it.written.add(prop);
+      }
       return;
     }
     // move: an arrow moves along its axis, the center dot (and g) moves freely; x / y / z lock it to one axis
@@ -1379,6 +1522,13 @@ export function SceneOverlay() {
         // x tilts, y turns, z rolls. the key of the running one goes back to the roll
         const ring = cur.ring === k ? 2 : k;
         if (ring !== cur.ring) restartModal('rotate', ring);
+      } else if (cur.kind === 'scale') {
+        // x y z stretch one axis of the clip, the same key again goes back to every side
+        const lock = scaleLock(cur.lock, k, cur.items.some((it) => it.depth));
+        if (lock !== cur.lock) {
+          cur.lock = lock;
+          again();
+        }
       }
       return;
     }
@@ -1453,7 +1603,7 @@ export function SceneOverlay() {
         ui.toast('a camera has no size to scale');
         return;
       }
-      g = { kind: 'scale', ...base, cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items };
+      g = { kind: 'scale', ...base, cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items, lock: null, dir: null };
       readout.current = scaleReadout(1);
     }
     selBefore.current = store.selection;
@@ -1536,6 +1686,11 @@ export function SceneOverlay() {
         store.setClipValue(t.id, 'rotation', time, 0, o);
       } else if (t.kind === 'clip') {
         store.setClipValue(t.id, 'scale', time, 1, o);
+        // the stretch goes back too: only the axes that are stretched or keyed get a write
+        const raw = project.clips.find((c) => c.id === t.id);
+        if (raw && isVisualClip(raw)) {
+          for (const p of stretchesToClear(resolveClip(raw, time).transform, raw.keyframes)) store.setClipValue(t.id, p, time, 1, o);
+        }
       }
     }
   };
@@ -1754,7 +1909,29 @@ export function SceneOverlay() {
       }
       const items = scaleItems(targets);
       if (items.length === 0) return false;
-      begin({ kind: 'scale', ...base, started: false, modal: false, typed: '', cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items });
+      if (h.kind === 'stretch') {
+        // an axis handle: the pull along its direction on screen, from the center, stretches that axis
+        const tip = gz.stretchTips[h.i]!;
+        if (!tip.ok) return false;
+        const d0 = Math.max(8, axisPull(gz.cx, gz.cy, tip.x, tip.y, lx, ly));
+        const l = Math.hypot(tip.x - gz.cx, tip.y - gz.cy) || 1;
+        begin({
+          kind: 'scale',
+          ...base,
+          started: false,
+          modal: false,
+          typed: '',
+          cx: gz.cx,
+          cy: gz.cy,
+          d0,
+          items,
+          lock: h.i as AxisLock,
+          dir: { x: (tip.x - gz.cx) / l, y: (tip.y - gz.cy) / l },
+        });
+        redrawRef.current();
+        return true;
+      }
+      begin({ kind: 'scale', ...base, started: false, modal: false, typed: '', cx: gz.cx, cy: gz.cy, d0: Math.max(8, Math.hypot(lx - gz.cx, ly - gz.cy)), items, lock: null, dir: null });
       redrawRef.current();
       return true;
     };
@@ -2029,6 +2206,46 @@ export function SceneOverlay() {
               className="scene-axis-label"
               ref={(n) => {
                 ringText.current[a] = n;
+              }}
+            >
+              {name}
+            </text>
+          </g>
+        ))}
+        {AXIS_NAMES.map((name, a) => (
+          <g
+            key={`stretch-${name}`}
+            className="scene-scale"
+            style={{ display: 'none' }}
+            ref={(n) => {
+              stretchGroup.current[a] = n;
+            }}
+          >
+            <line
+              className="scene-axis-under"
+              ref={(n) => {
+                stretchUnder.current[a] = n;
+              }}
+            />
+            <line
+              className="scene-axis-line"
+              ref={(n) => {
+                stretchLine.current[a] = n;
+              }}
+            />
+            <rect
+              className="scene-axis-tip"
+              width="8"
+              height="8"
+              ref={(n) => {
+                stretchRect.current[a] = n;
+              }}
+            />
+            <text
+              className="scene-axis-label"
+              textAnchor="middle"
+              ref={(n) => {
+                stretchText.current[a] = n;
               }}
             >
               {name}

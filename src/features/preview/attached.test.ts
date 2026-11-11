@@ -7,7 +7,7 @@ vi.mock('../../engine/parent', () => ({
   worldDeltaToLocal: (_p: unknown, _c: unknown, _t: number, dx: number, dy: number) => ({ x: dx / 2, y: dy / 2 }),
 }));
 
-const { isAttached, localDelta, withoutRidingChildren, worldClip } = await import('./attached');
+const { isAttached, localDelta, withOwnStretch, withoutRidingChildren, worldClip } = await import('./attached');
 const { sceneCenter } = await import('./overlayMath');
 
 const img = (id: string, over: Partial<VisualClip> = {}): VisualClip =>
@@ -59,6 +59,27 @@ describe('attached clips', () => {
     expect(withoutRidingChildren(all, [c, g]).map((x) => x.id)).toEqual(['c']);
     expect(withoutRidingChildren(all, [g, p]).map((x) => x.id)).toEqual(['p']);
     expect(withoutRidingChildren(all, [g]).map((x) => x.id)).toEqual(['g']);
+  });
+});
+
+describe('a stretch is the clip own', () => {
+  it('the world pose keeps the own stretch, also when the parent pose drops it', () => {
+    const own = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 2, scaleZ: 0.5 };
+    const world = { x: 5, y: 5, scale: 3, rotation: 0, opacity: 1, scaleY: 9 };
+    const w = withOwnStretch(world, own);
+    expect(w.scale).toBe(3);
+    expect(w.scaleX).toBe(2);
+    expect(w.scaleZ).toBe(0.5);
+    expect('scaleY' in w).toBe(false);
+  });
+  it('is the same object when nothing differs', () => {
+    const t = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 2 };
+    expect(withOwnStretch(t, { ...t, x: 4 })).toBe(t);
+  });
+  it('an attached clip is measured with its own stretch, not its parent', () => {
+    const p = img('p', { transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 4 } });
+    const c = img('c', { parent: 'p', transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 2 } });
+    expect(worldClip(project([p, c]), c, 0).transform.scaleX).toBe(2);
   });
 });
 

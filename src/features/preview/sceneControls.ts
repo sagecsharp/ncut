@@ -3,7 +3,8 @@
  *
  * - 'blender' (the default): the middle button orbits (shift pans, ctrl zooms, alt + left does the same without
  *   a middle button), a left click selects and a left drag draws a selection box. g / r / s grab, rotate and
- *   scale the selection without holding a button: x y z pick the axis, a typed number sets the amount, a click
+ *   scale the selection without holding a button: x y z pick the axis (in s it stretches only that axis of the clip), a
+ *   typed number sets the amount, a click
  *   or enter confirms, a right click or escape cancels. shift + d copies, x deletes, a selects everything,
  *   the numpad picks the view. the keys belong to the scene view while the pointer is over it.
  * - 'unity': a left drag orbits, w e r pick the gizmo tool, alt + drag an arrow leaves a copy.
@@ -55,7 +56,7 @@ export const useSceneControls = create<SceneControlsState>()((set, get) => ({
 /** the line of help at the bottom of the scene view */
 export const SCENE_HINTS: Readonly<Record<SceneScheme, string>> = {
   blender:
-    'middle drag or alt drag: orbit   shift: pan   wheel: zoom   g r s: move rotate scale   x y z: axis   click: keep   right click: cancel   shift d: copy   x: delete   numpad: views',
+    'middle drag or alt drag: orbit   shift: pan   wheel: zoom   g r s: move rotate scale   x y z: axis (s: stretch one axis)   click: keep   right click: cancel   shift d: copy   x: delete   numpad: views',
   unity: 'drag: orbit   shift drag: pan   wheel: zoom   w e r: tool   f: frame   ctrl: snap   x y z: lock axis   alt drag arrow: copy   esc: cancel',
 };
 
