@@ -753,6 +753,17 @@ function bareAnimates(clip: ShapeClip): boolean {
 }
 
 /**
+ * does the picture of this shape change from frame to frame? such a picture gets no key, so the gpu side reuses one scratch
+ * texture instead of keeping a mipmapped copy of every frame: an outline that is being drawn on, a keyed width, corner
+ * count, gradient angle ... of the figure, and a keyed stretch (the figure is drawn at its stretched size).
+ */
+export function shapePictureLive(clip: ShapeClip, bare = false): boolean {
+  const keys = clip.keyframes;
+  if (keys?.scaleX?.length || keys?.scaleY?.length) return true;
+  return bare ? bareAnimates(clip) : !!(keys?.drawStart?.length || keys?.drawEnd?.length) || animatesPicture(clip);
+}
+
+/**
  * `bare`: the figure alone, without its outline and without draw on, and without the texture room for the outline. that
  * is the picture of a solid whose line is real geometry (lineOnSolid). the signature says so: the same clip id can be
  * asked for either one over time.
@@ -792,10 +803,7 @@ function shapeTexture(clip: ShapeClip, bare = false): ShapeTexture | null {
   c.translate(w / 2, h / 2);
   c.scale(q, q);
   drawShape(c, clip, figW, figH, 1);
-  // an outline that is being drawn on changes every frame: no key, so the gpu side reuses one scratch texture
-  // instead of keeping a mipmapped copy of every frame
-  // (so does a keyed width, corner count, gradient angle ... of the figure)
-  const live = bare ? bareAnimates(clip) : !!(keys?.drawStart?.length || keys?.drawEnd?.length) || animatesPicture(clip);
+  const live = shapePictureLive({ ...clip, keyframes: keys }, bare);
   const entry: ShapeTexture = { sig, canvas, key: live ? undefined : 'shape:' + clip.id + ':' + ++shapeTextureSerial, margin };
   shapeTextures.delete(clip.id);
   shapeTextures.set(clip.id, entry);

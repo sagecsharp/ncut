@@ -587,7 +587,16 @@ function OutputOverlay() {
             startY: e.clientY,
             id: clip.id,
             edge,
-            start: { cx: box.cx, cy: box.cy, rotation: box.rotation, bw: box.width, bh: box.height, scale: world.transform.scale },
+            // (the box of a shape that is stretched as well is its size x scale x that stretch: the new size is the new
+            // side divided by all of it)
+            start: {
+              cx: box.cx,
+              cy: box.cy,
+              rotation: box.rotation,
+              bw: box.width,
+              bh: box.height,
+              scale: world.transform.scale * (mode === 'size' ? (horizontal ? stretchX(world.transform) : stretchY(world.transform)) : 1),
+            },
             stretch: mode === 'stretch' ? { prop: horizontal ? 'scaleX' : 'scaleY', s0: horizontal ? stretchX(clip.transform) : stretchY(clip.transform) } : null,
             x0: clip.transform.x,
             y0: clip.transform.y,

@@ -80,6 +80,12 @@ describe('edgeResize', () => {
     expect(r.dy).toBeCloseTo(25);
     expect(300 + r.dy + 50 / 2).toBeCloseTo(350);
   });
+  it('a shape that is stretched as well: the start scale carries the stretch of that side', () => {
+    // a 200 wide figure at scale 1 with a stretch of 2 shows 400 wide. the right edge goes from 700 to 800: 500 wide = a 250 figure
+    const r = edgeResize({ cx: 500, cy: 300, rotation: 0, bw: 400, bh: 100, scale: 1 * 2 }, 'r', 800, 300);
+    expect(r.width).toBeCloseTo(250);
+    expect(r.dx).toBeCloseTo(50);
+  });
   it('is clamped to a minimum size', () => {
     const r = edgeResize(start, 'l', 900, 300, 4);
     expect(r.width).toBeCloseTo(2);

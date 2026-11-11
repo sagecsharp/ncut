@@ -147,7 +147,8 @@ export function visualKeyProps(c: VisualClip): string[] {
   if (stretchX(t) !== 1 || keyed('scaleX')) props.splice(3, 0, 'scaleX');
   if (stretchY(t) !== 1 || keyed('scaleY')) props.splice(props.includes('scaleX') ? 4 : 3, 0, 'scaleY');
   // depth only means something on a solid or on extruded 3d text
-  const solid = c.threeD && (c.type === 'text' ? !!c.extrude : !!c.shape && c.shape !== 'plane');
+  // (any clip wrapped on a solid, text included; extruded text only when it has a depth: the same rule as the scene view)
+  const solid = !!c.threeD && ((!!c.shape && c.shape !== 'plane') || (c.type === 'text' && !!c.extrude && c.extrude.depth > 0));
   if (solid && (stretchZ(t) !== 1 || keyed('scaleZ'))) props.splice(props.indexOf('rotation'), 0, 'scaleZ');
   return props;
 }

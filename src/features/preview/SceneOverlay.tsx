@@ -1374,14 +1374,17 @@ export function SceneOverlay() {
       const writes = g.items.filter((it) => g.lock !== 2 || it.depth);
       const first = writes[0];
       if (first) readout.current = scaleReadout(scaledValue(first.v0[prop], g.d0, d, typed, MIN_SCALE, MAX_SCALE) / Math.max(1e-6, first.v0[prop]), g.lock);
-      for (const it of writes) {
-        store.setClipValue(it.id, prop, time, scaledValue(it.v0[prop], g.d0, d, typed, MIN_SCALE, MAX_SCALE), { skipHistory: true });
-        // a lock pressed mid drag: what was written before goes back to the grab value
+      // a lock pressed mid drag: what was written before goes back to the grab value, on every clip (a flat clip gets
+      // nothing from a z lock, but it must not keep what the drag gave it before the lock)
+      for (const it of g.items) {
         for (const p of Array.from(it.written)) {
           if (p === prop) continue;
           store.setClipValue(it.id, p, time, it.v0[p], { skipHistory: true });
           it.written.delete(p);
         }
+      }
+      for (const it of writes) {
+        store.setClipValue(it.id, prop, time, scaledValue(it.v0[prop], g.d0, d, typed, MIN_SCALE, MAX_SCALE), { skipHistory: true });
         it.written.add(prop);
       }
       return;

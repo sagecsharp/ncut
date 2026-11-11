@@ -6,6 +6,7 @@ import { curveLayout } from '../../engine/text';
 import { textAnimUnits } from '../../engine/textAnim';
 import type { TextBox, TextGlyph } from '../../engine/text';
 import { evalKeys } from '../../lib/anim';
+import { stretchX, stretchY } from '../../types';
 import type { Keyframes, TextClip, Transform } from '../../types';
 
 export type SplitMode = 'letters' | 'words' | 'lines';
@@ -298,6 +299,8 @@ export function splitNotes(clip: TextClip, mode?: SplitMode): string[] {
   const keyed = (prop: string) => (clip.keyframes?.[prop]?.length ?? 0) > 0;
   const moving = ['scale', 'scaleX', 'scaleY', 'rotation', ...(clip.threeD ? ['rotX', 'rotY'] : [])].filter(keyed);
   if (moving.length > 0) notes.push('the size / turn is animated: the pieces match at the playhead only');
+  // a letter on a curve that is stretched more one way than the other is slanted: a piece can be turned and stretched, not slanted
+  if (clip.curve && Math.abs(stretchX(clip.transform) - stretchY(clip.transform)) > 1e-3) notes.push('curved and stretched: the letters lose their slant');
   const looks: string[] = [];
   if (clip.gradient) looks.push('gradient');
   if (clip.motionIn || clip.motionOut || clip.motionLoop) looks.push('motion');

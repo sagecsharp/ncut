@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { shapePictureLive } from '../../engine/draw';
 import { createShapeClip, createTextClip } from '../../lib/factory';
+import { MAX_SCALE, MIN_SCALE, isStretched, stretchX, stretchY, stretchZ } from '../../types';
 import { visualKeyProps } from '../shell/shortcuts';
 import { wiggleDefault, wiggleProps } from './keyActions';
 import { solidDepthOf } from './place3d';
@@ -57,6 +59,43 @@ describe('solidDepthOf', () => {
   });
 });
 
+describe('the stretch that is read', () => {
+  it('missing or broken is no stretch', () => {
+    expect(stretchX({})).toBe(1);
+    expect(stretchY({ scaleY: NaN })).toBe(1);
+    expect(stretchZ({ scaleZ: Infinity })).toBe(1);
+    expect(isStretched({ scaleX: 1, scaleY: 1 })).toBe(false);
+  });
+  it('a keyed value that swings below zero or past the top is held inside the range, not read as 1', () => {
+    expect(stretchX({ scaleX: -0.2 })).toBe(MIN_SCALE);
+    expect(stretchY({ scaleY: 0 })).toBe(MIN_SCALE);
+    expect(stretchZ({ scaleZ: 1e6 })).toBe(MAX_SCALE);
+    expect(stretchX({ scaleX: 2.5 })).toBe(2.5);
+  });
+});
+
+describe('the picture of a shape with a keyed stretch', () => {
+  const key = [{ t: 0, v: 1, ease: 'linear' }, { t: 1, v: 2, ease: 'linear' }];
+  it('is live (no texture kept per frame), with and without its outline in the picture', () => {
+    const still = createShapeClip('t', 0, {});
+    expect(shapePictureLive(still)).toBe(false);
+    expect(shapePictureLive(still, true)).toBe(false);
+    const x = createShapeClip('t', 0, {});
+    x.keyframes = { scaleX: key } as never;
+    expect(shapePictureLive(x)).toBe(true);
+    expect(shapePictureLive(x, true)).toBe(true);
+    const y = createShapeClip('t', 0, {});
+    y.keyframes = { scaleY: key } as never;
+    expect(shapePictureLive(y, true)).toBe(true);
+  });
+  it('an even scale or a move does not make it live', () => {
+    const c = createShapeClip('t', 0, {});
+    c.keyframes = { scale: key, x: key } as never;
+    expect(shapePictureLive(c)).toBe(false);
+    expect(shapePictureLive(c, true)).toBe(false);
+  });
+});
+
 describe('wiggle', () => {
   it('offers the stretch of both sides with the amount scale has', () => {
     const c = createShapeClip('t', 0, {});
@@ -86,6 +125,17 @@ describe('key everything', () => {
     flat.transform = { ...flat.transform, scaleZ: 2 };
     expect(visualKeyProps(flat)).not.toContain('scaleZ');
   });
+  it('text wrapped on a solid has a depth, extruded text only with one', () => {
+    const wrapped = createTextClip('t', 0, { threeD: true, shape: 'box' });
+    wrapped.transform = { ...wrapped.transform, scaleZ: 2 };
+    expect(visualKeyProps(wrapped)).toContain('scaleZ');
+    const thin = createTextClip('t', 0, { threeD: true, extrude: { depth: 0 } as never });
+    thin.transform = { ...thin.transform, scaleZ: 2 };
+    expect(visualKeyProps(thin)).not.toContain('scaleZ');
+    const thick = createTextClip('t', 0, { threeD: true, extrude: { depth: 40 } as never });
+    thick.transform = { ...thick.transform, scaleZ: 2 };
+    expect(visualKeyProps(thick)).toContain('scaleZ');
+  });
 });
 
 describe('text split keeps the stretch', () => {
@@ -107,5 +157,16 @@ describe('text split keeps the stretch', () => {
     const c = createTextClip('t', 0, {});
     c.keyframes = { scaleX: [{ t: 0, v: 1, ease: 'linear' }] } as never;
     expect(splitNotes(c).some((n) => n.includes('animated'))).toBe(true);
+  });
+  it('curved text with an uneven stretch is noted: its letters are slanted and a piece cannot be', () => {
+    const c = createTextClip('t', 0, { curve: 180 });
+    c.transform = { ...c.transform, scaleX: 2 };
+    expect(splitNotes(c).some((n) => n.includes('slant'))).toBe(true);
+    const even = createTextClip('t', 0, { curve: 180 });
+    even.transform = { ...even.transform, scaleX: 2, scaleY: 2 };
+    expect(splitNotes(even).some((n) => n.includes('slant'))).toBe(false);
+    const straight = createTextClip('t', 0, {});
+    straight.transform = { ...straight.transform, scaleX: 2 };
+    expect(splitNotes(straight).some((n) => n.includes('slant'))).toBe(false);
   });
 });

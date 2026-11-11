@@ -700,8 +700,13 @@ export const DEFAULT_TRANSFORM: Transform = { x: 0, y: 0, scale: 1, rotation: 0,
 export const MIN_SCALE = 0.01;
 export const MAX_SCALE = 100;
 
+/**
+ * a missing or broken value is no stretch. every other value is held inside the range: a keyed stretch can pass below zero
+ * for a few frames (the back and elastic easings swing past their end), and that must read as "almost nothing", not as 1.
+ */
 function stretchOf(v: number | undefined): number {
-  return v === undefined || !(v > 0) || !isFinite(v) ? 1 : v;
+  if (v === undefined || !isFinite(v)) return 1;
+  return v < MIN_SCALE ? MIN_SCALE : v > MAX_SCALE ? MAX_SCALE : v;
 }
 /** the stretch of a transform along x (1 = none). multiply it onto scale for the width. */
 export function stretchX(t: { scaleX?: number }): number {
