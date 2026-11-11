@@ -135,6 +135,9 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
       for (const [k, v] of Object.entries(value)) {
         if (!keys.includes(k)) throw new ToolError(`the effect ${def.id} has no param ${k} (it has: ${keys.join(', ') || 'none'})`);
         if (typeof v !== 'number' || !Number.isFinite(v)) throw new ToolError(`params.${k} must be a number`);
+        // the store would clamp it without a word
+        const p = def.params.find((x) => x.key === k)!;
+        if (v < p.min || v > p.max) throw new ToolError(`params.${k} must be between ${p.min} and ${p.max}${p.unit ? ` ${p.unit}` : ''}, got ${v}`);
         touched.push(`p.${k}`);
       }
       params = value;

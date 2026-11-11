@@ -100,8 +100,9 @@ a path has to be absolute with a drive letter (`C:\...` or `C:/...`). no unc (`\
 `export_video` gets a `ticket` (the call's id) with its call. when the file is ready the page calls
 `shell.mcp.save(ticket)` and then starts a normal download named `ncut-mcp-<ticket>-<file name>`
 (`mcpDownloadName` in src/lib/shell.ts). main's download handler sees the marker: an armed ticket -> the file goes to
-the save folder only for the extensions export_video makes (mp4 webm gif wav ogg, any case; anything else is cancelled and the invoke resolves not ok) (the last folder the user saved to, else Downloads) under `<file name>` (cleaned like every download,
-never over an existing file: ` (2)`, ` (3)` ... are added), no dialog. the invoke resolves with `{ ok, name }` when the
+the save folder (the last folder the user saved to, else Downloads) under `<file name>` (cleaned like every download,
+never over an existing file: ` (2)`, ` (3)` ... are added), no dialog. only the extensions export_video makes are
+saved this way (mp4 webm gif wav ogg, any case): anything else is cancelled and the invoke resolves not ok. the invoke resolves with `{ ok, name }` when the
 download ended. a marked download without an armed ticket is cancelled. a ticket works once, is only given to
 `export_video`, and lapses after 12 hours; at most 8 are open (a full map drops the oldest unarmed ticket first, an armed one only when there is none). a ticket whose call ended in an error before it was armed is dropped at once. main remembers the full path per ticket so a later
 `export_status` answer with `saved: <ticket>` gets the path added.
@@ -115,7 +116,8 @@ a call that waited or ran past 170 s is answered as failed). in a dev build `win
 `listTools` and `callTool` for trying tools without the exe.
 
 rules for every tool:
-- times are timeline seconds unless a field says otherwise. sizes and positions are project pixels. x 0 / y 0 is the middle of the canvas.
+- times are timeline seconds unless a field says otherwise (at most 86400, a day). sizes and positions are project pixels. x 0 / y 0 is the middle of the canvas.
+- a value outside its range, a made up id (blend mode, transition, motion, clip) or an object of the wrong shape is refused with the reason, never clamped or stored as it came. a nested object may be given in part: it is laid over what the clip has.
 - a tool that changes the project makes exactly one undo step (helpers `oneStep`).
 - nothing is done silently: a refused edit (locked track, unknown id, a value that changed nothing) is an error result that says why and what to call instead.
 - answers are compact json text. ids are the app's own ids (`get_project` lists them).
@@ -124,14 +126,14 @@ rules for every tool:
 project and view (tools/project.ts):
 - `get_state` {}: app version, the open project (id, name, size, fps, duration, counts) or null, playhead time, selected ids, save state, whether an export runs, how many undo / redo steps.
 - `list_projects` {}: the stored projects, newest first.
-- `open_project` { id }
+- `open_project` { id }: the project that is already open is not opened again (the answer says so, the undo history stays).
 - `create_project` { name?, preset?: '16:9' | '9:16' | '1:1' | '4:3' | '4:5' | '21:9', width?, height?, fps? }: makes and opens it.
 - `close_project` {}: back to the projects screen (saved first).
 - `update_project` { name?, width?, height?, fps?, background? }
 - `get_project` {}: tracks top to bottom (id, kind, name, muted / hidden / locked), every clip as a short line (helpers `clipBrief`), media (id, name, kind, duration, size), markers, duration.
 - `get_clip` { id }: the whole clip as stored, plus `animatable` (prop, label, min, max, unit) and, for a solid, its side names.
 - `select_clips` { ids }, `seek` { time }, `undo` { steps? }, `redo` { steps? }
-- `add_track` { kind: 'video' | 'audio', index?, name? }, `update_track` { id, name?, muted?, hidden?, locked? }, `remove_track` { id } (takes its clips with it)
+- `add_track` { kind: 'video' | 'audio', index?, name? }, `update_track` { id, name?, muted?, hidden?, locked? }, `remove_track` { id } (takes its clips with it; a locked track is refused)
 - `add_marker` { time, name? }, `remove_marker` { id }
 
 choices (tools/catalog.ts):
@@ -140,7 +142,7 @@ choices (tools/catalog.ts):
   `fonts`, `enums` (blend modes, mask shapes, eases, look at, fits, canvas presets, fps), `fields` (what `update_clip` takes per clip type, with units and ranges).
 
 media (tools/media.ts):
-- `import_media` { paths }: adds the files to the open project's media. answers the new media ids.
+- `import_media` { paths }: adds the files to the open project's media. answers the new media and, for every file that was skipped, its name and why.
 - `import_project` { path }: adds a .ncut file as a new project. answers its id (not opened).
 - `add_media_clip` { asset, track?, start? }: a clip of that media on the timeline.
 - `replace_media` { id, asset }: the clip shows other media of the same kind.
@@ -150,13 +152,17 @@ new clips (tools/add.ts):
 - `add_shape` { preset?, kind?, shape3d?, track?, start?, duration?, fields? }
 - `add_effect` { effect, track?, start?, duration?, target?, amount?, params? }
 - `add_camera` { track?, start?, duration?, fields? }
-`fields` is the same thing `update_clip` takes as `patch`, applied in the same undo step.
+`fields` is the same thing `update_clip` takes as `patch`, applied in the same undo step. when the clip could not go where it was asked
+(the spot was taken) the answer has a `note` that says where it went.
 
 edits (tools/edit.ts):
-- `update_clip` { id, patch }: any stored field of the clip. `transform` goes through the store's clamps, an effect's `params` are checked against
-  the effect, `speed` re-times the clip. `start`, `duration`, `trimStart`, the track and `keyframes` are refused with the name of the tool that does it.
+- `update_clip` { id, patch }: any stored field of the clip (tools/editCheck.ts knows what each may hold). `transform` is a partial transform, an effect's
+  `params` are checked against the effect and its ranges, `speed` re-times the clip. `start`, `duration`, `trimStart`, the track, `keyframes`, the sides,
+  the media (`assetId`), the group and the effect id are refused with the name of the tool that does it. a property that has keyframes is refused too
+  (the keys decide its value). the answer lists the fields that changed; a patch that changes nothing is an error.
 - `set_sides` { id, sides }: what a 3d solid shows per side: `{ "front": { "clip": id, "fit"?: 'fill' | 'fit' | 'stretch' }, "top": { "color": "#rrggbb" }, "all": ..., "back": null }`.
-  null = that side shows the solid's own picture again. the names come from `get_clip` / `list_options shapes`.
+  null = that side shows the solid's own picture again. the names come from `get_clip` / `list_options shapes`; a shape with one side (sphere, ring, capsule)
+  takes `all`. a clip that shows this solid on one of its own sides is refused as a source (two solids would hide each other).
 - `move_clip` { id, start?, track? }, `trim_clip` { id, edge: 'start' | 'end', time }
 - `split_clips` { time, ids? }, `delete_clips` { ids, ripple? }, `duplicate_clips` { ids, same_time? }
 - `group_clips` { ids }, `ungroup_clips` { ids }
@@ -169,7 +175,9 @@ keyframes (tools/keys.ts):
 
 output (tools/output.ts):
 - `render_frame` { time?, max_size? }: the picture of the project at that time as a png image (longest side at most max_size, default 960, at most 1920).
+  a time at or past the end gives the last frame. fonts that could not be loaded are named in the answer.
 - `export_video` { format?: 'mp4' | 'webm' | 'gif' | 'wav' | 'ogg', quality?: 'low' | 'medium' | 'high', scale?: 1 | 0.75 | 0.5, fps?, start?, end?, audio?, name? }:
   starts the export and answers at once. one export at a time.
 - `export_status` {}: running (phase, progress 0..1), done (file name, and the full path added by the shell), failed (why) or none.
-- `export_cancel` {}
+  when the shell could not save the file on its own, the app shows its usual save dialog instead and the answer says no path is known.
+- `export_cancel` {}: too late once the file is being saved.

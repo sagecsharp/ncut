@@ -87,3 +87,13 @@ describe('the fields reference and the checks agree', () => {
     expect(unchecked).toEqual([]);
   });
 });
+
+describe('effect params keep inside the effect\'s ranges', () => {
+  it('refuses a value the store would clamp', async () => {
+    fresh();
+    const fx = (await call('add_effect', { effect: 'vignette', start: 0, duration: 2 })).data.id;
+    await refused('update_clip', { id: fx, patch: { params: { strength: 500 } } }, /params\.strength must be between 0 and 100/);
+    await oneStepOf(() => call('update_clip', { id: fx, patch: { params: { strength: 40 } } }));
+    expect((clipOf(fx) as { params: Record<string, number> }).params.strength).toBe(40);
+  });
+});
