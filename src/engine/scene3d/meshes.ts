@@ -16,6 +16,19 @@ export interface MeshArrays {
   /** u, v per vertex */
   uvs: Float32Array;
   indices: Uint16Array;
+  /**
+   * the index range of each side, in the order and with the names of faceNames(shape) (faces.ts). the ranges follow
+   * each other and cover every index once. a plane has none (and a mesh with no sides is drawn in one go).
+   */
+  groups: MeshGroup[];
+}
+
+export interface MeshGroup {
+  name: string;
+  /** first index in `indices` */
+  start: number;
+  /** number of indices */
+  count: number;
 }
 
 /** default number of segments around a round shape */
@@ -30,6 +43,11 @@ class Builder {
   pos: number[] = [];
   uv: number[] = [];
   idx: number[] = [];
+  groups: MeshGroup[] = [];
+  /** the indices that follow belong to the side `name` */
+  side(name: string): void {
+    this.groups.push({ name, start: this.idx.length, count: 0 });
+  }
   get count(): number {
     return this.pos.length / 3;
   }
@@ -45,7 +63,11 @@ class Builder {
     this.idx.push(a, b, c, a, c, d);
   }
   done(): MeshArrays {
-    return { positions: new Float32Array(this.pos), uvs: new Float32Array(this.uv), indices: new Uint16Array(this.idx) };
+    for (let i = 0; i < this.groups.length; i++) {
+      const g = this.groups[i]!;
+      g.count = (i + 1 < this.groups.length ? this.groups[i + 1]!.start : this.idx.length) - g.start;
+    }
+    return { positions: new Float32Array(this.pos), uvs: new Float32Array(this.uv), indices: new Uint16Array(this.idx), groups: this.groups };
   }
 }
 
@@ -74,15 +96,16 @@ function plane(): MeshArrays {
 function box(): MeshArrays {
   const b = new Builder();
   // each face: origin (its top left corner seen from outside), the step along u, the step along v
-  const faces: [number[], number[], number[]][] = [
-    [[-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0]], // front (faces the viewer)
-    [[0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0]], // back
-    [[0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0]], // right
-    [[-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0]], // left
-    [[-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1]], // top
-    [[-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1]], // bottom
+  const faces: [string, number[], number[], number[]][] = [
+    ['front', [-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0]], // faces the viewer
+    ['back', [0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0]],
+    ['right', [0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0]],
+    ['left', [-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0]],
+    ['top', [-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1]], // y = -0.5
+    ['bottom', [-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1]],
   ];
-  for (const [o, u, v] of faces) {
+  for (const [name, o, u, v] of faces) {
+    b.side(name);
     const base = b.count;
     for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) {
       b.vert(o[0]! + u[0]! * fu + v[0]! * fv, o[1]! + u[1]! * fu + v[1]! * fv, o[2]! + u[2]! * fu + v[2]! * fv, fu, fv);
@@ -95,6 +118,7 @@ function box(): MeshArrays {
 function sphere(seg: number): MeshArrays {
   const rings = Math.max(2, Math.round(seg / 2));
   const b = new Builder();
+  b.side('surface');
   for (let j = 0; j <= rings; j++) {
     const v = j / rings;
     const r = 0.5 * Math.sin(Math.PI * v);
@@ -117,6 +141,7 @@ function sphere(seg: number): MeshArrays {
 
 function cylinder(seg: number): MeshArrays {
   const b = new Builder();
+  b.side('side');
   for (let j = 0; j <= 1; j++) {
     for (let i = 0; i <= seg; i++) {
       const u = i / seg;
@@ -125,7 +150,9 @@ function cylinder(seg: number): MeshArrays {
     }
   }
   for (let i = 0; i < seg; i++) b.idx.push(i, i + 1, i + seg + 2, i, i + seg + 2, i + seg + 1);
+  b.side('top');
   cap(b, -0.5, true, seg);
+  b.side('bottom');
   cap(b, 0.5, false, seg);
   return b.done();
 }
@@ -133,6 +160,7 @@ function cylinder(seg: number): MeshArrays {
 /** apex up. u runs around the side (0.5 faces the viewer), v from the tip (0) to the base (1). */
 function cone(seg: number): MeshArrays {
   const b = new Builder();
+  b.side('side');
   const ring = b.count;
   for (let i = 0; i <= seg; i++) {
     const u = i / seg;
@@ -144,6 +172,7 @@ function cone(seg: number): MeshArrays {
     const tip = b.vert(0, -0.5, 0, (i + 0.5) / seg, 0);
     b.tri(tip, ring + i + 1, ring + i);
   }
+  b.side('bottom');
   cap(b, 0.5, false, seg);
   return b.done();
 }
@@ -155,19 +184,21 @@ function cone(seg: number): MeshArrays {
 function pyramid(): MeshArrays {
   const b = new Builder();
   // base corners of each side seen from outside, left to right (same order as the box faces)
-  const sides: [number, number, number, number][] = [
-    [-0.5, -0.5, 0.5, -0.5], // front (faces the viewer): x -0.5 -> 0.5 at z = -0.5
-    [0.5, -0.5, 0.5, 0.5], // right
-    [0.5, 0.5, -0.5, 0.5], // back
-    [-0.5, 0.5, -0.5, -0.5], // left
+  const sides: [string, number, number, number, number][] = [
+    ['front', -0.5, -0.5, 0.5, -0.5], // faces the viewer: x -0.5 -> 0.5 at z = -0.5
+    ['right', 0.5, -0.5, 0.5, 0.5],
+    ['back', 0.5, 0.5, -0.5, 0.5],
+    ['left', -0.5, 0.5, -0.5, -0.5],
   ];
-  for (const [x0, z0, x1, z1] of sides) {
+  for (const [name, x0, z0, x1, z1] of sides) {
+    b.side(name);
     const t = b.vert(0, -0.5, 0, 0.5, 0);
     const l = b.vert(x0, 0.5, z0, 0, 1);
     const r = b.vert(x1, 0.5, z1, 1, 1);
     b.tri(t, r, l);
   }
   // base: the picture seen from below, like the box bottom
+  b.side('bottom');
   const base = b.count;
   for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) b.vert(-0.5 + fu, 0.5, -0.5 + fv, fu, fv);
   b.quad(base, base + 1, base + 2, base + 3);
@@ -186,6 +217,7 @@ function torus(seg: number): MeshArrays {
   const R = 0.5 / (1 + TORUS_TUBE);
   const r = R * TORUS_TUBE;
   const b = new Builder();
+  b.side('surface');
   for (let j = 0; j <= tube; j++) {
     const v = j / tube;
     const psi = TAU * v;
@@ -217,6 +249,7 @@ export const CAPSULE_CAP = 0.25;
 function capsule(seg: number): MeshArrays {
   const rings = Math.max(2, Math.round(seg / 4));
   const b = new Builder();
+  b.side('surface');
   const rows: [number, number, number][] = []; // radius, y, v
   for (let k = 0; k <= rings; k++) {
     const phi = (Math.PI / 2) * (k / rings);
@@ -256,13 +289,11 @@ function extruded(kind: OutlineKind, seg: number): MeshArrays {
   for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
   for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
   for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, 1 - o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
-  for (let t = 0; t < o.triangles.length; t += 3) {
-    const a = o.triangles[t]!;
-    const bb = o.triangles[t + 1]!;
-    const c = o.triangles[t + 2]!;
-    b.tri(a, bb, c);
-    b.tri(2 * n + a, 2 * n + c, 2 * n + bb);
-  }
+  b.side('front');
+  for (let t = 0; t < o.triangles.length; t += 3) b.tri(o.triangles[t]!, o.triangles[t + 1]!, o.triangles[t + 2]!);
+  b.side('back');
+  for (let t = 0; t < o.triangles.length; t += 3) b.tri(2 * n + o.triangles[t]!, 2 * n + o.triangles[t + 2]!, 2 * n + o.triangles[t + 1]!);
+  b.side('side');
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
     // same handedness as the box faces (their normals point away from the viewer's side), culling is off anyway

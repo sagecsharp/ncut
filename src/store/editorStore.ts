@@ -67,6 +67,7 @@ import {
 } from '../lib/anim';
 import { uid } from '../lib/id';
 import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
+import { faceClipId, remapFaces } from '../engine/scene3d/faces';
 import { BPM_MAX, BPM_MIN, type EffectBeat, parseBeatOffset, parseBpm, parseEffectBeat, sameEffectBeat } from '../lib/tempo';
 import { clamp } from '../lib/time';
 import {
@@ -341,16 +342,45 @@ export interface EditorState {
 
 /* ---------- pure helpers ---------- */
 
-/** point the links (parent, camera target, group) of freshly copied clips at each other */
+/**
+ * the clips with the clip ids in their side fills (Spatial.faces) swapped or dropped through `map` (see remapFaces: undefined
+ * keeps an id, null drops the entry). only the clips in `only` when given. clips that change are new objects, the rest stay.
+ */
+export function remapSides(clips: Clip[], map: (id: string) => string | null | undefined, only?: ReadonlySet<string>): Clip[] {
+  return clips.map((c) => {
+    if (!isVisualClip(c) || !c.faces || (only && !only.has(c.id))) return c;
+    const faces = remapFaces(c.faces, map);
+    if (faces === c.faces) return c;
+    const { faces: _drop, ...rest } = c;
+    void _drop;
+    return (faces ? { ...rest, faces } : rest) as Clip;
+  });
+}
+
+/** point the links (parent, camera target, group, the clips on the sides of a solid) of freshly copied clips at each other */
 function relinkIn(project: Project, idMap: ReadonlyMap<string, string>, originals: readonly Clip[]): Project {
   const copyIds = new Set(idMap.values());
-  const copies = relinkCopies(
-    project.clips.filter((c) => copyIds.has(c.id)),
-    idMap,
-    originals,
+  // a copied solid shows the copy of its picture clip when that was copied along, else it keeps naming the original
+  const copies = remapSides(
+    relinkCopies(
+      project.clips.filter((c) => copyIds.has(c.id)),
+      idMap,
+      originals,
+    ),
+    (id) => idMap.get(id),
   );
   const byId = new Map(copies.map((c) => [c.id, c]));
   return { ...project, clips: project.clips.map((c) => byId.get(c.id) ?? c) };
+}
+
+/** does a solid show one of these clips on a side? */
+function showsAny(c: Clip, ids: ReadonlySet<string>): boolean {
+  if (!isVisualClip(c) || !c.faces) return false;
+  for (const f of Object.values(c.faces)) {
+    const id = faceClipId(f);
+    if (id !== null && ids.has(id)) return true;
+  }
+  return false;
 }
 
 /**
@@ -376,6 +406,8 @@ export function repointSplitDependents(clips: Clip[], rightOf: ReadonlyMap<strin
       const look = map(c.lookTarget);
       if (parent) c = { ...c, parent } as Clip;
       if (look) c = { ...c, lookTarget: look } as Clip;
+      // a solid that shows a clip that was cut shows its right half from the cut on
+      if (isVisualClip(c) && c.faces) c = remapSides([c], (id) => rightOf.get(id))[0]!;
     }
     if (isCameraClip(c)) {
       const t = map(c.target);
@@ -539,7 +571,8 @@ export function removeClipsKeepingPose(p: Project, gone: ReadonlySet<string>): C
     if (tr === c.transform) return c;
     return { ...c, transform: { ...tr, scale: clamp(tr.scale, MIN_SCALE, MAX_SCALE) } } as Clip;
   });
-  return unlinkRemoved(placed, gone);
+  // the sides that showed a removed clip go back to the solid's own picture (in the same step, so one undo restores both)
+  return remapSides(unlinkRemoved(placed, gone), (id) => (gone.has(id) ? null : undefined));
 }
 
 function sameKeyframes(a: Keyframes | undefined, b: Keyframes | undefined): boolean {
@@ -1240,7 +1273,7 @@ export const useEditor = create<EditorState>()((set, get) => {
             const hangsOn =
               c.type === 'effect' || c.type === 'camera'
                 ? !!c.target && extra.has(c.target)
-                : isVisualClip(c) && ((!!c.parent && extra.has(c.parent)) || (!!c.lookTarget && extra.has(c.lookTarget)));
+                : isVisualClip(c) && ((!!c.parent && extra.has(c.parent)) || (!!c.lookTarget && extra.has(c.lookTarget)) || showsAny(c, extra));
             if (!hangsOn) continue;
             targets.add(c.id);
             extra.add(c.id);
@@ -1306,7 +1339,8 @@ export const useEditor = create<EditorState>()((set, get) => {
         }
         created.push(...extraCreated);
         if (created.length === 0) return null;
-        const linked = repointSplitDependents(repointSplitHalves(clips, rightOf), rightOf, time);
+        // the right half of a solid shows the right half of a picture clip that was cut with it
+        const linked = repointSplitDependents(remapSides(repointSplitHalves(clips, rightOf), (id) => rightOf.get(id), new Set(rightOf.values())), rightOf, time);
         if (rightGroups.size === 0) return { ...p, clips: linked };
         // a group of one is no group
         const size = new Map<string, number>();

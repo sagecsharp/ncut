@@ -1,5 +1,6 @@
 /** pure planning of a freeze frame (no store, no dom): which clip, where the still goes, what moves */
 import { resolveClip } from '../../lib/anim';
+import { faceSourceSet } from '../../engine/scene3d/faces';
 import { clipEnd, fadeFactor } from '../../lib/timelineOps';
 import { formatTimecode } from '../../lib/time';
 import type { Clip, ClipAnim, EffectClip, ImageClip, Project, Transition, VideoClip } from '../../types';
@@ -28,9 +29,11 @@ export function pickFreezeTarget(project: Project, selection: readonly string[],
     if (inside(only)) return only;
   }
   const hidden = new Set(project.tracks.filter((t) => t.hidden).map((t) => t.id));
+  // a clip that is shown on a side of a solid is not on screen by itself: the frame there is the solid's
+  const onSides = faceSourceSet(project);
   for (const track of project.tracks) {
     if (hidden.has(track.id)) continue;
-    const hit = project.clips.find((c) => c.trackId === track.id && inside(c));
+    const hit = project.clips.find((c) => c.trackId === track.id && !onSides.has(c.id) && inside(c));
     if (hit) return hit as VideoClip;
   }
   return null;
@@ -187,7 +190,7 @@ export function freezeEffectCopies(clips: readonly Clip[], videoId: string, time
 
 /**
  * the still: the video clip's look (static, already resolved at the time) as a fresh image clip.
- * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, crop, radius,
+ * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, faces, crop, radius,
  * mask, blend, adjust, chromaKey, parent, motionBlur) and, from `handover`, the entrance / exit.
  * deliberately NOT copied:
  * - id, trackId (same track), name, start, duration: the still has its own.
@@ -226,6 +229,8 @@ export function stillClipFrom(
   if (video.lookAt) still.lookAt = video.lookAt;
   if (video.shape) still.shape = video.shape;
   if (video.shapeDepth !== undefined) still.shapeDepth = video.shapeDepth;
+  // what its sides show (other clips are still named by id)
+  if (video.faces) still.faces = structuredClone(video.faces);
   if (video.crop) still.crop = { ...video.crop };
   if (video.radius !== undefined) still.radius = video.radius;
   if (video.blend) still.blend = video.blend;
