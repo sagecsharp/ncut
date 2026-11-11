@@ -14,6 +14,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const shellRules = require('./rules.cjs');
 const { createMcp } = require('./mcp.cjs');
+const mcpRules = require('./mcpRules.cjs');
 
 const DIST = path.join(__dirname, '..', 'dist');
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
@@ -289,7 +290,8 @@ function setupMcp() {
   onRequest('ncut:mcp-state', MCP_OFF, () => mcp.state());
   onRequest('ncut:mcp-enable', MCP_OFF, (_w, on) => mcp.setEnabled(on === true));
   onRequest('ncut:mcp-rotate', MCP_OFF, () => mcp.rotate());
-  onRequest('ncut:mcp-copy', false, (_w, kind) => (kind === 'claude' || kind === 'http' || kind === 'stdio' ? mcp.copy(kind) : false));
+  // the token only goes to the clipboard while the window is the one in use, not from a page nobody looks at
+  onRequest('ncut:mcp-copy', false, (w, kind) => (mcpRules.copyAllowed(kind, w.isFocused()) ? mcp.copy(kind) : false));
   onRequest('ncut:mcp-save', { ok: false, name: null }, (_w, ticket) =>
     Number.isSafeInteger(ticket) ? mcp.armSave(ticket) : { ok: false, name: null },
   );
@@ -468,12 +470,18 @@ function createWindow() {
     if (details.isMainFrame && !details.isSameDocument) {
       releaseBlocker(st);
       st.ready = false;
+      // the calls the old page held are never answered
+      if (mcp) mcp.failPending();
       if (!w.isDestroyed()) w.setProgressBar(-1);
     }
   });
   wc.on('render-process-gone', () => {
     releaseBlocker(st);
     st.ready = false;
+    if (mcp) mcp.failPending();
+  });
+  w.on('closed', () => {
+    if (mcp) mcp.failPending();
   });
   const home = devUrl ?? shellRules.HOME;
   // the page failed to load at all: show the window (it is blank, but it must not be invisible)

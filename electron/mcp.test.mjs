@@ -93,10 +93,11 @@ async function setup(options = {}) {
       return true;
     },
     writeClipboard: (t) => ctx.clip.push(t),
-    saveFolder: () => saveDir,
+    saveFolder: () => options.saveFolder ?? saveDir,
     onSaved: (file) => ctx.saved.push(file),
     log: (m) => ctx.logs.push(m),
     timing: options.timing,
+    limits: options.limits,
     ports: { first, tries: options.tries ?? 5 },
   });
   contexts.push(ctx);
@@ -1007,4 +1008,227 @@ describe('dispose', () => {
     const state = await ctx.mcp.setEnabled(true);
     expect(state.running).toBe(false);
   });
+});
+
+describe('review fixes: security and shutdown', () => {
+  const NOT_OK = { ok: false, name: null };
+
+  async function exportTicket(ctx, id) {
+    const before = ctx.calls.length;
+    await ctx.call('export_video', {}, id);
+    return ctx.calls[before].ticket;
+  }
+
+  async function waitFor(fn) {
+    for (let i = 0; i < 200 && !fn(); i++) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  winOnly('a call that is reading files when the server is turned off never reaches the page', async () => {
+    const ctx = await setup();
+    const p = path.join(ctx.dir, 'a.png');
+    fs.writeFileSync(p, 'x');
+    const orig = fs.promises.readFile;
+    let entered = false;
+    let open;
+    const gate = new Promise((r) => (open = r));
+    fs.promises.readFile = async (...a) => {
+      entered = true;
+      await gate;
+      return orig(...a);
+    };
+    try {
+      const sent = ctx.call('import_media', { paths: [p] }).catch((e) => e);
+      await waitFor(() => entered);
+      await ctx.mcp.setEnabled(false);
+      open();
+      await sent;
+      await new Promise((r) => setTimeout(r, 50));
+      expect(ctx.calls).toEqual([]);
+    } finally {
+      fs.promises.readFile = orig;
+    }
+  });
+
+  winOnly('the files of all calls share one budget, and it is free again when a call settles', async () => {
+    const ctx = await setup({ timing: { call: 5000 }, limits: { inFlight: 100 } });
+    const p = path.join(ctx.dir, 'a.png');
+    fs.writeFileSync(p, Buffer.alloc(80));
+    ctx.answer = () => undefined;
+    const first = ctx.call('import_media', { paths: [p] }, 1);
+    await waitFor(() => ctx.calls.length === 1);
+    const second = await ctx.call('import_media', { paths: [p] }, 2);
+    expect(second.json.result.isError).toBe(true);
+    expect(second.json.result.content[0].text).toContain('other imports are still being read');
+    expect(ctx.calls).toHaveLength(1);
+    ctx.mcp.failPending();
+    await first;
+    ctx.answer = () => JSON.stringify({ content: [] });
+    const third = await ctx.call('import_media', { paths: [p] }, 3);
+    expect(third.json.result.isError).toBeUndefined();
+  });
+
+  it('a ticket download is only saved with an extension export_video makes', async () => {
+    const ctx = await setup({ timing: { arm: 5000 } });
+    for (const bad of ['evil.bat', 'evil.lnk', 'noext', 'a.mp4.exe']) {
+      const t = await exportTicket(ctx, 1);
+      const armed = ctx.mcp.armSave(t);
+      const item = fakeItem(`ncut-mcp-${t}-${bad}`);
+      expect(ctx.mcp.claimDownload(item)).toBe(true);
+      expect(item.cancelled).toBe(true);
+      expect(item.savePath).toBeNull();
+      expect(await armed).toEqual(NOT_OK);
+    }
+    for (const good of ['a.MP4', 'b.webm', 'c.gif', 'd.wav', 'e.Ogg']) {
+      const t = await exportTicket(ctx, 1);
+      const armed = ctx.mcp.armSave(t);
+      const item = fakeItem(`ncut-mcp-${t}-${good}`);
+      ctx.mcp.claimDownload(item);
+      expect(item.cancelled).toBe(false);
+      fs.writeFileSync(item.savePath, 'x');
+      item.emit('done', {}, 'completed');
+      expect((await armed).ok).toBe(true);
+    }
+    expect(fs.readdirSync(ctx.saveDir).sort()).toEqual(['a.MP4', 'b.webm', 'c.gif', 'd.wav', 'e.Ogg']);
+  });
+
+  it('a save folder that cannot be used fails at once, naming the code and not the folder', async () => {
+    const missing = path.join(os.tmpdir(), 'ncut-mcp-missing-folder', 'inner');
+    const ctx = await setup({ saveFolder: missing, timing: { arm: 5000 } });
+    const t = await exportTicket(ctx, 1);
+    const armed = ctx.mcp.armSave(t);
+    const orig = fs.openSync;
+    let opens = 0;
+    fs.openSync = (...a) => {
+      if (String(a[0]).startsWith(missing)) opens++;
+      return orig(...a);
+    };
+    const item = fakeItem(`ncut-mcp-${t}-a.mp4`);
+    try {
+      expect(ctx.mcp.claimDownload(item)).toBe(true);
+    } finally {
+      fs.openSync = orig;
+    }
+    expect(opens).toBe(1);
+    expect(item.cancelled).toBe(true);
+    expect(await armed).toEqual(NOT_OK);
+    expect(ctx.logs.some((l) => l.includes('ENOENT'))).toBe(true);
+    expect(ctx.logs.join('\n')).not.toContain('ncut-mcp-missing-folder');
+  });
+
+  it('a port that moved gets a new token', async () => {
+    const ctx = await setup();
+    const oldToken = ctx.config().token;
+    const oldPort = ctx.mcp.state().port;
+    await ctx.mcp.setEnabled(false);
+    const blocker = net.createServer();
+    await new Promise((resolve) => blocker.listen(oldPort, '127.0.0.1', resolve));
+    try {
+      const state = await ctx.mcp.setEnabled(true);
+      expect(state.running).toBe(true);
+      expect(state.port).not.toBe(oldPort);
+      expect(ctx.config().token).not.toBe(oldToken);
+      expect((await ctx.rpc({ jsonrpc: '2.0', id: 1, method: 'ping' }, { token: oldToken })).status).toBe(401);
+      expect((await ctx.rpc({ jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(200);
+    } finally {
+      await new Promise((resolve) => blocker.close(resolve));
+    }
+  });
+
+  it('a port that did not move keeps its token', async () => {
+    const ctx = await setup();
+    const oldToken = ctx.config().token;
+    await ctx.mcp.setEnabled(false);
+    await ctx.mcp.setEnabled(true);
+    expect(ctx.config().token).toBe(oldToken);
+  });
+
+  it('a reload fails the waiting calls at once: a call gets a tool result, a list the -32000 error', async () => {
+    const ctx = await setup({ timing: { call: 5000, list: 5000 } });
+    ctx.answer = () => undefined;
+    const call = ctx.call('get_state', {}, 1);
+    const list = ctx.rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    await waitFor(() => ctx.calls.length === 2);
+    ctx.mcp.failPending();
+    const [c, l] = await Promise.all([call, list]);
+    expect(c.json.result.isError).toBe(true);
+    expect(c.json.result.content[0].text).toBe('the ncut window was reloaded or closed while this ran');
+    expect(l.json.error.code).toBe(rules.SERVER_ERROR);
+    expect(l.json.error.message).toContain('reloaded or closed');
+    // nothing waits any more: this is harmless
+    ctx.mcp.failPending();
+  });
+
+  it('a ticket of a call that ended in an error and was never armed is dropped', async () => {
+    const ctx = await setup({ timing: { arm: 5000 } });
+    ctx.answer = () => JSON.stringify({ content: [{ type: 'text', text: 'an export is already running' }], isError: true });
+    const t = await exportTicket(ctx, 1);
+    expect(await ctx.mcp.armSave(t)).toEqual(NOT_OK);
+    const item = fakeItem(`ncut-mcp-${t}-a.mp4`);
+    ctx.mcp.claimDownload(item);
+    expect(item.cancelled).toBe(true);
+  });
+
+  it('more tickets than fit push out the unarmed ones, not the running export', async () => {
+    const ctx = await setup({ timing: { arm: 5000 } });
+    const running = await exportTicket(ctx, 1);
+    const armed = ctx.mcp.armSave(running);
+    for (let i = 0; i < 12; i++) await exportTicket(ctx, i + 2);
+    const item = fakeItem(`ncut-mcp-${running}-a.mp4`);
+    ctx.mcp.claimDownload(item);
+    expect(item.cancelled).toBe(false);
+    fs.writeFileSync(item.savePath, 'x');
+    item.emit('done', {}, 'completed');
+    expect((await armed).ok).toBe(true);
+  });
+
+  it('a connection that trickles a header is closed within seconds', async () => {
+    const ctx = await setup();
+    const sock = net.connect(ctx.mcp.state().port, '127.0.0.1');
+    sock.on('error', () => {});
+    sock.resume();
+    const closed = new Promise((resolve) => sock.on('close', () => resolve(Date.now())));
+    await new Promise((r) => sock.on('connect', r));
+    const t0 = Date.now();
+    sock.write('POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n');
+    const t1 = await Promise.race([closed, new Promise((r) => setTimeout(() => r(-1), 9000))]);
+    expect(t1).toBeGreaterThan(0);
+    expect(t1 - t0).toBeLessThan(8000);
+    sock.destroy();
+  }, 15000);
+
+  it('a normal client keeps its socket between requests', async () => {
+    const ctx = await setup();
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const ports = [];
+    const once = () =>
+      new Promise((resolve, reject) => {
+        const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' });
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port: ctx.mcp.state().port,
+            path: '/mcp',
+            method: 'POST',
+            agent,
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.config().token}`, 'Content-Length': Buffer.byteLength(body) },
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode));
+          },
+        );
+        req.on('socket', (s) => ports.push(s.localPort));
+        req.on('error', reject);
+        req.end(body);
+      });
+    try {
+      expect(await once()).toBe(200);
+      // idle for longer than the header timeout, shorter than the keep-alive one
+      await new Promise((r) => setTimeout(r, 3600));
+      expect(await once()).toBe(200);
+      expect(ports[1]).toBe(ports[0]);
+    } finally {
+      agent.destroy();
+    }
+  }, 15000);
 });
