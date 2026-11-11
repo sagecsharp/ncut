@@ -8,6 +8,9 @@ import type { ToolDef } from '../types';
 
 const DESKTOP_ONLY = 'this tool only works in the ncut desktop app: the app reads the files from disk. in a browser there is no way to hand it a path';
 
+/** the messages unpackProject throws for a file that is not a readable project (storage/projectFile.ts) */
+const BAD_FILE = ['not an ncut project file', 'the project file is damaged', 'this project file was made by a newer version of ncut'];
+
 function assetBrief(a: MediaAsset): Record<string, unknown> {
   return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio };
 }
@@ -20,7 +23,7 @@ export const mediaTools: ToolDef[] = [
       'adds video, audio and image files from disk to the open project\'s media (not to the timeline: add_media_clip does that). ' +
       'paths is required: 1 to 16 absolute paths with a drive letter, like C:/clips/a.mp4. ' +
       'video: mp4 m4v mov webm mkv ogv avi ts mts 3gp. audio: mp3 wav ogg oga m4a aac flac opus weba aiff aif. image: png jpg jpeg gif webp bmp avif svg. ' +
-      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio). files that cannot be read are left out and counted in "skipped". desktop app only.',
+      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio). files that cannot be read are left out and listed in "skipped" (name and why). desktop app only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -38,10 +41,14 @@ export const mediaTools: ToolDef[] = [
       needProject();
       // the type stays empty: the importer tells the kind from the extension
       const files = ctx.files.map((f) => new File([f.bytes], f.name));
-      const added = await importFiles(files);
-      if (added.length === 0) throw new ToolError('none of the files could be imported (unsupported or unreadable). see the list of formats in this tool\'s description');
-      const skipped = files.length - added.length;
-      return ok({ media: added.map(assetBrief), ...(skipped > 0 ? { skipped } : {}) });
+      // quiet: the answer names the skipped files, a toast would say it twice
+      const skipped: { name: string; why: string }[] = [];
+      const added = await importFiles(files, { quiet: true, onSkip: (name, why) => skipped.push({ name, why }) });
+      if (added.length === 0) {
+        const named = skipped.map((s) => `${s.name} (${s.why})`).join(', ');
+        throw new ToolError(`none of the files could be imported${named ? `: ${named}` : ''}. see the list of formats in this tool's description`);
+      }
+      return ok({ media: added.map(assetBrief), ...(skipped.length > 0 ? { skipped } : {}) });
     },
   },
   {
@@ -63,7 +70,10 @@ export const mediaTools: ToolDef[] = [
       try {
         id = await importProjectFile(new Blob([file.bytes]));
       } catch (e) {
-        throw new ToolError(`${file.name} is not a project ncut can read${e instanceof Error && e.message ? ` (${e.message})` : ''}`);
+        const why = e instanceof Error ? e.message : '';
+        // only what unpackProject throws is about the file, anything else (quota, db) is about storing it
+        const unreadable = BAD_FILE.includes(why) ? '. the file is not a project ncut can read' : '';
+        throw new ToolError(`could not import ${file.name}${why ? `: ${why}` : ''}${unreadable}`);
       }
       return ok({ id, note: 'stored as a new project, not opened. open_project opens it' });
     },

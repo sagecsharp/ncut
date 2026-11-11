@@ -187,3 +187,14 @@ describe('the fields reference matches the store', () => {
     }
   });
 });
+
+describe('the fields reference states the ranges the store and update_clip enforce', () => {
+  const row = (list: FieldRow[], field: string) => list.find((r) => r.field === field)!;
+  it('writes speed, bpm and the mask size into the rows', () => {
+    expect(row(VIDEO_FIELDS, 'speed').type).toContain('0.25..4');
+    expect(row(AUDIO_FIELDS, 'bpm').type).toContain('20..400');
+    expect(row(VIDEO_FIELDS, 'volume').type).toContain('0..2');
+    expect(row(PICTURE_FIELDS, 'mask').note).toContain('height 0..3');
+    expect(row(PICTURE_FIELDS, 'transform').note).toContain('opacity 0..1');
+  });
+});
