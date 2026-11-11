@@ -108,6 +108,7 @@ const SPATIAL_KEYS = [
   'lookAt',
   'shape',
   'shapeDepth',
+  'faces',
   'transition',
   'blend',
   'crop',
@@ -1085,6 +1086,14 @@ export const useEditor = create<EditorState>()((set, get) => {
               changed = true;
               continue;
             }
+          }
+          // the sides of a solid: no fill left = no field (the saved project stays as it was before the feature)
+          if (key === 'faces' && (value === null || typeof value !== 'object' || Object.keys(value as object).length === 0)) {
+            if (key in next) {
+              delete next[key];
+              changed = true;
+            }
+            continue;
           }
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;

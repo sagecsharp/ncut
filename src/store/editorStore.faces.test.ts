@@ -131,3 +131,19 @@ describe('splitting', () => {
     expect(clipOf(made[0]!).faces!.front).toEqual({ clip: 'a' });
   });
 });
+
+describe('writing the sides through updateClip', () => {
+  it('a clip that never had sides takes them, and an empty value takes the field away again', () => {
+    open((t) => [image(t, 'c', 0, 10, { threeD: true, shape: 'box' })]);
+    expect('faces' in clipOf('c')).toBe(false);
+    ed().updateClip('c', { faces: { top: { color: '#ff0000' } } });
+    expect(clipOf('c').faces).toEqual({ top: { color: '#ff0000' } });
+    ed().updateClip('c', { faces: null as never });
+    expect('faces' in clipOf('c')).toBe(false);
+    ed().updateClip('c', { faces: { top: { clip: 'a' } } });
+    ed().updateClip('c', { faces: {} });
+    expect('faces' in clipOf('c')).toBe(false);
+    ed().undo();
+    expect(clipOf('c').faces).toEqual({ top: { clip: 'a' } });
+  });
+});
