@@ -45,6 +45,8 @@ import { gifExportFps, gifSizeWarning, paletteSampleFrames, sampleSize } from '.
 import { GifPoolError, createGifPool, gifPartWorkers, gifWorkerCount, planGifParts } from './gifPool';
 import { type TimeRange, clampRange, rangeFrameCount } from './range';
 import { createFrameSources } from './sources';
+import { isStillContainer, jpegQuality, renderStill, stillMime, stillSize } from './still';
+import type { StillContainer } from './still';
 import { KEYFRAME_SECONDS, unpackGifFrames } from './segment';
 import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './parallel';
 import { checkPartsMedia } from './mediaCheck';
@@ -63,7 +65,8 @@ export type VideoContainer = 'mp4' | 'webm';
 export type AudioContainer = 'wav' | 'ogg';
 /** gif is a picture only file (no audio), made by lib/gif.ts instead of webcodecs */
 export type ImageContainer = 'gif';
-export type ExportContainer = VideoContainer | AudioContainer | ImageContainer;
+/** png / jpg are one picture (still.ts): the first frame of the range */
+export type ExportContainer = VideoContainer | AudioContainer | ImageContainer | StillContainer;
 
 export function isAudioContainer(c: ExportContainer): c is AudioContainer {
   return c === 'wav' || c === 'ogg';
@@ -177,6 +180,8 @@ const AUDIO_CODECS: Record<ExportContainer, AudioCodec[]> = {
   wav: ['pcm-s16'],
   ogg: ['opus', 'vorbis'],
   gif: [],
+  png: [],
+  jpg: [],
 };
 
 export const CODEC_LABEL: Record<string, string> = {
@@ -385,6 +390,18 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   if (!range) throw new Error('the range is empty, pick a start before the end');
   if (signal?.aborted) throw abortError();
   if (isAudioContainer(options.container)) return exportAudioOnly(project, options.container, range, hooks);
+  if (isStillContainer(options.container)) {
+    // one picture: the frame a video of this range starts with. no encoder, no sound, no frame rate
+    const size = stillSize(project, options.scale);
+    onProgress?.({ phase: 'video', progress: 0, frame: 0, totalFrames: 1 });
+    const blob = await renderStill(
+      project,
+      { time: range.start, width: size.width, height: size.height, mime: stillMime(options.container), quality: jpegQuality(options.quality) },
+      { onWarning, signal },
+    );
+    onProgress?.({ phase: 'finalizing', progress: 1, frame: 1, totalFrames: 1 });
+    return blob;
+  }
   const isGif = options.container === 'gif';
   if (!isGif && typeof VideoEncoder === 'undefined') {
     throw new Error('this browser has no webcodecs support, try a recent chrome or edge');

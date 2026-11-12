@@ -24,6 +24,7 @@ import {
   gifSizeWarning,
 } from './gifPlan';
 import { loadExportSettings, saveExportSettings } from './settings';
+import { isStillContainer, stillSize } from './still';
 import { isExporting } from '../../engine/exportState';
 import { mcpExportJob } from '../../mcp/exportJob';
 import { setBusy } from '../../lib/busy';
@@ -78,10 +79,10 @@ function formatClock(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** frame rate + resolution are remembered apart for gif and for video */
+/** frame rate + resolution are remembered apart for gif and for video. a picture goes with the video's resolution */
 type PrefGroup = 'gif' | 'video';
 function groupOf(c: ExportContainer): PrefGroup | null {
-  return c === 'gif' ? 'gif' : c === 'mp4' || c === 'webm' ? 'video' : null;
+  return c === 'gif' ? 'gif' : c === 'mp4' || c === 'webm' || isStillContainer(c) ? 'video' : null;
 }
 
 const PHASE_TEXT: Record<ExportProgress['phase'], string> = {
@@ -171,7 +172,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
 
   // ask the browser what it can encode for the chosen size + fps + quality (debounced, cancelled by the next change)
   useEffect(() => {
-    if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container) || isGifContainer(container)) return;
+    if (!open || phase !== 'setup' || projectW <= 0 || isAudioContainer(container) || isGifContainer(container) || isStillContainer(container)) return;
     const videoContainer: VideoContainer = container;
     const size = outputSize({ width: projectW, height: projectH }, scale);
     const ask = (c: VideoContainer) => ({ container: c, width: size.width, height: size.height, fps, quality });
@@ -290,8 +291,10 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const hasMarkerRange = markerRange(markers) !== null;
   // a marker choice that stopped being possible (a marker was removed) falls back to the whole project
   const mode: RangeMode = rangeMode === 'markers' && !hasMarkerRange ? 'all' : rangeMode;
+  // a picture (png / jpg) is the first frame of the range: only where the range starts matters
+  const isStill = isStillContainer(container);
   const customStart = Number.parseFloat(rangeFrom);
-  const customEnd = rangeTo.trim() === '' ? projectLength : Number.parseFloat(rangeTo);
+  const customEnd = isStill || rangeTo.trim() === '' ? projectLength : Number.parseFloat(rangeTo);
   const range = useMemo(
     () => resolveRange(mode, projectLength, markers, { start: customStart, end: customEnd }),
     [mode, projectLength, markers, customStart, customEnd],
@@ -301,7 +304,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const duration = range ? range.end - range.start : 0;
   // a gif cannot play faster than 50 fps
   const effFps = isGif ? gifExportFps(fps) : fps;
-  const totalFrames = range ? rangeFrameCount(range, effFps) : 0;
+  const totalFrames = range ? (isStill ? 1 : rangeFrameCount(range, effFps)) : 0;
 
   const triggerDownload = useCallback((url: string, name: string) => {
     const a = document.createElement('a');
@@ -328,14 +331,14 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     lastUiRef.current = 0;
     setElapsed(0);
     setSavedName(null);
-    setProgress({ phase: 'audio', progress: 0, frame: 0, totalFrames });
+    setProgress({ phase: isStill ? 'video' : 'audio', progress: 0, frame: 0, totalFrames });
     setPhase('exporting');
     const name = `${sanitizeName(fileName || project.name)}.${container}`;
     saveExportSettings({ container, quality, fps, scale });
     try {
       const blob = await exportProject(
         project,
-        { container, scale, fps: effFps, quality, includeAudio: !isGif && (includeAudio || audioOnly), range },
+        { container, scale, fps: effFps, quality, includeAudio: !isGif && !isStill && (includeAudio || audioOnly), range },
         {
           signal: ac.signal,
           onWarning: (m) => {
@@ -380,13 +383,14 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
     }
-  }, [project, phase, range, totalFrames, audioOnly, isGif, effFps, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
+  }, [project, phase, range, totalFrames, audioOnly, isGif, isStill, effFps, fileName, container, scale, fps, quality, includeAudio, revokeUrl, triggerDownload]);
 
   const cancel = useCallback(() => abortRef.current?.abort(), []);
 
   if (!project) return null;
 
-  const size = outputSize(project, scale);
+  const sizeAt = (s: number) => (isStill ? stillSize(project, s) : outputSize(project, s));
+  const size = sizeAt(scale);
   const outName = `${sanitizeName(fileName || project.name)}.${container}`;
   const frac = progress ? progress.progress : 0;
   const eta = frac > 0.02 ? (elapsed / frac) * (1 - frac) : null;
@@ -397,13 +401,13 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     // audio only files and gifs need no video encoder and no plan
     const plan = container === 'mp4' || container === 'webm' ? plans[container] : undefined;
     const other: VideoContainer = container === 'mp4' ? 'webm' : 'mp4';
-    const needsEncoder = !audioOnly && !isGif;
+    const needsEncoder = !audioOnly && !isGif && !isStill;
     const probing = needsEncoder && plan === undefined;
     const noEncoder = needsEncoder && typeof VideoEncoder === 'undefined';
     const gifWarn = isGif && range ? gifSizeWarning(size.width, size.height, totalFrames) : '';
     let note = '';
     if (noEncoder) note = 'this browser cannot encode video, try a recent chrome or edge';
-    else if (!empty && !range) note = 'the range is empty, the start must be before the end';
+    else if (!empty && !range) note = isStill ? 'pick a time before the end of the project' : 'the range is empty, the start must be before the end';
     else if (plan === null) {
       note = `${container} cannot be encoded at ${size.width}x${size.height} and ${fps} fps here${
         plans[other] ? `, try ${other}, or` : ', try'
@@ -456,35 +460,40 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
                 <option value="wav">wav</option>
                 <option value="ogg">ogg (opus)</option>
               </optgroup>
+              <optgroup label="image (first frame)">
+                <option value="png">png</option>
+                <option value="jpg">jpg</option>
+              </optgroup>
             </select>
           </label>
           <label className="field">
-            <span className="field-label">range</span>
+            <span className="field-label">{isStill ? 'frame' : 'range'}</span>
             <select
               className="select"
               value={mode}
-              title="which part of the timeline to export"
+              title={isStill ? 'which frame of the timeline becomes the picture' : 'which part of the timeline to export'}
               onChange={(e) => setRangeMode(e.target.value as RangeMode)}
             >
-              <option value="all">whole project</option>
-              {hasMarkerRange && <option value="markers">first to last marker</option>}
-              <option value="custom">custom</option>
+              <option value="all">{isStill ? 'first frame' : 'whole project'}</option>
+              {hasMarkerRange && <option value="markers">{isStill ? 'at the first marker' : 'first to last marker'}</option>}
+              <option value="custom">{isStill ? 'at a time' : 'custom'}</option>
             </select>
           </label>
           {mode === 'custom' && (
             <>
               <label className="field">
-                <span className="field-label">start (s)</span>
+                <span className="field-label">{isStill ? 'time (s)' : 'start (s)'}</span>
                 <input
                   className="input"
                   type="number"
                   min={0}
                   step={0.1}
                   value={rangeFrom}
-                  title="start of the range in seconds"
+                  title={isStill ? 'the timeline second of the frame' : 'start of the range in seconds'}
                   onChange={(e) => setRangeFrom(e.target.value)}
                 />
               </label>
+              {!isStill && (
               <label className="field">
                 <span className="field-label">end (s)</span>
                 <input
@@ -498,6 +507,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
                   onChange={(e) => setRangeTo(e.target.value)}
                 />
               </label>
+              )}
             </>
           )}
           {!audioOnly && (
@@ -510,7 +520,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               onChange={(e) => setScale(Number(e.target.value))}
             >
               {SCALES.map((s) => {
-                const sz = outputSize(project, s.value);
+                const sz = sizeAt(s.value);
                 return (
                   <option key={s.value} value={s.value}>
                     {s.label} ({sz.width}x{sz.height})
@@ -520,7 +530,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             </select>
           </label>
           )}
-          {!audioOnly && (
+          {!audioOnly && !isStill && (
           <label className="field">
             <span className="field-label">frame rate</span>
             <select className="select" value={fps} title="frames per second" onChange={(e) => setFps(Number(e.target.value))}>
@@ -532,13 +542,13 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             </select>
           </label>
           )}
-          {!audioOnly && !isGif && (
+          {!audioOnly && !isGif && container !== 'png' && (
           <label className="field">
             <span className="field-label">quality</span>
             <select
               className="select"
               value={quality}
-              title="video bitrate"
+              title={isStill ? 'how much the jpg is compressed' : 'video bitrate'}
               onChange={(e) => setQuality(e.target.value as ExportQuality)}
             >
               {QUALITIES.map((q) => (
@@ -550,7 +560,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           </label>
           )}
         </div>
-        {!audioOnly && !isGif && (
+        {!audioOnly && !isGif && !isStill && (
           <label className="field-row export-check" title="mix all audible clips into the file">
             <input
               type="checkbox"
@@ -565,7 +575,11 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
           {empty
             ? 'the project is empty, add some clips first'
             : !range
-              ? 'nothing to export in this range'
+              ? isStill
+                ? 'there is no frame at that time'
+                : 'nothing to export in this range'
+              : isStill
+                ? `one picture, ${size.width}x${size.height}, ${mode === 'all' ? 'the first frame of the project' : `the frame at ${range.start.toFixed(2)}s`}`
               : audioOnly
                 ? `${formatDuration(duration)} (${duration.toFixed(2)}s) of audio, from ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s`
                 : `${formatDuration(duration)} (${duration.toFixed(2)}s), ${totalFrames} frames, ${size.width}x${size.height} at ${effFps} fps${
@@ -577,6 +591,10 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
             ? container === 'wav'
               ? 'uncompressed 16 bit stereo, 48 khz'
               : 'opus audio in an ogg file'
+            : isStill
+              ? container === 'png'
+                ? 'png: no loss, the bigger file'
+                : `jpg: ${quality} quality, the smaller file`
             : isGif
               ? range
                 ? `256 colors, no sound, loops forever, about ${formatBytes(estimateGifBytes(size.width, size.height, totalFrames))}`

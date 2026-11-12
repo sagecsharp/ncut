@@ -63,10 +63,16 @@ async function setup({ server = true, delayList = 0 } = {}) {
       child.stderr.on('data', (c) => (err += c));
       child.on('error', reject);
       child.on('close', (code) => resolve({ lines: out.split('\n').filter((l) => l !== ''), raw: out, err, code }));
+      /** resolves once the bridge has written n answer lines (a fixed pause is too short on a busy machine) */
+      const answered = (n) =>
+        new Promise((done) => {
+          const tick = () => (out.split('\n').length - 1 >= n ? done() : setTimeout(tick, 10));
+          tick();
+        });
       void (async () => {
         for (const line of lines) {
           child.stdin.write(`${line}\n`);
-          if (between) await between();
+          if (between) await between({ answered });
         }
         if (endAfter) child.stdin.end();
       })();
@@ -129,11 +135,14 @@ describe('the stdio bridge', () => {
 
   it('reads the token again for every message', async () => {
     const ctx = await setup();
+    // the token changes only between two messages: after the answer to the one before is out
+    let sent = 0;
     const got = await ctx.run(
       [msg({ id: 1, method: 'ping' }), msg({ id: 2, method: 'ping' })],
       {
-        between: async () => {
-          await new Promise((r) => setTimeout(r, 150));
+        between: async ({ answered }) => {
+          sent++;
+          await answered(sent);
           await ctx.mcp.rotate();
         },
       },

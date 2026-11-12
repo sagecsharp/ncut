@@ -509,8 +509,8 @@ describe('the marked download', () => {
 
 describe('what a ticket download and a copy may be', () => {
   it('ticketExtOk takes what export_video makes, in any case, and nothing else', () => {
-    for (const n of ['a.mp4', 'a.WEBM', 'a.Gif', 'a.wav', 'x.y.ogg']) expect(r.ticketExtOk(n)).toBe(true);
-    for (const n of ['a.bat', 'a.lnk', 'a.exe', 'a', 'mp4', 'a.mp4.exe', '', undefined]) expect(r.ticketExtOk(n)).toBe(false);
+    for (const n of ['a.mp4', 'a.WEBM', 'a.Gif', 'a.wav', 'x.y.ogg', 'a.png', 'a.JPG']) expect(r.ticketExtOk(n)).toBe(true);
+    for (const n of ['a.bat', 'a.lnk', 'a.exe', 'a', 'mp4', 'a.mp4.exe', 'a.jpeg', 'a.svg', 'a.png.lnk', '', undefined]) expect(r.ticketExtOk(n)).toBe(false);
   });
 
   it('copyAllowed needs a known kind and a focused window', () => {

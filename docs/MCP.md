@@ -102,7 +102,7 @@ a path has to be absolute with a drive letter (`C:\...` or `C:/...`). no unc (`\
 (`mcpDownloadName` in src/lib/shell.ts). main's download handler sees the marker: an armed ticket -> the file goes to
 the save folder (the last folder the user saved to, else Downloads) under `<file name>` (cleaned like every download,
 never over an existing file: ` (2)`, ` (3)` ... are added), no dialog. only the extensions export_video makes are
-saved this way (mp4 webm gif wav ogg, any case): anything else is cancelled and the invoke resolves not ok. the invoke resolves with `{ ok, name }` when the
+saved this way (mp4 webm gif wav ogg png jpg, any case): anything else is cancelled and the invoke resolves not ok. the invoke resolves with `{ ok, name }` when the
 download ended. a marked download without an armed ticket is cancelled. a ticket works once, is only given to
 `export_video`, and lapses after 12 hours; at most 8 are open (a full map drops the oldest unarmed ticket first, an armed one only when there is none). a ticket whose call ended in an error before it was armed is dropped at once. main remembers the full path per ticket so a later
 `export_status` answer with `saved: <ticket>` gets the path added.
@@ -176,8 +176,9 @@ keyframes (tools/keys.ts):
 output (tools/output.ts):
 - `render_frame` { time?, max_size? }: the picture of the project at that time as a png image (longest side at most max_size, default 960, at most 1920).
   a time at or past the end gives the last frame. fonts that could not be loaded are named in the answer.
-- `export_video` { format?: 'mp4' | 'webm' | 'gif' | 'wav' | 'ogg', quality?: 'low' | 'medium' | 'high', scale?: 1 | 0.75 | 0.5, fps?, start?, end?, audio?, name? }:
-  starts the export and answers at once. one export at a time.
+- `export_video` { format?: 'mp4' | 'webm' | 'gif' | 'wav' | 'ogg' | 'png' | 'jpg', quality?: 'low' | 'medium' | 'high', scale?: 1 | 0.75 | 0.5, fps?, start?, end?, audio?, name? }:
+  starts the export and answers at once. one export at a time. `png` / `jpg` save one picture (the project size times `scale`, not capped like `render_frame`): the frame at `start` (default the
+  first frame). `end`, `fps` and `audio` do not apply there (the answer notes what was ignored), `quality` only squeezes a jpg.
 - `export_status` {}: running (phase, progress 0..1), done (file name, and the full path added by the shell), failed (why) or none.
   when the shell could not save the file on its own, the app shows its usual save dialog instead and the answer says no path is known.
 - `export_cancel` {}: too late once the file is being saved.

@@ -58,6 +58,37 @@ describe('planMcpExport', () => {
     expect(planMcpExport(project(), { end: 25 }).notes.join(' ')).toMatch(/cut to the project.*0 to 10 s/);
     expect(planMcpExport(project(), { start: 1, end: 10 }).notes).toEqual([]);
   });
+  it('a picture is the one frame at start: full size, no fps, no sound, no length', () => {
+    const p = planMcpExport(project({ width: 1081, height: 607 }), { format: 'png', name: 'thumb' });
+    expect(p.options).toMatchObject({ container: 'png', scale: 1, includeAudio: false });
+    expect(p.range.start).toBe(0);
+    expect(p.frames).toBe(1);
+    // not rounded to even sides like a video
+    expect([p.width, p.height]).toEqual([1081, 607]);
+    expect(p.fileName).toBe('thumb.png');
+    expect(p.notes).toEqual([]);
+    const j = planMcpExport(project(), { format: 'jpg', start: 4, scale: 0.5, quality: 'low' });
+    expect(j.range.start).toBe(4);
+    expect([j.width, j.height]).toEqual([960, 540]);
+    expect(j.options.quality).toBe('low');
+    expect(j.fileName).toBe('my film.jpg');
+    expect(j.notes).toEqual([]);
+  });
+  it('a picture says what it ignored, and an end before start does not make it empty', () => {
+    const p = planMcpExport(project(), { format: 'png', start: 6, end: 2, fps: 60, audio: true, quality: 'low' });
+    expect(p.range.start).toBe(6);
+    expect(p.frames).toBe(1);
+    expect(p.notes.join(' ')).toMatch(/end, fps, audio were ignored/);
+    expect(p.notes.join(' ')).toMatch(/png has no loss/);
+    expect(planMcpExport(project(), { format: 'jpg', end: 3 }).notes.join(' ')).toMatch(/end was ignored/);
+    // audio false is what a picture is anyway
+    expect(planMcpExport(project(), { format: 'jpg', audio: false }).notes).toEqual([]);
+  });
+  it('a picture needs a start inside the project', () => {
+    expect(() => planMcpExport(project(), { format: 'png', start: 10 })).toThrow(/not inside the project/);
+    expect(() => planMcpExport(project(), { format: 'png', start: 99 })).toThrow(/not inside the project/);
+    expect(planMcpExport(project(), { format: 'png', start: 9.99 }).range.start).toBe(9.99);
+  });
   it('refuses an empty project and an empty range', () => {
     expect(() => planMcpExport(project({ clips: [] }), {})).toThrow(/empty/);
     expect(() => planMcpExport(project(), { start: 5, end: 5 })).toThrow(/holds nothing/);
@@ -202,6 +233,15 @@ describe('the export job', () => {
     expect(info).not.toHaveProperty('width');
     expect(info).not.toHaveProperty('frames');
     expect(info.notes.join(' ')).toMatch(/0 to 10 s/);
+  });
+
+  it('a picture start answer has its size and time, no fps and no length', () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    const info = job.start(project(), { format: 'png', start: 2.5 }, null);
+    expect(info).toMatchObject({ file: 'my film.png', format: 'png', width: 1920, height: 1080, frames: 1, time: 2.5, seconds: 0 });
+    expect(info).not.toHaveProperty('fps');
+    expect(f.options()).toMatchObject({ container: 'png', includeAudio: false });
   });
 
   it('without a ticket: keeps the blob in memory and says it was not written', async () => {

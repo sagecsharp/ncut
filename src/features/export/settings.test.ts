@@ -42,6 +42,19 @@ describe('gif settings', () => {
     expect(back.gif).toEqual({ fps: 15, scale: 0.5 });
     expect(back.fps).toBe(24);
   });
+  it('a picture is remembered as the format and leaves fps and scale alone', () => {
+    expect(parseExportSettings('{"container":"png"}')).toEqual({ container: 'png' });
+    expect(parseExportSettings('{"container":"jpg","quality":"low"}')).toEqual({ container: 'jpg', quality: 'low' });
+    expect(parseExportSettings('{"container":"jpeg"}')).toEqual({});
+    const prev = { fps: 60, scale: 0.75, gif: { fps: 15, scale: 0.5 } };
+    expect(mergeExportSettings(prev, { container: 'png', quality: 'high', fps: 30, scale: 0.5 })).toEqual({
+      fps: 60,
+      scale: 0.75,
+      gif: { fps: 15, scale: 0.5 },
+      container: 'png',
+      quality: 'high',
+    });
+  });
   it('audio containers leave fps and scale alone', () => {
     const prev = { fps: 60, scale: 1 };
     expect(mergeExportSettings(prev, { container: 'wav', quality: 'low', fps: 30, scale: 0.5 })).toEqual({

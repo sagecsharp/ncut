@@ -82,17 +82,18 @@ export const outputTools: ToolDef[] = [
     description:
       'starts exporting the open project to a file and answers at once with the file name, size and frame count. the export runs in the background: ' +
       'poll export_status until it says done (then the answer holds the full path of the file), export_cancel stops it. one export at a time. ' +
-      'format mp4 (default), webm, gif (no sound, at most 50 fps), wav or ogg (sound only). quality low | medium | high (default high). ' +
+      'format mp4 (default), webm, gif (no sound, at most 50 fps), wav or ogg (sound only), png or jpg (one picture at the project size times scale: the frame at start, ' +
+      'default the first frame; end, fps and audio do not apply). quality low | medium | high (default high; a png has no loss). ' +
       'scale 1 | 0.75 | 0.5 of the project size (default 1). fps defaults to the project fps. start / end in timeline seconds pick a part (default the whole project). ' +
       'audio false leaves the sound out of a video. name is the file name without the extension (default the project name).',
     inputSchema: {
       type: 'object',
       properties: {
-        format: { type: 'string', enum: ['mp4', 'webm', 'gif', 'wav', 'ogg'], description: 'default mp4' },
+        format: { type: 'string', enum: ['mp4', 'webm', 'gif', 'wav', 'ogg', 'png', 'jpg'], description: 'default mp4' },
         quality: { type: 'string', enum: ['low', 'medium', 'high'], description: 'default high' },
         scale: { type: 'number', enum: [1, 0.75, 0.5], description: 'share of the project size, default 1' },
         fps: { type: 'number', description: 'frames per second, default the project fps', minimum: 1, maximum: 240 },
-        start: { type: 'number', description: 'timeline second to start at, default 0', minimum: 0 },
+        start: { type: 'number', description: 'timeline second to start at, default 0. png / jpg: the frame that is saved', minimum: 0 },
         end: { type: 'number', description: 'timeline second to stop at, default the end of the project', minimum: 0 },
         audio: { type: 'boolean', description: 'false = no sound in a video, default true' },
         name: { type: 'string', description: 'file name without the extension', maxLength: 120 },

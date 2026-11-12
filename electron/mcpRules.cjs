@@ -365,7 +365,7 @@ function savedFileName(file) {
 }
 
 /** the only extensions a ticket download may have: what export_video makes. nothing else is saved without a dialog */
-const TICKET_EXTS = ['mp4', 'webm', 'gif', 'wav', 'ogg'];
+const TICKET_EXTS = ['mp4', 'webm', 'gif', 'wav', 'ogg', 'png', 'jpg'];
 
 function ticketExtOk(name) {
   const m = /\.([A-Za-z0-9]+)$/.exec(String(name ?? ''));

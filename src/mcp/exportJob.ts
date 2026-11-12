@@ -7,6 +7,7 @@ import { clampRange, rangeFrameCount } from '../features/export/range';
 import type { TimeRange } from '../features/export/range';
 import { exportProject, isAudioContainer, isGifContainer, outputSize } from '../features/export/exporter';
 import type { ExportContainer, ExportHooks, ExportOptions, ExportProgress, ExportQuality } from '../features/export/exporter';
+import { isStillContainer, stillSize } from '../features/export/still';
 import { effectiveGifFps } from '../lib/gif';
 import { isExporting } from '../engine/exportState';
 import { setBusy } from '../lib/busy';
@@ -64,15 +65,22 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
   const container: ExportContainer = args.format ?? 'mp4';
   const duration = projectDuration(project);
   if (!(duration > 0)) throw new ToolError('the project is empty, there is nothing to export. add clips first');
-  const wanted: TimeRange = { start: args.start ?? 0, end: args.end ?? duration };
+  // a picture is the frame at start: it has no end, no frame rate and no sound
+  const still = isStillContainer(container);
+  const wanted: TimeRange = { start: args.start ?? 0, end: still ? duration : (args.end ?? duration) };
   const range = clampRange(wanted, duration);
+  if (!range && still) {
+    throw new ToolError(
+      `start ${wanted.start} s is not inside the project (${Math.round(duration * 1000) / 1000} s long): a picture is the frame at start, which has to be before the end`,
+    );
+  }
   if (!range) {
     throw new ToolError(
       `the range ${wanted.start} to ${wanted.end} s holds nothing: the project is ${Math.round(duration * 1000) / 1000} s long and start has to be before end`,
     );
   }
   const notes: string[] = [];
-  const cut = (args.start !== undefined && args.start !== range.start) || (args.end !== undefined && args.end !== range.end);
+  const cut = (args.start !== undefined && args.start !== range.start) || (!still && args.end !== undefined && args.end !== range.end);
   if (cut) notes.push(`start / end were cut to the project, the part that is exported is ${round3(range.start)} to ${round3(range.end)} s`);
   const gif = isGifContainer(container);
   const audioOnly = isAudioContainer(container);
@@ -83,14 +91,20 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
   }
   if (gif && args.audio === true) notes.push('a gif has no sound, audio was ignored');
   if (audioOnly && args.audio === false) notes.push('an audio file is only sound, audio false was ignored');
+  if (still) {
+    fps = project.fps;
+    const unused = [args.end !== undefined ? 'end' : '', args.fps !== undefined ? 'fps' : '', args.audio === true ? 'audio' : ''].filter((s) => s !== '');
+    if (unused.length > 0) notes.push(`a picture is one frame (the one at start) without sound: ${unused.join(', ')} ${unused.length > 1 ? 'were' : 'was'} ignored`);
+    if (container === 'png' && args.quality !== undefined) notes.push('a png has no loss, quality was ignored');
+  }
   const scale = args.scale ?? 1;
-  const size = outputSize(project, scale);
+  const size = still ? stillSize(project, scale) : outputSize(project, scale);
   const options: ExportOptions = {
     container,
     scale,
     fps,
     quality: args.quality ?? 'high',
-    includeAudio: !gif && (audioOnly || args.audio !== false),
+    includeAudio: !gif && !still && (audioOnly || args.audio !== false),
     range,
   };
   const base = cleanFileName(args.name ?? '', cleanFileName(project.name, 'ncut-export'));
@@ -100,7 +114,7 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
     container,
     width: size.width,
     height: size.height,
-    frames: rangeFrameCount(range, fps),
+    frames: still ? 1 : rangeFrameCount(range, fps),
     fps,
     fileName: `${base}.${container}`,
     notes,
@@ -149,8 +163,12 @@ export interface StartInfo {
   /** not for wav / ogg: a sound file has no picture */
   width?: number;
   height?: number;
+  /** not for png / jpg: a picture has no frame rate */
   fps?: number;
   frames?: number;
+  /** png / jpg only: the timeline second the picture shows */
+  time?: number;
+  /** the length of the file (0 for a picture) */
   seconds: number;
   notes: string[];
 }
@@ -295,13 +313,15 @@ export function createExportJob(deps: JobDeps): ExportJob {
       run = execute(project, planned, ticket, ac, t0);
       const picture = isAudioContainer(planned.container)
         ? {}
-        : { width: planned.width, height: planned.height, fps: planned.fps, frames: planned.frames };
+        : isStillContainer(planned.container)
+          ? { width: planned.width, height: planned.height, frames: 1, time: round3(planned.range.start) }
+          : { width: planned.width, height: planned.height, fps: planned.fps, frames: planned.frames };
       return {
         status: 'started',
         file: planned.fileName,
         format: planned.container,
         ...picture,
-        seconds: round3(planned.range.end - planned.range.start),
+        seconds: isStillContainer(planned.container) ? 0 : round3(planned.range.end - planned.range.start),
         notes: planned.notes,
       };
     },

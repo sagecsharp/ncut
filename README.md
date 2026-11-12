@@ -28,7 +28,7 @@
 - **94 effects, 87 transitions**, motion blur, masks, green screen
 - **text** with 29 fonts plus your own, letter animations, captions
 - **a plain color card** in every project, ready to drop in
-- **export** to mp4, webm, gif or audio, up to 240 fps, no watermark
+- **export** to mp4, webm, gif, audio or a picture (png / jpg of a frame), up to 240 fps, no watermark
 - **local only**: projects and media stay on your machine
 
 the full list is in [docs/FEATURES.md](docs/FEATURES.md).

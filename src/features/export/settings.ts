@@ -1,6 +1,7 @@
 /**
  * the export dialog remembers the last used format / quality / frame rate / resolution (localStorage, per browser).
  * gif keeps its own frame rate + resolution (`gif`), so picking gif never overwrites the video choices.
+ * a picture (png / jpg) only remembers that it was picked (and the quality a jpg used).
  * parsing is pure and strict: anything unexpected is ignored, so a broken value never breaks the dialog.
  */
 import type { ExportContainer, ExportQuality } from './exporter';
@@ -29,7 +30,7 @@ export interface ExportChoices {
 
 export const EXPORT_SETTINGS_KEY = 'ncut-export-settings';
 
-const CONTAINERS: readonly string[] = ['mp4', 'webm', 'gif', 'wav', 'ogg'];
+const CONTAINERS: readonly string[] = ['mp4', 'webm', 'gif', 'wav', 'ogg', 'png', 'jpg'];
 const QUALITIES: readonly string[] = ['low', 'medium', 'high'];
 const SCALES: readonly number[] = [1, 0.75, 0.5];
 
