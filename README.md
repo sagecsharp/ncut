@@ -129,4 +129,4 @@ npm run test
 
 ## license
 
-[mit](LICENSE). the bundled fonts come from fontsource and keep their own licenses (mostly sil open font license).
+[mit](LICENSE). what ncut bundles keeps its own license: the fonts from fontsource (mostly sil open font license), react, zustand, lucide and mediabunny. they are all listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

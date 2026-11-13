@@ -8,5 +8,5 @@ export default defineConfig({
   // the export workers are module workers: their lazy imports (font stylesheets the engine never asks for in a
   // worker) stay separate chunks instead of being inlined into a script that would touch the document on load
   worker: { format: 'es' },
-  test: { include: ['src/**/*.test.ts', 'electron/**/*.test.mjs'], environment: 'node' },
+  test: { include: ['src/**/*.test.ts', 'electron/**/*.test.mjs', 'scripts/**/*.test.mjs'], environment: 'node' },
 });

@@ -10,3 +10,7 @@ notes/
 release
 dist-bench
 build/bin
+.env*
+.vscode/
+.idea/
+*.ncut

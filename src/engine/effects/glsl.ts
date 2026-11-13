@@ -35,7 +35,8 @@ float aspect() { return u_size.x / u_size.y; }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
 vec3 sat(vec3 x) { return clamp(x, 0.0, 1.0); }
 
-/* hashes: cheap, stable across gpus (no sin) */
+/* hashes: cheap, stable across gpus (no sin). they follow "hash without sine" by david hoskins,
+   shadertoy.com/view/4djSRW, mit license, copyright (c) 2014 david hoskins (see THIRD-PARTY-NOTICES.md) */
 float hash11(float p) {
   p = fract(p * 0.1031);
   p *= p + 33.33;
