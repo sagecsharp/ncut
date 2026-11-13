@@ -33,9 +33,17 @@
 
 the full list is in [docs/FEATURES.md](docs/FEATURES.md).
 
+## download
+
+the [latest release](https://github.com/sagecsharp/ncut/releases/latest) has:
+
+- `ncut-<version>-setup.exe` the windows app as an installer
+- `ncut-<version>-portable.exe` the windows app as one file, just run it
+- `ncut-<version>-web.zip` the browser version, ready for any static web host
+
 ## quick start
 
-you need [node](https://nodejs.org) 22 or newer.
+to run it from the source you need [node](https://nodejs.org) 22 or newer.
 
 ```bash
 git clone https://github.com/sagecsharp/ncut.git
@@ -108,12 +116,15 @@ press `?` in the editor for the full list. the main ones:
 - `npm run app` build and open the desktop window without packaging
 - `npm run app:dev` desktop window on the running dev server
 - `npm run exe` build the windows exe files
+- `npm run web` build the browser version as `release/ncut-<version>-web.zip` (runs from any folder of a static host)
 - `npm run icon` redraw the app icon
 - `npm run qos` build the helper for full speed background exports (part of `npm run exe`)
 
 built with vite, react, typescript, zustand, [mediabunny](https://mediabunny.dev) for encoding and decoding, lucide icons and plain css. the desktop app is an [electron](https://www.electronjs.org) window around the same build.
 
 how the code is laid out: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+a release: set the version in `package.json`, then push a tag `v<version>`. github builds the exe files and the web zip and puts them on a release ([.github/workflows/release.yml](.github/workflows/release.yml)).
 
 ## contributing
 

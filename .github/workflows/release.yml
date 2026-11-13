@@ -1,0 +1,94 @@
+name: release
+
+# a pushed tag like v0.1.0 (it has to be the version in package.json) builds the windows app and the browser build
+# and puts them on a github release: the setup exe, the portable exe and the web zip.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: the tag is the version in package.json
+        run: |
+          version="$(node scripts/release-notes.cjs --version | tr -d '\r')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME but package.json says $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # scripts/build-qos.cjs builds ncut-qos.exe with this compiler and only prints a note when it is missing
+      - name: the c# compiler of windows is there
+        run: |
+          if [ ! -f "$WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" ] && [ ! -f "$WINDIR/Microsoft.NET/Framework/v4.0.30319/csc.exe" ]; then
+            echo "::error::no csc.exe under $WINDIR/Microsoft.NET on this image, ncut-qos.exe can not be built"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: windows app
+        run: npm run exe -- --publish never
+
+      - name: browser build
+        run: npm run web
+
+      - name: everything is there
+        run: |
+          for f in \
+            "release/win-unpacked/resources/ncut-qos.exe" \
+            "release/win-unpacked/resources/LICENSE" \
+            "release/win-unpacked/resources/THIRD-PARTY-NOTICES.md" \
+            "release/ncut-$VERSION-setup.exe" \
+            "release/ncut-$VERSION-portable.exe" \
+            "release/ncut-$VERSION-web.zip"
+          do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f is missing"
+              exit 1
+            fi
+          done
+
+      - name: github release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          node scripts/release-notes.cjs > release/notes.md
+          cat release/notes.md
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "ncut $VERSION" --notes-file release/notes.md
+            gh release upload "$GITHUB_REF_NAME" --clobber \
+              "release/ncut-$VERSION-setup.exe" \
+              "release/ncut-$VERSION-portable.exe" \
+              "release/ncut-$VERSION-web.zip"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "ncut $VERSION" --notes-file release/notes.md \
+              "release/ncut-$VERSION-setup.exe" \
+              "release/ncut-$VERSION-portable.exe" \
+              "release/ncut-$VERSION-web.zip"
+          fi

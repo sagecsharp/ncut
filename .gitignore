@@ -9,6 +9,7 @@ notes/
 *.tsbuildinfo
 release
 dist-bench
+dist-web
 build/bin
 .env*
 .vscode/
