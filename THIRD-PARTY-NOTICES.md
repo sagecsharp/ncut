@@ -96,6 +96,14 @@ https://github.com/react/react
 
 the same license text as react above.
 
+### scheduler 0.28.0 (MIT)
+
+https://github.com/react/react
+
+comes with react-dom.
+
+the same license text as react above.
+
 ### zustand 5.1.0 (MIT)
 
 https://github.com/pmndrs/zustand

@@ -1,6 +1,7 @@
 'use strict';
 // writes THIRD-PARTY-NOTICES.md: the licences of everything ncut bundles into the web build and the desktop app
-// (the dependencies in package.json, read from node_modules) plus the one snippet in the source that has an owner.
+// (the dependencies in package.json and what they bring along at run time, read from node_modules) plus the one
+// snippet in the source that has an owner.
 // run `npm run notices` after a dependency is added, removed or updated. scripts/make-notices.test.mjs fails when
 // the file in the repo is not what this script writes.
 const fs = require('node:fs');
@@ -61,11 +62,28 @@ function readPackage(root, name) {
   return { name, version: pkg.version, license: String(pkg.license), url: repoUrl(pkg), home: pkg.homepage || '', text };
 }
 
+/**
+ * the dependencies of package.json plus what they need at run time (package-lock.json says what that is), each with
+ * the package that brought it in. type only packages are left out: nothing of them is in a build.
+ */
+function bundledNames(root, manifest) {
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).packages || {};
+  const via = new Map();
+  const queue = Object.keys(manifest.dependencies || {}).map((name) => ({ name, from: null }));
+  while (queue.length) {
+    const { name, from } = queue.shift();
+    if (via.has(name) || name.startsWith('@types/')) continue;
+    via.set(name, from);
+    const entry = lock[`node_modules/${name}`];
+    for (const dep of Object.keys((entry && entry.dependencies) || {})) queue.push({ name: dep, from: name });
+  }
+  return [...via.keys()].sort().map((name) => ({ name, via: via.get(name) }));
+}
+
 /** the whole file as one string (lf line ends, no dates, the same input gives the same output) */
 function buildNotices(root) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  const names = Object.keys(manifest.dependencies || {}).sort();
-  const packages = names.map((n) => readPackage(root, n));
+  const packages = bundledNames(root, manifest).map((n) => ({ ...readPackage(root, n.name), via: n.via }));
   const fonts = packages.filter((p) => p.name.startsWith('@fontsource/'));
   const code = packages.filter((p) => !p.name.startsWith('@fontsource/'));
 
@@ -84,6 +102,7 @@ function buildNotices(root) {
     out.push(`### ${p.name} ${p.version} (${p.license})`);
     out.push('');
     if (p.url) out.push(p.url, '');
+    if (p.via) out.push(`comes with ${p.via}.`, '');
     if (p.license === 'MPL-2.0') {
       out.push(
         'used as published, not changed. its source is at the address above, the license text is at',
