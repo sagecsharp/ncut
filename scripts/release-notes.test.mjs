@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { releaseFiles, releaseNotes, sizeText } = require('./release-notes.cjs');
+const { SITE, releaseFiles, releaseNotes, sizeText } = require('./release-notes.cjs');
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+const pages = fs.readFileSync(path.join(root, '.github', 'workflows', 'pages.yml'), 'utf8');
+const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 
 describe('a release', () => {
   it('has the files the builds write, under the names they write them', () => {
@@ -26,6 +28,7 @@ describe('a release', () => {
       expect(text).toContain(`${f.sha256}  ${f.file}`);
     }
     expect(text).toContain('/blob/v1.2.3/docs/FEATURES.md');
+    expect(text).toContain(SITE);
     expect(text).not.toContain('\r');
     expect(sizeText(155093441)).toBe('147.9 mb');
   });
@@ -42,5 +45,22 @@ describe('a release', () => {
     // the token is only there for the step that makes the release
     expect(workflow.split('GH_TOKEN').length - 1).toBe(1);
     expect(workflow).not.toContain('\r');
+  });
+
+  it('the pages workflow hosts the web zip of a release, after the workflow that makes it', () => {
+    // it waits for the release workflow by its name
+    expect(workflow).toMatch(/^name: release$/m);
+    expect(pages).toMatch(/workflow_run:\n    workflows:\n      - release\n/);
+    // the pattern it downloads is the name the web zip gets, and the folder it uploads is the one inside the zip
+    const zipName = releaseFiles('1.2.3')[2].file;
+    expect(zipName).toMatch(/^ncut-.*-web\.zip$/);
+    expect(pages).toContain("--pattern 'ncut-*-web.zip'");
+    expect(pages).toContain('path: site/ncut-web');
+    expect(fs.readFileSync(path.join(root, 'scripts', 'make-web-zip.cjs'), 'utf8')).toContain('`ncut-web/${f.name}`');
+    // the address in the readme and the release text is where a project site of this repo lands
+    const [, owner, repo] = manifest.repository.url.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    expect(SITE).toBe(`https://${owner}.github.io/${repo}/`);
+    expect(readme).toContain(SITE);
+    expect(pages).not.toContain('\r');
   });
 });

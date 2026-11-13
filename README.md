@@ -33,6 +33,10 @@
 
 the full list is in [docs/FEATURES.md](docs/FEATURES.md).
 
+## use it
+
+in the browser, nothing to install: **https://sagecsharp.github.io/ncut/** (a chromium based browser: chrome, edge, brave).
+
 ## download
 
 the [latest release](https://github.com/sagecsharp/ncut/releases/latest) has:
@@ -124,7 +128,7 @@ built with vite, react, typescript, zustand, [mediabunny](https://mediabunny.dev
 
 how the code is laid out: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-a release: set the version in `package.json`, then push a tag `v<version>`. github builds the exe files and the web zip and puts them on a release ([.github/workflows/release.yml](.github/workflows/release.yml)).
+a release: set the version in `package.json`, then push a tag `v<version>`. github builds the exe files and the web zip and puts them on a release ([.github/workflows/release.yml](.github/workflows/release.yml)), then the web zip of that release goes onto github pages ([.github/workflows/pages.yml](.github/workflows/pages.yml)).
 
 ## contributing
 

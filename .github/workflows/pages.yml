@@ -1,0 +1,63 @@
+name: pages
+
+# puts the browser version on github pages: the web zip of the latest release, unpacked as it is (nothing is built
+# here). runs after the release workflow made a release, when this file changes on main, or by hand.
+# needs once, in the repo settings: pages > build and deployment > source: github actions.
+
+on:
+  workflow_run:
+    workflows:
+      - release
+    types:
+      - completed
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # after a release run only when it went through
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: the web zip of the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download --pattern 'ncut-*-web.zip' --dir zip
+          ls -l zip
+          unzip -q zip/ncut-*-web.zip -d site
+          for f in index.html LICENSE THIRD-PARTY-NOTICES.md; do
+            if [ ! -s "site/ncut-web/$f" ]; then
+              echo "::error::$f is not in the web zip"
+              exit 1
+            fi
+          done
+          if grep -qE '(src|href)="/' site/ncut-web/index.html; then
+            echo "::error::the web zip was built with an absolute base, it would not run under /<repo>/"
+            exit 1
+          fi
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/ncut-web
+
+      - id: deployment
+        uses: actions/deploy-pages@v5

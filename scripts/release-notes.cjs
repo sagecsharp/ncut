@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+/** where the browser version is hosted (.github/workflows/pages.yml puts the web zip of the latest release there) */
+const SITE = 'https://sagecsharp.github.io/ncut/';
+
 /** the files of a release, in the order they are listed */
 function releaseFiles(version) {
   return [
@@ -26,6 +29,8 @@ function sizeText(bytes) {
 function releaseNotes(version, files) {
   const out = [];
   out.push('a flat, monochrome video editor. runs in your browser or as a windows app, nothing gets uploaded.');
+  out.push('');
+  out.push(`use it right in the browser: ${SITE}`);
   out.push('');
   out.push('## downloads');
   out.push('');
@@ -63,7 +68,7 @@ function sha256(file) {
   return hash.digest('hex');
 }
 
-module.exports = { releaseFiles, releaseNotes, sizeText };
+module.exports = { SITE, releaseFiles, releaseNotes, sizeText };
 
 if (require.main === module) {
   const root = path.join(__dirname, '..');
