@@ -22,6 +22,11 @@ describe('decideNotice, a ready version', () => {
     expect(newer.memory.told).toEqual(['0.3.0', '0.4.0']);
   });
 
+  it('with the switch off the toast says restart, not close', () => {
+    const d = decideNotice(null, st({ phase: 'ready', auto: false, latest: '0.3.0' }), NOTICE_START);
+    expect(d.toast).toEqual({ text: 'ncut 0.3.0 is ready. press restart to update', kind: 'success' });
+  });
+
   it('says nothing for a ready state without a known version', () => {
     expect(decideNotice(null, st({ phase: 'ready', latest: null }), NOTICE_START).toast).toBeNull();
   });

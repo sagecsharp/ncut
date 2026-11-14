@@ -71,6 +71,11 @@ describe('updateStatusText', () => {
     expect(updateStatusText(st({ phase: 'ready', kind: 'manual', latest: '0.3.0' }), NOW)).toBe('0.3.0 is out. this copy does not update itself');
   });
 
+  it('ready with the switch off says restart: a normal close applies nothing then', () => {
+    expect(updateStatusText(st({ phase: 'ready', auto: false, latest: '0.3.0' }), NOW)).toBe('0.3.0 is ready. press restart to update');
+    expect(updateStatusText(st({ phase: 'ready', auto: false, kind: 'portable', latest: '0.3.0' }), NOW)).toBe('0.3.0 is ready. press restart to update');
+  });
+
   it('failed, with and without the newest version', () => {
     expect(updateStatusText(st({ phase: 'failed', error: 'no network' }), NOW)).toBe('could not update: no network');
     expect(updateStatusText(st({ phase: 'failed', error: 'no network', latest: '0.3.0' }), NOW)).toBe('could not update: no network (0.3.0 is out)');

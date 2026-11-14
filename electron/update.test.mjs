@@ -953,7 +953,7 @@ describe('starting', () => {
     const t = setup({});
     await t.u.init();
     t.u.setAuto(false);
-    expect(readJson(t.stateFile)).toEqual({ auto: false, checkedAt: null, ready: null });
+    expect(readJson(t.stateFile)).toEqual({ auto: false, checkedAt: null, ready: null, swapFails: 0 });
     expect(fs.readdirSync(t.dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
   });
 
@@ -1348,7 +1348,7 @@ describe('applying an update of the portable app', () => {
       expect(result.why, code).toBe(code === 'ENOSPC' ? 'there is no room left next to ncut' : 'the folder of ncut can not be written');
       // a failed restart: main brings the exe back that was running
       expect(result.relaunch).toBe(exe);
-      expect(calls).toContainEqual([`${exe}.check`, 'wx']);
+      expect(calls).toContainEqual([`${exe}.check-${process.pid}`, 'wx']);
       expect(t.spawned).toEqual([]);
       expect(fs.existsSync(path.join(t.updates, 'ncut-swap.exe'))).toBe(false);
       expect(fs.readdirSync(pdir)).toEqual(['ncut.exe']);
@@ -1358,29 +1358,66 @@ describe('applying an update of the portable app', () => {
     }
   });
 
-  it('the probe leaves nothing next to the exe, also when an old probe file was in the way', async () => {
+  it('the probe leaves nothing next to the exe, and a file of the user with a name like it is never touched', async () => {
     const { t, exe, pdir } = await portable();
-    fs.writeFileSync(`${exe}.check`, 'left over');
+    fs.writeFileSync(`${exe}.check`, 'a file of the user');
     expect(t.u.applyAtQuit({ restart: false })).toEqual({ applied: true, started: false });
-    expect(fs.readdirSync(pdir)).toEqual(['ncut.exe']);
+    expect(fs.readdirSync(pdir).sort()).toEqual(['ncut.exe', 'ncut.exe.check']);
+    expect(fs.readFileSync(`${exe}.check`, 'utf8')).toBe('a file of the user');
   });
 
   it('a helper that is still at work from the close before is left to it: nothing is started twice', async () => {
-    for (const code of ['EBUSY', 'EPERM']) {
+    // a running exe can not be overwritten: that is EBUSY, and only that says "still at work"
+    const fsApi = {
+      ...fs,
+      copyFileSync() {
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      },
+    };
+    const { t, file } = await portable({ opts: { fs: fsApi } });
+    const result = t.u.applyAtQuit({ restart: false });
+    expect(result).toMatchObject({ applied: false, why: 'an earlier update step is still running' });
+    expect(result.relaunch).toBeUndefined();
+    expect(t.spawned).toEqual([]);
+    expect(fs.existsSync(file)).toBe(true);
+    expect(readJson(t.stateFile).ready).toMatchObject({ version: '0.3.0' });
+    // it is not a failure of the swap: nothing is counted
+    expect(readJson(t.stateFile).swapFails).toBe(0);
+  });
+
+  it('a refused copy of the helper (a folder or file that does not let us write) is not "still at work"', async () => {
+    for (const code of ['EPERM', 'EACCES']) {
       const fsApi = {
         ...fs,
         copyFileSync() {
           throw Object.assign(new Error(code), { code });
         },
       };
-      const { t, file } = await portable({ opts: { fs: fsApi } });
-      const result = t.u.applyAtQuit({ restart: false });
-      expect(result).toMatchObject({ applied: false, why: 'an earlier update step is still running' });
-      expect(result.relaunch).toBeUndefined();
+      const { t } = await portable({ opts: { fs: fsApi } });
+      expect(t.u.applyAtQuit({ restart: false }), code).toMatchObject({ applied: false, why: 'the update helper could not be put in place' });
       expect(t.spawned).toEqual([]);
-      expect(fs.existsSync(file)).toBe(true);
-      expect(readJson(t.stateFile).ready).toMatchObject({ version: '0.3.0' });
     }
+  });
+
+  it('a read only copy of the helper from before is replaced, not mistaken for one that runs', async () => {
+    let first = true;
+    const fsApi = {
+      ...fs,
+      copyFileSync(from, to, ...rest) {
+        if (first) {
+          first = false;
+          throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+        }
+        return fs.copyFileSync(from, to, ...rest);
+      },
+    };
+    const { t, exe, file, bytes } = await portable({ opts: { fs: fsApi } });
+    fs.mkdirSync(t.updates, { recursive: true });
+    fs.writeFileSync(path.join(t.updates, 'ncut-swap.exe'), 'OLD HELPER');
+    fs.chmodSync(path.join(t.updates, 'ncut-swap.exe'), 0o444);
+    expect(t.u.applyAtQuit({ restart: false })).toEqual({ applied: true, started: false });
+    expect(fs.readFileSync(path.join(t.updates, 'ncut-swap.exe'), 'utf8')).toBe('HELPER');
+    expect(t.spawned[0].args).toEqual([file, exe, sha(bytes), String(bytes.length), 'quiet']);
   });
 
   it('a helper that can not be copied or started is an error in the result, and the download stays ready', async () => {
@@ -1421,6 +1458,18 @@ describe('applying an update of the portable app', () => {
     expect(readJson(t.stateFile).ready).toBeNull();
   });
 
+  it('a download or an exe that was replaced by a folder gets no helper', async () => {
+    const a = await portable();
+    fs.unlinkSync(a.file);
+    fs.mkdirSync(a.file);
+    expect(a.t.u.applyAtQuit({ restart: false })).toMatchObject({ applied: false, why: 'the downloaded update is gone' });
+    const b = await portable();
+    fs.unlinkSync(b.exe);
+    fs.mkdirSync(b.exe);
+    expect(b.t.u.applyAtQuit({ restart: false })).toMatchObject({ applied: false, why: 'ncut is not at the place it was started from' });
+    expect(a.t.spawned.concat(b.t.spawned)).toEqual([]);
+  });
+
   it('an exe that is not at its place any more gets no helper', async () => {
     const { t, exe } = await portable();
     fs.unlinkSync(exe);
@@ -1443,15 +1492,16 @@ describe('applying an update of the portable app', () => {
   });
 
   it('the new version drops the entry when it starts, and the helper copy and its note go with the clean up', async () => {
-    const { t, exe, file } = await portable();
+    const { t, exe, file, helper } = await portable();
     t.u.applyAtQuit({ restart: true });
     t.u.dispose();
     // what the helper leaves when it worked: the download is gone, its own exe and its note are still there
     fs.unlinkSync(file);
     fs.writeFileSync(path.join(t.updates, 'swap.log'), '0\n');
-    const next = setup({ dir: t.dir, opts: { kind: 'portable', portableFile: exe, swapHelper: path.join(t.updates, '..', 'h.exe'), appVersion: '0.3.0' } });
-    // (no helper file at that path: the app is a manual one then, and still cleans up)
+    const next = setup({ dir: t.dir, opts: { kind: 'portable', portableFile: exe, swapHelper: helper, appVersion: '0.3.0' } });
     await next.u.init();
+    // still a portable app: the entry went because its version is not newer than the running one
+    expect(next.u.state().kind).toBe('portable');
     expect(readJson(t.stateFile).ready).toBeNull();
     expect(fs.readdirSync(t.updates)).toEqual([]);
     expect(next.logs.join('\n')).not.toMatch(/swap/);
@@ -1483,10 +1533,10 @@ describe('applying an update of the portable app', () => {
     }
   });
 
-  it('on the next start the .old next to the exe goes, a fresh .new stays (a helper may still need it), a stale one goes', async () => {
+  it('on the next start a fresh .new stays (a helper may still need it), a stale one goes, and a .old is not ours to delete', async () => {
     const { t, exe, pdir, helper } = await portable();
     t.u.dispose();
-    fs.writeFileSync(`${exe}.old`, 'the exe of before');
+    fs.writeFileSync(`${exe}.old`, 'a file of the user');
     fs.writeFileSync(`${exe}.old2`, 'x');
     fs.writeFileSync(path.join(pdir, 'other.exe.old'), 'x');
     fs.writeFileSync(`${exe}.new`, 'a copy in the making');
@@ -1495,19 +1545,121 @@ describe('applying an update of the portable app', () => {
     stamp(t.h.clock.t - 60_000);
     const next = setup({ dir: t.dir, h: t.h, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } });
     await next.u.init();
-    expect(fs.readdirSync(pdir).sort()).toEqual(['ncut.exe', 'ncut.exe.new', 'ncut.exe.old2', 'other.exe.old']);
+    expect(fs.readdirSync(pdir).sort()).toEqual(['ncut.exe', 'ncut.exe.new', 'ncut.exe.old', 'ncut.exe.old2', 'other.exe.old']);
     next.u.dispose();
     stamp(t.h.clock.t - rules.STALE_NEW_MS - 1000);
     const later = setup({ dir: t.dir, h: t.h, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } });
     await later.u.init();
-    expect(fs.readdirSync(pdir).sort()).toEqual(['ncut.exe', 'ncut.exe.old2', 'other.exe.old']);
-    // a folder with that name is not touched
-    fs.mkdirSync(`${exe}.old`);
-    fs.writeFileSync(path.join(`${exe}.old`, 'inside'), 'x');
+    expect(fs.readdirSync(pdir).sort()).toEqual(['ncut.exe', 'ncut.exe.old', 'ncut.exe.old2', 'other.exe.old']);
+    expect(fs.readFileSync(`${exe}.old`, 'utf8')).toBe('a file of the user');
+    // a folder with the name of the copy is not touched
+    fs.mkdirSync(`${exe}.new`);
+    fs.writeFileSync(path.join(`${exe}.new`, 'inside'), 'x');
     later.u.dispose();
     const again = setup({ dir: t.dir, h: t.h, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } });
     await again.u.init();
-    expect(fs.existsSync(path.join(`${exe}.old`, 'inside'))).toBe(true);
+    expect(fs.existsSync(path.join(`${exe}.new`, 'inside'))).toBe(true);
+  });
+
+  /** closes with the update handed over, then starts again with the note the helper left (a number) */
+  async function afterSwap(t, exe, helper, code, restart = false) {
+    t.u.applyAtQuit({ restart });
+    t.u.dispose();
+    fs.writeFileSync(path.join(t.updates, 'swap.log'), `${code}\n`);
+    const next = setup({ dir: t.dir, h: t.h, net: t.net, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } });
+    await next.u.init();
+    return next;
+  }
+
+  it('a swap that does not work again and again is not handed over for ever: the page says so, and "check now" tries again', async () => {
+    const { t, exe, helper, file } = await portable();
+    const second = await afterSwap(t, exe, helper, 5);
+    expect(second.u.state()).toMatchObject({ phase: 'ready', error: null });
+    expect(readJson(t.stateFile).swapFails).toBe(1);
+    const third = await afterSwap(second, exe, helper, 5);
+    expect(readJson(t.stateFile).swapFails).toBe(2);
+    expect(third.u.state()).toMatchObject({ phase: 'failed', latest: '0.3.0' });
+    expect(third.u.state().error).toMatch(/download page/);
+    // the download is still there, but nothing is handed over any more on its own, restart included
+    expect(fs.existsSync(file)).toBe(true);
+    expect(third.u.wantsApply(false)).toBe(false);
+    expect(third.u.wantsApply(true)).toBe(false);
+    expect(third.u.canRestart()).toBe(false);
+    expect(third.u.applyAtQuit({ restart: true })).toMatchObject({ applied: false });
+    expect(third.spawned).toEqual([]);
+    // the next start still knows
+    third.u.dispose();
+    const fourth = setup({ dir: t.dir, h: t.h, net: t.net, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } });
+    await fourth.u.init();
+    expect(fourth.u.state().phase).toBe('failed');
+    // "check now" is the new try: the count starts over and the update is ready again
+    await fourth.u.check();
+    await until(() => fourth.u.state().phase !== 'checking');
+    expect(fourth.u.state()).toMatchObject({ phase: 'ready', error: null });
+    expect(readJson(t.stateFile).swapFails).toBe(0);
+    expect(fourth.u.wantsApply(false)).toBe(true);
+  });
+
+  it('a stuck update does not stop the questions to github: a newer release replaces it and starts the count over', async () => {
+    const { t, exe, helper } = await portable();
+    const second = await afterSwap(t, exe, helper, 6);
+    const third = await afterSwap(second, exe, helper, 6);
+    expect(third.u.state().phase).toBe('failed');
+    // github has a newer one now
+    const newer = payload(41);
+    third.net.handler = github(releaseFor(newer, { version: '0.4.0', kind: 'portable' }), newer);
+    await third.h.advance(rules.MIN_CHECK_GAP_MS + 20_000);
+    await until(() => third.u.state().latest === '0.4.0' && third.u.state().phase === 'ready');
+    expect(readJson(t.stateFile)).toMatchObject({ swapFails: 0, ready: { version: '0.4.0' } });
+    expect(third.u.wantsApply(false)).toBe(true);
+  });
+
+  it('a swap that ended because ncut was started again (7, 8) or that worked (0) is no failure', async () => {
+    const { t, exe, helper } = await portable();
+    let cur = t;
+    for (const code of [7, 8, 7, 8, 7]) {
+      cur = await afterSwap(cur, exe, helper, code);
+      expect(cur.u.state().phase, String(code)).toBe('ready');
+    }
+    expect(readJson(t.stateFile).swapFails).toBe(0);
+    // a failure, then a note that says it worked: the count starts over
+    cur = await afterSwap(cur, exe, helper, 3);
+    expect(readJson(t.stateFile).swapFails).toBe(1);
+    cur = await afterSwap(cur, exe, helper, 0);
+    expect(readJson(t.stateFile).swapFails).toBe(0);
+  });
+
+  it('a hand over that failed before any helper started counts too (a stick that can not be written)', async () => {
+    const fsApi = {
+      ...fs,
+      openSync(file, flags, ...rest) {
+        if (flags === 'wx') throw Object.assign(new Error('EROFS'), { code: 'EROFS' });
+        return fs.openSync(file, flags, ...rest);
+      },
+    };
+    const { t, exe, helper } = await portable({ opts: { fs: fsApi } });
+    expect(t.u.applyAtQuit({ restart: false })).toMatchObject({ applied: false });
+    expect(readJson(t.stateFile).swapFails).toBe(1);
+    t.u.dispose();
+    const next = setup({ dir: t.dir, h: t.h, net: t.net, opts: { kind: 'portable', portableFile: exe, swapHelper: helper, fs: fsApi } });
+    await next.u.init();
+    expect(next.u.applyAtQuit({ restart: false })).toMatchObject({ applied: false });
+    expect(readJson(t.stateFile).swapFails).toBe(2);
+    next.u.dispose();
+    const stuck = setup({ dir: t.dir, h: t.h, net: t.net, opts: { kind: 'portable', portableFile: exe, swapHelper: helper, fs: fsApi } });
+    await stuck.u.init();
+    expect(stuck.u.state().phase).toBe('failed');
+    expect(stuck.u.wantsApply(false)).toBe(false);
+  });
+
+  it('a portable app in a profile folder so deep that the download would get a path of 260 characters is a manual one', () => {
+    const helper = path.join(tmpDir(), 'ncut-swap.exe');
+    fs.writeFileSync(helper, 'x');
+    const exe = path.join(tmpDir(), 'ncut.exe');
+    fs.writeFileSync(exe, 'x');
+    const deep = path.join(os.tmpdir(), 'd'.repeat(200));
+    expect(setup({ dir: deep, opts: { kind: 'portable', portableFile: exe, swapHelper: helper } }).u.state().kind).toBe('manual');
+    expect(setup({ opts: { kind: 'portable', portableFile: exe, swapHelper: helper } }).u.state().kind).toBe('portable');
   });
 
   it('a portable app without the helper can not replace itself: it is a manual one', async () => {

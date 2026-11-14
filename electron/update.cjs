@@ -193,11 +193,13 @@ function createUpdater(opts) {
   // is done by a helper once ncut has closed. a build without the helper can not update itself
   const swapHelper = typeof opts.swapHelper === 'string' && opts.swapHelper !== '' && isPlainFile(fs, opts.swapHelper) ? opts.swapHelper : null;
   if (kind === 'portable' && !swapHelper) kind = 'manual';
+  // the helper takes no path of 260 characters or more: a profile folder so deep that the download would get one can not update
+  if (kind === 'portable' && path.join(opts.userDataDir, 'updates', rules.assetName('99999.99999.99999', 'portable')).length > rules.MAX_SWAP_SOURCE_PATH) kind = 'manual';
   const execPath = typeof opts.execPath === 'string' && opts.execPath !== '' ? opts.execPath : null;
   const restartArgs = Array.isArray(opts.restartArgs) ? opts.restartArgs.filter((a) => typeof a === 'string') : [];
 
   // what update.json holds
-  const stored = { auto: true, checkedAt: null, ready: null };
+  const stored = { auto: true, checkedAt: null, ready: null, swapFails: 0 };
   // what the page sees
   const live = { phase: 'idle', latest: null, progress: 0, error: null };
   /** the stored ready entry, once its file was hashed again and found right */
@@ -255,7 +257,7 @@ function createUpdater(opts) {
 
   function persist() {
     try {
-      writeAtomic(stateFile, JSON.stringify({ auto: stored.auto, checkedAt: stored.checkedAt, ready: stored.ready }));
+      writeAtomic(stateFile, JSON.stringify({ auto: stored.auto, checkedAt: stored.checkedAt, ready: stored.ready, swapFails: stored.swapFails }));
     } catch (e) {
       log(`update: could not save update.json (${e && e.code ? e.code : 'error'})`);
     }
@@ -267,10 +269,12 @@ function createUpdater(opts) {
       stored.auto = clean.auto;
       stored.checkedAt = clean.checkedAt;
       stored.ready = clean.ready;
+      stored.swapFails = clean.swapFails;
     } catch {
       stored.auto = true;
       stored.checkedAt = null;
       stored.ready = null;
+      stored.swapFails = 0;
     }
   }
 
@@ -348,21 +352,47 @@ function createUpdater(opts) {
     if (deleteFile && entry && rules.readyFileOk(entry, updatesDir, kind, path)) removeEntry(entry.file);
   }
 
-  /** how the helper of the close before ended (it writes one number): a swap that did not work goes to the log */
+  /** how the helper of the close before ended (it writes one number): a swap that did not work goes to the log. the number, or null */
   function noteLastSwap() {
     let fd = null;
     try {
       const file = path.join(updatesDir, rules.SWAP_LOG);
-      if (isLink(updatesDir) || !isPlainFile(fs, file)) return;
+      if (isLink(updatesDir) || !isPlainFile(fs, file)) return null;
       fd = fs.openSync(file, 'r');
       const buf = Buffer.alloc(8);
       const n = fs.readSync(fd, buf, 0, buf.length, 0);
       const text = buf.subarray(0, n).toString('latin1').trim();
-      if (/^\d{1,3}$/.test(text) && text !== '0') log(`update: the last swap of the exe did not work: ${rules.swapResult(Number(text))}`);
+      if (!/^\d{1,3}$/.test(text)) return null;
+      if (text !== '0') log(`update: the last swap of the exe did not work: ${rules.swapResult(Number(text))}`);
+      return Number(text);
     } catch {
       /* no swap happened */
+      return null;
     } finally {
       closeQuiet(fs, fd);
+    }
+  }
+
+  /**
+   * a portable swap that did not work again and again (no room next to the exe, no rights, a scanner in the way) must
+   * not be handed over at every close for ever while the page says "ready": after SWAP_MAX_FAILS the update stays
+   * downloaded but is not applied on its own, the page says so and offers the download page. "check now" tries again,
+   * and a newer release replaces the entry (which starts the count over)
+   */
+  function stuck() {
+    return kind === 'portable' && stored.swapFails >= rules.SWAP_MAX_FAILS;
+  }
+
+  /** what the page shows while nothing runs: an update that is ready is ready, unless it is stuck */
+  function rest() {
+    if (!ready) {
+      live.phase = 'idle';
+    } else if (stuck()) {
+      live.phase = 'failed';
+      live.error = 'replacing this exe did not work, get the new version from the download page';
+    } else {
+      live.phase = 'ready';
+      live.error = null;
     }
   }
 
@@ -389,12 +419,11 @@ function createUpdater(opts) {
     started = true;
     if (kind === 'none') return Promise.resolve();
     loadStateFile();
+    let swapCode = null;
     if (portableFile) {
-      // what a swap left next to the exe (the helper tidies up itself, this is for one that was cut short).
-      // <file>.old is the exe of before, nobody needs it once this one runs. <file>.new may belong to a helper that
-      // is still waiting for this file (ncut was started again right after it closed), so only an old one goes
-      const old = `${portableFile}.old`;
-      if (isPlainFile(fs, old)) unlinkQuiet(fs, old);
+      // what a swap left next to the exe (the helper deletes its copy itself, this is for one that was cut short).
+      // <file>.new may belong to a helper that is still waiting for this file (ncut was started again right after it
+      // closed), so only an old one goes
       const fresh = `${portableFile}.new`;
       try {
         const st = fs.lstatSync(fresh);
@@ -402,8 +431,11 @@ function createUpdater(opts) {
       } catch {
         /* there is none */
       }
-      noteLastSwap();
+      swapCode = noteLastSwap();
     }
+    // the swap of the close before did not work: counted, so a swap that never works is not tried for ever
+    if (swapCode === 0) stored.swapFails = 0;
+    else if (swapCode !== null && rules.swapFailureCounts(swapCode)) stored.swapFails = Math.min(99, stored.swapFails + 1);
     const entry = stored.ready;
     let believed = null;
     if (entry && kind !== 'manual') {
@@ -418,6 +450,7 @@ function createUpdater(opts) {
     } else if (entry) {
       dropStoredReady(true);
     }
+    if (!believed) stored.swapFails = 0;
     cleanUpdatesDir(believed ? believed.file : null);
     persist();
     arm(true);
@@ -428,9 +461,8 @@ function createUpdater(opts) {
       if (disposed || stored.ready !== believed) return;
       if (got && got.size === believed.size && got.sha256 === believed.sha256) {
         ready = believed;
-        live.phase = 'ready';
         live.latest = believed.version;
-        live.error = null;
+        rest();
       } else {
         dropStoredReady(true);
         log('update: the downloaded update did not match its checksum any more and was removed');
@@ -479,8 +511,8 @@ function createUpdater(opts) {
       schedule(wait);
       return;
     }
-    // an update that is ready needs no new question, a running job is not started twice
-    if (ready || job) {
+    // an update that is ready needs no new question (one that is stuck does: a newer release may be the fix), a running job is not started twice
+    if ((ready && !stuck()) || job) {
       schedule(rules.CHECK_EVERY_MS);
       return;
     }
@@ -669,12 +701,12 @@ function createUpdater(opts) {
       await fs.promises.rename(part, final);
       const older = stored.ready;
       stored.ready = { version, file: final, sha256: asset.sha256, size: asset.size };
+      stored.swapFails = 0;
       ready = stored.ready;
       if (older && older.file !== final && rules.readyFileOk(older, updatesDir, kind, path)) removeEntry(older.file);
       persist();
-      live.phase = 'ready';
+      rest();
       live.progress = 0;
-      live.error = null;
     } catch (e) {
       if (fh) {
         try {
@@ -691,7 +723,7 @@ function createUpdater(opts) {
   function failWith(e, j) {
     if (e === CANCELLED || (j.aborted && !(e instanceof Reason))) {
       // the app closes or the switch went off: nobody is told about a stop they asked for
-      live.phase = ready ? 'ready' : 'idle';
+      rest();
       live.progress = 0;
       return;
     }
@@ -699,8 +731,7 @@ function createUpdater(opts) {
     if (ready) {
       // a check or a newer download that failed while an update is ready: the ready one is still good and is what the
       // page shows. the reason goes to the log
-      live.phase = 'ready';
-      live.error = null;
+      rest();
       log(`update: ${sentenceFor(e)}`);
       return;
     }
@@ -711,6 +742,11 @@ function createUpdater(opts) {
 
   /** a check, and the download when it finds a newer version. resolves when it is over, never throws */
   async function runCheck(manual) {
+    // "check now" is also the retry of a swap that did not work: the next close hands the update over again
+    if (manual && stored.swapFails > 0) {
+      stored.swapFails = 0;
+      persist();
+    }
     const j = newJob(manual);
     job = j;
     live.phase = 'checking';
@@ -732,7 +768,7 @@ function createUpdater(opts) {
       const covered = ready !== null && !rules.isNewer(found.version, ready.version);
       live.latest = covered ? ready.version : found.version;
       if (!found.newer || covered || kind === 'manual' || !(stored.auto || manual) || j.aborted) {
-        live.phase = ready ? 'ready' : 'idle';
+        rest();
       } else {
         const t = now();
         if (
@@ -795,7 +831,7 @@ function createUpdater(opts) {
   }
 
   function canRestart() {
-    return !disposed && !applying && ready !== null && (kind === 'installed' || kind === 'portable');
+    return !disposed && !applying && ready !== null && !stuck() && (kind === 'installed' || kind === 'portable');
   }
 
   // ---------- applying, when the app really quits ----------
@@ -827,20 +863,28 @@ function createUpdater(opts) {
    * did not happen the next close tries again.
    */
   function handOverPortable(entry, wanted) {
-    const no = (why) => ({ applied: false, started: false, why });
-    // a folder that can not be written (a read only stick, program files) is found here, not by a helper nobody sees
-    const probe = `${portableFile}.check`;
+    // a hand over that did not happen counts (see stuck), unless the helper of the close before is still at it
+    const no = (why, counts = true) => {
+      if (counts) {
+        stored.swapFails = Math.min(99, stored.swapFails + 1);
+        persist();
+      }
+      return { applied: false, started: false, why };
+    };
+    // a folder that can not be written (a read only stick, program files) is found here, not by a helper nobody sees.
+    // the name is ours alone: a file the user keeps next to the exe is never touched
+    const probe = `${portableFile}.check-${process.pid}`;
     try {
       fsApi.closeSync(fsApi.openSync(probe, 'wx'));
     } catch (e) {
-      if (!e || e.code !== 'EEXIST') return no(writeSentence(e && e.code));
+      return no(writeSentence(e && e.code));
     }
     unlinkQuiet(fsApi, probe);
     if (!isPlainFile(fsApi, portableFile)) return no('ncut is not at the place it was started from');
     if (!isPlainFile(fsApi, entry.file)) {
       dropStoredReady(false);
       persist();
-      return no('the downloaded update is gone');
+      return no('the downloaded update is gone', false);
     }
     const args = rules.swapArgs(entry, portableFile, wanted, restartArgs);
     if (!args) return no('the update could not be handed over');
@@ -848,16 +892,22 @@ function createUpdater(opts) {
     try {
       fsApi.copyFileSync(swapHelper, helper);
     } catch (e) {
-      const code = e && e.code;
-      // in use: the helper of the close before is still waiting for the exe, and it will do the job
-      return no(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES' ? 'an earlier update step is still running' : 'the update helper could not be put in place');
+      // a helper that runs can not be overwritten (EBUSY): the one of the close before still waits for the exe and will
+      // do the job. any other refusal (a read only copy from before, a folder that does not let us write) is no such thing
+      if (e && e.code === 'EBUSY') return no('an earlier update step is still running', false);
+      try {
+        fsApi.unlinkSync(helper);
+        fsApi.copyFileSync(swapHelper, helper);
+      } catch {
+        return no('the update helper could not be put in place');
+      }
     }
     if (!startDetached(helper, args, updatesDir, true)) return no('the update helper could not be started');
     return { applied: true, started: wanted };
   }
 
   function wantsApply(restart) {
-    return !applying && ready !== null && (kind === 'installed' || kind === 'portable') && (restart === true || stored.auto);
+    return !applying && ready !== null && !stuck() && (kind === 'installed' || kind === 'portable') && (restart === true || stored.auto);
   }
 
   /**
@@ -876,7 +926,6 @@ function createUpdater(opts) {
     clearTimer();
     if (job) job.abort(CANCELLED);
     const entry = ready;
-    const deadline = now() + applyBudget;
     let result = { applied: false, started: false, why: 'the update could not be applied' };
     try {
       if (!rules.readyFileOk(entry, updatesDir, kind, path)) {
@@ -884,6 +933,7 @@ function createUpdater(opts) {
         persist();
         result = { applied: false, started: false, why: 'the update file is not in the update folder' };
       } else if (kind === 'installed') {
+        const deadline = now() + applyBudget;
         const verdict = verifyFileSync(fsApi, entry.file, entry, deadline, now);
         if (verdict === 'ok') {
           if (startDetached(entry.file, rules.installerArgs(wanted), updatesDir, true)) {

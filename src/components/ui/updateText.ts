@@ -59,8 +59,10 @@ export function updateStatusText(state: StateView, now: number): string {
       return `downloading ${latest ?? 'the update'} (${percent(state.progress)}%)`;
     case 'ready': {
       const what = latest ?? 'the update';
-      if (state.kind === 'portable') return `${what} is ready. it replaces this exe when you close ncut`;
       if (state.kind === 'manual') return `${what} is out. this copy does not update itself`;
+      // with the switch off a normal close applies nothing: only restart does
+      if (!state.auto) return `${what} is ready. press restart to update`;
+      if (state.kind === 'portable') return `${what} is ready. it replaces this exe when you close ncut`;
       return `${what} is ready. it installs when you close ncut`;
     }
     case 'failed': {

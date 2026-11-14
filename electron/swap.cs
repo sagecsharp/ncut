@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -13,18 +15,53 @@ using System.Threading;
 //
 //   1. <source> (the downloaded new exe) must have exactly <size> bytes and the sha256 <sha256>, else nothing happens
 //   2. it is copied to <target>.new, and what was written is read back and hashed again
-//   3. wait until <target> can be renamed (the old starter has ended), at most two minutes
-//   4. <target> becomes <target>.old, <target>.new becomes <target>. if that fails the old file is put back
-//   5. <target>.old and <source> are deleted
-//   6. start: the new <target> is started, with the one argument if there is one
+//   3. <target>.new is moved onto <target> in one step (MoveFileEx, replace existing). while the old starter still runs
+//      windows refuses that, so it is tried again until the starter has ended, at most two minutes. one step means
+//      <target> is always a whole exe: the old one, or the new one
+//   4. <source> is deleted
+//   5. start: the new <target> is started, with the one argument if there is one
 //
-// the name the user has for the exe stays (shortcuts and the taskbar pin point at it), and it never holds half a file.
-// it takes nothing but these arguments, asks nobody, shows no window, and writes one line to swap.log next to
-// <source> saying how it ended. built by scripts/build-qos.cjs with the c# compiler that is part of windows.
+// the name the user has for the exe stays (shortcuts and the taskbar pin point at it). it takes nothing but these
+// arguments, asks nobody, shows no window, and writes one number to swap.log next to <source> saying how it ended
+// (docs/UPDATE.md has the numbers). built by scripts/build-qos.cjs with the c# compiler that is part of windows.
 static class Program
 {
     const int WaitMs = 120000;
     const int StepMs = 250;
+    // the c# compiler of .net framework 4 has no long path support: a path is at most 259 characters. <target>.new has
+    // to fit too, so the target is shorter (the app checks the same numbers, updateRules.MAX_SWAP_*)
+    const int MaxSourceLength = 259;
+    const int MaxTargetLength = 255;
+
+    const uint MoveReplaceExisting = 1;
+    const uint MoveWriteThrough = 8;
+    const int ErrorAccessDenied = 5;
+    const int ErrorSharingViolation = 32;
+    const int ErrorLockViolation = 33;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool MoveFileEx(string from, string to, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandle(IntPtr handle, out HandleInfo info);
+
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+
+    // BY_HANDLE_FILE_INFORMATION, the times as plain numbers
+    [StructLayout(LayoutKind.Sequential)]
+    struct HandleInfo
+    {
+        public uint Attributes;
+        public uint CreatedLow, CreatedHigh, AccessedLow, AccessedHigh, WrittenLow, WrittenHigh;
+        public uint Volume;
+        public uint SizeHigh, SizeLow;
+        public uint Links;
+        public uint IndexHigh, IndexLow;
+    }
 
     static int Main(string[] args)
     {
@@ -37,18 +74,29 @@ static class Program
             string target = args[1];
             string sha = args[2];
             long size;
-            if (!IsExePath(source) || !IsExePath(target)) return 2;
-            if (!IsHex64(sha) || !long.TryParse(args[3], out size) || size < 1) return 2;
+            if (!IsExePath(source, MaxSourceLength) || !IsExePath(target, MaxTargetLength)) return 2;
+            if (!IsHex64(sha) || !IsSize(args[3], out size)) return 2;
             if (args[4] != "start" && args[4] != "quiet") return 2;
             bool start = args[4] == "start";
             string extra = args.Length == 6 ? args[5] : null;
             if (extra != null && !IsPlainArg(extra)) return 2;
-            if (string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase)) return 2;
-            log = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(source)), "swap.log");
+            try
+            {
+                source = Path.GetFullPath(source);
+                target = Path.GetFullPath(target);
+            }
+            catch
+            {
+                return 2;
+            }
+            // the same file under two names (a folder junction, a hard link, a mapped drive) is no download: the swap
+            // would end by deleting the new exe it just put in place
+            if (string.Equals(source, target, StringComparison.OrdinalIgnoreCase) || SameFile(source, target)) return 2;
+            log = Path.Combine(Path.GetDirectoryName(source), "swap.log");
 
             // one helper per target at a time: a second one would fight over <target>.new
             bool mine;
-            using (Mutex mutex = new Mutex(true, "Local\\ncut-swap-" + HashText(Path.GetFullPath(target).ToLowerInvariant()), out mine))
+            using (Mutex mutex = new Mutex(true, "Local\\ncut-swap-" + HashText(target.ToLowerInvariant()), out mine))
             {
                 if (!mine)
                 {
@@ -73,93 +121,31 @@ static class Program
     static int Swap(string source, string target, string sha, long size, bool start, string extra)
     {
         string fresh = target + ".new";
-        string old = target + ".old";
-        if (!IsPlainFile(target)) return 3;
+        if (!IsFile(target)) return 3;
         // 1. the download is what the app said it is
-        if (!IsPlainFile(source) || new FileInfo(source).Length != size || HashFile(source) != sha) return 4;
-
-        // 2. the copy, read back from the disk
+        if (!Matches(source, size, sha)) return 4;
         try
         {
-            DeleteQuiet(fresh);
-            using (FileStream input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (FileStream output = new FileStream(fresh, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                input.CopyTo(output, 1 << 20);
-            }
+            int code = Replace(source, target, fresh, sha, size);
+            if (code != 0) return code;
         }
-        catch
+        finally
         {
+            // whatever happened, no half done copy stays next to the exe
             DeleteQuiet(fresh);
-            return 5;
-        }
-        if (new FileInfo(fresh).Length != size || HashFile(fresh) != sha)
-        {
-            DeleteQuiet(fresh);
-            return 6;
         }
 
-        // 3. + 4. the old starter lets go of its file when it has ended
-        bool moved = false;
-        Stopwatch clock = Stopwatch.StartNew();
-        while (clock.ElapsedMilliseconds < WaitMs)
-        {
-            try
-            {
-                DeleteQuiet(old);
-                File.Move(target, old);
-                moved = true;
-                break;
-            }
-            catch
-            {
-                Thread.Sleep(StepMs);
-            }
-        }
-        if (!moved)
-        {
-            DeleteQuiet(fresh);
-            return 7;
-        }
-        try
-        {
-            File.Move(fresh, target);
-        }
-        catch
-        {
-            // the old file goes back under its name, whatever it takes
-            for (int i = 0; i < 20; i++)
-            {
-                try
-                {
-                    File.Move(old, target);
-                    break;
-                }
-                catch
-                {
-                    Thread.Sleep(StepMs);
-                }
-            }
-            DeleteQuiet(fresh);
-            return 10;
-        }
-
-        // 5. tidy up: neither is needed any more, and neither failing changes the result
-        for (int i = 0; i < 8 && File.Exists(old); i++)
-        {
-            DeleteQuiet(old);
-            if (File.Exists(old)) Thread.Sleep(StepMs);
-        }
+        // 4. the download is used up. failing to delete it changes nothing
         DeleteQuiet(source);
 
-        // 6. the new version, started the way the user starts it
+        // 5. the new version, started the way the user starts it
         if (start)
         {
             try
             {
                 ProcessStartInfo info = new ProcessStartInfo(target);
                 info.UseShellExecute = false;
-                info.WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(target));
+                info.WorkingDirectory = Path.GetDirectoryName(target);
                 if (extra != null) info.Arguments = Quote(extra);
                 // what the old starter told the old app is not for the new one (it sets its own)
                 info.EnvironmentVariables.Remove("PORTABLE_EXECUTABLE_DIR");
@@ -175,10 +161,50 @@ static class Program
         return 0;
     }
 
-    /** a full windows path to an exe, with nothing in it that is odd for a path */
-    static bool IsExePath(string p)
+    /** steps 2 and 3: the copy next to the exe, then the move onto it. 0 when <target> now is the new exe */
+    static int Replace(string source, string target, string fresh, string sha, long size)
     {
-        if (p == null || p.Length < 4 || p.Length > 1024) return false;
+        // 2. the copy, read back from the disk
+        try
+        {
+            DeleteQuiet(fresh);
+            using (FileStream input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (FileStream output = new FileStream(fresh, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                input.CopyTo(output, 1 << 20);
+            }
+        }
+        catch
+        {
+            return 5;
+        }
+        if (!Matches(fresh, size, sha)) return 6;
+
+        // 3. the old starter lets go of its file when it has ended. a read only exe is replaced like any other
+        ClearReadOnly(target);
+        int error = 0;
+        Stopwatch clock = Stopwatch.StartNew();
+        for (;;)
+        {
+            if (MoveFileEx(fresh, target, MoveReplaceExisting | MoveWriteThrough)) return 0;
+            error = Marshal.GetLastWin32Error();
+            // anything but "in use" (or refused) will not go away by waiting: scanners that hold the fresh copy for a
+            // moment and the old starter both end up here
+            if (!InUse(error)) return 10;
+            if (clock.ElapsedMilliseconds >= WaitMs) return 7;
+            Thread.Sleep(StepMs);
+        }
+    }
+
+    static bool InUse(int error)
+    {
+        return error == ErrorAccessDenied || error == ErrorSharingViolation || error == ErrorLockViolation;
+    }
+
+    /** a full windows path to an exe, with nothing in it that is odd for a path */
+    static bool IsExePath(string p, int max)
+    {
+        if (p == null || p.Length < 4 || p.Length > max) return false;
         if (!p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return false;
         foreach (char c in p)
         {
@@ -209,12 +235,30 @@ static class Program
         return true;
     }
 
-    static bool IsPlainFile(string p)
+    /** only digits (no sign, no spaces, no culture), at least 1 */
+    static bool IsSize(string s, out long size)
+    {
+        size = 0;
+        if (s == null || s.Length == 0 || s.Length > 18) return false;
+        foreach (char c in s)
+        {
+            if (c < '0' || c > '9') return false;
+        }
+        return long.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out size) && size >= 1;
+    }
+
+    /** a file, not a folder (a link to a file counts: the move replaces the link itself, never what it points at) */
+    static bool IsFile(string p)
+    {
+        return File.Exists(p);
+    }
+
+    /** the file is there, has exactly this size and this sha256. a file that can not be read is not that file */
+    static bool Matches(string p, long size, string sha)
     {
         try
         {
-            FileAttributes a = File.GetAttributes(p);
-            return (a & FileAttributes.Directory) == 0 && (a & FileAttributes.ReparsePoint) == 0;
+            return IsFile(p) && new FileInfo(p).Length == size && HashFile(p) == sha;
         }
         catch
         {
@@ -246,13 +290,63 @@ static class Program
         return s.ToString();
     }
 
+    /** which file this is on the disk (volume and index) and how many names it has. false when that can not be asked */
+    static bool Identity(string p, out uint volume, out ulong index, out uint links)
+    {
+        volume = 0;
+        index = 0;
+        links = 0;
+        // access 0 and every share flag: only the information is asked, so a file that is in use can still be asked
+        IntPtr h = CreateFile(p, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return false;
+        try
+        {
+            HandleInfo info;
+            if (!GetFileInformationByHandle(h, out info)) return false;
+            volume = info.Volume;
+            index = ((ulong)info.IndexHigh << 32) | info.IndexLow;
+            links = info.Links;
+            return true;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    static bool SameFile(string a, string b)
+    {
+        uint va, vb, la, lb;
+        ulong ia, ib;
+        if (!Identity(a, out va, out ia, out la) || !Identity(b, out vb, out ib, out lb)) return false;
+        return va == vb && ia == ib;
+    }
+
+    /** the read only flag (and only it) goes. a file with more than one name is shared with others: not touched */
+    static void ClearReadOnly(string p)
+    {
+        try
+        {
+            FileAttributes a = File.GetAttributes(p);
+            if ((a & FileAttributes.ReadOnly) == 0) return;
+            uint volume, links;
+            ulong index;
+            if (!Identity(p, out volume, out index, out links) || links > 1) return;
+            File.SetAttributes(p, a & ~FileAttributes.ReadOnly);
+        }
+        catch
+        {
+            /* the caller sees what is left */
+        }
+    }
+
     static void DeleteQuiet(string p)
     {
         try
         {
             if (File.Exists(p))
             {
-                File.SetAttributes(p, FileAttributes.Normal);
+                ClearReadOnly(p);
                 File.Delete(p);
             }
         }

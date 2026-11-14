@@ -50,6 +50,14 @@ const SWAP_HELPER = 'ncut-swap.exe';
 const SWAP_LOG = 'swap.log';
 /** a <file>.new next to the portable exe that is older than this belongs to no helper any more (one waits two minutes at most) */
 const STALE_NEW_MS = 15 * 60 * 1000;
+/**
+ * the helper is a .net framework 4 program, which takes no path of 260 or more characters: the downloaded exe may have
+ * 259, the portable exe 255 (<file>.new has to fit next to it). swap.cs has the same two numbers
+ */
+const MAX_SWAP_SOURCE_PATH = 259;
+const MAX_SWAP_TARGET_PATH = 255;
+/** a portable swap that did not work this many times in a row is not tried again on its own: the page says so */
+const SWAP_MAX_FAILS = 2;
 
 const KINDS = ['installed', 'portable', 'manual', 'none'];
 const PHASES = ['idle', 'checking', 'downloading', 'ready', 'failed'];
@@ -109,17 +117,24 @@ function installerArgs(restart) {
  * the arguments a restarted portable ncut gets: only the profile folder it was started with (--user-data-dir=...),
  * so someone who keeps the profile next to the exe on a stick does not land in another profile after an update.
  * nothing else is carried (a project file was opened already). the value goes on as one argument, never through
- * a shell, and only when it has nothing odd in it.
+ * a shell, and only when it has nothing odd in it. a relative folder is made absolute against `cwd` (the folder this
+ * process was started in): the new exe is started in the folder of the exe, where the same words would mean another one.
  */
-function carriedArgs(argv) {
+function carriedArgs(argv, cwd = process.cwd()) {
   if (!Array.isArray(argv)) return [];
   const prefix = '--user-data-dir=';
+  const odd = /["<>|?*\u0000-\u001f]/;
   // the first argument is the exe itself
   for (const arg of argv.slice(1)) {
     if (typeof arg !== 'string' || !arg.startsWith(prefix)) continue;
-    const value = arg.slice(prefix.length);
-    if (value === '' || arg.length > 1024 || /["<>|?*\u0000-\u001f]/.test(value)) return [];
-    return [arg];
+    let value = arg.slice(prefix.length);
+    if (value === '' || arg.length > 1024 || odd.test(value)) return [];
+    if (!path.win32.isAbsolute(value)) {
+      if (typeof cwd !== 'string' || cwd === '') return [];
+      value = path.win32.resolve(cwd, value);
+    }
+    const carried = prefix + value;
+    return carried.length > 1024 || odd.test(value) ? [] : [carried];
   }
   return [];
 }
@@ -132,6 +147,7 @@ function carriedArgs(argv) {
 function swapArgs(entry, portableFile, restart, extra, platform = process.platform) {
   if (!entry || typeof entry !== 'object') return null;
   if (!isPortablePath(entry.file, platform) || !isPortablePath(portableFile, platform)) return null;
+  if (entry.file.length > MAX_SWAP_SOURCE_PATH || portableFile.length > MAX_SWAP_TARGET_PATH) return null;
   if (typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256)) return null;
   if (!Number.isSafeInteger(entry.size) || entry.size < 1) return null;
   const args = [entry.file, portableFile, entry.sha256, String(entry.size), restart === true ? 'start' : 'quiet'];
@@ -152,9 +168,19 @@ function swapResult(code) {
     6: 'the copy did not come out right',
     7: 'the exe stayed in use',
     8: 'another swap was running',
-    10: 'the new file could not take its place, the old one was put back',
+    9: 'the helper failed in a way it could not name',
+    10: 'the new file could not take its place, the old exe is untouched',
   };
   return Object.prototype.hasOwnProperty.call(known, code) ? known[code] : 'an error';
+}
+
+/**
+ * does a swap that ended with this number of the helper count as a failure that will come again? 7 (the exe stayed in
+ * use) and 8 (another helper was at it) happen when ncut is started again right after it closed: nothing is wrong
+ * then. the others come every time (no room, no rights, a file that does not read back right)
+ */
+function swapFailureCounts(code) {
+  return Number.isInteger(code) && code > 0 && code !== 7 && code !== 8;
 }
 
 /**
@@ -170,11 +196,30 @@ function isPortablePath(p, platform = process.platform) {
   return p.startsWith('/');
 }
 
+/** a windows path made comparable: absolute, no trailing slash, lower case. null for anything that is not a drive or share path */
+function comparablePath(p) {
+  if (typeof p !== 'string' || p.length > 1024 || !/^(?:[a-zA-Z]:[\\/]|\\\\[^\\/]+[\\/])/.test(p)) return null;
+  return path.win32.resolve(p).toLowerCase();
+}
+
+/** the running exe lies below the temp folder (where the starter unpacks it) and the portable exe is not in its folder */
+function startedByPortableStarter(execPath, tempDir, portableFile) {
+  const exec = comparablePath(execPath);
+  const temp = comparablePath(tempDir);
+  const portable = comparablePath(portableFile);
+  if (!exec || !temp || !portable) return false;
+  const below = temp.endsWith('\\') ? temp : `${temp}\\`;
+  if (!exec.startsWith(below)) return false;
+  return path.win32.dirname(portable) !== path.win32.dirname(exec);
+}
+
 /**
  * which kind of app this is, from facts the caller collected:
- * { platform, packaged, portableFile (the PORTABLE_EXECUTABLE_FILE value), execPath, isFile(path) }.
- * none = not packaged or not windows. portable = the one file exe says where it lives and that is a real exe.
- * installed = the nsis uninstaller sits next to the running exe. manual = a packaged app that is neither.
+ * { platform, packaged, portableFile (the PORTABLE_EXECUTABLE_FILE value), execPath, tempDir, isFile(path) }.
+ * execPath and tempDir come with their long names (realpath): the starter unpacks the app below the temp folder.
+ * none = not packaged or not windows. portable = the one file exe says where it lives and that is a real exe, and the
+ * running exe really is what the starter unpacked. installed = the nsis uninstaller sits next to the running exe.
+ * manual = a packaged app that is neither (the unpacked folder).
  * `portableFile` of the answer is the believed portable path, else null.
  */
 function decideKind(facts) {
@@ -196,8 +241,18 @@ function decideKind(facts) {
     const uninstaller = path.win32.join(path.win32.dirname(exec), UNINSTALL_FILE);
     if (isFile(uninstaller)) return { kind: 'installed', portableFile: null };
   }
+  // the variable is inherited as well: an unpacked or zip extracted ncut that another portable program started would
+  // take that program's exe for itself, and the update would replace it. the real starter unpacks the app below the
+  // temp folder and the portable exe lies somewhere else, so anything that does not look like that is a manual one
   const portable = facts.portableFile;
-  if (isPortablePath(portable, 'win32') && isFile(portable)) return { kind: 'portable', portableFile: portable };
+  if (
+    isPortablePath(portable, 'win32') &&
+    portable.length <= MAX_SWAP_TARGET_PATH &&
+    startedByPortableStarter(exec, facts.tempDir, portable) &&
+    isFile(portable)
+  ) {
+    return { kind: 'portable', portableFile: portable };
+  }
   return { kind: 'manual', portableFile: null };
 }
 
@@ -378,13 +433,15 @@ function cleanReady(raw) {
   return { version: raw.version, file: raw.file, sha256: raw.sha256, size: raw.size };
 }
 
-/** <userData>/update.json as it is believed: { auto, checkedAt, ready }. anything broken = the defaults (auto on) */
+/** <userData>/update.json as it is believed: { auto, checkedAt, ready, swapFails }. anything broken = the defaults (auto on) */
 function cleanStateFile(raw) {
   const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   return {
     auto: r.auto !== false,
     checkedAt: Number.isSafeInteger(r.checkedAt) && r.checkedAt >= 0 ? r.checkedAt : null,
     ready: cleanReady(r.ready),
+    // how many times in a row the swap of the portable exe did not work for the ready entry
+    swapFails: Number.isSafeInteger(r.swapFails) && r.swapFails >= 0 && r.swapFails <= 99 ? r.swapFails : 0,
   };
 }
 
@@ -406,6 +463,10 @@ function readyFileOk(entry, updatesDir, kind, pathApi = path) {
 
 module.exports = {
   REPO,
+  MAX_SWAP_SOURCE_PATH,
+  MAX_SWAP_TARGET_PATH,
+  SWAP_MAX_FAILS,
+  swapFailureCounts,
   API_HOST,
   WEB_HOST,
   API_URL,

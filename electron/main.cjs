@@ -10,6 +10,7 @@
  */
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeTheme, powerSaveBlocker, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const shellRules = require('./rules.cjs');
@@ -318,12 +319,24 @@ function updateOff() {
   return updateRules.cleanUpdateState({ kind: 'none', auto: true, phase: 'idle', current: app.getVersion() });
 }
 
+/** the long name of a path (the temp folder is often given with 8.3 names), the path itself when that fails */
+function longName(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
 function setupUpdate() {
   const facts = updateRules.decideKind({
     platform: process.platform,
     packaged: app.isPackaged,
     portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
-    execPath: process.execPath,
+    execPath: longName(process.execPath),
+    // the portable starter unpacks the app below the temp folder: that tells it from an unpacked copy of ncut that
+    // some other program started (the variable above is inherited by everything that program starts)
+    tempDir: longName(os.tmpdir()),
     isFile: fileExists,
   });
   updater = createUpdater({
@@ -703,11 +716,10 @@ if (!app.requestSingleInstanceLock()) {
         /* the lock goes with the process anyway */
       }
       const result = updater.applyAtQuit({ restart });
-      if (!result.applied || (restart && !result.started)) {
-        if (!result.applied) console.error(`update: not applied (${result.why})`);
-        else console.error(`update: applied, but ${result.why}`);
-        // "restart now" that did not end in a running ncut: it still comes back (electron starts it when this
-        // process ends): the file as it was, or the new one that is in place but did not start
+      if (!result.applied) {
+        console.error(`update: not applied (${result.why})`);
+        // "restart now" that did not hand the update over: it still comes back (electron starts it when this process
+        // ends): the file as it was
         if (restart && typeof result.relaunch === 'string' && result.relaunch !== '') {
           try {
             app.relaunch({ execPath: result.relaunch, args: updateRules.carriedArgs(process.argv) });

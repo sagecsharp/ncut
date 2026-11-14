@@ -45,7 +45,7 @@ export function decideNotice(prev: UpdateState | null, next: UpdateState, memory
 
   if (next.phase === 'ready' && next.latest !== null && !memory.told.includes(next.latest)) {
     return {
-      toast: { text: `ncut ${next.latest} is ready. it installs when you close ncut`, kind: 'success' },
+      toast: { text: `ncut ${next.latest} is ready. ${next.auto ? 'it installs when you close ncut' : 'press restart to update'}`, kind: 'success' },
       memory: { told: [...memory.told, next.latest], askedAt: null },
     };
   }

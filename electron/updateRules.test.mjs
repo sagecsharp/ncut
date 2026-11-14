@@ -432,12 +432,17 @@ describe('the state file', () => {
 
   it('defaults to auto on, never checked, nothing ready', () => {
     for (const raw of [null, undefined, 5, 'x', [], {}, { auto: 'x' }]) {
-      expect(rules.cleanStateFile(raw)).toEqual({ auto: true, checkedAt: null, ready: null });
+      expect(rules.cleanStateFile(raw)).toEqual({ auto: true, checkedAt: null, ready: null, swapFails: 0 });
     }
   });
 
   it('keeps what is right', () => {
-    expect(rules.cleanStateFile({ auto: false, checkedAt: 5, ready })).toEqual({ auto: false, checkedAt: 5, ready });
+    expect(rules.cleanStateFile({ auto: false, checkedAt: 5, ready, swapFails: 2 })).toEqual({ auto: false, checkedAt: 5, ready, swapFails: 2 });
+  });
+
+  it('a failure count is a small whole number, else none', () => {
+    for (const swapFails of [-1, 1.5, '2', NaN, 100, 2 ** 60, null, {}]) expect(rules.cleanStateFile({ swapFails }).swapFails, String(swapFails)).toBe(0);
+    expect(rules.cleanStateFile({ swapFails: 99 }).swapFails).toBe(99);
   });
 
   it('drops a ready entry with any wrong part', () => {
@@ -514,6 +519,17 @@ describe('what a restarted portable app is started with', () => {
     expect(rules.carriedArgs(['x', 5, null, {}])).toEqual([]);
     expect(rules.carriedArgs(['x', '--USER-DATA-DIR=C:\\a', '-user-data-dir=C:\\a', 'x--user-data-dir=C:\\a'])).toEqual([]);
   });
+
+  it('a relative profile folder is made absolute against the folder ncut was started in', () => {
+    // the restarted exe starts in the folder of the exe: the same words would mean another folder there
+    expect(rules.carriedArgs(['x', '--user-data-dir=.\\profile'], 'D:\\stick\\work')).toEqual(['--user-data-dir=D:\\stick\\work\\profile']);
+    expect(rules.carriedArgs(['x', '--user-data-dir=..\\p q'], 'D:\\stick\\work')).toEqual(['--user-data-dir=D:\\stick\\p q']);
+    // an absolute one goes on exactly as it was written
+    expect(rules.carriedArgs(['x', '--user-data-dir=E:\\p\\'], 'D:\\stick')).toEqual(['--user-data-dir=E:\\p\\']);
+    // no folder to resolve against, or one that makes it too long
+    expect(rules.carriedArgs(['x', '--user-data-dir=p'], '')).toEqual([]);
+    expect(rules.carriedArgs(['x', '--user-data-dir=p'], 'D:\\a'.padEnd(1100, 'a'))).toEqual([]);
+  });
 });
 
 describe('what the swap helper is started with', () => {
@@ -545,9 +561,25 @@ describe('what the swap helper is started with', () => {
   });
 
   it('every result number of the helper has a sentence, an unknown one is an error', () => {
-    for (const code of [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]) expect(rules.swapResult(code), String(code)).not.toBe('an error');
-    for (const code of [9, 11, 255, -1, 'toString', '__proto__', null]) expect(rules.swapResult(code), String(code)).toBe('an error');
+    for (const code of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) expect(rules.swapResult(code), String(code)).not.toBe('an error');
+    for (const code of [11, 255, -1, 'toString', '__proto__', null]) expect(rules.swapResult(code), String(code)).toBe('an error');
     expect(rules.swapResult(7)).toBe('the exe stayed in use');
+  });
+
+  it('only a swap that comes again every time counts as a failure', () => {
+    for (const code of [1, 3, 4, 5, 6, 9, 10, 99]) expect(rules.swapFailureCounts(code), String(code)).toBe(true);
+    // 7 and 8: ncut was started again right after it closed
+    for (const code of [0, 7, 8, -1, 1.5, '3', null, undefined]) expect(rules.swapFailureCounts(code), String(code)).toBe(false);
+  });
+
+  it('paths the helper can not take (260 characters or more, with the copy next to the exe) are refused', () => {
+    const entry = { version: '0.3.0', file: 'C:\\data\\updates\\ncut-0.3.0-portable.exe', sha256: 'ab'.repeat(32), size: 5_000_000 };
+    const fit = (len) => 'C:\\' + 'a'.repeat(len - 7) + '.exe';
+    expect(fit(255)).toHaveLength(255);
+    expect(rules.swapArgs(entry, fit(255), false, [], 'win32')).not.toBeNull();
+    expect(rules.swapArgs(entry, fit(256), false, [], 'win32')).toBeNull();
+    expect(rules.swapArgs({ ...entry, file: fit(259) }, 'C:\\a.exe', false, [], 'win32')).not.toBeNull();
+    expect(rules.swapArgs({ ...entry, file: fit(260) }, 'C:\\a.exe', false, [], 'win32')).toBeNull();
   });
 });
 
@@ -557,9 +589,12 @@ describe('which kind of app this is', () => {
     packaged: true,
     portableFile: undefined,
     execPath: 'C:\\Users\\me\\AppData\\Local\\Programs\\ncut\\ncut.exe',
+    tempDir: 'C:\\Users\\me\\AppData\\Local\\Temp',
     isFile: () => false,
     ...over,
   });
+  // where the portable starter unpacks the app: below the temp folder
+  const unpacked = 'C:\\Users\\me\\AppData\\Local\\Temp\\abc123\\ncut.exe';
 
   it('none when not packaged, not windows, or no facts', () => {
     expect(rules.decideKind(win({ packaged: false }))).toEqual({ kind: 'none', portableFile: null });
@@ -572,19 +607,54 @@ describe('which kind of app this is', () => {
 
   it('portable when the starter names an exe that is there', () => {
     const file = 'C:\\Games\\ncut\\ncut.exe';
-    expect(rules.decideKind(win({ portableFile: file, isFile: (p) => p === file }))).toEqual({ kind: 'portable', portableFile: file });
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: file, isFile: (p) => p === file }))).toEqual({ kind: 'portable', portableFile: file });
     // a share works too
     const unc = '\\\\nas\\tools\\ncut.exe';
-    expect(rules.decideKind(win({ portableFile: unc, isFile: (p) => p === unc }))).toEqual({ kind: 'portable', portableFile: unc });
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: unc, isFile: (p) => p === unc }))).toEqual({ kind: 'portable', portableFile: unc });
+    // the temp folder under another spelling (case, a slash at the end, the app in a folder below the unpack folder)
+    for (const [exec, temp] of [
+      ['c:\\users\\ME\\appdata\\local\\temp\\abc123\\ncut.exe', 'C:\\Users\\me\\AppData\\Local\\Temp\\'],
+      ['C:\\Users\\me\\AppData\\Local\\Temp\\ns1.tmp\\app\\ncut.exe', 'C:\\Users\\me\\AppData\\Local\\Temp'],
+    ]) {
+      expect(rules.decideKind(win({ execPath: exec, tempDir: temp, portableFile: file, isFile: (p) => p === file })).kind, exec).toBe('portable');
+    }
   });
 
   it('a portable file that is not believable is not used', () => {
     for (const bad of ['ncut.exe', '.\\ncut.exe', 'C:\\x\\ncut.txt', 'C:\\x\\"ncut".exe', 'C:\\x\\n<c>.exe', 'C:\\x\\a|b.exe', 'C:\\x\\a?.exe', 'C:\\x\\a*.exe', 'C:\\x\\a\u0001.exe', '/usr/bin/ncut.exe', 'C:\\' + 'a'.repeat(1100) + '.exe', 5, null]) {
-      expect(rules.decideKind(win({ portableFile: bad, isFile: (p) => p === bad })).kind, String(bad)).toBe('manual');
+      expect(rules.decideKind(win({ execPath: unpacked, portableFile: bad, isFile: (p) => p === bad })).kind, String(bad)).toBe('manual');
     }
     // not there, or not a file
-    expect(rules.decideKind(win({ portableFile: 'C:\\Games\\ncut.exe', isFile: () => false })).kind).toBe('manual');
-    expect(rules.decideKind(win({ portableFile: 'C:\\Games\\ncut.exe', isFile: () => { throw new Error('x'); } })).kind).toBe('manual');
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: 'C:\\Games\\ncut.exe', isFile: () => false })).kind).toBe('manual');
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: 'C:\\Games\\ncut.exe', isFile: () => { throw new Error('x'); } })).kind).toBe('manual');
+    // a path the helper can not take (it is a .net framework 4 program: 260 characters are too many with the copy next to it)
+    const long = 'C:\\' + 'a'.repeat(256 - 7) + '.exe';
+    expect(long).toHaveLength(256);
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: long, isFile: (p) => p === long })).kind).toBe('manual');
+  });
+
+  it('an unpacked or extracted copy of ncut that another portable program started stays manual', () => {
+    // PORTABLE_EXECUTABLE_FILE is inherited by every child: this copy must not take the exe of the other program for
+    // itself, the update would replace that program with ncut
+    const other = 'D:\\tools\\SomeOtherPortableApp.exe';
+    const isFile = (p) => p === other;
+    for (const exec of [
+      'C:\\builds\\ncut\\win-unpacked\\ncut.exe',
+      'C:\\Users\\me\\Downloads\\ncut-zip\\ncut.exe',
+      // below a folder that only begins like the temp folder
+      'C:\\Users\\me\\AppData\\Local\\Temp2\\abc\\ncut.exe',
+      // the temp folder itself is not below it
+      'C:\\Users\\me\\AppData\\Local\\Temp',
+    ]) {
+      expect(rules.decideKind(win({ execPath: exec, portableFile: other, isFile })), exec).toEqual({ kind: 'manual', portableFile: null });
+    }
+    // no temp folder given, or none that makes sense
+    for (const tempDir of [undefined, '', 'Temp', null, 5]) {
+      expect(rules.decideKind(win({ execPath: unpacked, tempDir, portableFile: other, isFile })).kind, String(tempDir)).toBe('manual');
+    }
+    // the portable exe in the folder of the running exe is the folder build, not the starter
+    const same = 'C:\\Users\\me\\AppData\\Local\\Temp\\abc123\\other.exe';
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: same, isFile: (p) => p === same })).kind).toBe('manual');
   });
 
   it('installed when the uninstaller sits next to the running exe', () => {
@@ -604,8 +674,7 @@ describe('which kind of app this is', () => {
 
   it('the portable run has no uninstaller next to its exe and so stays portable', () => {
     const file = 'C:\\Games\\ncut\\ncut.exe';
-    const temp = 'C:\\Users\\me\\AppData\\Local\\Temp\\abc123\\ncut.exe';
-    expect(rules.decideKind(win({ execPath: temp, portableFile: file, isFile: (p) => p === file })).kind).toBe('portable');
+    expect(rules.decideKind(win({ execPath: unpacked, portableFile: file, isFile: (p) => p === file })).kind).toBe('portable');
   });
 
   it('manual for a packaged folder that is neither', () => {
