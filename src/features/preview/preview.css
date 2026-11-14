@@ -634,3 +634,18 @@
 .scene-tools .icon-btn + .icon-btn:last-child {
   margin-left: var(--space-1);
 }
+
+/* ---------- wallpaper ---------- */
+/* the area around the canvas lies on the panel, so it needs no fill of its own (the canvas and the tools over it
+   are solid, see theme.css). fullscreen has no panel behind it and stays solid. */
+:root[data-wallpaper='on'] .preview-stage:not(:fullscreen) {
+  background: transparent;
+}
+/* the transport bar has the panel's own token: a second layer of it would show as a darker box */
+:root[data-wallpaper='on'] .preview-transport {
+  background: transparent;
+}
+/* the segment buttons sit in a header of their own token */
+:root[data-wallpaper='on'] .preview-seg-btn:not(.is-active):not(:hover) {
+  background: transparent;
+}

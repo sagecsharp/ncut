@@ -54,3 +54,8 @@
   height: 3px;
   cursor: row-resize;
 }
+
+/* wallpaper: the dim layer is the app background, the panels lie on it */
+:root[data-wallpaper='on'] .editor {
+  background: transparent;
+}

@@ -579,3 +579,24 @@
   color: var(--text-faint);
   font-size: var(--font-size-xs);
 }
+
+/* ---------- wallpaper ---------- */
+/* the lanes lie on the panel. the body, the lanes, the zone lane and the filler all had the wells color, one on
+   top of the other (same color on same color, invisible today): see-through, they would stack to nearly solid and
+   hide the picture, so only the panel's own layer is left. */
+:root[data-wallpaper='on'] .timeline-body,
+:root[data-wallpaper='on'] .timeline-lane,
+:root[data-wallpaper='on'] .timeline-zone-lane:not(.is-hot),
+:root[data-wallpaper='on'] .timeline-filler-lane {
+  background: transparent;
+}
+/* the sticky track heads, the ruler row and its corner lie over clips, the playhead and the ruler marks that scroll
+   under them. a see-through fill would show those through the track names and the time labels (at 100 minus the
+   panels percent, up to 70), so they stay solid. the picture shows through the lanes, which is what matters. */
+:root[data-wallpaper='on'] .timeline-head {
+  background: var(--solid-2);
+}
+:root[data-wallpaper='on'] .timeline-ruler-row,
+:root[data-wallpaper='on'] .timeline-corner {
+  background: var(--solid-3);
+}

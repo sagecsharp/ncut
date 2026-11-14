@@ -30,8 +30,11 @@ lib/fonts.ts             font catalog: bundled (lazy css imports), system, local
 lib/fontDetect.ts        does a family really render here (measured, not asked): the export warns when not
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
+lib/wallpaper.ts         the ui wallpaper: the picture in its own indexeddb (ncut-wallpaper), the settings in localStorage,
+                         one fixed layer behind the app, data-wallpaper="on" on <html> while a picture shows
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
 store/playback.ts        usePlayback: the master clock (time, playing, loop, volume, speed, rate + shuttle)
+store/mcpCursors.ts      useMcpCursors: the cursors of mcp clients (one per name, at most 8), no dom
 store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
@@ -64,6 +67,7 @@ engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 s
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
+features/mcp/            McpCursors (the fixed layer that draws the cursors) + locate.ts (a target -> a point on the screen)
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k)
 features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools,
                          favorites.ts (starred effects / transitions, kept in localStorage), transitionBatch.ts
@@ -273,6 +277,13 @@ scrubbing, dragging clips and zooming, with dozens of clips.
   `--danger`, `--warn` (destructive actions, the fps health dot).
 - no glow of any kind: no `box-shadow`, `text-shadow`, `filter: blur/drop-shadow`, `backdrop-filter`.
 - no gradients. solid fills only. depth = surface tokens + 1px borders.
+- two stated exceptions: the wallpaper layer may blur its picture (`#ncut-wallpaper`, one static layer behind the app),
+  and the mcp cursors have 8 hues (`features/mcp/mcpCursors.css`), because several agents have to be told apart.
+- wallpaper: while `<html data-wallpaper="on">` the tokens `--surface-0..5` are the solid colors (`--solid-0..5`) at the
+  user's panels percentage, so a surface is see-through without any selector knowing about it. anything that floats
+  over other content or sits over scrolling content (menus, dialogs, toasts, sticky heads, inputs, media thumbs) must
+  stay solid: add its root to the list in `styles/theme.css` that sets the surface tokens back, or use `--solid-N`.
+  code that draws on a canvas with a surface color reads `--solid-N`.
 - canvases that draw with token colors read them through a resolver that is invalidated on the
   `ncut:appearance` window event (see `features/timeline/view.ts` cssVar) and redraw.
 - the font is kode mono everywhere (`--font`, bundled via @fontsource/kode-mono). it is monospace and wide:

@@ -573,3 +573,48 @@ input[type='color'].input {
 .spacer {
   flex: 1;
 }
+
+/* ---------- wallpaper layer (made by lib/wallpaper.ts) ---------- */
+
+/* one fixed layer behind the whole ui: the picture, and over it the dim layer in the solid app background color.
+   the layer sits at z-index -1, so it paints above the page background and below every block of the app.
+   its own background is the same solid color, for the bars of the 'fit' mode. the blur (inline, on the picture
+   only) is the one filter allowed in this app; the picture grows past the edges by the blur so no rim shows. */
+#ncut-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--solid-1);
+}
+.ncut-wp-pic,
+.ncut-wp-dim {
+  position: absolute;
+  inset: 0;
+}
+.ncut-wp-dim {
+  background: var(--solid-1);
+}
+
+/* the dim layer does the job of the app background while a picture shows */
+:root[data-wallpaper='on'] body {
+  background: transparent;
+}
+
+/* wallpaper: a see-through control on a header of the same token would draw a darker box that is not there today
+   (same color on same color), so buttons in headers drop their fill. hover, press, disabled and active keep theirs. */
+:root[data-wallpaper='on']
+  :is(.panel-header, .tabs, .shell-header)
+  .btn:not(.btn-primary):not(.btn-danger):not(.is-active):not(:hover):not(:active):not(:disabled) {
+  background: transparent;
+}
+/* a disabled button has the panel's own token: on a panel body that was an invisible fill, and as a second layer
+   it would draw a lighter box. in a header it was a visible box on the header token and stays one. */
+:root[data-wallpaper='on'] .btn:disabled:not(.btn-primary):not(:is(.panel-header, .tabs, .shell-header) .btn) {
+  background: transparent;
+}
+/* the layer stays in the page after the picture was removed: it must not be there for anything then */
+:root:not([data-wallpaper='on']) #ncut-wallpaper {
+  display: none;
+}

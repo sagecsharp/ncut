@@ -196,3 +196,17 @@
   object-fit: cover;
   pointer-events: none;
 }
+
+/* wallpaper: the dim layer is the app background, the cards and the top bar lie on it */
+:root[data-wallpaper='on'] .projects {
+  background: transparent;
+}
+/* the top bar is sticky and the cards scroll under it: a see-through fill would show their titles and previews
+   through the brand and the buttons, so it stays solid */
+:root[data-wallpaper='on'] .projects-top {
+  background: var(--solid-2);
+}
+/* the brand mark is an inline svg that fills with --surface-3: keep it solid */
+:root[data-wallpaper='on'] .projects-brand svg rect:first-child {
+  fill: var(--solid-3);
+}

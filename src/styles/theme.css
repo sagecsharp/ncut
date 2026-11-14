@@ -15,6 +15,15 @@
  *  - depth comes from the surface steps below and 1px borders, nothing else
  *  - small radii (--radius), compact controls
  *  - never hardcode a color in a component stylesheet. use these tokens.
+ *
+ * the one exception to the no filter / no gradient rule: the wallpaper layer (lib/wallpaper.ts, #ncut-wallpaper).
+ * the picture the user chose may be blurred with a css filter, on that one fixed layer behind the whole ui and
+ * nowhere else. nothing in the ui itself blurs, glows or fades.
+ *
+ * wallpaper: the solid colors are --solid-0 .. --solid-5 and --surface-N points at --solid-N. while a picture
+ * shows (<html data-wallpaper="on">) the surface tokens become the solid color at --wp-panels percent, so every
+ * panel, header and control that uses a surface token turns see-through by itself. the section at the end of
+ * this file lists what stays solid anyway. with no picture --surface-N is exactly --solid-N, as before.
  */
 :root {
   color-scheme: dark;
@@ -27,13 +36,20 @@
   --c-accent: calc(var(--tint-s) * 0.15);
   --c-clip: calc(var(--tint-s) * 0.06);
 
-  /* surfaces, darkest to lightest */
-  --surface-0: oklch(0.178 var(--c-surface) var(--tint-h)); /* wells: preview backdrop, timeline lanes */
-  --surface-1: oklch(0.205 var(--c-surface) var(--tint-h)); /* app background */
-  --surface-2: oklch(0.22 var(--c-surface) var(--tint-h)); /* panels */
-  --surface-3: oklch(0.255 var(--c-surface) var(--tint-h)); /* panel headers, raised rows, controls */
-  --surface-4: oklch(0.3 var(--c-surface) var(--tint-h)); /* hover on controls */
-  --surface-5: oklch(0.36 var(--c-surface) var(--tint-h)); /* pressed / active controls */
+  /* the solid surface colors, darkest to lightest. the --surface-N tokens below are what stylesheets use. */
+  --solid-0: oklch(0.178 var(--c-surface) var(--tint-h)); /* wells: preview backdrop, timeline lanes */
+  --solid-1: oklch(0.205 var(--c-surface) var(--tint-h)); /* app background */
+  --solid-2: oklch(0.22 var(--c-surface) var(--tint-h)); /* panels */
+  --solid-3: oklch(0.255 var(--c-surface) var(--tint-h)); /* panel headers, raised rows, controls */
+  --solid-4: oklch(0.3 var(--c-surface) var(--tint-h)); /* hover on controls */
+  --solid-5: oklch(0.36 var(--c-surface) var(--tint-h)); /* pressed / active controls */
+  /* surfaces: the solid colors, see-through while a wallpaper shows (end of this file) */
+  --surface-0: var(--solid-0);
+  --surface-1: var(--solid-1);
+  --surface-2: var(--solid-2);
+  --surface-3: var(--solid-3);
+  --surface-4: var(--solid-4);
+  --surface-5: var(--solid-5);
   --scrollbar: oklch(0.42 var(--c-surface) var(--tint-h)); /* scrollbar thumbs */
   --scrim: oklch(0.1 0 0 / 0.6); /* modal backdrop */
 
@@ -97,12 +113,12 @@
   --c-surface: calc(var(--tint-s) * 0.018);
   --c-accent: calc(var(--tint-s) * 0.16);
 
-  --surface-0: oklch(0.86 var(--c-surface) var(--tint-h));
-  --surface-1: oklch(0.91 var(--c-surface) var(--tint-h));
-  --surface-2: oklch(0.975 var(--c-surface) var(--tint-h));
-  --surface-3: oklch(0.935 var(--c-surface) var(--tint-h));
-  --surface-4: oklch(0.88 var(--c-surface) var(--tint-h));
-  --surface-5: oklch(0.82 var(--c-surface) var(--tint-h));
+  --solid-0: oklch(0.86 var(--c-surface) var(--tint-h));
+  --solid-1: oklch(0.91 var(--c-surface) var(--tint-h));
+  --solid-2: oklch(0.975 var(--c-surface) var(--tint-h));
+  --solid-3: oklch(0.935 var(--c-surface) var(--tint-h));
+  --solid-4: oklch(0.88 var(--c-surface) var(--tint-h));
+  --solid-5: oklch(0.82 var(--c-surface) var(--tint-h));
   --scrollbar: oklch(0.62 var(--c-surface) var(--tint-h));
 
   --border: oklch(0.42 var(--c-surface) var(--tint-h));
@@ -129,4 +145,64 @@
   --clip-text: oklch(0.54 var(--c-clip) var(--tint-h));
   --clip-shape: oklch(0.5 var(--c-clip) var(--tint-h));
   --clip-effect: oklch(0.2 var(--c-clip) var(--tint-h));
+}
+
+/*
+ * ---------- wallpaper (lib/wallpaper.ts) ----------
+ * --wp-panels is the percentage the user chose (30..100). every surface token follows the theme and the tint live,
+ * because the solid color is mixed with transparent at use time.
+ */
+:root[data-wallpaper='on'] {
+  --surface-0: color-mix(in oklch, var(--solid-0) calc(var(--wp-panels, 82) * 1%), transparent);
+  --surface-1: color-mix(in oklch, var(--solid-1) calc(var(--wp-panels, 82) * 1%), transparent);
+  --surface-2: color-mix(in oklch, var(--solid-2) calc(var(--wp-panels, 82) * 1%), transparent);
+  --surface-3: color-mix(in oklch, var(--solid-3) calc(var(--wp-panels, 82) * 1%), transparent);
+  --surface-4: color-mix(in oklch, var(--solid-4) calc(var(--wp-panels, 82) * 1%), transparent);
+  --surface-5: color-mix(in oklch, var(--solid-5) calc(var(--wp-panels, 82) * 1%), transparent);
+}
+
+/*
+ * what stays fully solid while a wallpaper shows: the surface tokens go back to the solid colors on these roots,
+ * and custom properties inherit, so everything inside follows. no rule here changes anything with no wallpaper.
+ *  - floating layers: menus (also the font picker and the timeline / speed / zoom menus), dialogs, the command
+ *    palette, toasts, the fps counter, the mcp cursors, the timeline readout and transition markers (they sit over clips)
+ *  - inputs: text is typed into them or read from them, a see-through fill makes that hard
+ *  - media: the video picture and its tools, thumbnails, posters, color swatches, the project card previews
+ */
+:root[data-wallpaper='on']
+  :is(
+    .menu,
+    .dialog,
+    .shell-palette,
+    .toast,
+    .fps-counter,
+    .mcp-cursors,
+    .timeline-readout,
+    .timeline-transition,
+    .input,
+    .select,
+    .number-field,
+    .checkbox,
+    .range,
+    .preview-frame,
+    .preview-stage:fullscreen,
+    .preview-badge,
+    .scene-tools,
+    .scene-inset,
+    .media-thumb,
+    .media-text-preview,
+    .media-fx-thumb,
+    .media-badge,
+    .media-actions,
+    .media-fav,
+    .media-plain-pick,
+    .media-drop-hint,
+    .projects-preview
+  ) {
+  --surface-0: var(--solid-0);
+  --surface-1: var(--solid-1);
+  --surface-2: var(--solid-2);
+  --surface-3: var(--solid-3);
+  --surface-4: var(--solid-4);
+  --surface-5: var(--solid-5);
 }
