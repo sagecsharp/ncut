@@ -255,7 +255,8 @@ describe.skipIf(!csc)('ncut-swap.exe', () => {
     const lines = fs.readFileSync(out, 'utf8').split('\n');
     expect(lines).toContain('args=1');
     expect(lines).toContain(`arg=${arg}`);
-    expect(lines).toContain(`cwd=${s.dir}`);
+    // the long name: the temp folder can be a short one (C:\Users\RUNNER~1 on github), the helper starts the exe by its full name
+    expect(lines).toContain(`cwd=${fs.realpathSync.native(s.dir)}`);
     expect(lines).toContain('KEEP_ME=kept');
     expect(lines).toContain('PORTABLE_EXECUTABLE_DIR=');
     expect(lines).toContain('PORTABLE_EXECUTABLE_FILE=');
