@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { SITE, releaseFiles, releaseNotes, sizeText } = require('./release-notes.cjs');
+const { NEW_IN, SITE, releaseFiles, releaseNotes, sizeText } = require('./release-notes.cjs');
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
@@ -31,6 +31,20 @@ describe('a release', () => {
     expect(text).toContain(SITE);
     expect(text).not.toContain('\r');
     expect(sizeText(155093441)).toBe('147.9 mb');
+  });
+
+  it('says what is new for a version that has an entry, and nothing for one that has none', () => {
+    const files = releaseFiles('9.9.9').map((f) => ({ ...f, bytes: 1024 * 1024, sha256: 'a'.repeat(64) }));
+    expect(releaseNotes('9.9.9', files)).not.toContain('## new');
+    const [version, lines] = Object.entries(NEW_IN)[0];
+    const text = releaseNotes(version, files);
+    expect(text).toContain('## new\n\n- ' + lines[0] + '\n');
+    for (const line of lines) expect(text).toContain(`- ${line}\n`);
+    // the section sits above the downloads
+    expect(text.indexOf('## new')).toBeLessThan(text.indexOf('## downloads'));
+    // the version being released has its entry (a release without one would silently say nothing new)
+    expect(NEW_IN[manifest.version], `scripts/release-notes.cjs NEW_IN has no entry for ${manifest.version}`).toBeDefined();
+    for (const list of Object.values(NEW_IN)) for (const line of list) expect(line).not.toMatch(/[\r\n]/);
   });
 
   it('the workflow builds with the scripts of package.json and uploads those three files', () => {

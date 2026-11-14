@@ -128,7 +128,7 @@ built with vite, react, typescript, zustand, [mediabunny](https://mediabunny.dev
 
 how the code is laid out: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-a release: set the version in `package.json`, then push a tag `v<version>`. github builds the exe files and the web zip and puts them on a release ([.github/workflows/release.yml](.github/workflows/release.yml)), then the web zip of that release goes onto github pages ([.github/workflows/pages.yml](.github/workflows/pages.yml)).
+a release: set the version in `package.json` (`npm version <version> --no-git-tag-version`), say what is new in `NEW_IN` in `scripts/release-notes.cjs`, then push a tag `v<version>`. github builds the exe files and the web zip and puts them on a release ([.github/workflows/release.yml](.github/workflows/release.yml)), then the web zip of that release goes onto github pages ([.github/workflows/pages.yml](.github/workflows/pages.yml)).
 
 ## contributing
 

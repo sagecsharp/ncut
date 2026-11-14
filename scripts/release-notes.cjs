@@ -9,6 +9,17 @@ const crypto = require('node:crypto');
 /** where the browser version is hosted (.github/workflows/pages.yml puts the web zip of the latest release there) */
 const SITE = 'https://sagecsharp.github.io/ncut/';
 
+/**
+ * what is new per version, a few plain lines each (the release text shows them under "new"). a version without an
+ * entry just has no such section.
+ */
+const NEW_IN = {
+  '0.2.0': [
+    'mcp cursors: while an mcp client (claude code and others) works in the window you see its cursor, with its name and what it is doing. several agents at once each get their own, up to 8. the client can point at something and leave a note. off switch in the settings',
+    'wallpaper: a picture of yours behind the whole ui, with fit, dim, blur and how solid the panels are. settings > appearance',
+  ],
+};
+
 /** the files of a release, in the order they are listed */
 function releaseFiles(version) {
   return [
@@ -32,6 +43,13 @@ function releaseNotes(version, files) {
   out.push('');
   out.push(`use it right in the browser: ${SITE}`);
   out.push('');
+  const fresh = NEW_IN[version];
+  if (fresh && fresh.length > 0) {
+    out.push('## new');
+    out.push('');
+    for (const line of fresh) out.push(`- ${line}`);
+    out.push('');
+  }
   out.push('## downloads');
   out.push('');
   for (const f of files) out.push(`- \`${f.file}\` (${sizeText(f.bytes)}) ${f.what}`);
@@ -68,7 +86,7 @@ function sha256(file) {
   return hash.digest('hex');
 }
 
-module.exports = { SITE, releaseFiles, releaseNotes, sizeText };
+module.exports = { NEW_IN, SITE, releaseFiles, releaseNotes, sizeText };
 
 if (require.main === module) {
   const root = path.join(__dirname, '..');

@@ -1,6 +1,6 @@
 name: release
 
-# a pushed tag like v0.1.0 (it has to be the version in package.json) builds the windows app and the browser build
+# a pushed tag like v0.2.0 (it has to be the version in package.json) builds the windows app and the browser build
 # and puts them on a github release: the setup exe, the portable exe and the web zip.
 
 on:
