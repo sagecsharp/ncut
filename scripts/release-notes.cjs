@@ -14,6 +14,10 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.3.0': [
+    'auto update: the desktop app asks github now and then whether a newer release is out, downloads it in the background, checks it against the checksum github gives for it, and installs it when you close ncut. "restart to update" in the settings does it at once. the installed app runs its setup silently, the portable exe is replaced in place and keeps its name. settings > updates, with an off switch and "check now"',
+    'this is the first version that can update itself: 0.1.0 and 0.2.0 can not, so get this one by hand once',
+  ],
   '0.2.0': [
     'mcp cursors: while an mcp client (claude code and others) works in the window you see its cursor, with its name and what it is doing. several agents at once each get their own, up to 8. the client can point at something and leave a note. off switch in the settings',
     'wallpaper: a picture of yours behind the whole ui, with fit, dim, blur and how solid the panels are. settings > appearance',

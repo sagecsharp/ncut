@@ -27,12 +27,18 @@ function freePort() {
 }
 
 /** a raw http post / get: bad hosts and origins need headers fetch would not send */
-function request(port, { method = 'POST', url = '/mcp', headers = {}, body, chunks } = {}) {
+/**
+ * hold: the request is not ended and nothing is sent past what was asked for (the headers alone, or the chunks one
+ * after the other), the answer is waited for. a server that refuses a body closes the connection, and a client that
+ * is still pushing bytes into it then gets a reset instead of the answer every now and then (windows, a busy machine)
+ */
+function request(port, { method = 'POST', url = '/mcp', headers = {}, body, chunks, hold = false } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (v) => {
       if (settled) return;
       settled = true;
+      if (hold) req.destroy();
       resolve(v);
     };
     const req = http.request({ host: '127.0.0.1', port, path: url, method, headers, agent: false }, (res) => {
@@ -48,7 +54,18 @@ function request(port, { method = 'POST', url = '/mcp', headers = {}, body, chun
         reject(e);
       }
     });
-    if (chunks) {
+    if (hold) {
+      if (!chunks) {
+        req.flushHeaders();
+        return;
+      }
+      (async () => {
+        for (const c of chunks) {
+          if (settled) return;
+          await new Promise((next) => req.write(c, () => next()));
+        }
+      })();
+    } else if (chunks) {
       for (const c of chunks) req.write(c);
       req.end();
     } else {
@@ -348,13 +365,14 @@ describe('the http rules', () => {
     const ctx = await setup();
     const { port } = ctx.mcp.state();
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.config().token}` };
-    const big = Buffer.alloc(rules.MAX_BODY_BYTES + 10, 0x20);
-    const declared = await request(port, { headers: { ...headers, 'Content-Length': String(big.length) }, body: big });
+    // a length over the cap is refused from the headers alone, before a byte of the body
+    const declared = await request(port, { headers: { ...headers, 'Content-Length': String(rules.MAX_BODY_BYTES + 10) }, hold: true });
     expect(declared.status).toBe(413);
-    // no length given: the server stops reading at the cap
+    // no length given: the server stops reading at the cap. just enough to cross it, then the answer is waited for
+    const piece = 32 * 1024;
     const parts = [];
-    for (let i = 0; i < 40; i++) parts.push(Buffer.alloc(32 * 1024, 0x20));
-    const streamed = await request(port, { headers, chunks: parts });
+    for (let i = 0; i < Math.floor(rules.MAX_BODY_BYTES / piece) + 1; i++) parts.push(Buffer.alloc(piece, 0x20));
+    const streamed = await request(port, { headers, chunks: parts, hold: true });
     expect(streamed.status).toBe(413);
     // a body just under the cap is read
     const pad = ' '.repeat(rules.MAX_BODY_BYTES - 100);

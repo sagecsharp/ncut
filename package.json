@@ -2,7 +2,7 @@
   "name": "ncut",
   "private": true,
   "license": "MIT",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "a flat, dark, in-browser video editor. multi-track timeline, real-time preview, local-only, no watermark.",
   "author": "sagecsharp",
