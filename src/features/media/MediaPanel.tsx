@@ -122,6 +122,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
     <div
       ref={cardRef}
       className="media-card"
+      data-asset-id={id}
       draggable={!editing}
       tabIndex={0}
       title={tip}

@@ -48,6 +48,8 @@ export interface ToolCtx {
   files: ShellFile[];
   /** this call may save one file without a dialog (shell.mcp.save) */
   ticket: number | null;
+  /** the name of the caller's cursor (the "cursor" argument, already taken off the arguments) */
+  cursor?: string;
 }
 
 export interface ToolAnnotations {

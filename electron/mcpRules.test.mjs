@@ -39,6 +39,10 @@ describe('protocol', () => {
     expect(out.instructions).toContain('get_state');
     expect(out.instructions).toContain('list_options');
     expect(out.instructions).toContain('undo step');
+    // the cursor: every call names its own, point_at shows something
+    expect(out.instructions).toContain('"cursor"');
+    expect(out.instructions).toContain('own name');
+    expect(out.instructions).toContain('point_at');
     expect(r.initializeResult('x', '').serverInfo.version).toBe('0.0.0');
     expect(r.initializeResult('x', '1').protocolVersion).toBe('2025-06-18');
   });

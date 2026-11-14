@@ -56,7 +56,9 @@ function versionHeaderOk(header) {
 const INSTRUCTIONS =
   'ncut is a video editor and this server works in the window the user has open. call get_state first to see what is open. ' +
   'call list_options to learn the ids of effects, transitions, presets and fonts before you use them. ' +
-  'times are in seconds on the timeline and sizes are project pixels. every edit you make is one undo step, so the user can undo it.';
+  'times are in seconds on the timeline and sizes are project pixels. every edit you make is one undo step, so the user can undo it. ' +
+  'the user sees a cursor in the ncut window that shows where you work: pass "cursor" with your own short name on every call, and give each subagent its own name so each has its own cursor. ' +
+  'point_at shows the user a clip, a track, a time or a spot on the canvas with a short note.';
 
 function initializeResult(version, appVersion) {
   return {

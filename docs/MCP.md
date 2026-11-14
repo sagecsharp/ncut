@@ -17,6 +17,7 @@ to listen on a port).
 - "new token" makes every old config stop working.
 - ncut has to be running, with the server on. tools act on the project that is open in the window, and every
   edit is a normal undo step.
+- while a client works you see its cursor in the window, with a name tag (see "cursors"). "show cursors" under the server switch turns that off.
 
 ## shape
 
@@ -109,13 +110,14 @@ download ended. a marked download without an armed ticket is cancelled. a ticket
 
 ## the tools (src/mcp/**)
 
-`src/mcp/types.ts` (ToolDef), `validate.ts` (arguments against the schema, unknown fields are errors), `helpers.ts`
+`src/mcp/types.ts` (ToolDef), `cursor.ts` + `cursorRun.ts` (the cursor argument and what each call points at), `validate.ts` (arguments against the schema, unknown fields are errors), `helpers.ts`
 (ok / fail / ToolError / needProject / needClip / oneStep ...), `registry.ts` (TOOLS, listTools, callTool),
 `dispatch.ts` (startMcp: tool calls run one at a time in the order they came, the tool list is answered at once,
 a call that waited or ran past 170 s is answered as failed). in a dev build `window.__ncut.mcp` has
 `listTools` and `callTool` for trying tools without the exe.
 
 rules for every tool:
+- every tool takes an optional `cursor` (a short name, see "cursors"). `callTool` takes it off before the validation, so a tool never sees it and still refuses unknown fields.
 - times are timeline seconds unless a field says otherwise (at most 86400, a day). sizes and positions are project pixels. x 0 / y 0 is the middle of the canvas.
 - a value outside its range, a made up id (blend mode, transition, motion, clip) or an object of the wrong shape is refused with the reason, never clamped or stored as it came. a nested object may be given in part: it is laid over what the clip has.
 - a tool that changes the project makes exactly one undo step (helpers `oneStep`).
@@ -182,3 +184,34 @@ output (tools/output.ts):
 - `export_status` {}: running (phase, progress 0..1), done (file name, and the full path added by the shell), failed (why) or none.
   when the shell could not save the file on its own, the app shows its usual save dialog instead and the answer says no path is known.
 - `export_cancel` {}: too late once the file is being saved.
+
+cursors (tools/cursor.ts):
+- `point_at` { clip?, track?, time?, x?, y?, note? }: moves your cursor to a clip, a track, a time on the ruler or a spot on the canvas (`x` and `y` together, project pixels) and shows `note` (up to 120 characters) in a bubble. exactly one kind of target; none or more than one is an error, an unknown id is an error like in the other tools. changes nothing in the project (no undo step), read only. the answer says what it points at, and says plainly when the user has cursors switched off (not an error).
+
+## cursors
+
+while a client works, ncut draws a mouse cursor with a name tag over the window and flies it to the thing each tool call touches. it is for the user: it shows what the agent is doing. it never changes the project, never takes a click and costs no undo step.
+
+what the user sees:
+- an arrow in one of 8 colors, a tag with the name and under it what the tool does ("moves a clip"). the cursor flies (about 350 ms) to the clip, track, time on the ruler, spot on the canvas, media card, inspector, preview, top bar button (undo, redo, export) or project card the call touches. a tool that makes something (add_text, add_track, add_media_clip, duplicate_clips ...) moves on to what it made when it is done. a tool that removes its target (delete_clips, remove_track, remove_marker) points at it before it is gone. a pure lookup (get_state, list_options, get_project) only changes the label, the cursor stays where it was.
+- a call that finished makes a ring grow around the arrow. a call that failed shows "failed" in the tag and a red square instead of the ring.
+- the cursor stays on its target while the user scrolls, zooms or resizes. a target that is scrolled out of the timeline is shown at the edge of the timeline; the user's scroll and zoom are never changed by a cursor. a target that can not be found (no editor open) leaves the cursor where it was; a cursor that never had a spot starts at the top middle of the window.
+- it fades and goes 12 seconds after its last activity (30 seconds when it shows a `point_at` note). a note stays through your next calls and goes 30 seconds after it was set.
+- with `prefers-reduced-motion` the cursor still flies (where it goes is the point of it) but does not pulse.
+
+the `cursor` argument (every tool, optional):
+- a string, trimmed, 1 to 24 characters: letters, digits, space, dot, dash, underscore. nothing else.
+- missing = the name `agent`. several clients (or subagents) pass different names and each has its own cursor, all visible at the same time. pass the same name on every call.
+- anything else (not a string, empty, too long, other characters) is an error result that says what a name may be, and the tool is not run.
+- main (electron/mcp.cjs) relays it like any argument and never looks at it; the page takes it off in `callTool`.
+- the tool list (`tools/list`) adds the property to every tool's input schema, in one place (`listTools`). the tool definitions do not have it.
+
+limits:
+- at most 8 cursors (the shell lets 8 calls wait at once). a 9th name takes the place of the cursor that was idle the longest (one that is working is only replaced when all of them work).
+- a color is picked when the cursor appears (the lowest of the 8 not in use) and kept while it lives.
+
+the switch:
+- "show cursors" in the mcp settings (project settings, or the appearance dialog on the projects screen), on by default. it is kept in localStorage under `ncut.mcpCursors` as json (`{"show":false}`); bad json or no storage = on.
+- off: nothing is tracked, cursors that are there go at once, `point_at` still answers (and says nothing is drawn).
+
+where it lives: `src/mcp/cursor.ts` (name rules, one target rule + label per tool; a test fails for a tool without a rule), `src/store/mcpCursors.ts` (the cursors, idle sweep, the switch), `src/features/mcp/` (the layer, `locate.ts` turns a target into a point on the screen). the layer is in the page at z-index 150, `aria-hidden`, `pointer-events: none`. frames and timers only run while at least one cursor exists.

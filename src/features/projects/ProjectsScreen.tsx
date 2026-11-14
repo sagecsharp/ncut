@@ -128,6 +128,7 @@ const ProjectCard = memo(function ProjectCard({
   return (
     <div
       className={`projects-card${busy ? ' is-busy' : ''}${renaming ? ' is-renaming' : ''}`}
+      data-project-id={id}
       role="button"
       tabIndex={0}
       title={`open ${project.name}`}

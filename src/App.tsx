@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { Toasts } from './components/ui/Toasts';
+import { McpCursors } from './features/mcp/McpCursors';
 import { loadEditorLayout, preloadEditor } from './features/editor/loadEditor';
 import { ProjectsScreen } from './features/projects/ProjectsScreen';
 import { signalShellReady } from './features/shell/openShellFile';
@@ -73,6 +74,7 @@ export function App() {
         <ProjectsScreen />
       )}
       <Toasts />
+      <McpCursors />
     </>
   );
 }

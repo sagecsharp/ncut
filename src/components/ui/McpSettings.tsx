@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { shell } from '../../lib/shell';
 import type { McpCopyKind, McpState } from '../../lib/shell';
 import { Switch } from '../../features/properties/controls';
+import { useMcpCursors } from '../../store/mcpCursors';
 import { useUi } from '../../store/ui';
 import { mcpAddress, mcpCopyButtons, mcpStatusText } from './mcpText';
 
@@ -16,6 +17,7 @@ export function McpSettings() {
 
 function McpSettingsInner() {
   const [state, setState] = useState<McpState | null>(null);
+  const showCursors = useMcpCursors((s) => s.enabled);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const timer = useRef<number | null>(null);
@@ -124,6 +126,14 @@ function McpSettingsInner() {
         </>
       )}
       <p className="mcp-hint">lets claude code and other mcp clients edit the open project. off by default, local only.</p>
+      <div className="field">
+        <span className="field-label">show cursors</span>
+        <Switch
+          checked={showCursors}
+          title="draw a named cursor over the window where an mcp client works, so you can see what it does. off = no cursors at all"
+          onChange={(on) => useMcpCursors.getState().setEnabled(on)}
+        />
+      </div>
     </>
   );
 }

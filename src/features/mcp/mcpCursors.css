@@ -1,0 +1,188 @@
+/*
+ * the cursors of mcp clients (docs/MCP.md, "cursors"). a fixed layer over the whole window that never takes a click.
+ * flat like the rest of the app: no shadow, no glow, no gradient, no blur.
+ *
+ * this is the one place in the app where hue is allowed: the cursors of several agents have to be told apart, so the
+ * 8 colors below are the same lightness and chroma with 8 hues spread around the wheel. the lightness is one value
+ * per theme (light enough for the black theme, dark enough for the white one) so the tag text, which is --on-accent,
+ * reads on every color. on the black theme the chroma (0.12 at 0.76) is the largest one all 8 hues can show inside
+ * srgb. on the white theme that limit (0.08 at 0.5) looked like eight shades of mud in the real window, so it is 0.13
+ * at 0.52: a few hues are a little outside srgb there and the browser maps them back, they stay easy to tell apart.
+ * the slot of a cursor (0..7) picks the color.
+ */
+:root {
+  --mcp-l: 0.76;
+  --mcp-c: 0.12;
+  --mcp-0: oklch(var(--mcp-l) var(--mcp-c) 20);
+  --mcp-1: oklch(var(--mcp-l) var(--mcp-c) 65);
+  --mcp-2: oklch(var(--mcp-l) var(--mcp-c) 110);
+  --mcp-3: oklch(var(--mcp-l) var(--mcp-c) 155);
+  --mcp-4: oklch(var(--mcp-l) var(--mcp-c) 200);
+  --mcp-5: oklch(var(--mcp-l) var(--mcp-c) 245);
+  --mcp-6: oklch(var(--mcp-l) var(--mcp-c) 290);
+  --mcp-7: oklch(var(--mcp-l) var(--mcp-c) 335);
+}
+
+:root[data-theme='light'] {
+  --mcp-l: 0.52;
+  --mcp-c: 0.13;
+}
+
+.mcp-cursors {
+  position: fixed;
+  inset: 0;
+  z-index: 150; /* dialogs 100, command palette and font picker 110, toasts 200 */
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.mcp-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 1;
+  will-change: transform;
+  /* the fade before a cursor goes */
+  transition: opacity 1000ms linear;
+}
+/* the flight to a new target. only a flight is animated: while a cursor stays on its target and the user scrolls or
+   zooms, the position follows at once instead of chasing */
+.mcp-cursor[data-flying] {
+  transition:
+    transform 350ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 1000ms linear;
+}
+.mcp-cursor[data-fading] {
+  opacity: 0;
+}
+.mcp-cursor[data-slot='0'] { --mcp-color: var(--mcp-0); }
+.mcp-cursor[data-slot='1'] { --mcp-color: var(--mcp-1); }
+.mcp-cursor[data-slot='2'] { --mcp-color: var(--mcp-2); }
+.mcp-cursor[data-slot='3'] { --mcp-color: var(--mcp-3); }
+.mcp-cursor[data-slot='4'] { --mcp-color: var(--mcp-4); }
+.mcp-cursor[data-slot='5'] { --mcp-color: var(--mcp-5); }
+.mcp-cursor[data-slot='6'] { --mcp-color: var(--mcp-6); }
+.mcp-cursor[data-slot='7'] { --mcp-color: var(--mcp-7); }
+
+/* the arrow: its tip is the point the cursor stands on */
+.mcp-arrow {
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  display: block;
+}
+.mcp-arrow path {
+  fill: var(--mcp-color);
+  stroke: var(--surface-1);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
+/* a finished call: a ring grows around the tip and fades. a failed one: a square in the danger color */
+.mcp-pulse {
+  position: absolute;
+  left: -10px;
+  top: -10px;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--mcp-color);
+  border-radius: 50%;
+  animation: mcp-ring 650ms ease-out forwards;
+}
+.mcp-cursor[data-phase='failed'] .mcp-pulse {
+  border-color: var(--danger);
+  border-radius: 0;
+}
+@keyframes mcp-ring {
+  from {
+    opacity: 1;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+/* the tag and the note sit right and below the tip. near the edges of the window they flip to the other side */
+.mcp-body {
+  position: absolute;
+  left: 13px;
+  top: 15px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.mcp-cursor[data-flip-x] .mcp-body {
+  left: auto;
+  right: 6px;
+  align-items: flex-end;
+}
+.mcp-cursor[data-flip-y] .mcp-body {
+  top: auto;
+  bottom: 12px;
+  flex-direction: column-reverse;
+}
+
+.mcp-tag {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: 240px;
+  padding: 2px 6px;
+  border: 1px solid var(--surface-1);
+  border-radius: var(--radius-sm);
+  background: var(--mcp-color);
+  color: var(--on-accent);
+  font-family: var(--font);
+  font-size: var(--font-size-xs);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.mcp-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcp-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the label is only for the moments around a call */
+.mcp-cursor[data-quiet] .mcp-label {
+  display: none;
+}
+.mcp-fail {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--danger);
+  color: var(--on-accent);
+}
+
+.mcp-note {
+  width: max-content;
+  max-width: 220px;
+  padding: 3px 6px;
+  border: 1px solid var(--mcp-color);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* with "reduce motion" on in the system the ring is gone. the flight stays: like the user's own pointer, where the
+   cursor goes is the whole point of it, and a jump from clip to clip can not be followed */
+@media (prefers-reduced-motion: reduce) {
+  .mcp-pulse {
+    display: none;
+  }
+}

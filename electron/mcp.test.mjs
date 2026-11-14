@@ -471,6 +471,17 @@ describe('the methods', () => {
     expect(ctx.calls[0]).toMatchObject({ kind: 'call', name: 'seek', args: { time: 2.5 }, files: [], ticket: null });
   });
 
+  it('the cursor argument is relayed as it came: main does not look at it, the page decides', async () => {
+    const ctx = await setup();
+    // a name the page would refuse and one it would take: both reach the page untouched
+    await ctx.call('seek', { time: 1, cursor: 'sub agent 2' }, 1);
+    await ctx.call('seek', { time: 1, cursor: 'x'.repeat(40) }, 2);
+    await ctx.call('seek', { time: 1, cursor: 5 }, 3);
+    expect(ctx.calls[0].args).toEqual({ time: 1, cursor: 'sub agent 2' });
+    expect(ctx.calls[1].args).toEqual({ time: 1, cursor: 'x'.repeat(40) });
+    expect(ctx.calls[2].args).toEqual({ time: 1, cursor: 5 });
+  });
+
   it('a call without arguments gets {}, bad params are -32602', async () => {
     const ctx = await setup();
     await ctx.rpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_state' } });
