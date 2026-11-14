@@ -188,3 +188,18 @@
   flex: 1;
   min-width: 0;
 }
+
+/* updates section (UpdateSettings.tsx), the rest reuses the mcp classes */
+.update-version {
+  font-size: var(--font-size-sm);
+}
+.update-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--border-soft);
+}
+.update-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}

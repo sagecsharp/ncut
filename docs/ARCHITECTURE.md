@@ -30,6 +30,8 @@ lib/fonts.ts             font catalog: bundled (lazy css imports), system, local
 lib/fontDetect.ts        does a family really render here (measured, not asked): the export warns when not
 lib/perf.ts              frame-time monitor behind the fps counter
 lib/appearance.ts        theme mode (auto/black/white) + tint, saved in localStorage, applied to <html>
+lib/updateNotice.ts      the toast when an update of the desktop app is ready (once per version), and when a check the
+                         user asked for failed
 lib/wallpaper.ts         the ui wallpaper: the picture in its own indexeddb (ncut-wallpaper), the settings in localStorage,
                          one fixed layer behind the app, data-wallpaper="on" on <html> while a picture shows
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
@@ -393,6 +395,16 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
   wanted state runs) with the app's own process ids
   (`rules.qosArgs`: digits only). it switches the throttling off for them and hands it back when the export ends.
   without the helper everything works, only slower in the background.
+- auto update (docs/UPDATE.md): `electron/update.cjs` (`createUpdater`, everything electron-ish handed in so it tests in
+  node) and `electron/updateRules.cjs` (pure: versions, reading the release answer, which addresses may be asked, the
+  state for the page). main asks the github releases api, downloads the asset of its kind (`installed`: the setup exe,
+  `portable`: the portable exe, `manual`: the plain folder only says a version is out, `none`: dev) into
+  `<userData>/updates`, believes it only with the size and sha256 the api names, and applies it in `will-quit`: the
+  setup exe runs silently, the portable exe is swapped by `ncut-swap.exe` (`electron/swap.cs`, built with
+  `ncut-qos.exe`) after the app has closed, because windows does not let a running portable exe be renamed. main may
+  only use electron and node builtins here (no `node_modules` in the app). the page gets `window.ncutShell.update`
+  (`shell.update` in `src/lib/shell.ts`), sends nothing but booleans and shows the state in
+  `components/ui/UpdateSettings.tsx` (texts in `updateText.ts`).
 - packaging: `electron-builder` config in `package.json` (`build`): only `dist/`, `electron/` and `package.json` go
   into the asar, fuses turn off run-as-node / node options / inspect and turn on asar integrity.
 - testing the exe: start it with `--remote-debugging-port=9334 --user-data-dir=<temp folder>` and drive the page

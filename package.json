@@ -86,7 +86,8 @@
         "from": "build/bin",
         "to": ".",
         "filter": [
-          "ncut-qos.exe"
+          "ncut-qos.exe",
+          "ncut-swap.exe"
         ]
       }
     ]

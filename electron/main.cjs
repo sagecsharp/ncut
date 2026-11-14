@@ -15,6 +15,8 @@ const { execFile } = require('node:child_process');
 const shellRules = require('./rules.cjs');
 const { createMcp } = require('./mcp.cjs');
 const mcpRules = require('./mcpRules.cjs');
+const { createUpdater } = require('./update.cjs');
+const updateRules = require('./updateRules.cjs');
 
 const DIST = path.join(__dirname, '..', 'dist');
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
@@ -305,6 +307,59 @@ function setupMcp() {
   void mcp.init();
 }
 
+// ---------- the auto updater (docs/UPDATE.md) ----------
+
+/** @type {ReturnType<typeof createUpdater> | null} */
+let updater = null;
+/** the user pressed "restart now": the update is applied and the new version started when the app really ends */
+let restartWanted = false;
+
+function updateOff() {
+  return updateRules.cleanUpdateState({ kind: 'none', auto: true, phase: 'idle', current: app.getVersion() });
+}
+
+function setupUpdate() {
+  const facts = updateRules.decideKind({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+    execPath: process.execPath,
+    isFile: fileExists,
+  });
+  updater = createUpdater({
+    userDataDir: app.getPath('userData'),
+    appVersion: app.getVersion(),
+    kind: facts.kind,
+    portableFile: facts.portableFile,
+    execPath: process.execPath,
+    restartArgs: updateRules.carriedArgs(process.argv),
+    // the helper that swaps the portable exe once ncut has closed (electron/swap.cs, next to ncut-qos.exe)
+    swapHelper: app.isPackaged ? path.join(process.resourcesPath, updateRules.SWAP_HELPER) : null,
+    log: (message) => console.error(message),
+  });
+  onRequest('ncut:update-state', updateOff(), () => updater.state());
+  onRequest('ncut:update-auto', updateOff(), (_w, on) => updater.setAuto(on === true));
+  onRequest('ncut:update-check', updateOff(), () => updater.check());
+  onRequest('ncut:update-restart', false, (w) => {
+    if (!updater.canRestart()) return false;
+    // the window closes the normal way (autosave, the question about a running export), the update is applied when
+    // the app really ends: see the will-quit handler
+    restartWanted = true;
+    w.close();
+    return true;
+  });
+  // the address is fixed here, the page never sends one
+  onRequest('ncut:update-open', false, async () => {
+    await shell.openExternal(updateRules.RELEASES_URL);
+    return true;
+  });
+  updater.onChange((state) => {
+    const w = readyWindow();
+    if (w) w.webContents.send('ncut:update-changed', state);
+  });
+  void updater.init();
+}
+
 // ---------- serving dist/ ----------
 
 function notFound() {
@@ -560,6 +615,8 @@ function createWindow() {
         });
         if (pick === 0) {
           closing = false;
+          // the user stays: no restart is wanted any more
+          restartWanted = false;
           return;
         }
       }
@@ -617,6 +674,7 @@ if (!app.requestSingleInstanceLock()) {
     setupBridge();
     setupMcp();
     const first = createWindow();
+    setupUpdate();
     const startFile = shellRules.projectFileFromArgs(process.argv, app.isPackaged);
     if (startFile) void openProjectFile(first, startFile);
     app.on('activate', () => {
@@ -626,6 +684,41 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     if (mcp) void mcp.dispose();
+    // the updater is not stopped here: a quit can still be called off after this (the window asks "an export is
+    // running, close anyway?" and the user keeps working), and a stopped updater would stay dead. see will-quit
+  });
+  // the order at quit: the window closes ('close' -> destroy -> 'closed') -> window-all-closed -> app.quit() ->
+  // before-quit -> will-quit -> quit. will-quit comes once, when every window is gone and nothing can keep the app
+  // from ending: that is where an update is applied and where the updater stops (timers, a running download), so
+  // both run exactly once and only when the app really ends.
+  // the single instance lock goes first, so the new version does not find this one still holding it and quit.
+  app.on('will-quit', () => {
+    if (!updater) return;
+    try {
+      const restart = restartWanted;
+      if (!updater.wantsApply(restart)) return;
+      try {
+        app.releaseSingleInstanceLock();
+      } catch {
+        /* the lock goes with the process anyway */
+      }
+      const result = updater.applyAtQuit({ restart });
+      if (!result.applied || (restart && !result.started)) {
+        if (!result.applied) console.error(`update: not applied (${result.why})`);
+        else console.error(`update: applied, but ${result.why}`);
+        // "restart now" that did not end in a running ncut: it still comes back (electron starts it when this
+        // process ends): the file as it was, or the new one that is in place but did not start
+        if (restart && typeof result.relaunch === 'string' && result.relaunch !== '') {
+          try {
+            app.relaunch({ execPath: result.relaunch, args: updateRules.carriedArgs(process.argv) });
+          } catch {
+            /* the user starts ncut again */
+          }
+        }
+      }
+    } finally {
+      updater.dispose();
+    }
   });
   app.on('window-all-closed', () => app.quit());
 }

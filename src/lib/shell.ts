@@ -44,6 +44,38 @@ export interface McpSaved {
   name: string | null;
 }
 
+/** what kind of copy this is: installed (setup exe), portable (one file exe), manual (unpacked folder), none (no updater) */
+export type UpdateKind = 'installed' | 'portable' | 'manual' | 'none';
+
+export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'failed';
+
+/** the updater of the desktop app, as the page may know it (never a url or a path) */
+export interface UpdateState {
+  kind: UpdateKind;
+  /** the user's switch */
+  auto: boolean;
+  phase: UpdatePhase;
+  /** the running version, like 0.2.0 ('' when the shell sent nothing usable) */
+  current: string;
+  /** the newest version github has as far as known, null = never checked */
+  latest: string | null;
+  /** 0..1 while downloading, else 0 */
+  progress: number;
+  /** why the last check or download failed, or null */
+  error: string | null;
+  /** ms since epoch of the last check that finished (fine or failed) */
+  checkedAt: number | null;
+}
+
+interface RawUpdate {
+  state?: () => Promise<unknown>;
+  setAuto?: (on: boolean) => Promise<unknown>;
+  check?: () => Promise<unknown>;
+  restart?: () => Promise<unknown>;
+  openPage?: () => Promise<unknown>;
+  onState?: (cb: (state: unknown) => void) => () => void;
+}
+
 interface RawMcp {
   state?: () => Promise<unknown>;
   setEnabled?: (on: boolean) => Promise<unknown>;
@@ -95,8 +127,55 @@ export function cleanMcpCall(v: unknown): McpCall | null {
   };
 }
 
+const UPDATE_KINDS: readonly UpdateKind[] = ['installed', 'portable', 'manual', 'none'];
+const UPDATE_PHASES: readonly UpdatePhase[] = ['idle', 'checking', 'downloading', 'ready', 'failed'];
+/** the longest error text the page keeps */
+const UPDATE_ERROR_MAX = 200;
+/** a version is three numbers (each at most 9 digits, so the compare stays exact) */
+const VERSION_RE = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/;
+
+function cleanVersion(v: unknown): string | null {
+  return typeof v === 'string' && VERSION_RE.test(v) ? v : null;
+}
+
+/** whatever the shell sent, as an update state the ui can trust. anything unusable is the "none" state (no updater) */
+export function cleanUpdateState(v: unknown): UpdateState {
+  try {
+    return cleanUpdateStateUnsafe(v);
+  } catch {
+    // an object with a getter that throws is not a state
+    return noUpdateState();
+  }
+}
+
+function noUpdateState(): UpdateState {
+  return { kind: 'none', auto: true, phase: 'idle', current: '', latest: null, progress: 0, error: null, checkedAt: null };
+}
+
+function cleanUpdateStateUnsafe(v: unknown): UpdateState {
+  const none = noUpdateState();
+  if (!isObject(v)) return none;
+  const kind = UPDATE_KINDS.find((k) => k === v.kind) ?? 'none';
+  const phase = UPDATE_PHASES.find((p) => p === v.phase) ?? 'idle';
+  const progress = typeof v.progress === 'number' && Number.isFinite(v.progress) ? Math.min(1, Math.max(0, v.progress)) : 0;
+  const error = typeof v.error === 'string' && v.error !== '' ? v.error.slice(0, UPDATE_ERROR_MAX) : null;
+  const checkedAt = typeof v.checkedAt === 'number' && Number.isFinite(v.checkedAt) && v.checkedAt > 0 ? v.checkedAt : null;
+  return {
+    kind,
+    // missing = the default (on). a value that is not a real boolean is not trusted to mean on: off is the quiet side
+    auto: v.auto === undefined ? true : v.auto === true,
+    phase,
+    current: cleanVersion(v.current) ?? '',
+    latest: cleanVersion(v.latest),
+    progress: phase === 'downloading' ? progress : 0,
+    error,
+    checkedAt,
+  };
+}
+
 interface RawShell {
   mcp?: RawMcp;
+  update?: RawUpdate;
   version?: unknown;
   setProgress?: (fraction: number | null) => void;
   keepAwake?: (on: boolean) => void;
@@ -208,6 +287,45 @@ export const shell = {
    */
   ready(dark?: boolean): void {
     call((s) => s.ready?.(dark));
+  },
+  /** the updater of the desktop app. the page never sends a url, a path or a version */
+  update: {
+    /** true when this shell has an updater (an older shell does not) */
+    get available(): boolean {
+      const u = raw()?.update;
+      return (
+        typeof u === 'object' &&
+        u !== null &&
+        typeof u.state === 'function' &&
+        typeof u.setAuto === 'function' &&
+        typeof u.check === 'function' &&
+        typeof u.restart === 'function' &&
+        typeof u.openPage === 'function' &&
+        typeof u.onState === 'function'
+      );
+    },
+    state(): Promise<UpdateState> {
+      return ask<unknown>(null, (s) => s.update?.state?.()).then(cleanUpdateState);
+    },
+    /** the user's switch for automatic updates. the answer is the new state */
+    setAuto(on: boolean): Promise<UpdateState> {
+      return ask<unknown>(null, (s) => s.update?.setAuto?.(on === true)).then(cleanUpdateState);
+    },
+    /** start a check now. the answer is the state right after it started */
+    check(): Promise<UpdateState> {
+      return ask<unknown>(null, (s) => s.update?.check?.()).then(cleanUpdateState);
+    },
+    /** install the ready update now and start the new version. false when nothing is ready */
+    restart(): Promise<boolean> {
+      return ask<unknown>(false, (s) => s.update?.restart?.()).then((v) => v === true);
+    },
+    /** open the releases page in the browser. false when the shell could not */
+    openPage(): Promise<boolean> {
+      return ask<unknown>(false, (s) => s.update?.openPage?.()).then((v) => v === true);
+    },
+    onState(cb: (state: UpdateState) => void): () => void {
+      return subscribe<UpdateState>(cb, (s, safe) => s.update?.onState?.((v) => safe(cleanUpdateState(v))));
+    },
   },
   /** the mcp server of the desktop app (docs/MCP.md). the token never comes to the page */
   mcp: {

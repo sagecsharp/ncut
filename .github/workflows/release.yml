@@ -39,11 +39,11 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      # scripts/build-qos.cjs builds ncut-qos.exe with this compiler and only prints a note when it is missing
+      # scripts/build-qos.cjs builds ncut-qos.exe and ncut-swap.exe with this compiler and only prints a note when it is missing
       - name: the c# compiler of windows is there
         run: |
           if [ ! -f "$WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" ] && [ ! -f "$WINDIR/Microsoft.NET/Framework/v4.0.30319/csc.exe" ]; then
-            echo "::error::no csc.exe under $WINDIR/Microsoft.NET on this image, ncut-qos.exe can not be built"
+            echo "::error::no csc.exe under $WINDIR/Microsoft.NET on this image, ncut-qos.exe and ncut-swap.exe can not be built"
             exit 1
           fi
 
@@ -61,6 +61,7 @@ jobs:
         run: |
           for f in \
             "release/win-unpacked/resources/ncut-qos.exe" \
+            "release/win-unpacked/resources/ncut-swap.exe" \
             "release/win-unpacked/resources/LICENSE" \
             "release/win-unpacked/resources/THIRD-PARTY-NOTICES.md" \
             "release/ncut-$VERSION-setup.exe" \

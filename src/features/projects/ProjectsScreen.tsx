@@ -5,6 +5,7 @@ import type { ProjectSummary } from '../../types';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { McpSettings } from '../../components/ui/McpSettings';
+import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../../lib/templates';
 import { formatDuration } from '../../lib/time';
@@ -469,6 +470,7 @@ export function ProjectsScreen() {
       <Dialog open={appearanceOpen} title="appearance" onClose={() => setAppearanceOpen(false)} width={380}>
         <AppearanceSettings />
         <McpSettings />
+        <UpdateSettings />
       </Dialog>
 
       <main className="projects-main">

@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
 import { McpSettings } from '../../components/ui/McpSettings';
+import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
@@ -128,6 +129,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
       </div>
 
       <McpSettings />
+      <UpdateSettings />
 
       <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>
       <label className="field">

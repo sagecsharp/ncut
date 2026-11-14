@@ -16,6 +16,7 @@ import { preloadEditor } from './features/editor/loadEditor';
 import { attachShellOpenFile } from './features/shell/openShellFile';
 import { initAppearance } from './lib/appearance';
 import { watchFocusSource } from './lib/pressKey';
+import { startUpdateNotice } from './lib/updateNotice';
 import { initWallpaper } from './lib/wallpaper';
 import { startMcp } from './mcp/dispatch';
 import { callTool, listTools } from './mcp/registry';
@@ -51,6 +52,8 @@ attachShellOpenFile(
 );
 // the desktop app's mcp server relays its tool requests to this page (docs/MCP.md). nothing in a browser
 startMcp();
+// the desktop app's updater: a toast when a new version is ready. nothing in a browser
+startUpdateNotice();
 
 // handy for poking at the app from the devtools console (dev builds only)
 if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {

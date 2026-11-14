@@ -87,6 +87,7 @@ good to know:
 - a double click on a `.ncut` file opens it
 - exports run at full speed when the window is minimized
 - projects live in `%APPDATA%\ncut`, separate from the browser version. move one over with its `.ncut` file
+- it keeps itself up to date: a new release is downloaded in the background and installed when you close ncut (settings > updates, with an off switch). how it works and what it checks: [docs/UPDATE.md](docs/UPDATE.md)
 - the exe is not code signed, windows smartscreen may ask before the first start
 
 ## shortcuts

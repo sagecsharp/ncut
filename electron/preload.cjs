@@ -113,6 +113,55 @@ const mcp = {
   },
 };
 
+const UPDATE_KINDS = new Set(['installed', 'portable', 'manual', 'none']);
+const UPDATE_PHASES = new Set(['idle', 'checking', 'downloading', 'ready', 'failed']);
+// the same rule as parseVersion in updateRules.cjs (a sandboxed preload can not require a file of ours, so it is written out here)
+const isVersion = (v) => typeof v === 'string' && /^(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})$/.test(v);
+
+/** the update state main sends, cleaned again: only these fields and believable values (no path or address ever comes through) */
+function updateState(v) {
+  if (!v || typeof v !== 'object') return undefined;
+  const phase = UPDATE_PHASES.has(v.phase) ? v.phase : 'idle';
+  const error = typeof v.error === 'string' ? v.error.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200) : '';
+  return {
+    kind: UPDATE_KINDS.has(v.kind) ? v.kind : 'none',
+    auto: v.auto !== false,
+    phase,
+    current: isVersion(v.current) ? v.current : '',
+    latest: isVersion(v.latest) ? v.latest : null,
+    progress: phase === 'downloading' && typeof v.progress === 'number' && Number.isFinite(v.progress) ? Math.min(1, Math.max(0, v.progress)) : 0,
+    error: error === '' ? null : error,
+    checkedAt: Number.isSafeInteger(v.checkedAt) && v.checkedAt >= 0 ? v.checkedAt : null,
+  };
+}
+
+/** what the page gets when the shell does not answer: no updater at all */
+function updateOff() {
+  return updateState({ kind: 'none', auto: true, phase: 'idle', current: api.version });
+}
+
+// the page sends nothing but a boolean: main knows the address, the file and the version
+const update = {
+  state() {
+    return ipcRenderer.invoke('ncut:update-state').then((v) => updateState(v) ?? updateOff(), () => updateOff());
+  },
+  setAuto(on) {
+    return ipcRenderer.invoke('ncut:update-auto', on === true).then((v) => updateState(v) ?? updateOff(), () => updateOff());
+  },
+  check() {
+    return ipcRenderer.invoke('ncut:update-check').then((v) => updateState(v) ?? updateOff(), () => updateOff());
+  },
+  restart() {
+    return ipcRenderer.invoke('ncut:update-restart').then((ok) => ok === true, () => false);
+  },
+  openPage() {
+    return ipcRenderer.invoke('ncut:update-open').then((ok) => ok === true, () => false);
+  },
+  onState(cb) {
+    return listen('ncut:update-changed', updateState, cb);
+  },
+};
+
 const api = {
   version: version(),
   setProgress(fraction) {
@@ -148,6 +197,7 @@ const api = {
     ipcRenderer.send('ncut:ready', typeof dark === 'boolean' ? dark : null);
   },
   mcp: Object.freeze(mcp),
+  update: Object.freeze(update),
 };
 
 contextBridge.exposeInMainWorld('ncutShell', Object.freeze(api));
