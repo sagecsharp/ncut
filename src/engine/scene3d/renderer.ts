@@ -1,6 +1,7 @@
 /**
- * unlit 3d renderer: textured planes with a depth buffer, plus plain colored lines for editor helpers.
- * one webgl2 context per channel, like the effects runner. the result is a transparent canvas
+ * the 3d renderer, unlit or lit by light.ts: textured planes with a depth buffer, plus plain colored lines for editor
+ * helpers. a render with a lit plane uses a second program (LIT_VS / LIT_FS), every other render the plane program as it
+ * always was. one webgl2 context per channel, like the effects runner. the result is a transparent canvas
  * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there.
  */
 import type { SceneFog, Shape3D } from '../../types';
@@ -9,7 +10,8 @@ import type { Mat4, Vec3 } from './math';
 import { mulInto } from './math';
 import { fogOn, writeFogUniforms } from './fog';
 import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
-import { type MeshGroup, interleave, knownShape, shapeMesh } from './meshes';
+import { type LightRig, planeLight } from './light';
+import { type MeshGroup, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 import { solidOutline } from './outline3d';
 
@@ -61,6 +63,16 @@ export interface Plane3D {
    * `image` / `uv` as usual. missing or empty = the plain path: one draw for the whole mesh. ignored on a plane.
    */
   faces?: Record<string, FacePicture>;
+  /**
+   * 0..1: how much the light of the render (renderScene `light`) shades this plane. missing / 0 = unlit, exactly as before.
+   * a plane gets one light (its normal turned to the eye, light.ts planeLight); a solid is lit per vertex.
+   */
+  lit?: number;
+  /**
+   * key-less pictures only: the same number on two renders means the same pixels in the same image object (the copies of
+   * one motion blur), so the upload of the earlier render may be kept. missing = upload as usual.
+   */
+  serial?: number;
 }
 
 /** the picture of one side of a solid */
@@ -123,7 +135,7 @@ void main() {
   gl_Position = u_mvp * vec4(a_pos, 1.0);
   v_depth = gl_Position.w;
 }`;
-const PLANE_FS = `#version 300 es
+export const PLANE_FS = `#version 300 es
 precision highp float;
 const float SOLID = 0.98;
 in vec2 v_uv;
@@ -246,6 +258,53 @@ void main() {
   }
   outColor = c;
 }`;
+export const LIT_VS = `#version 300 es
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec2 a_uv;
+// lit solids only (their lit mesh). a plane's vao has none: it reads 0 here and never uses it (u_light.w = 0)
+layout(location = 2) in vec3 a_normal;
+uniform mat4 u_mvp;
+// read while fog is on, and for a lit solid (its normal)
+uniform mat4 u_model;
+uniform float u_fogOn;
+// rgb = the light of a plane (cpu, light.ts planeLight) with w = 0, or (1, 1, 1, lit amount) for a solid lit here
+uniform vec4 u_light;
+// sky, horizon, ground (linear, times 1 - sun), toward the sun, sun color (linear, times sun): light.ts LightRig.env
+uniform vec3 u_env[5];
+out vec2 v_uv;
+out vec3 v_world;
+out float v_depth;
+out vec3 v_light;
+void main() {
+  v_uv = a_uv;
+  v_world = u_fogOn > 0.0 ? (u_model * vec4(a_pos, 1.0)).xyz : vec3(0.0);
+  gl_Position = u_mvp * vec4(a_pos, 1.0);
+  v_depth = gl_Position.w;
+  v_light = vec3(1.0);
+  if (u_light.w > 0.0) {
+    // LIGHT MATH: must match light.ts litFactor. the normal goes through the cofactor of the model (right under any
+    // scale), flipped back for a mirrored one. world y points down.
+    vec3 c0 = u_model[0].xyz;
+    vec3 c1 = u_model[1].xyz;
+    vec3 c2 = u_model[2].xyz;
+    vec3 n = mat3(cross(c1, c2), cross(c2, c0), cross(c0, c1)) * a_normal * sign(dot(c0, cross(c1, c2)));
+    float len = length(n);
+    n = len > 0.0 ? n / len : vec3(0.0, -1.0, 0.0);
+    float up = -n.y;
+    vec3 lin = u_env[0] * max(up, 0.0) + u_env[1] * (1.0 - abs(up)) + u_env[2] * max(-up, 0.0) + u_env[4] * max(dot(n, u_env[3]), 0.0);
+    v_light = pow(max(mix(vec3(1.0), lin, u_light.w), vec3(1e-6)), vec3(1.0 / 2.2));
+  }
+}`;
+/** the line LIT_FS adds right before the fog block */
+export const LIGHT_LINE = '  // LIGHT: rgb only, after the alpha tests: the passes, the stack and the fog see the lit color\n  c.rgb *= u_light.w > 0.0 ? v_light : u_light.rgb;\n';
+/** PLANE_FS with the light in it: its inputs before outColor, LIGHT_LINE before the fog. throws when an anchor is not there exactly once. */
+export function litFragment(src: string): string {
+  const decl = 'out vec4 outColor;\n';
+  const fog = '  if (u_fogOn > 0.0) {\n';
+  if (src.split(decl).length !== 2 || src.split(fog).length !== 2) throw new Error('litFragment: the plane shader changed, move the anchors');
+  return src.replace(decl, 'uniform vec4 u_light;\nin vec3 v_light;\n' + decl).replace(fog, LIGHT_LINE + fog);
+}
+const LIT_FS = litFragment(PLANE_FS);
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec3 a_pos;
 uniform mat4 u_vp;
@@ -292,6 +351,35 @@ void main() {
   }
   outColor = c;
 }`;
+
+/** a key-less scratch upload can be kept when the slot holds the same image object from a render with the same serial and the same mips */
+export function canReuseScratch(prevImage: unknown, prevSerial: number | undefined, prevMips: boolean, image: unknown, serial: number | undefined, mips: boolean): boolean {
+  return serial !== undefined && prevSerial === serial && prevImage === image && prevMips === mips;
+}
+
+/**
+ * what u_light holds for one plane of a lit render (see LIT_VS): unlit (1, 1, 1, 0); a lit solid (1, 1, 1, k), lit in
+ * the vertex shader; a lit plane (its light, 0), one normal worked out here. k = lit clamped to 0..1.
+ */
+export function lightUniform(lit: number | undefined, shape: Shape3D, model: ArrayLike<number>, eye: ArrayLike<number>, env: ArrayLike<number>, out: Float32Array): void {
+  const k = lit !== undefined && lit > 0 ? (lit < 1 ? lit : 1) : 0;
+  if (!(k > 0)) {
+    out[0] = 1;
+    out[1] = 1;
+    out[2] = 1;
+    out[3] = 0;
+    return;
+  }
+  if (shape !== 'plane') {
+    out[0] = 1;
+    out[1] = 1;
+    out[2] = 1;
+    out[3] = k;
+    return;
+  }
+  planeLight(model, eye, k, env, out);
+  out[3] = 0;
+}
 
 const CACHE_LIMIT = 48;
 /** how many outline piece sets stay on the gpu. an animated width or size makes a new one per frame, the oldest go. */
@@ -368,10 +456,52 @@ interface Mesh {
   buffers: (WebGLBuffer | null)[];
 }
 
+/** the uniform locations of a plane program (the base one and the lit one have the same names; light / env only on the lit one) */
+interface PlaneLocs {
+  mvp: WebGLUniformLocation | null;
+  alpha: WebGLUniformLocation | null;
+  uv: WebGLUniformLocation | null;
+  radius: WebGLUniformLocation | null;
+  size: WebGLUniformLocation | null;
+  pass: WebGLUniformLocation | null;
+  model: WebGLUniformLocation | null;
+  fogOn: WebGLUniformLocation | null;
+  fogColor: WebGLUniformLocation | null;
+  fogRange: WebGLUniformLocation | null;
+  eye: WebGLUniformLocation | null;
+  focusOn: WebGLUniformLocation | null;
+  focus: WebGLUniformLocation | null;
+  frameH: WebGLUniformLocation | null;
+  edge: WebGLUniformLocation | null;
+  wrapU: WebGLUniformLocation | null;
+  stack: WebGLUniformLocation | null;
+  clipOn: WebGLUniformLocation | null;
+  clip: WebGLUniformLocation | null;
+  under: WebGLUniformLocation | null;
+  underOn: WebGLUniformLocation | null;
+  underUv: WebGLUniformLocation | null;
+  light: WebGLUniformLocation | null;
+  env: WebGLUniformLocation | null;
+}
+
+interface PlaneProgram {
+  program: WebGLProgram;
+  loc: PlaneLocs;
+}
+
 class SceneRenderer {
   readonly canvas: GLCanvas;
   private gl: WebGL2RenderingContext;
-  private planeProg: WebGLProgram;
+  /** the plane program of the render in progress: base, or lit while a render has a lit plane */
+  private prog: PlaneProgram;
+  private base: PlaneProgram;
+  private lit: PlaneProgram | null = null;
+  private litState: 'none' | 'started' | 'ready' | 'failed' = 'none';
+  private litPending: { program: WebGLProgram; vs: WebGLShader; fs: WebGLShader } | null = null;
+  private litMeshes = new Map<Shape3D, Mesh>();
+  private lightBuf = new Float32Array(4);
+  /** the u_light the program holds now (nan = not sent yet in this render): an equal one is not sent again */
+  private lastLight = new Float32Array(4);
   private lineProg: WebGLProgram;
   private outlineProg: WebGLProgram;
   private oMvp: WebGLUniformLocation | null;
@@ -386,28 +516,6 @@ class SceneRenderer {
   private eyeNow: Vec3 = [0, 0, 0];
   /** least recently used first (map order): a hit moves the entry to the end. null = pieces were empty. */
   private outlines = new Map<string, OutlineGpu | null>();
-  private uMvp: WebGLUniformLocation | null;
-  private uAlpha: WebGLUniformLocation | null;
-  private uUv: WebGLUniformLocation | null;
-  private uRadius: WebGLUniformLocation | null;
-  private uSize: WebGLUniformLocation | null;
-  private uPass: WebGLUniformLocation | null;
-  private uModel: WebGLUniformLocation | null;
-  private uFogOn: WebGLUniformLocation | null;
-  private uFogColor: WebGLUniformLocation | null;
-  private uFogRange: WebGLUniformLocation | null;
-  private uEye: WebGLUniformLocation | null;
-  private uFocusOn: WebGLUniformLocation | null;
-  private uFocus: WebGLUniformLocation | null;
-  private uFrameH: WebGLUniformLocation | null;
-  private uEdge: WebGLUniformLocation | null;
-  private uWrapU: WebGLUniformLocation | null;
-  private uStack: WebGLUniformLocation | null;
-  private uClipOn: WebGLUniformLocation | null;
-  private uClip: WebGLUniformLocation | null;
-  private uUnder: WebGLUniformLocation | null;
-  private uUnderOn: WebGLUniformLocation | null;
-  private uUnderUv: WebGLUniformLocation | null;
   /** a 1 x 1 see-through texture: what texture unit 1 holds while no side picture is drawn */
   private blank: WebGLTexture | null = null;
   private fogBuf = new Float32Array(6);
@@ -422,6 +530,9 @@ class SceneRenderer {
   private scratch: WebGLTexture[] = [];
   /** scratch textures that currently have a mip filter (only while a mesh is blurred) */
   private scratchMips: boolean[] = [];
+  /** the image object and serial a key-less scratch slot last uploaded with a serial (see canReuseScratch) */
+  private scratchImage: (TexImageSource | null)[] = [];
+  private scratchSerial: (number | undefined)[] = [];
   private frame = 0;
   /** scratch slots used so far in this render, and the key-less picture uploaded last (see ownTexture) */
   private slot = 0;
@@ -435,7 +546,11 @@ class SceneRenderer {
   constructor(canvas: GLCanvas, gl: WebGL2RenderingContext) {
     this.canvas = canvas;
     this.gl = gl;
-    this.planeProg = this.link(PLANE_VS, PLANE_FS);
+    const basep = this.link(PLANE_VS, PLANE_FS);
+    this.base = { program: basep, loc: this.locate(basep) };
+    this.prog = this.base;
+    // only enables it: the lit program is compiled and linked without asking for the status (startLit)
+    gl.getExtension('KHR_parallel_shader_compile');
     this.lineProg = this.link(LINE_VS, LINE_FS);
     this.outlineProg = this.link(OUTLINE_VS, OUTLINE_FS);
     const op = this.outlineProg;
@@ -446,28 +561,6 @@ class SceneRenderer {
     this.oFogColor = gl.getUniformLocation(op, 'u_fogColor');
     this.oFogRange = gl.getUniformLocation(op, 'u_fogRange');
     this.oEye = gl.getUniformLocation(op, 'u_eye');
-    this.uMvp = gl.getUniformLocation(this.planeProg, 'u_mvp');
-    this.uAlpha = gl.getUniformLocation(this.planeProg, 'u_alpha');
-    this.uUv = gl.getUniformLocation(this.planeProg, 'u_uv');
-    this.uRadius = gl.getUniformLocation(this.planeProg, 'u_radius');
-    this.uSize = gl.getUniformLocation(this.planeProg, 'u_size');
-    this.uPass = gl.getUniformLocation(this.planeProg, 'u_pass');
-    this.uModel = gl.getUniformLocation(this.planeProg, 'u_model');
-    this.uFogOn = gl.getUniformLocation(this.planeProg, 'u_fogOn');
-    this.uFogColor = gl.getUniformLocation(this.planeProg, 'u_fogColor');
-    this.uFogRange = gl.getUniformLocation(this.planeProg, 'u_fogRange');
-    this.uEye = gl.getUniformLocation(this.planeProg, 'u_eye');
-    this.uFocusOn = gl.getUniformLocation(this.planeProg, 'u_focusOn');
-    this.uFocus = gl.getUniformLocation(this.planeProg, 'u_focus');
-    this.uFrameH = gl.getUniformLocation(this.planeProg, 'u_frameH');
-    this.uEdge = gl.getUniformLocation(this.planeProg, 'u_edge');
-    this.uWrapU = gl.getUniformLocation(this.planeProg, 'u_wrapU');
-    this.uStack = gl.getUniformLocation(this.planeProg, 'u_stack');
-    this.uClipOn = gl.getUniformLocation(this.planeProg, 'u_clipOn');
-    this.uClip = gl.getUniformLocation(this.planeProg, 'u_clip');
-    this.uUnder = gl.getUniformLocation(this.planeProg, 'u_under');
-    this.uUnderOn = gl.getUniformLocation(this.planeProg, 'u_underOn');
-    this.uUnderUv = gl.getUniformLocation(this.planeProg, 'u_underUv');
     this.uVp = gl.getUniformLocation(this.lineProg, 'u_vp');
     this.uColor = gl.getUniformLocation(this.lineProg, 'u_color');
 
@@ -510,16 +603,30 @@ class SceneRenderer {
       if (this.blank) gl.deleteTexture(this.blank);
       this.blank = null;
       this.scratch = [];
+      this.scratchImage = [];
+      this.scratchSerial = [];
       for (const m of this.meshes.values()) {
         gl.deleteVertexArray(m.vao);
         for (const b of m.buffers) gl.deleteBuffer(b);
       }
       this.meshes.clear();
+      for (const m of this.litMeshes.values()) {
+        gl.deleteVertexArray(m.vao);
+        for (const b of m.buffers) gl.deleteBuffer(b);
+      }
+      this.litMeshes.clear();
       for (const o of this.outlines.values()) this.freeOutline(o);
       this.outlines.clear();
       gl.deleteVertexArray(this.lineVao);
       gl.deleteBuffer(this.lineBuf);
-      gl.deleteProgram(this.planeProg);
+      gl.deleteProgram(this.base.program);
+      if (this.lit) gl.deleteProgram(this.lit.program);
+      if (this.litPending) {
+        gl.deleteProgram(this.litPending.program);
+        gl.deleteShader(this.litPending.vs);
+        gl.deleteShader(this.litPending.fs);
+        this.litPending = null;
+      }
       gl.deleteProgram(this.lineProg);
       gl.deleteProgram(this.outlineProg);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -529,6 +636,85 @@ class SceneRenderer {
     } catch {
       // already gone
     }
+  }
+
+  /** the uniform locations of a plane program. light and env are null on the base one. */
+  private locate(p: WebGLProgram): PlaneLocs {
+    const gl = this.gl;
+    const at = (name: string) => gl.getUniformLocation(p, name);
+    return {
+      mvp: at('u_mvp'),
+      alpha: at('u_alpha'),
+      uv: at('u_uv'),
+      radius: at('u_radius'),
+      size: at('u_size'),
+      pass: at('u_pass'),
+      model: at('u_model'),
+      fogOn: at('u_fogOn'),
+      fogColor: at('u_fogColor'),
+      fogRange: at('u_fogRange'),
+      eye: at('u_eye'),
+      focusOn: at('u_focusOn'),
+      focus: at('u_focus'),
+      frameH: at('u_frameH'),
+      edge: at('u_edge'),
+      wrapU: at('u_wrapU'),
+      stack: at('u_stack'),
+      clipOn: at('u_clipOn'),
+      clip: at('u_clip'),
+      under: at('u_under'),
+      underOn: at('u_underOn'),
+      underUv: at('u_underUv'),
+      light: at('u_light'),
+      env: at('u_env'),
+    };
+  }
+
+  /**
+   * start compiling the lit program, without asking for any status (the driver can build it in the background). the
+   * first lit render asks (litProgram). no-op once started or when the context is gone.
+   */
+  startLit(): void {
+    if (this.litState !== 'none' || this.isLost()) return;
+    const gl = this.gl;
+    try {
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, LIT_VS);
+      gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, LIT_FS);
+      gl.compileShader(fs);
+      const program = gl.createProgram()!;
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      this.litPending = { program, vs, fs };
+      this.litState = 'started';
+    } catch {
+      this.litState = 'failed';
+    }
+  }
+
+  /** the lit program, once it is linked. null = it failed (lit planes are drawn unlit) */
+  private litProgram(): PlaneProgram | null {
+    if (this.litState === 'ready') return this.lit;
+    if (this.litState === 'failed') return null;
+    this.startLit();
+    const pend = this.litPending;
+    if (!pend) return null;
+    this.litPending = null;
+    const gl = this.gl;
+    if (!gl.getProgramParameter(pend.program, gl.LINK_STATUS)) {
+      console.warn('[ncut] the lit 3d program failed, lit clips are drawn unlit', gl.getProgramInfoLog(pend.program), gl.getShaderInfoLog(pend.vs), gl.getShaderInfoLog(pend.fs));
+      gl.deleteProgram(pend.program);
+      gl.deleteShader(pend.vs);
+      gl.deleteShader(pend.fs);
+      this.litState = 'failed';
+      return null;
+    }
+    this.lit = { program: pend.program, loc: this.locate(pend.program) };
+    this.litState = 'ready';
+    return this.lit;
   }
 
   private link(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -569,6 +755,32 @@ class SceneRenderer {
     gl.bindVertexArray(null);
     const mesh: Mesh = { vao, count: data.indices.length, groups: data.groups, buffers: [vbo, ibo] };
     this.meshes.set(shape, mesh);
+    return mesh;
+  }
+
+  /** the gpu mesh of a lit solid (normals at location 2), built on first use. mesh() stays as it is. */
+  private litMesh(shape: Shape3D): Mesh {
+    const hit = this.litMeshes.get(shape);
+    if (hit) return hit;
+    const gl = this.gl;
+    const data = litShapeMesh(shape);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, interleaveLit(data), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 32, 12);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 32, 20);
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    const mesh: Mesh = { vao, count: data.indices.length, groups: data.groups, buffers: [vbo, ibo] };
+    this.litMeshes.set(shape, mesh);
     return mesh;
   }
 
@@ -641,9 +853,10 @@ class SceneRenderer {
    * silhouette line), strips along the hard edges inside. stencil bit 0 = the core, bit 1 = something was painted
    * already (the hull has a front and a back, the strips lie on both faces: every pixel is painted once).
    * the depth of field blur does not apply to the line: it stays sharp.
-   * expects this.mvpBuf to hold the plane's mvp. gives the gl state back the way the plane loop needs it.
+   * expects this.mvpBuf to hold the plane's mvp. gives the gl state back the way the plane loop needs it: the plane
+   * program of the render and `vao` bound.
    */
-  private drawOutline(plane: Plane3D, shape: Shape3D, gpu: OutlineGpu, offsetUnits: number): void {
+  private drawOutline(plane: Plane3D, shape: Shape3D, gpu: OutlineGpu, offsetUnits: number, vao: WebGLVertexArrayObject | null): void {
     const gl = this.gl;
     const o = plane.outline!;
     const ca = o.color[3];
@@ -696,8 +909,8 @@ class SceneRenderer {
     gl.stencilMask(0xff);
     gl.polygonOffset(0, offsetUnits);
     gl.depthMask(false);
-    gl.useProgram(this.planeProg);
-    gl.bindVertexArray(this.mesh(shape).vao);
+    gl.useProgram(this.prog.program);
+    gl.bindVertexArray(vao);
   }
 
   private newTexture(mips: boolean): WebGLTexture {
@@ -716,7 +929,7 @@ class SceneRenderer {
    * bind the texture of a picture, uploading when needed, and give it back (null when the upload failed). a picture with
    * a key is uploaded once (and gets mips); one without uploads into the scratch texture `slot` every time.
    */
-  private acquire(image: TexImageSource, cacheKey: string | undefined, slot: number, mips: boolean): WebGLTexture | null {
+  private acquire(image: TexImageSource, cacheKey: string | undefined, slot: number, mips: boolean, serial?: number): WebGLTexture | null {
     const gl = this.gl;
     if (cacheKey !== undefined) {
       const hit = this.cache.get(cacheKey);
@@ -744,6 +957,8 @@ class SceneRenderer {
     } else {
       gl.bindTexture(gl.TEXTURE_2D, tex);
     }
+    // the same frame as the render before (the copies of a motion blur): its upload is still in the texture
+    if (canReuseScratch(this.scratchImage[slot] ?? null, this.scratchSerial[slot], this.scratchMips[slot] === true, image, serial, mips)) return tex;
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
       // a blurred video frame reads smaller mip levels: build them for this frame only
@@ -752,7 +967,11 @@ class SceneRenderer {
         this.scratchMips[slot] = mips;
       }
       if (mips) gl.generateMipmap(gl.TEXTURE_2D);
+      this.scratchImage[slot] = serial !== undefined ? image : null;
+      this.scratchSerial[slot] = serial;
     } catch {
+      this.scratchImage[slot] = null;
+      this.scratchSerial[slot] = undefined;
       return null;
     }
     return tex;
@@ -767,7 +986,7 @@ class SceneRenderer {
       return tex;
     }
     this.lastImage = null;
-    const tex = this.acquire(plane.image, plane.cacheKey, this.slot, blurred);
+    const tex = this.acquire(plane.image, plane.cacheKey, this.slot, blurred, plane.serial);
     if (tex && plane.cacheKey === undefined) {
       this.lastImage = plane.image;
       this.lastMips = blurred;
@@ -833,6 +1052,7 @@ class SceneRenderer {
    */
   private drawRuns(runs: FaceRun[], hollow: boolean): void {
     const gl = this.gl;
+    const loc = this.prog.loc;
     let bound: WebGLTexture | null = null;
     let clipOn = false;
     let underOn = false;
@@ -840,24 +1060,24 @@ class SceneRenderer {
       if (r.own && hollow) continue;
       const under = !r.own && !hollow;
       if (under !== underOn) {
-        gl.uniform1f(this.uUnderOn, under ? 1 : 0);
+        gl.uniform1f(loc.underOn, under ? 1 : 0);
         underOn = under;
       }
       if (r.tex !== bound) {
         gl.bindTexture(gl.TEXTURE_2D, r.tex);
         bound = r.tex;
       }
-      gl.uniform4f(this.uUv, r.uv[0], r.uv[1], r.uv[2], r.uv[3]);
+      gl.uniform4f(loc.uv, r.uv[0], r.uv[1], r.uv[2], r.uv[3]);
       const on = r.clip !== null;
-      if (on) gl.uniform4f(this.uClip, r.clip![0], r.clip![1], r.clip![0] + r.clip![2], r.clip![1] + r.clip![3]);
+      if (on) gl.uniform4f(loc.clip, r.clip![0], r.clip![1], r.clip![0] + r.clip![2], r.clip![1] + r.clip![3]);
       if (on !== clipOn) {
-        gl.uniform1f(this.uClipOn, on ? 1 : 0);
+        gl.uniform1f(loc.clipOn, on ? 1 : 0);
         clipOn = on;
       }
       gl.drawElements(gl.TRIANGLES, r.count, gl.UNSIGNED_SHORT, r.start * 2);
     }
-    if (clipOn) gl.uniform1f(this.uClipOn, 0);
-    if (underOn) gl.uniform1f(this.uUnderOn, 0);
+    if (clipOn) gl.uniform1f(loc.clipOn, 0);
+    if (underOn) gl.uniform1f(loc.underOn, 0);
   }
 
   /** texture unit 1 (the own picture under a side's picture): `tex`, or the blank one. unit 0 is the active one after. */
@@ -887,7 +1107,7 @@ class SceneRenderer {
     }
   }
 
-  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null): GLCanvas | null {
+  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null, light: LightRig | null = null): GLCanvas | null {
     const gl = this.gl;
     if (this.isLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -915,10 +1135,17 @@ class SceneRenderer {
     // they never punch a hole into a plane that is painted after them.
     const order = paintOrder(planes, viewProj, eye);
 
-    gl.useProgram(this.planeProg);
+    // a render with a lit plane runs the lit program for all its planes (an unlit one gets a light of 1), any other render
+    // the plane program exactly as before
+    const litProg = light ? this.litProgram() : null;
+    const lighting = litProg !== null;
+    this.prog = litProg ?? this.base;
+    const loc = this.prog.loc;
+    gl.useProgram(this.prog.program);
+    this.lastLight.fill(NaN);
     // the picture under a side's picture reads texture unit 1: it always holds a texture (the blank one between solids)
-    gl.uniform1i(this.uUnder, 1);
-    gl.uniform1f(this.uUnderOn, 0);
+    gl.uniform1i(loc.under, 1);
+    gl.uniform1f(loc.underOn, 0);
     this.bindUnder(null);
     gl.activeTexture(gl.TEXTURE0);
     this.eyeNow = eye;
@@ -926,17 +1153,18 @@ class SceneRenderer {
     const fogging = fogOn(fog);
     this.fogging = fogging;
     writeFogUniforms(fog, this.fogBuf);
-    gl.uniform1f(this.uFogOn, fogging ? 1 : 0);
+    gl.uniform1f(loc.fogOn, fogging ? 1 : 0);
     if (fogging) {
-      gl.uniform3f(this.uFogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
-      gl.uniform3f(this.uFogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
-      gl.uniform3f(this.uEye, eye[0], eye[1], eye[2]);
+      gl.uniform3f(loc.fogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
+      gl.uniform3f(loc.fogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
+      gl.uniform3f(loc.eye, eye[0], eye[1], eye[2]);
     }
+    if (lighting) gl.uniform3fv(loc.env, light!.env);
     // depth of field: set once per render. off = one uniform at 0 for every mesh.
     if (focus) {
-      gl.uniform4f(this.uFocus, focus.distance, focus.range, blurReach(focus), focus.strength * MAX_BLUR);
-      gl.uniform1f(this.uFrameH, h);
-    } else gl.uniform1f(this.uFocusOn, 0);
+      gl.uniform4f(loc.focus, focus.distance, focus.range, blurReach(focus), focus.strength * MAX_BLUR);
+      gl.uniform1f(loc.frameH, h);
+    } else gl.uniform1f(loc.focusOn, 0);
     // the key-less picture that was uploaded last, and whether it got mips: the next plane with the same image object
     // (the planes of a stack share their picture) binds that texture again instead of uploading it once more
     this.slot = 0;
@@ -959,58 +1187,68 @@ class SceneRenderer {
       const hollow = !!line && !!ol!.hollow;
       if (hollow && !(shape !== 'plane' && plane.faces)) {
         mulInto(this.mvpBuf, viewProj, plane.model);
-        this.drawOutline(plane, shape, line!, offsetUnits);
+        this.drawOutline(plane, shape, line!, offsetUnits, this.mesh(shape).vao);
         continue;
       }
       const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
       const ownTex = this.ownTexture(plane, blurred);
       if (!ownTex) continue;
-      const mesh = this.mesh(shape);
+      if (lighting) lightUniform(plane.lit, shape, plane.model, eye, light!.env, this.lightBuf);
+      const litSolid = lighting && this.lightBuf[3]! > 0;
+      const mesh = litSolid ? this.litMesh(shape) : this.mesh(shape);
       // pictures on single sides: set up before anything is drawn (they change the bound texture)
       const runs = shape !== 'plane' && plane.faces ? this.faceRuns(plane, mesh, ownTex, blurred) : null;
       if (hollow && !runs) {
         mulInto(this.mvpBuf, viewProj, plane.model);
-        this.drawOutline(plane, shape, line!, offsetUnits);
+        this.drawOutline(plane, shape, line!, offsetUnits, mesh.vao);
         continue;
       }
       if (focus) {
-        gl.uniform1f(this.uFocusOn, blurred ? 1 : 0);
+        gl.uniform1f(loc.focusOn, blurred ? 1 : 0);
         if (blurred) {
-          gl.uniform1f(this.uEdge, shape === 'plane' ? 1 : 0);
-          gl.uniform1f(this.uWrapU, uvWrapsU(shape) ? 1 : 0);
+          gl.uniform1f(loc.edge, shape === 'plane' ? 1 : 0);
+          gl.uniform1f(loc.wrapU, uvWrapsU(shape) ? 1 : 0);
         }
       }
       // uniformMatrix4fv copies the numbers at the call, so one buffer serves every plane
-      gl.uniformMatrix4fv(this.uMvp, false, mulInto(this.mvpBuf, viewProj, plane.model));
-      if (fogging) gl.uniformMatrix4fv(this.uModel, false, plane.model);
-      gl.uniform1f(this.uAlpha, Math.min(1, plane.alpha));
+      gl.uniformMatrix4fv(loc.mvp, false, mulInto(this.mvpBuf, viewProj, plane.model));
+      if (fogging || litSolid) gl.uniformMatrix4fv(loc.model, false, plane.model);
+      if (lighting) {
+        const lb = this.lightBuf;
+        const ll = this.lastLight;
+        if (lb[0] !== ll[0] || lb[1] !== ll[1] || lb[2] !== ll[2] || lb[3] !== ll[3]) {
+          gl.uniform4f(loc.light, lb[0]!, lb[1]!, lb[2]!, lb[3]!);
+          ll.set(lb);
+        }
+      }
+      gl.uniform1f(loc.alpha, Math.min(1, plane.alpha));
       // the stack correction runs on the final texel alpha, so the solid / see-through pass test below it sees the corrected
       // alpha: only a texel that is fully opaque on a fully opaque plane writes depth, a soft or faded one blends
-      gl.uniform1f(this.uStack, plane.stack !== undefined && plane.stack > 1 ? plane.stack : 1);
+      gl.uniform1f(loc.stack, plane.stack !== undefined && plane.stack > 1 ? plane.stack : 1);
       const uv = plane.uv;
-      if (uv) gl.uniform4f(this.uUv, uv[0], uv[1], uv[2], uv[3]);
-      else gl.uniform4f(this.uUv, 0, 0, 1, 1);
+      if (uv) gl.uniform4f(loc.uv, uv[0], uv[1], uv[2], uv[3]);
+      else gl.uniform4f(loc.uv, 0, 0, 1, 1);
       const size = plane.size;
       if (plane.radius && plane.radius > 0 && size) {
-        gl.uniform1f(this.uRadius, plane.radius);
-        gl.uniform2f(this.uSize, size[0], size[1]);
-      } else gl.uniform1f(this.uRadius, 0);
+        gl.uniform1f(loc.radius, plane.radius);
+        gl.uniform2f(loc.size, size[0], size[1]);
+      } else gl.uniform1f(loc.radius, 0);
       gl.bindVertexArray(mesh.vao);
       if (runs && !hollow) {
         // the own picture under the pictures of single sides
         this.bindUnder(ownTex);
-        if (uv) gl.uniform4f(this.uUnderUv, uv[0], uv[1], uv[2], uv[3]);
-        else gl.uniform4f(this.uUnderUv, 0, 0, 1, 1);
+        if (uv) gl.uniform4f(loc.underUv, uv[0], uv[1], uv[2], uv[3]);
+        else gl.uniform4f(loc.underUv, 0, 0, 1, 1);
       }
       // a plane that is faded as a whole has no solid pixels
       if (plane.alpha >= 0.98) {
         gl.depthMask(true);
-        gl.uniform1f(this.uPass, 1);
+        gl.uniform1f(loc.pass, 1);
         if (runs) this.drawRuns(runs, hollow);
         else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
       }
       gl.depthMask(false);
-      gl.uniform1f(this.uPass, 2);
+      gl.uniform1f(loc.pass, 2);
       // the solid pass of every side comes before the see-through pass of any (the sides of one solid depth sort
       // against each other through the depth buffer); the runs bind their own texture again
       if (runs) this.drawRuns(runs, hollow);
@@ -1020,7 +1258,7 @@ class SceneRenderer {
         // the own picture may be evicted later: unit 1 never keeps a texture that can go away
         if (!hollow) this.bindUnder(null);
       }
-      if (line) this.drawOutline(plane, shape, line, offsetUnits);
+      if (line) this.drawOutline(plane, shape, line, offsetUnits, mesh.vao);
     }
     gl.depthMask(true);
     gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -1134,14 +1372,22 @@ export function renderScene(
   fog: SceneFog | null = null,
   /** depth of field. undefined = the one the camera rig bound to viewProj (camera.ts); null = none */
   focus?: FocusRig | null,
+  /** the light of lit planes (light.ts sceneLightAt). null = none: every plane is drawn unlit with the plane program. */
+  light: LightRig | null = null,
 ): GLCanvas | null {
   if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0)) return null;
   let r = getRenderer(channel);
   if (!r) return null;
   const fo = focus === undefined ? boundFocus(viewProj) : focus;
-  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo);
+  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo, light);
   if (out || !r.isLost()) return out;
   // the context was lost: try once more on a fresh renderer (getRenderer drops the lost one)
   r = getRenderer(channel);
-  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo) : null;
+  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo, light) : null;
+}
+
+/** start compiling the lit program of a channel's renderer before its first lit frame. no renderer yet = nothing to do. */
+export function warmSceneLight(channel: string): void {
+  const r = renderers.get(channel);
+  if (r) r.startLit();
 }

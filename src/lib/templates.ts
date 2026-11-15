@@ -210,6 +210,94 @@ function solids(project: Project): Project {
   return b.finish(project, '#0e1013');
 }
 
+function litRoom(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 8;
+
+  b.camera(b.track('camera'), 0, {
+    duration: len,
+    tilt: -10,
+    y: -220 * u,
+    keyframes: {
+      x: ramp(-900 * u, 900 * u, len, 'linear'),
+      pan: ramp(26, -26, len, 'linear'),
+      z: ramp(-450 * u, -450 * u, len, 'linear'),
+    },
+  });
+  // the title is left unlit: no lit
+  b.text(b.track('title'), 0, {
+    duration: len,
+    name: 'title',
+    text: 'lit by the sky',
+    fontSize: 72 * u,
+    color: '#fff6e0',
+    threeD: true,
+    lookAt: 'cameraY',
+    transform: { x: 0, y: -360 * u, scale: 1, rotation: 0, opacity: 1, z: 150 * u },
+  });
+  b.shape(b.track('card'), 0, {
+    duration: len,
+    name: 'card',
+    kind: 'rect',
+    width: 520 * u,
+    height: 320 * u,
+    color: '#e8d9b5',
+    color2: '#a3643a',
+    gradientAngle: 45,
+    threeD: true,
+    lit: 0.75,
+    transform: { x: -620 * u, y: 20 * u, scale: 1, rotation: 0, opacity: 1, z: 320 * u, rotY: 28 },
+  });
+  const solid = (name: string, shape: 'box' | 'sphere' | 'cylinder', x: number, color: string, color2: string) =>
+    b.shape(b.track(name), 0, {
+      duration: len,
+      name,
+      kind: 'rect',
+      width: 280 * u,
+      height: 280 * u,
+      color,
+      color2,
+      gradientAngle: 90,
+      threeD: true,
+      lit: 1,
+      shape,
+      shapeDepth: 280 * u,
+      keyframes: { rotY: ramp(0, 360, len, 'linear') },
+      transform: { x: x * u, y: 60 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotY: 0 },
+    });
+  solid('box', 'box', -420, '#f2f2f2', '#6b7078');
+  solid('ball', 'sphere', 0, '#ffe14d', '#b3541e');
+  solid('can', 'cylinder', 420, '#9ad1ff', '#27408b');
+  b.shape(b.track('floor'), 0, {
+    duration: len,
+    name: 'floor',
+    kind: 'rect',
+    width: 2800 * u,
+    height: 2000 * u,
+    color: '#d8d2c4',
+    color2: '#8a8478',
+    gradientRadial: true,
+    threeD: true,
+    lit: 1,
+    transform: { x: 0, y: 200 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: 90 },
+  });
+  // the sky: a flat 2d gradient under everything, it gives the light its colors
+  b.shape(b.track('sky'), 0, {
+    duration: len,
+    name: 'sky',
+    kind: 'rect',
+    width: b.w,
+    height: b.h,
+    color: '#2b3f66',
+    color2: '#e9b48a',
+    gradientAngle: 90,
+    transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+  });
+  // no project.light: it shows the light taken from the scene
+  return { ...b.finish(project, '#1d2533'), fog: { color: '#e9b48a', near: 1800 * u, far: 6500 * u, amount: 0.35 } };
+}
+
 function lowerThird(project: Project): Project {
   const b = new Builder(project);
   const u = b.u;
@@ -977,6 +1065,7 @@ function lettersIn(project: Project): Project {
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
+  { id: 'lit-room', name: 'lit room', description: 'a floor, three shapes and a card lit by the evening sky behind them, and a title left unlit', build: litRoom },
   { id: 'lower-third', name: 'name tag', description: 'a name and a role sliding in at the bottom left', build: lowerThird },
   { id: 'countdown', name: 'countdown', description: 'five to one with a ring that pops on every number', build: countdown },
   { id: 'lyrics', name: 'lyrics', description: 'lines whose words light up one after another', build: lyrics },

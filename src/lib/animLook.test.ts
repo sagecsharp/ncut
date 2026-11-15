@@ -63,6 +63,7 @@ for (const on of ['video', 'image', 'text', 'shape'] as const) {
   }
   ROWS.push({ prop: 'mask.radius', on, withParent: { mask: MASK } as Partial<Clip>, missing: 'none', neutral: 0, to: 0.5, range: [0, 1] });
   ROWS.push({ prop: 'shapeDepth', on, missing: 'n/a', to: 300, range: [1, 10000] });
+  ROWS.push({ prop: 'lit', on, missing: 'n/a', neutral: 0, to: 0.6, range: [0, 1] });
 }
 const TXT = { color: '#000', width: 0.08 };
 const textRows: Row[] = [
@@ -314,7 +315,7 @@ describe('animatesPicture', () => {
   it('is true for color, key, mask, text style and shape figure keys, not for crop, radius, thickness or the transform', () => {
     expect(animatesPicture(video())).toBe(false);
     expect(animatesPicture(video({ keyframes: { x: [k(0, 0)] } }))).toBe(false);
-    expect(animatesPicture(video({ keyframes: { 'crop.left': [k(0, 0)], radius: [k(0, 0)], shapeDepth: [k(0, 50)] } }))).toBe(false);
+    expect(animatesPicture(video({ keyframes: { 'crop.left': [k(0, 0)], radius: [k(0, 0)], shapeDepth: [k(0, 50)], lit: [k(0, 0)] } }))).toBe(false);
     expect(animatesPicture(video({ keyframes: { 'adjust.hue': [k(0, 0)] } }))).toBe(true);
     expect(animatesPicture(video({ keyframes: { 'adjust.hue': [] } }))).toBe(false);
     expect(animatesPicture(video({ mask: { ...MASK }, keyframes: { 'mask.x': [k(0, 0)] } }))).toBe(true);

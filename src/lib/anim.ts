@@ -274,6 +274,8 @@ const COMMON_DEFS: LookDef[] = [
   row('mask', 'feather', 'mask soft edge', { min: 0, max: 1, pic: true }),
   row('mask', 'radius', 'mask corners', { min: 0, max: 1, neutral: 0, pic: true }),
   row(undefined, 'shapeDepth', 'thickness', { min: 1, max: 10000, unit: 'px', seed: true }),
+  // 3d only. it changes no picture of its own (no pic flag), so a texture keeps its key while lit moves
+  row(undefined, 'lit', 'lit', { min: 0, max: 1, neutral: 0 }),
 ];
 
 const TEXT_STYLE = { pic: true, textStyle: true } as const;

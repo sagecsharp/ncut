@@ -4,6 +4,8 @@
  *
  * - `render`  times renderFrame alone, with the gpu forced to finish every frame
  * - `export`  runs the real exporter and reports where the time went
+ * - `litScene` a lit 3d scene (sky, floor, cards, solids, a video screen) with options; { lit: false } is the same scene with no lit field
+ * - `coldFrame` the first frame on a fresh renderer against the second: what the lit shader compile costs
  * - `golden`  stores frames in indexeddb ('ncut-bench') and compares later builds against them, so a
  *             speedup can prove that it did not change a single pixel
  */
@@ -215,6 +217,212 @@ function videoProject(asset: MediaAsset, o: VideoProjectOptions = {}): Project {
   return p;
 }
 
+interface LitSceneOptions {
+  width?: number;
+  height?: number;
+  fps?: number;
+  /** timeline length in seconds (default 6) */
+  seconds?: number;
+  /** false = the very same scene with no lit field anywhere: the baseline (default true) */
+  lit?: boolean;
+  /** an own light (project.light with a sun) instead of the light taken from the scene */
+  own?: boolean;
+  /** fog matching the horizon (default true) */
+  fog?: boolean;
+  /** standing cards (default 6) */
+  cards?: number;
+  /** a box, a ball and a can (default true) */
+  solids?: boolean;
+  /** footage for a lit 3d video screen (bench.footage()). a project with video renders through bench.export or golden viaExport */
+  video?: MediaAsset;
+  /** motion blur samples on the moving video screen (needs video). missing / 0 = none */
+  motionBlur?: number;
+  /** the lit clips switch their light on at this time (lit keys 0 until then): for the first lit frame hitch */
+  litFrom?: number;
+}
+
+const LIT_CARD_COLORS: [string, string][] = [
+  ['#e8d9b5', '#a3643a'],
+  ['#9ad1ff', '#27408b'],
+  ['#ffb3a1', '#a33a2b'],
+  ['#b9e6b0', '#3d7a34'],
+  ['#d7b3ff', '#5b2b9e'],
+  ['#ffe08a', '#a37a12'],
+];
+
+type LitKeys = Record<string, { t: number; v: number; ease: 'linear' }[]>;
+
+/** a lit 3d scene: a sky behind, a floor, cards, solids and maybe a video screen. lit: false is the same scene with no lit field at all */
+function litScene(o: LitSceneOptions = {}): Project {
+  const width = o.width ?? 1920;
+  const height = o.height ?? 1080;
+  const fps = o.fps ?? 60;
+  const seconds = o.seconds ?? 6;
+  const lit = o.lit ?? true;
+  const u = Math.min(width, height) / 1080;
+  const p = createProject('bench lit', preset(width, height), fps);
+  p.tracks = [];
+  const clips: Clip[] = [];
+  const add = (name: string) => {
+    const track = createTrack('video', name);
+    p.tracks.push(track);
+    return track.id;
+  };
+  /** the lit field of a clip: nothing when lit is off, plus keys when it switches on later */
+  const litOf = (v: number): { lit?: number; keys: LitKeys } => {
+    if (!lit) return { keys: {} };
+    if (o.litFrom === undefined || o.litFrom <= 0.001) return { lit: v, keys: {} };
+    const from = o.litFrom;
+    return {
+      lit: v,
+      keys: {
+        lit: [
+          { t: 0, v: 0, ease: 'linear' },
+          { t: Math.max(0.001, from - 0.001), v: 0, ease: 'linear' },
+          { t: from, v, ease: 'linear' },
+        ],
+      },
+    };
+  };
+
+  clips.push(
+    createCameraClip(add('camera'), 0, {
+      duration: seconds,
+      tilt: -10,
+      y: -200 * u,
+      keyframes: {
+        x: [
+          { t: 0, v: -0.25 * width, ease: 'linear' },
+          { t: seconds, v: 0.25 * width, ease: 'linear' },
+        ],
+        pan: [
+          { t: 0, v: 18, ease: 'linear' },
+          { t: seconds, v: -18, ease: 'linear' },
+        ],
+      },
+    }),
+  );
+
+  if (o.video) {
+    const asset = o.video;
+    const c = createClipFromAsset(asset, add('screen'), 0) as VideoClip;
+    c.duration = Math.min(seconds, asset.duration);
+    c.threeD = true;
+    c.transform = { ...c.transform, scale: Math.max(width / Math.max(1, asset.width), height / Math.max(1, asset.height)) * 0.4, z: 150 * u, y: -60 * u };
+    const l = litOf(0.75);
+    if (l.lit !== undefined) c.lit = l.lit;
+    const keyframes: LitKeys = { ...l.keys };
+    if ((o.motionBlur ?? 0) > 0) {
+      keyframes.x = [
+        { t: 0, v: -0.25 * width, ease: 'linear' },
+        { t: c.duration, v: 0.25 * width, ease: 'linear' },
+      ];
+      keyframes.rotY = [
+        { t: 0, v: -30, ease: 'linear' },
+        { t: c.duration, v: 30, ease: 'linear' },
+      ];
+      c.motionBlur = { shutter: 0.5, samples: o.motionBlur! };
+    }
+    if (Object.keys(keyframes).length) c.keyframes = keyframes;
+    clips.push(c);
+  }
+
+  const n = Math.max(0, o.cards ?? 6);
+  for (let i = 0; i < n; i++) {
+    const [color, color2] = LIT_CARD_COLORS[i % LIT_CARD_COLORS.length]!;
+    const l = litOf(0.75);
+    clips.push(
+      createShapeClip(add(`card ${i + 1}`), 0, {
+        duration: seconds,
+        name: `card ${i + 1}`,
+        kind: 'rect',
+        width: 300 * u,
+        height: 200 * u,
+        color,
+        color2,
+        gradientAngle: 60,
+        threeD: true,
+        ...(l.lit !== undefined ? { lit: l.lit } : {}),
+        ...(Object.keys(l.keys).length ? { keyframes: l.keys } : {}),
+        transform: { x: (i - (n - 1) / 2) * 340 * u, y: -40 * u, scale: 1, rotation: 0, opacity: 1, z: (400 + (i % 2) * 160) * u, rotY: (i - (n - 1) / 2) * -8 },
+      }),
+    );
+  }
+
+  if (o.solids ?? true) {
+    const solid = (name: string, shape: 'box' | 'sphere' | 'cylinder', x: number, color: string, color2: string) => {
+      const l = litOf(1);
+      clips.push(
+        createShapeClip(add(name), 0, {
+          duration: seconds,
+          name,
+          kind: 'rect',
+          width: 300 * u,
+          height: 300 * u,
+          color,
+          color2,
+          gradientAngle: 90,
+          threeD: true,
+          shape,
+          shapeDepth: 300 * u,
+          ...(l.lit !== undefined ? { lit: l.lit } : {}),
+          keyframes: {
+            ...l.keys,
+            rotY: [
+              { t: 0, v: 0, ease: 'linear' },
+              { t: seconds, v: 360, ease: 'linear' },
+            ],
+          },
+          transform: { x: x * u, y: 60 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotY: 0 },
+        }),
+      );
+    };
+    solid('box', 'box', -520, '#f2f2f2', '#6b7078');
+    solid('ball', 'sphere', 0, '#ffe14d', '#b3541e');
+    solid('can', 'cylinder', 520, '#9ad1ff', '#27408b');
+  }
+
+  {
+    const l = litOf(1);
+    clips.push(
+      createShapeClip(add('floor'), 0, {
+        duration: seconds,
+        name: 'floor',
+        kind: 'rect',
+        width: 2600 * u,
+        height: 1800 * u,
+        color: '#cfc8b8',
+        color2: '#7d776b',
+        gradientRadial: true,
+        threeD: true,
+        ...(l.lit !== undefined ? { lit: l.lit } : {}),
+        ...(Object.keys(l.keys).length ? { keyframes: l.keys } : {}),
+        transform: { x: 0, y: 215 * u, scale: 1, rotation: 0, opacity: 1, z: 0, rotX: 90 },
+      }),
+    );
+  }
+  // the sky: a flat 2d gradient under everything
+  clips.push(
+    createShapeClip(add('sky'), 0, {
+      duration: seconds,
+      name: 'sky',
+      kind: 'rect',
+      width,
+      height,
+      color: '#2d4470',
+      color2: '#e7b98f',
+      gradientAngle: 90,
+    }),
+  );
+  p.tracks.push(createTrack('audio', 'audio 1'));
+  p.clips = clips;
+  p.background = '#1a2230';
+  if (o.fog ?? true) p.fog = { color: '#e7b98f', near: 1800 * u, far: 7000 * u, amount: 0.4 };
+  if (o.own && lit) p.light = { sky: '#8fa9d6', horizon: '#e7c9a8', ground: '#4a4038', sun: 0.5, sunColor: '#fff1d6', sunTurn: -35, sunHeight: 40 };
+  if (o.video) p.assets = [o.video];
+  return p;
+}
+
 // ---------- timing ----------
 
 function summary(ms: number[]) {
@@ -283,6 +491,38 @@ async function render(project: Project, o: RenderOptions = {}) {
     canvas.height = 0;
   }
   return summary(times);
+}
+
+/**
+ * the first frame on a fresh renderer against the second one: what a shader compile and the first uploads cost. the lit
+ * compile is the hitch of a lit scene minus the hitch of the same scene with lit off (a truly cold number needs a fresh
+ * browser profile)
+ */
+async function coldFrame(project: Project, o: { time?: number; scale?: number } = {}) {
+  await ensureProjectFonts(project);
+  const { canvas, ctx } = makeCanvas(project, o.scale ?? 1);
+  const probe = makeProbe();
+  const time = o.time ?? 0;
+  const r = (v: number) => Math.round(v * 100) / 100;
+  beginExport();
+  try {
+    // a fresh 3d renderer: its programs compile inside the timed frame
+    releaseRenderResources('export');
+    const t0 = performance.now();
+    renderFrame(ctx, project, time, nothing);
+    probe(canvas);
+    const cold = performance.now() - t0;
+    const t1 = performance.now();
+    renderFrame(ctx, project, time, nothing);
+    probe(canvas);
+    const warm = performance.now() - t1;
+    return { coldMs: r(cold), warmMs: r(warm), hitchMs: r(cold - warm) };
+  } finally {
+    endExport();
+    releaseRenderResources('export');
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }
 
 /** the file of the last bench export (for checks on the file itself) */
@@ -617,6 +857,8 @@ export const bench = {
   make: { createCameraClip, createClipFromAsset, createEffectClip, createShapeClip, createTextClip, createTrack },
   tone,
   videoProject,
+  litScene,
+  coldFrame,
   render,
   export: exportRun,
   lastBlob: () => lastBlob,

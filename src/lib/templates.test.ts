@@ -101,6 +101,19 @@ describe('project templates', () => {
     }
   }
 
+  it('lit room lights its 3d clips from the scene', () => {
+    const p = getTemplate('lit-room')!.build(createProject('x'));
+    expect(p.clips.some((c) => isVisualClip(c) && (c.lit ?? 0) > 0)).toBe(true);
+    const title = p.clips.find((c) => c.name === 'title')!;
+    expect(isVisualClip(title) && title.lit).toBeFalsy();
+    expect(p.light).toBeUndefined();
+    const bottom = p.tracks.filter((t) => t.kind === 'video').at(-1)!;
+    const under = p.clips.filter((c) => c.trackId === bottom.id);
+    expect(under).toHaveLength(1);
+    expect(under[0]!.type).toBe('shape');
+    expect(isVisualClip(under[0]!) && under[0]!.threeD).toBeFalsy();
+  });
+
   it('builds the same timeline twice apart from ids', () => {
     // ids differ between two builds: links between clips are compared by position instead
     const at = (p: Project, id: unknown) => (typeof id === 'string' ? p.clips.findIndex((c) => c.id === id) : id);

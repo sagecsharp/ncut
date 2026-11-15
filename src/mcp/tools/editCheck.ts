@@ -129,6 +129,7 @@ const PICTURE: Record<string, Check> = {
   lookTarget: orNull(pictureClip),
   shape: oneOf(SHAPES_3D),
   shapeDepth: num(1, 10000),
+  lit: orNull(num(0, 1)),
   transition,
   blend: oneOf(BLEND_MODES),
   crop: orNull(obj({ left: num(0, 0.95), top: num(0, 0.95), right: num(0, 0.95), bottom: num(0, 0.95) }, ['left', 'top', 'right', 'bottom'], { left: 0, top: 0, right: 0, bottom: 0 })),

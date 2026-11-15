@@ -4,15 +4,18 @@ import { busyReason } from '../../lib/busy';
 import { CANVAS_PRESETS, MAX_FPS } from '../../lib/factory';
 import { shell } from '../../lib/shell';
 import { defaultFog, FOG_GAP, FOG_MAX } from '../../features/properties/fogLogic';
+import { defaultLight, sameLight, sceneTime, setSunHeight, setSunPercent, setSunTurn } from '../../features/properties/lightLogic';
+import { autoLightAt } from '../../engine/scene3d/light';
 import { projectDuration } from '../../lib/timelineOps';
 import { faceNames } from '../../engine/scene3d/faces';
 import { getEffect } from '../../engine/effects/registry';
 import { listProjects } from '../../storage/db';
 import { useEditor } from '../../store/editorStore';
+import type { ProjectSettingsPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { closeProject, createAndOpenProject, deleteStoredProject, openProjectById, useSaveState } from '../../store/session';
 import { useUi } from '../../store/ui';
-import type { Project, SceneFog } from '../../types';
+import type { Project, SceneFog, SceneLight } from '../../types';
 import { changedSince, clipBrief, needClip, needProject, needTrack, ok, oneStep, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 
@@ -39,6 +42,12 @@ function projectBrief(p: Project): Record<string, unknown> {
 /** the fog as the answers show it: the object, or null when there is none */
 function fogOf(p: Project): SceneFog | null {
   return p.fog ? { color: p.fog.color, near: p.fog.near, far: p.fog.far, amount: p.fog.amount } : null;
+}
+
+/** the light as the answers show it: the object, or null when the scene gives it */
+function lightOf(p: Project): SceneLight | null {
+  const l = p.light;
+  return l ? { sky: l.sky, horizon: l.horizon, ground: l.ground, sun: l.sun, sunColor: l.sunColor, sunTurn: l.sunTurn, sunHeight: l.sunHeight } : null;
 }
 
 /** an export in progress would break when the project under it changes */
@@ -80,6 +89,36 @@ function layFog(p: Project, v: unknown, patch: { fog?: SceneFog | null; backgrou
   if (next.far < next.near + FOG_GAP) throw new ToolError(`fog.far (${next.far}) must be at least ${FOG_GAP} past fog.near (${next.near})`);
   if (p.fog && p.fog.color === next.color && p.fog.near === next.near && p.fog.far === next.far && p.fog.amount === next.amount) return true;
   patch.fog = next;
+  return false;
+}
+
+/**
+ * checks args.light and puts the new light on the patch. a part is laid over the own light, or over the one the scene gives at the playhead, with the background and fog of this call already in it. returns true when it is the light the project has already
+ * (the store compares objects by identity and would write a step for it)
+ */
+function layLight(p: Project, v: unknown, patch: ProjectSettingsPatch, time: number): boolean {
+  if (v === null) {
+    if (!p.light) return true;
+    patch.light = null;
+    return false;
+  }
+  // the schema has no type for light (null must pass), so the shape is checked here
+  if (typeof v !== 'object' || Array.isArray(v)) throw new ToolError('light must be an object like { sky, horizon, ground, sun, sunColor, sunTurn, sunHeight } or null');
+  const given = v as Record<string, unknown>;
+  let next: SceneLight = { ...(p.light ?? defaultLight({ ...p, ...patch } as Project, time)) };
+  for (const key of ['sky', 'horizon', 'ground', 'sunColor'] as const) {
+    const c = given[key];
+    if (typeof c !== 'string') continue;
+    if (!COLOR.test(c)) throw new ToolError(`light.${key} must be a hex color like #101010`);
+    next[key] = c.toLowerCase();
+  }
+  if (typeof given.sun === 'number') next = setSunPercent(next, given.sun * 100);
+  if (typeof given.sunTurn === 'number') next = setSunTurn(next, given.sunTurn);
+  if (typeof given.sunHeight === 'number') next = setSunHeight(next, given.sunHeight);
+  // the keys in the order of the answer
+  next = lightOf({ ...p, light: next })!;
+  if (p.light && sameLight(p.light, next)) return true;
+  patch.light = next;
   return false;
 }
 
@@ -262,11 +301,14 @@ export const projectTools: ToolDef[] = [
     name: 'update_project',
     title: 'change project settings',
     description:
-      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240), background color (hex like #101010) or fog of the open project, as one undo step. ' +
+      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240), background color (hex like #101010), fog or light of the open project, as one undo step. ' +
       'clips keep their pixel positions when the canvas size changes. ' +
       'fog is haze over the 3d space: 3d clips blend toward its color the farther they are from the camera. near and far are distances from the camera in project pixels (far at least 10 past near), amount 0..1 is the strongest haze. 2d clips are never fogged. ' +
       'null switches fog off; an object may be given in part (it is laid over the fog the project has, or over a default fog when there is none). ' +
-      'send only what changes; a call that changes nothing is an error. answers the project summary and the fog (an object, or null).',
+      'light is what 3d clips with lit (update_clip lit 0..1) are shaded by: sky, horizon, ground (hex), a sun (sun 0..1, sunColor, sunTurn, sunHeight); ' +
+      'null = take it from the scene (the background, the filled 2d shapes under the lowest 3d clip and the fog; pictures, video and text are not read; get_project autoLight shows what that gives at the playhead). light only darkens or tints: white light gives the picture back, a dark scene makes it darker. ' +
+      'an object may be given in part (laid over the own light, or when there is none over the scene sky, horizon and ground at the playhead plus a default sun: sun 0.4, sunColor #fff4e0, sunTurn -35, sunHeight 45; send sun 0 for the dome alone). ' +
+      'send only what changes; a call that changes nothing is an error. answers the project summary, the fog and the light (each an object, or null).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -285,6 +327,19 @@ export const projectTools: ToolDef[] = [
             amount: { type: 'number', minimum: 0, maximum: 1, description: 'strongest haze' },
           },
         },
+        // no type here either: null takes the light from the scene
+        light: {
+          description: 'the light of lit 3d clips, or null to take it from the scene. an object may be given in part (over no own light it starts with a 0.4 sun)',
+          properties: {
+            sky: { type: 'string', maxLength: 9, description: 'hex color' },
+            horizon: { type: 'string', maxLength: 9, description: 'hex color' },
+            ground: { type: 'string', maxLength: 9, description: 'hex color' },
+            sun: { type: 'number', minimum: 0, maximum: 1 },
+            sunColor: { type: 'string', maxLength: 9, description: 'hex color' },
+            sunTurn: { type: 'number', minimum: -180, maximum: 180, description: 'degrees, 0 = behind the camera, 90 = to the right' },
+            sunHeight: { type: 'number', minimum: 0, maximum: 90, description: 'degrees, 90 = straight above' },
+          },
+        },
       },
     },
     run(args) {
@@ -300,14 +355,15 @@ export const projectTools: ToolDef[] = [
         patch.background = args.background;
       }
       const sameFog = args.fog !== undefined ? layFog(before, args.fog, patch) : false;
+      const sameLight_ = args.light !== undefined ? layLight(before, args.light, patch, usePlayback.getState().time) : false;
       if (Object.keys(patch).length === 0) {
-        if (sameFog) throw new ToolError('the project already has those settings, nothing changed');
-        throw new ToolError('nothing to change: send name, width, height, fps, background or fog');
+        if (sameFog || sameLight_) throw new ToolError('the project already has those settings, nothing changed');
+        throw new ToolError('nothing to change: send name, width, height, fps, background, fog or light');
       }
       useEditor.getState().updateProject(patch);
       if (!changedSince(before)) throw new ToolError('the project already has those settings, nothing changed');
       const after = needProject();
-      return ok({ ...projectBrief(after), fog: fogOf(after) });
+      return ok({ ...projectBrief(after), fog: fogOf(after), light: lightOf(after) });
     },
   },
   {
@@ -315,7 +371,7 @@ export const projectTools: ToolDef[] = [
     title: 'read the project',
     description:
       'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked), every clip as one short line (id, type, track, start, end, name, ' +
-      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog (an object, or null) and the duration, all in seconds and project pixels. ' +
+      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog and the light (each an object, or null), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
       'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
@@ -324,6 +380,8 @@ export const projectTools: ToolDef[] = [
       return ok({
         ...projectBrief(p),
         fog: fogOf(p),
+        light: lightOf(p),
+        autoLight: autoLightAt(p, sceneTime(p, usePlayback.getState().time)),
         trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked })),
         clipList: p.clips.map(clipBrief),
         mediaList: p.assets.map((a) => ({ id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio })),

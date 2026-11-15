@@ -39,6 +39,7 @@ export const PICTURE_FIELDS: FieldRow[] = rows<TextClip>([
   ['lookTarget', 'clip id | null', "lookAt 'clip': the visual clip to face", 'clp_id'],
   ['shape', 'enum', "3d: what the clip is wrapped on: plane, box, sphere, cylinder, cone, pyramid, torus, capsule, prism, hexagon, star, heart. list_options 'shapes' has the side names", 'box'],
   ['shapeDepth', 'number px 1..10000', '3d solids: thickness at scale 1. missing = as deep as wide', 120],
+  ['lit', 'number 0..1 or null', '3d: how much the light of the scene shades the clip (update_project light). 0 = unlit, as it is. null = off (what the inspector switch writes when off). 0.75 is what the inspector switch sets. light only darkens or tints: white light gives the picture back, but on a black background with no own light lit 1 is black and 0.75 keeps about half. give a bright background, a 2d shape under the 3d clips or update_project light', 0.75],
   ['transition', '{ id, duration } | null', 'transition into this clip from what comes before it on the track. id from list_options transitions, duration 0.1..5 s (an error outside), centred on the clip start', { id: 'cross-fade', duration: 0.6 }],
   ['blend', 'enum', 'how the picture mixes with what is under it: list_options enums blendModes', 'screen'],
   ['crop', '{ left, top, right, bottom } | null', 'cut off edges, each 0..0.95 of the picture width / height. the picture keeps its place', { left: 0.1, top: 0, right: 0.1, bottom: 0 }],

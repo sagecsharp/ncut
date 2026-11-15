@@ -15,6 +15,8 @@ export interface MeshArrays {
   positions: Float32Array;
   /** u, v per vertex */
   uvs: Float32Array;
+  /** x, y, z per vertex: the unit normal, pointing out of the solid (a plane: toward the viewer, -z) */
+  normals: Float32Array;
   indices: Uint16Array;
   /**
    * the index range of each side, in the order and with the names of faceNames(shape) (faces.ts). the ranges follow
@@ -42,6 +44,7 @@ const TAU = Math.PI * 2;
 class Builder {
   pos: number[] = [];
   uv: number[] = [];
+  nrm: number[] = [];
   idx: number[] = [];
   groups: MeshGroup[] = [];
   /** the indices that follow belong to the side `name` */
@@ -51,9 +54,10 @@ class Builder {
   get count(): number {
     return this.pos.length / 3;
   }
-  vert(x: number, y: number, z: number, u: number, v: number): number {
+  vert(x: number, y: number, z: number, u: number, v: number, nx: number, ny: number, nz: number): number {
     this.pos.push(x, y, z);
     this.uv.push(u, v);
+    this.nrm.push(nx, ny, nz);
     return this.count - 1;
   }
   tri(a: number, b: number, c: number): void {
@@ -67,28 +71,29 @@ class Builder {
       const g = this.groups[i]!;
       g.count = (i + 1 < this.groups.length ? this.groups[i + 1]!.start : this.idx.length) - g.start;
     }
-    return { positions: new Float32Array(this.pos), uvs: new Float32Array(this.uv), indices: new Uint16Array(this.idx), groups: this.groups };
+    return { positions: new Float32Array(this.pos), uvs: new Float32Array(this.uv), normals: new Float32Array(this.nrm), indices: new Uint16Array(this.idx), groups: this.groups };
   }
 }
 
 /** a flat disc at height y, the picture seen from above (top) or below (bottom) */
 function cap(b: Builder, y: number, top: boolean, seg: number): void {
-  const center = b.vert(0, y, 0, 0.5, 0.5);
+  const ny = top ? -1 : 1;
+  const center = b.vert(0, y, 0, 0.5, 0.5, 0, ny, 0);
   for (let i = 0; i <= seg; i++) {
     const a = (TAU * i) / seg;
     const x = 0.5 * Math.cos(a);
     const z = 0.5 * Math.sin(a);
-    b.vert(x, y, z, x + 0.5, top ? 0.5 - z : z + 0.5);
+    b.vert(x, y, z, x + 0.5, top ? 0.5 - z : z + 0.5, 0, ny, 0);
   }
   for (let i = 0; i < seg; i++) b.tri(center, center + 1 + i, center + 2 + i);
 }
 
 function plane(): MeshArrays {
   const b = new Builder();
-  b.vert(-0.5, -0.5, 0, 0, 0);
-  b.vert(0.5, -0.5, 0, 1, 0);
-  b.vert(0.5, 0.5, 0, 1, 1);
-  b.vert(-0.5, 0.5, 0, 0, 1);
+  b.vert(-0.5, -0.5, 0, 0, 0, 0, 0, -1);
+  b.vert(0.5, -0.5, 0, 1, 0, 0, 0, -1);
+  b.vert(0.5, 0.5, 0, 1, 1, 0, 0, -1);
+  b.vert(-0.5, 0.5, 0, 0, 1, 0, 0, -1);
   b.quad(0, 1, 2, 3);
   return b.done();
 }
@@ -96,19 +101,19 @@ function plane(): MeshArrays {
 function box(): MeshArrays {
   const b = new Builder();
   // each face: origin (its top left corner seen from outside), the step along u, the step along v
-  const faces: [string, number[], number[], number[]][] = [
-    ['front', [-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0]], // faces the viewer
-    ['back', [0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0]],
-    ['right', [0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0]],
-    ['left', [-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0]],
-    ['top', [-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1]], // y = -0.5
-    ['bottom', [-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1]],
+  const faces: [string, number[], number[], number[], number[]][] = [
+    ['front', [-0.5, -0.5, -0.5], [1, 0, 0], [0, 1, 0], [0, 0, -1]], // faces the viewer
+    ['back', [0.5, -0.5, 0.5], [-1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    ['right', [0.5, -0.5, -0.5], [0, 0, 1], [0, 1, 0], [1, 0, 0]],
+    ['left', [-0.5, -0.5, 0.5], [0, 0, -1], [0, 1, 0], [-1, 0, 0]],
+    ['top', [-0.5, -0.5, 0.5], [1, 0, 0], [0, 0, -1], [0, -1, 0]], // y = -0.5
+    ['bottom', [-0.5, 0.5, -0.5], [1, 0, 0], [0, 0, 1], [0, 1, 0]],
   ];
-  for (const [name, o, u, v] of faces) {
+  for (const [name, o, u, v, n] of faces) {
     b.side(name);
     const base = b.count;
     for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) {
-      b.vert(o[0]! + u[0]! * fu + v[0]! * fv, o[1]! + u[1]! * fu + v[1]! * fv, o[2]! + u[2]! * fu + v[2]! * fv, fu, fv);
+      b.vert(o[0]! + u[0]! * fu + v[0]! * fv, o[1]! + u[1]! * fu + v[1]! * fv, o[2]! + u[2]! * fu + v[2]! * fv, fu, fv, n[0]!, n[1]!, n[2]!);
     }
     b.quad(base, base + 1, base + 2, base + 3);
   }
@@ -127,7 +132,9 @@ function sphere(seg: number): MeshArrays {
       const u = i / seg;
       const a = TAU * (u - 0.5);
       // u = 0.5 faces the viewer, u grows to the right
-      b.vert(r * Math.sin(a), y, -r * Math.cos(a), u, v);
+      const sx = r * Math.sin(a);
+      const sz = -r * Math.cos(a);
+      b.vert(sx, y, sz, u, v, sx * 2, y * 2, sz * 2);
     }
   }
   for (let j = 0; j < rings; j++) {
@@ -146,7 +153,7 @@ function cylinder(seg: number): MeshArrays {
     for (let i = 0; i <= seg; i++) {
       const u = i / seg;
       const a = TAU * (u - 0.5);
-      b.vert(0.5 * Math.sin(a), j - 0.5, -0.5 * Math.cos(a), u, j);
+      b.vert(0.5 * Math.sin(a), j - 0.5, -0.5 * Math.cos(a), u, j, Math.sin(a), 0, -Math.cos(a));
     }
   }
   for (let i = 0; i < seg; i++) b.idx.push(i, i + 1, i + seg + 2, i, i + seg + 2, i + seg + 1);
@@ -165,11 +172,14 @@ function cone(seg: number): MeshArrays {
   for (let i = 0; i <= seg; i++) {
     const u = i / seg;
     const a = TAU * (u - 0.5);
-    b.vert(0.5 * Math.sin(a), 0.5, -0.5 * Math.cos(a), u, 1);
+    const nl = Math.hypot(Math.sin(a), 0.5, Math.cos(a));
+    b.vert(0.5 * Math.sin(a), 0.5, -0.5 * Math.cos(a), u, 1, Math.sin(a) / nl, -0.5 / nl, -Math.cos(a) / nl);
   }
   // one tip vertex per segment, its u in the middle of the segment, so no triangle is degenerate
   for (let i = 0; i < seg; i++) {
-    const tip = b.vert(0, -0.5, 0, (i + 0.5) / seg, 0);
+    const am = TAU * ((i + 0.5) / seg - 0.5);
+    const nl = Math.hypot(Math.sin(am), 0.5, Math.cos(am));
+    const tip = b.vert(0, -0.5, 0, (i + 0.5) / seg, 0, Math.sin(am) / nl, -0.5 / nl, -Math.cos(am) / nl);
     b.tri(tip, ring + i + 1, ring + i);
   }
   b.side('bottom');
@@ -192,15 +202,21 @@ function pyramid(): MeshArrays {
   ];
   for (const [name, x0, z0, x1, z1] of sides) {
     b.side(name);
-    const t = b.vert(0, -0.5, 0, 0.5, 0);
-    const l = b.vert(x0, 0.5, z0, 0, 1);
-    const r = b.vert(x1, 0.5, z1, 1, 1);
+    const mx = (x0 + x1) / 2;
+    const mz = (z0 + z1) / 2;
+    const nl = Math.hypot(mx * 2, 0.5, mz * 2);
+    const nx = (mx * 2) / nl;
+    const ny = -0.5 / nl;
+    const nz = (mz * 2) / nl;
+    const t = b.vert(0, -0.5, 0, 0.5, 0, nx, ny, nz);
+    const l = b.vert(x0, 0.5, z0, 0, 1, nx, ny, nz);
+    const r = b.vert(x1, 0.5, z1, 1, 1, nx, ny, nz);
     b.tri(t, r, l);
   }
   // base: the picture seen from below, like the box bottom
   b.side('bottom');
   const base = b.count;
-  for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) b.vert(-0.5 + fu, 0.5, -0.5 + fv, fu, fv);
+  for (const [fu, fv] of [[0, 0], [1, 0], [1, 1], [0, 1]] as const) b.vert(-0.5 + fu, 0.5, -0.5 + fv, fu, fv, 0, 1, 0);
   b.quad(base, base + 1, base + 2, base + 3);
   return b.done();
 }
@@ -226,7 +242,7 @@ function torus(seg: number): MeshArrays {
     for (let i = 0; i <= around; i++) {
       const u = i / around;
       const th = TAU * u - Math.PI / 2;
-      b.vert(rho * Math.cos(th), rho * Math.sin(th), z, u, v);
+      b.vert(rho * Math.cos(th), rho * Math.sin(th), z, u, v, -Math.sin(psi) * Math.cos(th), -Math.sin(psi) * Math.sin(th), Math.cos(psi));
     }
   }
   for (let j = 0; j < tube; j++) {
@@ -250,20 +266,24 @@ function capsule(seg: number): MeshArrays {
   const rings = Math.max(2, Math.round(seg / 4));
   const b = new Builder();
   b.side('surface');
-  const rows: [number, number, number][] = []; // radius, y, v
+  const rows: [number, number, number, number][] = []; // radius, y, v, phi
   for (let k = 0; k <= rings; k++) {
     const phi = (Math.PI / 2) * (k / rings);
-    rows.push([0.5 * Math.sin(phi), -0.5 + CAPSULE_CAP * (1 - Math.cos(phi)), (CAPSULE_CAP * k) / rings]);
+    rows.push([0.5 * Math.sin(phi), -0.5 + CAPSULE_CAP * (1 - Math.cos(phi)), (CAPSULE_CAP * k) / rings, phi]);
   }
   for (let k = 0; k <= rings; k++) {
     const phi = Math.PI / 2 + (Math.PI / 2) * (k / rings);
-    rows.push([0.5 * Math.sin(phi), 0.5 - CAPSULE_CAP * (1 + Math.cos(phi)), 1 - CAPSULE_CAP + (CAPSULE_CAP * k) / rings]);
+    rows.push([0.5 * Math.sin(phi), 0.5 - CAPSULE_CAP * (1 + Math.cos(phi)), 1 - CAPSULE_CAP + (CAPSULE_CAP * k) / rings, phi]);
   }
-  for (const [r, y, v] of rows) {
+  for (const [r, y, v, phi] of rows) {
     for (let i = 0; i <= seg; i++) {
       const u = i / seg;
       const a = TAU * (u - 0.5);
-      b.vert(r * Math.sin(a), y, -r * Math.cos(a), u, v);
+      const cx = (Math.sin(phi) * Math.sin(a)) / 0.5;
+      const cy = -Math.cos(phi) / CAPSULE_CAP;
+      const cz = (-Math.sin(phi) * Math.cos(a)) / 0.5;
+      const cl = Math.hypot(cx, cy, cz) || 1;
+      b.vert(r * Math.sin(a), y, -r * Math.cos(a), u, v, cx / cl, cy / cl, cz / cl);
     }
   }
   for (let j = 0; j < rows.length - 1; j++) {
@@ -286,9 +306,9 @@ function extruded(kind: OutlineKind, seg: number): MeshArrays {
   const o = outlineFor(kind, seg);
   const n = o.points.length / 2;
   const b = new Builder();
-  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
-  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
-  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, 1 - o.uvs[i * 2]!, o.uvs[i * 2 + 1]!);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, -1);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, 1);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, 1 - o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, 1);
   b.side('front');
   for (let t = 0; t < o.triangles.length; t += 3) b.tri(o.triangles[t]!, o.triangles[t + 1]!, o.triangles[t + 2]!);
   b.side('back');
@@ -298,6 +318,81 @@ function extruded(kind: OutlineKind, seg: number): MeshArrays {
     const j = (i + 1) % n;
     // same handedness as the box faces (their normals point away from the viewer's side), culling is off anyway
     b.quad(i, n + i, n + j, j);
+  }
+  return b.done();
+}
+
+/** the largest turn between two side edges that is shaded smooth (a heart's curve); a sharper corner stays hard */
+const SMOOTH_COS = Math.cos((35 * Math.PI) / 180);
+
+/**
+ * extruded() for the lit program: the same front and back, but the side wall has 4 vertices of its own per edge, with
+ * the normal of the edge (averaged with the next edge when the turn is gentle, so a heart's curve shades smooth). the
+ * index count, the groups and their order are those of extruded(), and index slot s points at a vertex with the same
+ * position and uv as slot s of extruded().
+ */
+function extrudedLit(kind: OutlineKind, seg: number): MeshArrays {
+  const o = outlineFor(kind, seg);
+  const n = o.points.length / 2;
+  const b = new Builder();
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, -1);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, 1);
+  for (let i = 0; i < n; i++) b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, 1 - o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, 0, 0, 1);
+  b.side('front');
+  for (let t = 0; t < o.triangles.length; t += 3) b.tri(o.triangles[t]!, o.triangles[t + 1]!, o.triangles[t + 2]!);
+  b.side('back');
+  for (let t = 0; t < o.triangles.length; t += 3) b.tri(2 * n + o.triangles[t]!, 2 * n + o.triangles[t + 2]!, 2 * n + o.triangles[t + 1]!);
+  // the outward normal of every edge in x, y (the sign of the area says which way the outline runs)
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += o.points[i * 2]! * o.points[j * 2 + 1]! - o.points[j * 2]! * o.points[i * 2 + 1]!;
+  }
+  const sgn = area < 0 ? -1 : 1;
+  const ex: number[] = [];
+  const ey: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = o.points[j * 2]! - o.points[i * 2]!;
+    const dy = o.points[j * 2 + 1]! - o.points[i * 2 + 1]!;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-12) {
+      ex.push(0);
+      ey.push(0);
+    } else {
+      ex.push((sgn * dy) / len);
+      ey.push((-sgn * dx) / len);
+    }
+  }
+  const out: [number, number] = [0, 0];
+  const smooth = (a: number, c: number): void => {
+    if (ex[a]! * ex[c]! + ey[a]! * ey[c]! > SMOOTH_COS) {
+      const sx = ex[a]! + ex[c]!;
+      const sy = ey[a]! + ey[c]!;
+      const l = Math.hypot(sx, sy);
+      out[0] = sx / l;
+      out[1] = sy / l;
+    } else {
+      out[0] = ex[a]!;
+      out[1] = ey[a]!;
+    }
+  };
+  b.side('side');
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const flat = ex[i] === 0 && ey[i] === 0;
+    smooth(i, (i + n - 1) % n);
+    const ix = flat ? 0 : out[0];
+    const iy = flat ? 0 : out[1];
+    smooth(i, j);
+    const jx = flat ? 0 : out[0];
+    const jy = flat ? 0 : out[1];
+    const iz = flat ? -1 : 0;
+    const v0 = b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, -0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, ix, iy, iz);
+    const v1 = b.vert(o.points[i * 2]!, o.points[i * 2 + 1]!, 0.5, o.uvs[i * 2]!, o.uvs[i * 2 + 1]!, ix, iy, iz);
+    const v2 = b.vert(o.points[j * 2]!, o.points[j * 2 + 1]!, 0.5, o.uvs[j * 2]!, o.uvs[j * 2 + 1]!, jx, jy, iz);
+    const v3 = b.vert(o.points[j * 2]!, o.points[j * 2 + 1]!, -0.5, o.uvs[j * 2]!, o.uvs[j * 2 + 1]!, jx, jy, iz);
+    b.quad(v0, v1, v2, v3);
   }
   return b.done();
 }
@@ -336,6 +431,41 @@ export function interleave(m: MeshArrays): Float32Array {
     out[i * 5 + 2] = m.positions[i * 3 + 2]!;
     out[i * 5 + 3] = m.uvs[i * 2]!;
     out[i * 5 + 4] = m.uvs[i * 2 + 1]!;
+  }
+  return out;
+}
+
+const litCache = new Map<string, MeshArrays>();
+
+/**
+ * the mesh the lit program draws: shapeMesh with normals. the same object for every shape whose sides already have
+ * vertices of their own; prism, hexagon, star and heart get a side wall on vertices of its own (extrudedLit).
+ */
+export function litShapeMesh(shape: string | undefined, segments = DEFAULT_SEGMENTS): MeshArrays {
+  const s = knownShape(shape);
+  if (!isOutlineShape(s)) return shapeMesh(s, segments);
+  const seg = Math.max(3, Math.min(180, Math.round(segments)));
+  const key = `${s}:${s === 'heart' ? seg : 0}:lit`;
+  const hit = litCache.get(key);
+  if (hit) return hit;
+  const mesh = extrudedLit(s, seg);
+  litCache.set(key, mesh);
+  return mesh;
+}
+
+/** x, y, z, u, v, nx, ny, nz per vertex in one array (what the renderer uploads for a lit solid) */
+export function interleaveLit(m: MeshArrays): Float32Array {
+  const n = m.positions.length / 3;
+  const out = new Float32Array(n * 8);
+  for (let i = 0; i < n; i++) {
+    out[i * 8] = m.positions[i * 3]!;
+    out[i * 8 + 1] = m.positions[i * 3 + 1]!;
+    out[i * 8 + 2] = m.positions[i * 3 + 2]!;
+    out[i * 8 + 3] = m.uvs[i * 2]!;
+    out[i * 8 + 4] = m.uvs[i * 2 + 1]!;
+    out[i * 8 + 5] = m.normals[i * 3]!;
+    out[i * 8 + 6] = m.normals[i * 3 + 1]!;
+    out[i * 8 + 7] = m.normals[i * 3 + 2]!;
   }
   return out;
 }

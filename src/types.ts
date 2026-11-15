@@ -116,7 +116,7 @@ interface ClipBase {
 }
 
 /**
- * what a 3d clip is wrapped on. every shape is unlit and shows the clip's picture on each face.
+ * what a 3d clip is wrapped on. every shape shows the clip's picture on each face, unlit unless the clip is lit (Spatial.lit).
  * capsule = a tube with round ends. prism / hexagon / star / heart = that outline pushed back along z
  * (thickness = shapeDepth): the picture on the front and the back face, a side all around.
  */
@@ -270,6 +270,12 @@ interface Spatial {
    * (a text's outline, shadow or animation room does not count).
    */
   shapeDepth?: number;
+  /**
+   * 3d only: how much the light of the scene shades the clip, 0..1, keyframable. the light is Project.light, or the one
+   * the scene gives (engine/scene3d/light.ts). missing / null / 0 = unlit: the picture as it is. null is the same as
+   * missing (what the inspector switch writes when it is off).
+   */
+  lit?: number | null;
   /**
    * 3d solids only: what single sides show instead of the clip's own picture, by side name (engine/scene3d/faces.ts
    * faceNames(shape); 'all' = every side without an entry of its own; null under a side's name = the own picture there
@@ -662,6 +668,26 @@ export interface SceneFog {
   amount: number;
 }
 
+/**
+ * the light that lit 3d clips get (Spatial.lit): a sky dome (what shines down, sideways and up) and one sun. colors are
+ * css hex. the math is in engine/scene3d/light.ts.
+ */
+export interface SceneLight {
+  /** light from above */
+  sky: string;
+  /** light from the sides: what a clip facing the camera gets */
+  horizon: string;
+  /** light from below */
+  ground: string;
+  /** share of the sun in the light, 0..1. 0 = the dome only */
+  sun: number;
+  sunColor: string;
+  /** where the sun stands around the scene, degrees -180..180. 0 = behind the camera, 90 = to the right */
+  sunTurn: number;
+  /** how high the sun stands, degrees 0..90. 90 = straight above */
+  sunHeight: number;
+}
+
 /** a named point on the timeline (snaps, jump with shortcuts) */
 export interface Marker {
   id: string;
@@ -695,6 +721,8 @@ export interface Project {
   markers?: Marker[];
   /** haze over the 3d space. null / missing = none. */
   fog?: SceneFog | null;
+  /** the light of lit 3d clips. null / missing = taken from the scene: the background, the filled 2d shapes under the lowest 3d clip and the fog. */
+  light?: SceneLight | null;
 }
 
 /** lightweight row for the projects screen */

@@ -47,6 +47,7 @@ describe('stillClipFrom copies the look', () => {
       threeD: true,
       shape: 'box',
       shapeDepth: 30,
+      lit: 0.5,
       radius: 0.2,
       crop: { left: 0.1, top: 0, right: 0, bottom: 0 },
       blend: 'screen',
@@ -63,6 +64,7 @@ describe('stillClipFrom copies the look', () => {
     expect(s.threeD).toBe(true);
     expect(s.shape).toBe('box');
     expect(s.shapeDepth).toBe(30);
+    expect(s.lit).toBe(0.5);
     expect(s.radius).toBe(0.2);
     expect(s.crop).toEqual({ left: 0.1, top: 0, right: 0, bottom: 0 });
     expect(s.blend).toBe('screen');

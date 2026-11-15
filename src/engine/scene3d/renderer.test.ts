@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { meshNeedsBlur } from './focus';
 import { identity, mul, scaling, translation } from './math';
-import { OUTLINE_CACHE_LIMIT, lruOverflow, outlineKey, planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
+import { LIGHT_GAMMA, planeLight } from './light';
+import { LIGHT_LINE, LIT_VS, OUTLINE_CACHE_LIMIT, PLANE_FS, canReuseScratch, lightUniform, litFragment, lruOverflow, outlineKey, planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
 
 // a camera at the origin looking down +z: depth = z (w = z), no perspective needed for the depth test
 const viewProj = (() => {
@@ -86,5 +87,71 @@ describe('outline cache', () => {
     const keys = Array.from({ length: OUTLINE_CACHE_LIMIT + 3 }, (_, i) => 'k' + i);
     expect(lruOverflow(keys, keys.length, OUTLINE_CACHE_LIMIT)).toEqual(['k0', 'k1', 'k2']);
     expect(lruOverflow(keys.slice(0, OUTLINE_CACHE_LIMIT), OUTLINE_CACHE_LIMIT, OUTLINE_CACHE_LIMIT)).toEqual([]);
+  });
+});
+
+describe('the lit plane shader', () => {
+  const lit = litFragment(PLANE_FS);
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+  it('has its inputs and the light line once', () => {
+    expect(count(lit, 'uniform vec4 u_light;')).toBe(1);
+    expect(count(lit, 'in vec3 v_light;')).toBe(1);
+    expect(count(lit, LIGHT_LINE)).toBe(1);
+  });
+  it('the light line sits after the last discard and before the fog', () => {
+    expect(lit.indexOf(LIGHT_LINE)).toBeGreaterThan(lit.lastIndexOf('discard;'));
+    expect(lit.indexOf(LIGHT_LINE)).toBeLessThan(lit.indexOf('  if (u_fogOn > 0.0) {'));
+  });
+  it('without the two insertions it is the plane shader again', () => {
+    expect(lit.replace('uniform vec4 u_light;\nin vec3 v_light;\n', '').replace(LIGHT_LINE, '')).toBe(PLANE_FS);
+  });
+  it('the plane shader knows nothing of light', () => {
+    expect(PLANE_FS).not.toContain('u_light');
+  });
+  it('throws when an anchor is gone', () => {
+    expect(() => litFragment('void main() {}')).toThrow();
+  });
+  it('the vertex shader has its normal, its outputs and the same gamma as light.ts', () => {
+    expect(LIT_VS).toContain('layout(location = 2) in vec3 a_normal;');
+    for (const o of ['out vec3 v_light;', 'out vec2 v_uv;', 'out vec3 v_world;', 'out float v_depth;']) expect(LIT_VS).toContain(o);
+    expect(LIT_VS).toContain('1.0 / ' + LIGHT_GAMMA.toFixed(1));
+  });
+});
+
+describe('canReuseScratch', () => {
+  const img = {};
+  it('keeps an upload only for the same serial, image and mips', () => {
+    expect(canReuseScratch(img, 3, false, img, 3, false)).toBe(true);
+    expect(canReuseScratch(img, undefined, false, img, undefined, false)).toBe(false);
+    expect(canReuseScratch(img, 3, false, img, undefined, false)).toBe(false);
+    expect(canReuseScratch(img, 3, false, img, 4, false)).toBe(false);
+    expect(canReuseScratch(img, 3, false, {}, 3, false)).toBe(false);
+    expect(canReuseScratch(img, 3, false, img, 3, true)).toBe(false);
+    expect(canReuseScratch(null, undefined, false, img, 3, false)).toBe(false);
+  });
+});
+
+describe('lightUniform', () => {
+  const env = new Float32Array([0.3, 0.4, 0.6, 0.5, 0.45, 0.4, 0.1, 0.1, 0.1, 0, -1, 0, 0.2, 0.2, 0.1]);
+  const model = identity();
+  const eye = [0, 0, -10];
+  const run = (lit: number | undefined, shape: 'plane' | 'box') => {
+    const out = new Float32Array(4);
+    lightUniform(lit, shape, model, eye, env, out);
+    return [...out];
+  };
+  it('no light, a zero, a negative or a nan lit is unlit', () => {
+    for (const v of [undefined, 0, -1, NaN]) expect(run(v, 'plane')).toEqual([1, 1, 1, 0]);
+    for (const v of [undefined, 0, -1, NaN]) expect(run(v, 'box')).toEqual([1, 1, 1, 0]);
+  });
+  it('a lit solid is lit in the vertex shader, with the amount clamped', () => {
+    expect(run(0.5, 'box')).toEqual([1, 1, 1, 0.5]);
+    expect(run(3, 'box')).toEqual([1, 1, 1, 1]);
+  });
+  it('a lit plane gets its own light with w 0', () => {
+    const want = new Float32Array(4);
+    planeLight(model, eye, 0.5, env, want);
+    want[3] = 0;
+    expect(run(0.5, 'plane')).toEqual([...want]);
   });
 });

@@ -1,7 +1,7 @@
 # ncut architecture
 
-ncut is an in-browser video editor: multi-track timeline, real-time canvas preview, keyframes, an unlit
-3d space with cameras, gpu effects and transitions, animated text, local-only storage (indexeddb),
+ncut is an in-browser video editor: multi-track timeline, real-time canvas preview, keyframes, a 3d space (unlit unless a clip is lit)
+with cameras, gpu effects and transitions, animated text, local-only storage (indexeddb),
 export through webcodecs up to 240 fps. no server, no accounts, no watermark.
 
 stack: vite 8, react 19, typescript 7 (strict), zustand 5, mediabunny (muxing/encoding/decoding),
@@ -64,7 +64,7 @@ engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
 engine/effects/          effect registry + defs (glsl, one file per pack) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
-engine/scene3d/          3d math, camera rig, model matrices, the unlit webgl2 scene renderer, depth of field (focus.ts),
+engine/scene3d/          3d math, camera rig, model matrices, the webgl2 scene renderer (unlit, or lit by light.ts), depth of field (focus.ts),
                          meshes.ts (plane, box, ball ... and solids pushed out of a 2d outline: outline2d.ts)
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
@@ -125,7 +125,7 @@ them matching: a frame depends only on `(project, time)`. never on the wall cloc
 numbers at draw time (effects get a per-clip `seed`).
 
 - layers are painted bottom track first. a run of consecutive 3d clips is rendered together through the
-  camera by `engine/scene3d/renderer.ts` (depth tested, unlit) and laid over the canvas.
+  camera by `engine/scene3d/renderer.ts` (depth tested; unlit unless a clip has `lit`) and laid over the canvas.
 - keyframes: `resolveClip(clip, time)` returns the clip with every animated property baked in. always
   edit animatable numbers through the store's `setClipValue` (it writes a key when the property is animated).
 - effects: an effect clip post-processes the canvas below it in webgl2 (`engine/effects/runner.ts`).
@@ -173,6 +173,7 @@ numbers at draw time (effects get a per-clip `seed`).
 - look at: a 3d clip can turn toward the camera (`lookAt` 'camera' / 'cameraY') or toward another clip
   ('clip' + `lookTarget`). it is applied last, in the world.
 - fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
+- light (`clip.lit` 0..1, `project.light`): a lit 3d clip is shaded by a sky dome (sky, horizon, ground) and one sun in linear light (`engine/scene3d/light.ts`, its shader twin is LIT_VS). without an own light the dome is read off the project data behind the 3d clips: the background, the 2d shape clips under the lowest 3d clip and the fog; no pixels are read, so preview, export and export workers agree. a render with no lit plane uses the old program and costs what it did; a render with one uses a second program (compiled in the background after an unlit 3d frame of the same channel; a channel whose first 3d frame is already lit, like the lit room template at 0 s or an export that starts lit, waits for the link in that frame) where unlit planes get a light of 1. a plane gets one light from the cpu, a solid is lit per vertex from its mesh normals (`litShapeMesh`). 2d clips, outlines and helper lines are never lit. a motion blur on a 3d video uploads the frame once for all its copies (Plane3D.serial).
 - groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
 - a split keeps the picture: clips that point at a cut clip (parent, look target, camera target, effect
   target) and lie after the cut are re-pointed to the right half (`repointSplitDependents`).
@@ -419,4 +420,4 @@ every shader in the browser and return the ones that fail (an empty list = all g
 `window.__ncut.bench` (`src/dev/bench.ts`, dev builds and `vite build --mode bench --outDir dist-bench`) makes test
 footage and projects, exports them with the options of `exportProject` and reports frames per second, the workers
 used, the encoder rate and whether the file went to disk (`export`, `fileCheck`, `golden`). start the desktop
-window on a bench build (`--dev-url=`) with `--remote-debugging-port` to measure the real thing.
+window on a bench build (`--dev-url=`) with `--remote-debugging-port` to measure the real thing. `litScene` builds the lit test scene (lit on or off, own light, fog, a video screen with motion blur) and `coldFrame` times a first frame on a fresh renderer.

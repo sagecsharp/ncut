@@ -28,7 +28,8 @@ import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, 
 import { mul, scaling, translation } from './scene3d/math';
 import { faceArea, faceClipId, faceColor, faceFill, faceFit, faceSource, faceSourceSet, faceWindow, filledFaces, hasSides } from './scene3d/faces';
 import { clipModelMatrix } from './scene3d/model';
-import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene } from './scene3d/renderer';
+import { sceneLightAt, usesLight } from './scene3d/light';
+import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene, warmSceneLight } from './scene3d/renderer';
 import { drawShape, lineOnSolid, shapeSignature, shapeSpill } from './shape';
 import { parseHexColor } from './clipLook';
 import { drawText, finite, measureText, textSignature, textSpill } from './text';
@@ -598,6 +599,8 @@ export interface Layer3D {
    * = those sides show the solid's own picture.
    */
   resolve?: SourceResolver;
+  /** set by a motion blur on every copy of one frame (Plane3D.serial): the picture is the same in all of them */
+  serial?: number;
 }
 
 interface TextTexture {
@@ -1185,6 +1188,7 @@ function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexIm
     p.cacheKey = cacheKey;
     p.alpha = a;
     p.uv = face.uv;
+    p.lit = face.lit;
   }
   return st.planes;
 }
@@ -1458,6 +1462,10 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     model = mul(model, scaling(1, 1, solidDepth));
   }
   const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
+  const k = clip.lit;
+  if (k != null && k > 0) plane.lit = k < 1 ? k : 1;
+  // a motion blur draws one video frame once per copy: the renderer may keep the first upload (renderer.ts acquire)
+  if (layer.serial !== undefined && cacheKey === undefined && source && image === (source.image as TexImageSource)) plane.serial = layer.serial;
   if (clip.type === 'shape' && shape !== 'plane' && lineOnSolid(clip)) {
     // the box is not padded here (the bare picture has no room around it), so it is the size the solid is scaled by
     const rgb = parseHexColor(clip.stroke!.color) ?? [1, 1, 1];
@@ -1561,7 +1569,12 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
     for (let i = from; i < planes.length; i++) planes[i]!.layer = li;
     li++;
   }
-  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null);
+  let anyLit = false;
+  for (const p of planes) if (p.lit !== undefined) { anyLit = true; break; }
+  // undefined keeps the focus bound to the camera rig
+  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null, undefined, anyLit ? sceneLightAt(project, layers[0]!.time) : null);
+  // a project with lit clips but none in this frame: compile the lit program in the background for the first lit frame
+  if (!anyLit && usesLight(project)) warmSceneLight(channel);
   if (!out) return;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1803,6 +1816,9 @@ function sameNums(a: ArrayLike<number> | null, b: ArrayLike<number> | null): boo
   return true;
 }
 
+/** one number per motion blur frame, given to the 3d copies (Layer3D.serial) */
+let blurSerial = 0;
+
 /**
  * draw a clip with its motion blur: `samples` copies at moments spread over the shutter, each with its own
  * pose (keyframes, motions, parents, fades), summed premultiplied on a scratch layer ('lighter' at 1 / samples) and
@@ -1857,6 +1873,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     if (!samePose(first.w, first.a, p.w, p.a) || !sameNums(first.m, p.m) || !sameNums(first.l, p.l)) still = false;
   }
   if (still) return false;
+  // one number for all copies of this frame: a 3d video frame is uploaded once, not once per copy (Plane3D.serial)
+  const serial = rig ? ++blurSerial : undefined;
   const canvas = ctx.canvas as AnyCanvas | undefined;
   const copy = scratchFor(ctx, env.channel, 'mbCopy');
   const acc = scratchFor(ctx, env.channel, 'mbAcc', true);
@@ -1870,7 +1888,7 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     const p = poses[i] ?? pose(t);
     if (p.a <= 0.001) continue;
     clearScratch(copy);
-    if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t, resolve: env.resolve }], rig, env.channel);
+    if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t, resolve: env.resolve, serial }], rig, env.channel);
     else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);

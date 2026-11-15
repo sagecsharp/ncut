@@ -108,6 +108,7 @@ const SPATIAL_KEYS = [
   'lookAt',
   'shape',
   'shapeDepth',
+  'lit',
   'faces',
   'transition',
   'blend',
@@ -162,7 +163,7 @@ export interface ClipMove {
   start: number;
 }
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog'>>;
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light'>>;
 export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>;
 
 export interface EditorState {

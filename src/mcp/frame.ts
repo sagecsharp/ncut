@@ -5,6 +5,7 @@
  */
 import { beginExport, endExport } from '../engine/exportState';
 import { renderStill } from '../features/export/still';
+import { clampFrameTime } from '../lib/frameTime';
 import { projectDuration } from '../lib/timelineOps';
 import type { Project } from '../types';
 import { ToolError } from './helpers';
@@ -12,16 +13,7 @@ import { ToolError } from './helpers';
 export const DEFAULT_MAX_SIZE = 960;
 export const LIMIT_MAX_SIZE = 1920;
 
-/**
- * a time that shows a picture: not before 0, not after the start of the last frame (every clip is only visible
- * before its end, so the end itself is empty). a time that is not a number counts as 0
- */
-export function clampFrameTime(time: number, duration: number, fps: number): number {
-  if (!Number.isFinite(time)) return 0;
-  const last = Math.max(0, duration - 1 / (fps > 0 ? fps : 30));
-  return Math.max(0, Math.min(last, time));
-}
-
+export { clampFrameTime };
 export { fontWarning } from '../features/export/still';
 
 /** the size of the picture: the longest side is at most `maxSize`, the shape stays, a small project is not blown up */

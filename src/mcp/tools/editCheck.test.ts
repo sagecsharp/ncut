@@ -63,6 +63,15 @@ describe('update_clip checks what a field may hold', () => {
     expect((clipOf(text) as { crop?: unknown }).crop ?? null).toBeNull();
   });
 
+  it('lit takes a number 0..1 or null (off)', async () => {
+    await call('update_clip', { id: shape, patch: { threeD: true } });
+    await call('update_clip', { id: shape, patch: { lit: 0.5 } });
+    expect((clipOf(shape) as { lit?: unknown }).lit).toBe(0.5);
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { lit: null } }));
+    expect((clipOf(shape) as { lit?: unknown }).lit ?? null).toBeNull();
+    await refused('update_clip', { id: shape, patch: { lit: 2 } }, /lit must be between 0 and 1/);
+  });
+
   it('the same checks guard the fields of the add tools', async () => {
     const r = await call('add_text', { text: 'x', start: 5, fields: { blend: 'nope' } });
     expect(r.ok).toBe(false);

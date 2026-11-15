@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearBusy, setBusy } from '../../lib/busy';
 import { defaultFog } from '../../features/properties/fogLogic';
+import { autoLightAt } from '../../engine/scene3d/light';
+import { defaultLight } from '../../features/properties/lightLogic';
 import { CANVAS_PRESETS, createProject } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -240,7 +242,7 @@ describe('fog', () => {
   });
 
   it('an empty call names fog', async () => {
-    expect((await call('update_project', {})).text).toMatch(/fps, background or fog/);
+    expect((await call('update_project', {})).text).toMatch(/fps, background, fog or light/);
   });
 
   it('get_project shows the fog, or null', async () => {
@@ -249,6 +251,88 @@ describe('fog', () => {
     expect((await call('get_project')).json!.fog).toEqual(FOG);
     // the short brief stays without it
     expect((await call('get_state')).json!.project).not.toHaveProperty('fog');
+  });
+});
+
+describe('light', () => {
+  const LIGHT = { sky: '#334455', horizon: '#556677', ground: '#111111', sun: 0.4, sunColor: '#fff4e0', sunTurn: -35, sunHeight: 45 };
+  const lightNow = () => project().light;
+
+  it('a part over no light starts from the light of the scene and is one undo step', async () => {
+    await call('update_project', { background: '#336699' });
+    const d = defaultLight(project(), 0);
+    const before = past();
+    const r = await call('update_project', { light: { sun: 0.7 } });
+    expect(d.sky).toBe('#336699');
+    expect(d.horizon).toBe('#336699');
+    expect(r.json!.light).toEqual({ ...d, sun: 0.7 });
+    expect(lightNow()).toEqual({ ...d, sun: 0.7 });
+    expect(past()).toBe(before + 1);
+    useEditor.getState().undo();
+    expect(lightNow() ?? null).toBeNull();
+  });
+
+  it('the dome of a part sees the background and fog sent in the same call', async () => {
+    const r = await call('update_project', { background: '#336699', light: { sun: 0.5 } });
+    expect(r.json!.light).toMatchObject({ sky: '#336699', horizon: '#336699', sun: 0.5 });
+    const f = await call('update_project', { light: null });
+    expect(f.json!.light).toBeNull();
+    const g = await call('update_project', { fog: { color: '#ff0000', amount: 1 }, light: { sun: 0.6 } });
+    expect(g.json!.light.horizon).toBe(autoLightAt({ ...project(), light: null }, 0).horizon);
+    expect(g.json!.light.horizon).toBe('#ff0000');
+  });
+
+  it('a part over a light keeps the rest', async () => {
+    await call('update_project', { light: LIGHT });
+    const r = await call('update_project', { light: { sunTurn: 90, sunHeight: 10.04 } });
+    expect(r.json!.light).toEqual({ ...LIGHT, sunTurn: 90, sunHeight: 10 });
+  });
+
+  it('colors are lowercased and a bad hex is an error', async () => {
+    const r = await call('update_project', { light: { sky: '#ABCDEF', sunColor: '#FFF' } });
+    expect(r.json!.light).toMatchObject({ sky: '#abcdef', sunColor: '#fff' });
+    const before = past();
+    expect((await call('update_project', { light: { ground: 'red' } })).text).toMatch(/light.ground must be a hex color like #101010/);
+    expect(past()).toBe(before);
+  });
+
+  it('refuses what is not an object', async () => {
+    for (const bad of [1, 'x', [], true]) {
+      expect((await call('update_project', { light: bad })).text, JSON.stringify(bad)).toMatch(/light must be an object like/);
+    }
+  });
+
+  it('null on no light is nothing changed, null on a light removes it', async () => {
+    expect((await call('update_project', { light: null })).text).toMatch(/nothing changed/);
+    await call('update_project', { light: LIGHT });
+    const before = past();
+    const r = await call('update_project', { light: null });
+    expect(r.json!.light).toBeNull();
+    expect(lightNow() ?? null).toBeNull();
+    expect(past()).toBe(before + 1);
+  });
+
+  it('the same light again is nothing changed', async () => {
+    await call('update_project', { light: LIGHT });
+    const before = past();
+    expect((await call('update_project', { light: { ...LIGHT } })).text).toMatch(/nothing changed/);
+    expect((await call('update_project', { light: { sun: 0.4, sky: '#334455' } })).text).toMatch(/nothing changed/);
+    expect(past()).toBe(before);
+  });
+
+  it('an empty call names light', async () => {
+    expect((await call('update_project', {})).text).toMatch(/background, fog or light/);
+  });
+
+  it('get_project has light null and the light the scene gives', async () => {
+    await call('update_project', { background: '#336699' });
+    const r = await call('get_project');
+    expect(r.json!.light).toBeNull();
+    expect(r.json!.autoLight.sky).toBe('#336699');
+    expect(r.json!.autoLight.horizon).toMatch(/^#[0-9a-f]{6}$/);
+    expect(r.json!.autoLight.ground).toMatch(/^#[0-9a-f]{6}$/);
+    await call('update_project', { light: LIGHT });
+    expect((await call('get_project')).json!.light).toEqual(LIGHT);
   });
 });
 

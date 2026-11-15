@@ -190,7 +190,7 @@ export function freezeEffectCopies(clips: readonly Clip[], videoId: string, time
 
 /**
  * the still: the video clip's look (static, already resolved at the time) as a fresh image clip.
- * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, faces, crop, radius,
+ * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, lit, faces, crop, radius,
  * mask, blend, adjust, chromaKey, parent, motionBlur) and, from `handover`, the entrance / exit.
  * deliberately NOT copied:
  * - id, trackId (same track), name, start, duration: the still has its own.
@@ -229,6 +229,7 @@ export function stillClipFrom(
   if (video.lookAt) still.lookAt = video.lookAt;
   if (video.shape) still.shape = video.shape;
   if (video.shapeDepth !== undefined) still.shapeDepth = video.shapeDepth;
+  if (video.lit !== undefined) still.lit = video.lit;
   // what its sides show (other clips are still named by id)
   if (video.faces) still.faces = structuredClone(video.faces);
   if (video.crop) still.crop = { ...video.crop };

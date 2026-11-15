@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SHAPES_3D } from '../../types';
 import { faceNames } from './faces';
 import { outlineFor } from './outline2d';
-import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, interleave, knownShape, shapeMesh } from './meshes';
+import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
 
 describe('shape meshes', () => {
   for (const shape of SHAPES_3D) {
@@ -270,5 +270,98 @@ describe('shape meshes', () => {
     it('a plane has no groups', () => {
       expect(shapeMesh('plane').groups).toEqual([]);
     });
+  });
+});
+
+describe('normals and the lit meshes', () => {
+  const OUTLINES = ['prism', 'hexagon', 'star', 'heart'];
+  const unit = (m: { normals: Float32Array }, i: number) => Math.hypot(m.normals[i * 3]!, m.normals[i * 3 + 1]!, m.normals[i * 3 + 2]!);
+  const dotPos = (m: { positions: Float32Array; normals: Float32Array }, i: number) =>
+    m.normals[i * 3]! * m.positions[i * 3]! + m.normals[i * 3 + 1]! * m.positions[i * 3 + 1]! + m.normals[i * 3 + 2]! * m.positions[i * 3 + 2]!;
+
+  for (const shape of SHAPES_3D) {
+    it(`${shape}: one unit normal per vertex, on the base and the lit mesh`, () => {
+      for (const m of [shapeMesh(shape), litShapeMesh(shape)]) {
+        expect(m.normals.length).toBe(m.positions.length);
+        for (let i = 0; i < m.positions.length / 3; i++) expect(Math.abs(unit(m, i) - 1)).toBeLessThan(1e-6);
+      }
+    });
+  }
+
+  it('the normals point out of the solid', () => {
+    for (const shape of ['box', 'sphere', 'cylinder', 'cone', 'pyramid', 'capsule', 'prism', 'hexagon']) {
+      const m = litShapeMesh(shape);
+      for (let i = 0; i < m.positions.length / 3; i++) expect(dotPos(m, i)).toBeGreaterThan(-1e-9);
+    }
+  });
+
+  it('torus: the normals point away from the center of the tube', () => {
+    const m = shapeMesh('torus');
+    const R = 0.5 / (1 + TORUS_TUBE);
+    for (let i = 0; i < m.positions.length / 3; i++) {
+      const x = m.positions[i * 3]!;
+      const y = m.positions[i * 3 + 1]!;
+      const z = m.positions[i * 3 + 2]!;
+      const l = Math.hypot(x, y) || 1;
+      const d = m.normals[i * 3]! * (x - (R * x) / l) + m.normals[i * 3 + 1]! * (y - (R * y) / l) + m.normals[i * 3 + 2]! * z;
+      expect(d).toBeGreaterThan(0);
+    }
+  });
+
+  it('a plane faces the viewer, a box has one normal per face', () => {
+    expect([...shapeMesh('plane').normals]).toEqual([0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1]);
+    const m = shapeMesh('box');
+    const want: Record<string, number[]> = { front: [0, 0, -1], back: [0, 0, 1], right: [1, 0, 0], left: [-1, 0, 0], top: [0, -1, 0], bottom: [0, 1, 0] };
+    for (const g of m.groups) {
+      const v = m.indices[g.start]!;
+      expect([...m.normals.slice(v * 3, v * 3 + 3)]).toEqual(want[g.name]);
+    }
+  });
+
+  it('star and hexagon: the side normals lie flat and stand square on their edge', () => {
+    for (const kind of ['star', 'hexagon']) {
+      const m = litShapeMesh(kind);
+      const g = m.groups.find((x) => x.name === 'side')!;
+      for (let s = g.start; s < g.start + g.count; s += 6) {
+        const v0 = m.indices[s]!;
+        const v3 = m.indices[s + 5]!;
+        const ex = m.positions[v3 * 3]! - m.positions[v0 * 3]!;
+        const ey = m.positions[v3 * 3 + 1]! - m.positions[v0 * 3 + 1]!;
+        for (const v of [v0, v3]) {
+          expect(m.normals[v * 3 + 2]).toBe(0);
+          expect(Math.abs(m.normals[v * 3]! * ex + m.normals[v * 3 + 1]! * ey)).toBeLessThan(1e-6);
+        }
+      }
+    }
+  });
+
+  it('litShapeMesh is shapeMesh itself for a shape whose sides have vertices of their own', () => {
+    for (const shape of SHAPES_3D) {
+      if (OUTLINES.includes(shape)) continue;
+      expect(litShapeMesh(shape)).toBe(shapeMesh(shape));
+    }
+  });
+
+  it('an outline shape keeps the indices, the groups, and every position and uv of its base mesh', () => {
+    for (const shape of OUTLINES) {
+      const base = shapeMesh(shape);
+      const lit = litShapeMesh(shape);
+      expect(lit).not.toBe(base);
+      expect(lit.indices.length).toBe(base.indices.length);
+      expect(lit.groups).toEqual(base.groups);
+      for (let s = 0; s < base.indices.length; s++) {
+        const a = base.indices[s]!;
+        const b = lit.indices[s]!;
+        for (let k = 0; k < 3; k++) expect(lit.positions[b * 3 + k]).toBe(base.positions[a * 3 + k]);
+        for (let k = 0; k < 2; k++) expect(lit.uvs[b * 2 + k]).toBe(base.uvs[a * 2 + k]);
+      }
+      expect(litShapeMesh(shape)).toBe(lit);
+    }
+  });
+
+  it('interleaveLit is x, y, z, u, v, nx, ny, nz per vertex', () => {
+    const a = interleaveLit(shapeMesh('plane'));
+    expect(a.length).toBe(32);
+    expect([...a.slice(0, 8)]).toEqual([-0.5, -0.5, 0, 0, 0, 0, 0, -1]);
   });
 });

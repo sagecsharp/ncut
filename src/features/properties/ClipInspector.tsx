@@ -3,7 +3,7 @@ import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, 
 import { NumberField } from '../../components/ui/NumberField';
 import { getClipBox } from '../../engine/draw';
 import { FontPicker } from '../fonts/FontPicker';
-import { resolveClip } from '../../lib/anim';
+import { isAnimated, resolveClip } from '../../lib/anim';
 import { formatTimecode } from '../../lib/time';
 import { usePlayback } from '../../store/playback';
 import { useAsset, useClip, useEditor } from '../../store/editorStore';
@@ -546,6 +546,7 @@ export function ClipInspector({ id }: { id: string }) {
             shape={clip.shape ?? 'plane'}
             shapeDepth={clip.shapeDepth}
             defaultDepth={clip.threeD && clip.shape && clip.shape !== 'plane' && clip.shape !== 'sphere' ? defaultThickness(clip) : 0}
+            lit={clip.lit != null || isAnimated(clip, 'lit')}
           />
         ) : null}
         {show('path') && isVisualClip(clip) ? <PathSection id={clip.id} /> : null}

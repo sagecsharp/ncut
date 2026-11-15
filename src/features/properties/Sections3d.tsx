@@ -13,7 +13,8 @@ import { Row, SelectRow, Section, Switch, useSelectOpen } from './controls';
 import { targetLabelOf, targetOptions } from './targets';
 import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
-import { patchClip } from './edit';
+import { LIT_ON } from '../../engine/scene3d/light';
+import { beginEdit, liveOpts, patchClip } from './edit';
 import { ParentSelect } from './AttachSection';
 import { FacesSection } from './FacesSection';
 import { faceNames } from '../../engine/scene3d/faces';
@@ -232,9 +233,23 @@ interface ThreeDProps {
   shapeDepth: number | undefined;
   /** thickness used while shapeDepth is missing */
   defaultDepth: number;
+  /** the clip has a stored lit value (0 included) or keys on lit */
+  lit: boolean;
 }
 
-export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, lookTarget, shape, shapeDepth, defaultDepth }: ThreeDProps) {
+/** on = the lit amount of the switch. off = no value and no keys, as one undo step. a drag to 0 keeps the value, so the slider stays mounted */
+function setLit(id: string, on: boolean): void {
+  const st = actions();
+  if (on) {
+    st.updateClip(id, { lit: LIT_ON });
+    return;
+  }
+  beginEdit();
+  st.clearKeyframes(id, usePlayback.getState().time, 'lit', liveOpts());
+  patchClip(id, { lit: null }, true);
+}
+
+export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, lookTarget, shape, shapeDepth, defaultDepth, lit }: ThreeDProps) {
   return (
     <Section id="threed" title="3d">
       <Row label="3d" title="place this clip in 3d space" wide>
@@ -268,6 +283,12 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
           ) : null}
           {shape !== 'plane' ? (
             <AnimField wide id={id} prop="scaleZ" label="scale z" title="stretch the depth only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+          ) : null}
+          <Row label="lit" title="shade this clip with the light of the scene (project, light). it only darkens or tints: in a dark scene the clip gets darker" wide>
+            <Switch checked={lit} title="lit on or off" onChange={(on) => setLit(id, on)} />
+          </Row>
+          {lit ? (
+            <AnimField wide slider id={id} prop="lit" label="how lit" title="how much the light changes this clip (%). 0 = as it is. lower it when the clip gets too dark" scale={100} suffix="%" min={0} max={100} step={1} precision={0} />
           ) : null}
           {faceNames(shape).length > 0 ? <FacesSection id={id} shape={shape} /> : null}
         </>
