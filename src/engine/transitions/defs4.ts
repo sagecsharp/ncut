@@ -250,9 +250,10 @@ vec4 tr_main(vec2 uv, float p) {
   float mb = 1.0 - smoothstep(bp + 0.045, bp + 0.095, d);
   vec4 A = a(uv);
   vec4 B = b(uv);
-  float al = mix(A.a, B.a, mg);
+  // each colour crosses at its own edge with its own share of the two outlines. the outline is where any colour is
+  vec3 al = vec3(mix(A.a, B.a, mr), mix(A.a, B.a, mg), mix(A.a, B.a, mb));
   vec3 rgb = vec3(mix(A.r, B.r, mr), mix(A.g, B.g, mg), mix(A.b, B.b, mb));
-  return vec4(min(rgb, vec3(al)), al);
+  return vec4(rgb, max(al.r, max(al.g, al.b)));
 }`,
 
   // glass blocks: every square becomes a little lens that flips the picture while it changes

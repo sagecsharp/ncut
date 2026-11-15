@@ -89,6 +89,14 @@ describe('checkPartsMedia', () => {
     );
     expect(r.images).toBe(false);
   });
+  it('the pictures of the sky are checked too', async () => {
+    const p = { ...project([]), sky: { faces: ['png', 'png', 'png', 'png', 'png', 'svg'], turn: 0, brightness: 1, blur: 0 } } as unknown as Project;
+    expect((await checkPartsMedia(p, blobOf)).images).toBe(false);
+    const one = { ...project([]), sky: { asset: 'svg', turn: 0, brightness: 1, blur: 0 } } as unknown as Project;
+    expect((await checkPartsMedia(one, blobOf)).images).toBe(false);
+    const fine = { ...project([]), sky: { asset: 'png', turn: 0, brightness: 1, blur: 0 } } as unknown as Project;
+    expect((await checkPartsMedia(fine, blobOf)).images).toBe(true);
+  });
   it('ignores clips that are never drawn and files that are missing', async () => {
     const r = await checkPartsMedia(
       project(

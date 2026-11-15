@@ -7,7 +7,9 @@ import type { Project } from '../../types';
 import { beginExport } from '../../engine/exportState';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { installFontKit } from '../../lib/fontKit';
+import type { SkyPicture } from '../../engine/scene3d/sky';
 import { renderSegment } from './segment';
+import { loadExportSky } from './sources';
 import type { SegmentJob } from './segment';
 import type { FromWorker, ToWorker } from './parallel';
 
@@ -19,6 +21,8 @@ const scope = self as unknown as {
 let project: Project | null = null;
 let blobs = new Map<string, Blob>();
 const stop = new AbortController();
+/** the sky pictures of the project, read once for every part this worker renders (null = none). set by the first part */
+let sky: Promise<SkyPicture | null> | null = null;
 /** the worker starts taking parts only after the fonts are in */
 let ready: Promise<void> = Promise.resolve();
 
@@ -36,10 +40,20 @@ async function init(m: Extract<ToWorker, { type: 'init' }>): Promise<void> {
   post({ type: 'ready', missingFonts: missing });
 }
 
+/** closes the sky once the worker is told to stop (a terminated worker frees it anyway) */
+function closeSky(): void {
+  const p = sky;
+  sky = null;
+  void p?.then((s) => s?.close()).catch(() => {});
+}
+
 async function run(job: SegmentJob): Promise<void> {
   try {
     await ready;
     if (!project) throw new Error('the worker got a part before the project');
+    // the first part loads the sky, the others reuse it. a failed load is the same failure for every part
+    if (!sky) sky = loadExportSky({ project, blobOf: (id) => blobs.get(id), strictImages: true, onWarning: (message) => post({ type: 'warning', message }) });
+    const picture = await sky;
     let last = 0;
     let lastAlive = -Infinity;
     const frames = job.to - job.from;
@@ -50,6 +64,7 @@ async function run(job: SegmentJob): Promise<void> {
       // the same for a video this worker cannot decode: no file with a clip missing
       strictVideo: true,
       signal: stop.signal,
+      sky: picture,
       onWarning: (message) => post({ type: 'warning', message }),
       // a part that has not reported a frame yet (sources opening, run-in frames) says so, about once a second
       onAlive: () => {
@@ -79,5 +94,8 @@ scope.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'init') ready = init(m).catch((err) => post({ type: 'error', id: -1, message: err instanceof Error ? err.message : String(err) }));
   else if (m.type === 'segment') void run(m.job);
-  else if (m.type === 'cancel') stop.abort();
+  else if (m.type === 'cancel') {
+    stop.abort();
+    closeSky();
+  }
 };

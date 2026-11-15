@@ -24,7 +24,7 @@ function leaveSceneView(): void {
   useUi.getState().setPreviewMode('output');
 }
 
-function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) {
+function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolver | null; onSkyReady?: (f: () => void) => () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasProject = useEditor((s) => !!s.project);
 
@@ -97,11 +97,14 @@ function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) 
         if (s.quality !== p.quality) request();
       }),
     ];
+    // the sky pictures finish loading after the first draw: draw again with them
+    const offSky = onSkyReady?.(request);
     request();
 
     return () => {
       disposed = true;
       for (const off of offs) off();
+      offSky?.();
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
       window.clearTimeout(settle);
@@ -109,7 +112,7 @@ function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) 
       releaseRenderResources('inset');
       setCanvasChannel(canvas, 'default');
     };
-  }, [hasProject, getResolve]);
+  }, [hasProject, getResolve, onSkyReady]);
 
   if (!hasProject) return null;
   return (
@@ -120,9 +123,9 @@ function InsetBody({ getResolve }: { getResolve: () => SourceResolver | null }) 
   );
 }
 
-export function CameraInset({ getResolve }: { getResolve: () => SourceResolver | null }) {
+export function CameraInset({ getResolve, onSkyReady }: { getResolve: () => SourceResolver | null; onSkyReady?: (f: () => void) => () => void }) {
   const scene = useUi((s) => s.previewMode === 'scene');
   const on = useCameraInset((s) => s.on);
   if (!scene || !on) return null;
-  return <InsetBody getResolve={getResolve} />;
+  return <InsetBody getResolve={getResolve} onSkyReady={onSkyReady} />;
 }

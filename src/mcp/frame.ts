@@ -6,6 +6,7 @@
 import { beginExport, endExport } from '../engine/exportState';
 import { renderStill } from '../features/export/still';
 import { clampFrameTime } from '../lib/frameTime';
+import { skyUsable } from '../engine/scene3d/sky';
 import { projectDuration } from '../lib/timelineOps';
 import type { Project } from '../types';
 import { ToolError } from './helpers';
@@ -46,13 +47,24 @@ export interface FramePng {
 }
 
 /**
+ * the time the picture is drawn at. a project without clips has a picture only when it has a sky it can draw: that is
+ * drawn at time 0. anything else empty is refused.
+ */
+export function frameTimeFor(project: Project, time: number): number {
+  const duration = projectDuration(project);
+  if (!(duration > 0)) {
+    if (skyUsable(project)) return 0;
+    throw new ToolError('the project is empty, there is no picture to draw. add clips first');
+  }
+  return clampFrameTime(time, duration, project.fps);
+}
+
+/**
  * draw the project at `time` and encode it as png. the caller makes sure no export runs (the renderer shares its
  * scratch resources with it). nothing it opens stays open.
  */
 export async function renderFramePng(project: Project, time: number, maxSize: number = DEFAULT_MAX_SIZE): Promise<FramePng> {
-  const duration = projectDuration(project);
-  if (!(duration > 0)) throw new ToolError('the project is empty, there is no picture to draw. add clips first');
-  const t = clampFrameTime(time, duration, project.fps);
+  const t = frameTimeFor(project, time);
   const { width, height } = frameSize(project.width, project.height, maxSize);
   const warnings: string[] = [];
   // while this runs the renderer does not use wall clock retry pauses (engine/exportState.ts)

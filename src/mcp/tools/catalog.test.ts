@@ -44,6 +44,15 @@ describe('list_options', () => {
     expect(all.text).not.toContain('glsl');
   });
 
+  it('effects say what they do to the outline of a clip', async () => {
+    const all = await options('effects');
+    const by = (id: string) => all.json!.effects.find((e: any) => e.id === id);
+    expect(by('chroma-key').alpha).toBe('own');
+    expect(by('shake').alpha).toBe('moves');
+    expect(by('invert').alpha).toBe('keep');
+    expect(all.json!.effects.every((e: any) => ['keep', 'moves', 'own'].includes(e.alpha))).toBe(true);
+  });
+
   it('transitions come from the registry', async () => {
     const all = await options('transitions');
     expect(all.json!.transitions).toHaveLength(TRANSITIONS.length);

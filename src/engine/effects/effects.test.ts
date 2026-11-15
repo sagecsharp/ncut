@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { MAIN, PRELUDE } from './glsl';
+import { ALPHA_BLOCK, CUT_BLOCK, MAIN, MAIN_ALPHA, MAIN_CUT, PLAIN_BLOCK, PRELUDE } from './glsl';
 import { EFFECTS, effectParamValue, effectsInCategory, getEffect } from './registry';
-import { checkEffects, effectsSupported, fragmentSource, renderEffects } from './runner';
+import { checkEffects, effectsSupported, fragmentSource, renderEffects, renderEffectsAlpha } from './runner';
 import { EFFECT_CATEGORIES } from './types';
 import type { EffectDef, EffectPass } from './types';
 
@@ -25,6 +25,10 @@ const PRELUDE_NAMES = [
   'hsv2rgb',
   'rgb2hsv',
   'xform',
+  'unpm',
+  'repm',
+  'pick3',
+  'fx_straight',
 ];
 
 const isLower = (s: string) => s === s.toLowerCase();
@@ -331,11 +335,54 @@ describe('runner without webgl (node)', () => {
     expect(renderEffects(source, 0, 100, [pass()])).toBeNull();
     expect(renderEffects(source, 100, 0, [pass()])).toBeNull();
   });
+  it('renderEffectsAlpha returns null for empty passes, without webgl2 and for an empty size', () => {
+    expect(renderEffectsAlpha(source, 100, 100, [])).toBeNull();
+    expect(renderEffectsAlpha(source, 100, 100, [pass()])).toBeNull();
+    expect(renderEffectsAlpha(source, 100, 100, [pass()], { channel: 'export' })).toBeNull();
+    expect(renderEffectsAlpha(source, 0, 100, [pass()])).toBeNull();
+    expect(renderEffectsAlpha(source, 100, 0, [pass()])).toBeNull();
+  });
   it('effectsSupported is false', () => {
     expect(effectsSupported()).toBe(false);
   });
   it('checkEffects reports webgl missing', () => {
     expect(checkEffects(EFFECTS)).toEqual([{ id: '*', error: 'webgl2 is not available' }]);
     expect(checkEffects([])).toEqual([{ id: '*', error: 'webgl2 is not available' }]);
+  });
+});
+
+describe('fragmentSource variants', () => {
+  it('the plain build of a keep effect is the old string, byte for byte', () => {
+    const def = fake();
+    let uniforms = '';
+    for (const p of def.params) uniforms += `uniform float p_${p.key};\n`;
+    const src = fragmentSource(def);
+    expect(src).toBe(`${PRELUDE}\n${uniforms}\n${def.glsl}\n${MAIN}`);
+    expect(src).not.toContain('FX_ALPHA');
+  });
+  it('the plain build of an effect with alpha has the plain helpers and the old main', () => {
+    const src = fragmentSource(fake({ alpha: 'moves' }));
+    expect(src).toContain(PLAIN_BLOCK);
+    expect(src.endsWith(MAIN)).toBe(true);
+  });
+  it('the alpha build has the alpha helpers and ends with MAIN_ALPHA', () => {
+    const src = fragmentSource(fake({ alpha: 'moves' }), 'alpha');
+    expect(src).toContain(ALPHA_BLOCK);
+    expect(src).not.toContain(PLAIN_BLOCK);
+    expect(src.endsWith(MAIN_ALPHA)).toBe(true);
+  });
+  it('the cut build reads straight colour and ends with MAIN_CUT', () => {
+    const src = fragmentSource(fake(), 'cut');
+    expect(src).toContain(CUT_BLOCK);
+    expect(src).toContain('#define tex(uv) fx_straight(uv)');
+    expect(src.endsWith(MAIN_CUT)).toBe(true);
+  });
+  it('every registered effect builds every variant', () => {
+    for (const def of EFFECTS) {
+      for (const variant of ['plain', 'alpha', 'cut'] as const) {
+        const src = fragmentSource(def, variant);
+        expect(src, `${def.id} ${variant}`).toContain(def.glsl);
+      }
+    }
   });
 });

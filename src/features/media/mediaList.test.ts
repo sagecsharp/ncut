@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Clip, MediaAsset } from '../../types';
+import type { Clip, MediaAsset, SceneSky } from '../../types';
 import { canSwapInto, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
 
 const A = (id: string, name: string, kind: MediaAsset['kind'], duration: number, createdAt: number) =>
@@ -11,6 +11,14 @@ describe('usedAssetIds', () => {
   it('collects asset ids and ignores clips without media', () => {
     const used = usedAssetIds([clip('video', { assetId: 'a' }), clip('text'), clip('image', { assetId: 'd' }), clip('video', { assetId: 'a' })]);
     expect([...used].sort()).toEqual(['a', 'd']);
+  });
+
+  it('usedAssetIds counts the pictures of the sky', () => {
+    const one = { asset: 'x', turn: 0, brightness: 1, blur: 0 } as unknown as SceneSky;
+    const six = { faces: ['a', 'b', 'c', 'd', 'e', 'f'], turn: 0, brightness: 1, blur: 0 } as unknown as SceneSky;
+    expect([...usedAssetIds([], one)]).toEqual(['x']);
+    expect([...usedAssetIds([clip('video', { assetId: 'a' }), clip('image', { assetId: 'z' })], six)].sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'z']);
+    expect([...usedAssetIds([clip('video', { assetId: 'a' })], null)]).toEqual(['a']);
   });
 });
 

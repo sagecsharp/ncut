@@ -64,7 +64,7 @@ engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
 engine/effects/          effect registry + defs (glsl, one file per pack) + the webgl2 runner for adjustment layers
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
-engine/scene3d/          3d math, camera rig, model matrices, the webgl2 scene renderer (unlit, or lit by light.ts), depth of field (focus.ts),
+engine/scene3d/          3d math, camera rig, model matrices, the webgl2 scene renderer (unlit, or lit by light.ts), the skybox (sky.ts, skyLight.ts, skyFit.ts), depth of field (focus.ts),
                          meshes.ts (plane, box, ball ... and solids pushed out of a 2d outline: outline2d.ts)
 components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
@@ -173,7 +173,8 @@ numbers at draw time (effects get a per-clip `seed`).
 - look at: a 3d clip can turn toward the camera (`lookAt` 'camera' / 'cameraY') or toward another clip
   ('clip' + `lookTarget`). it is applied last, in the world.
 - fog (`project.fog`): 3d clips fade into a color with distance from the camera. 2d clips are untouched.
-- light (`clip.lit` 0..1, `project.light`): a lit 3d clip is shaded by a sky dome (sky, horizon, ground) and one sun in linear light (`engine/scene3d/light.ts`, its shader twin is LIT_VS). without an own light the dome is read off the project data behind the 3d clips: the background, the 2d shape clips under the lowest 3d clip and the fog; no pixels are read, so preview, export and export workers agree. a render with no lit plane uses the old program and costs what it did; a render with one uses a second program (compiled in the background after an unlit 3d frame of the same channel; a channel whose first 3d frame is already lit, like the lit room template at 0 s or an export that starts lit, waits for the link in that frame) where unlit planes get a light of 1. a plane gets one light from the cpu, a solid is lit per vertex from its mesh normals (`litShapeMesh`). 2d clips, outlines and helper lines are never lit. a motion blur on a 3d video uploads the frame once for all its copies (Plane3D.serial).
+- light (`clip.lit` 0..1, `project.light`): a lit 3d clip is shaded by a sky dome (sky, horizon, ground) and one sun in linear light (`engine/scene3d/light.ts`, its shader twin is LIT_VS). without an own light and without a sky the dome is read off the project data behind the 3d clips: the background, the 2d shape clips under the lowest 3d clip and the fog; no pixels are read, so preview, export and export workers agree. a render with no lit plane uses the old program and costs what it did; a render with one uses a second program (compiled in the background after an unlit 3d frame of the same channel; a channel whose first 3d frame is already lit, like the lit room template at 0 s or an export that starts lit, waits for the link in that frame) where unlit planes get a light of 1. a plane gets one light from the cpu, a solid is lit per vertex from its mesh normals (`litShapeMesh`). 2d clips, outlines and helper lines are never lit. a motion blur on a 3d video uploads the frame once for all its copies (Plane3D.serial).
+- sky (`project.sky`, `engine/scene3d/sky.ts`): a skybox, one cube map from image media of the project (one picture: a cross 4:3 or 3:4, a strip 6:1 or 1:6, cut into six sides; or six pictures, one per side, with quarter turns). the sides follow the gl cube table (px nx py ny pz nz, first row at t = 0) in the world with y flipped, so the home camera sees the front upright. it is drawn far away by a small program of its own (SKY_VS / SKY_FS: one triangle over the frame, a mat3 from clip position to cube direction, brightness as a gain, blur as a mip bias), behind every layer: inside the first run of 3d clips when that is the first thing that paints (no extra render), else alone right before the first thing that paints (one render and one drawImage). a temporal blend draws it in every sample. fog does not cover it. the cube is uploaded once per picture key and channel (faces up to 2048 px, 512 for the inset) with mips. the pictures come through the resolver (`SourceResolver.sky`): the preview reads them once at a face size of about twice the project height, the export does the same in `sources.ts` (workers get the blobs). a project without a sky makes exactly the calls it made before. lit 3d clips take their light from the sky (`light.ts skyLightOf`): a dome and a sun measured once from 32 px samples when the sky is set (`skyLight.ts`), turned and scaled with the sky, never read from pixels while rendering. six pictures named with words or numbers get a seam check (`skyFit.ts`) that may swap left and right or turn the top and bottom. removing a sky picture takes the sky off without clearing undo (a sky that comes back with an undo has its picture missing and is not drawn).
 - groups (`clip.group`) are a selection aid only: clicking one member selects all of them.
 - a split keeps the picture: clips that point at a cut clip (parent, look target, camera target, effect
   target) and lie after the cut are re-pointed to the right half (`repointSplitDependents`).
@@ -181,12 +182,17 @@ numbers at draw time (effects get a per-clip `seed`).
   in the scene view).
 - an effect on one clip (`EffectClip.target`): the effect is skipped by the adjustment layer walk. when its
   target is drawn, that clip is painted alone into a scratch canvas, the effects run on it and the result is
-  laid into the stack with the clip's blend mode. effects that only move or mix pixels (categories blur and
-  distortion) run on the premultiplied picture, and the same pass runs once more over the clip's alpha as a
-  grey picture to get the new alpha: a blur on a text goes soft at the edges and keeps its colour. every
-  other category runs un-premultiplied and is cut back to the clip's old outline. the two tracks can be
-  anywhere in the stack. a 3d target is drawn as a run of its own. temporal effects with a target do nothing.
-  a clip drawn frozen by a transition (before its start / after its end) keeps the effects of its edge frame.
+  laid into the stack with the clip's blend mode. each effect says what it does to the outline (`EffectDef.alpha`):
+  keep (no field: colour, overlays and the looks that recolour in place, cut back to the clip's outline), moves
+  (motion, blur, distortion and the looks that shift, bend, smear or glow: the shader gets the picture premultiplied
+  and returns its own alpha, so the outline moves and spreads with the picture) and own (the chroma key: it makes
+  see-through holes). a clip with only keep effects runs them as before. a clip with a moves or own effect runs all
+  of them in one gpu run on the premultiplied picture (a keep effect in that run reads straight colour and is cut to
+  the alpha at that point). on an adjustment layer every effect runs on the opaque frame as before. an own effect
+  without target is no adjustment layer: per frame it keys the nearest video or image clip below it (both sides of a
+  transition), after that clip's own effects (`frameFx`). the two tracks can be anywhere in the stack. a 3d target is
+  drawn as a run of its own. temporal effects with a target do nothing. a clip drawn frozen by a transition (before
+  its start / after its end) keeps the effects of its edge frame.
 - per-clip motion blur kinds (`clip.motionBlur.style`): 'even' averages the open shutter, 'trail' keeps the
   clip sharp and leaves a tail fading into the past, 'ghost' draws a few separate copies behind it.
 - running numbers (`TextClip.counter`): `resolveVisual` writes the number into the text right after the
@@ -420,4 +426,4 @@ every shader in the browser and return the ones that fail (an empty list = all g
 `window.__ncut.bench` (`src/dev/bench.ts`, dev builds and `vite build --mode bench --outDir dist-bench`) makes test
 footage and projects, exports them with the options of `exportProject` and reports frames per second, the workers
 used, the encoder rate and whether the file went to disk (`export`, `fileCheck`, `golden`). start the desktop
-window on a bench build (`--dev-url=`) with `--remote-debugging-port` to measure the real thing. `litScene` builds the lit test scene (lit on or off, own light, fog, a video screen with motion blur) and `coldFrame` times a first frame on a fresh renderer.
+window on a bench build (`--dev-url=`) with `--remote-debugging-port` to measure the real thing. `litScene` builds the lit test scene (lit on or off, own light, fog, a video screen with motion blur) and `coldFrame` times a first frame on a fresh renderer. `skyScene` builds that scene in front of a labelled skybox (in the first 3d run, or alone under a 2d clip) and the bench resolver hands it to render, coldFrame and grab.

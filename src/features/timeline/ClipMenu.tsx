@@ -11,6 +11,7 @@ import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsNow, selectEffectsOf, ungroupIdsNow } from './actions';
 import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
+import { getEffect } from '../../engine/effects/registry';
 import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
 import { cutAtMarkers, fitToMarkers, makeRow, canCutAtMarkers, sequenceableIds } from './sequenceActions';
@@ -52,6 +53,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
   const is3d = visual.length > 0 && visual.every((c) => c.threeD);
   const effectsHere = project ? visual.flatMap((c) => effectsOn(project.clips, c.id)) : [];
   const targetedEffects = picked.filter((c) => c.type === 'effect' && c.target);
+  const allOwn = targetedEffects.length > 0 && targetedEffects.every((c) => c.type === 'effect' && getEffect(c.effect)?.alpha === 'own');
   const targetClip = clip.type === 'effect' && clip.target && project ? project.clips.find((c) => c.id === clip.target) : undefined;
 
   const swaps = project ? swapCandidates(project.assets, clip) : [];
@@ -304,11 +306,11 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <button
             className="menu-item"
             role="menuitem"
-            title="make the selected effects change everything below their track again"
+            title={allOwn ? 'make the selected chroma keys key the video or picture right under them' : 'make the selected effects change everything below their track again'}
             onClick={run(() => applyEffectsToEverything(picked.map((c) => c.id)))}
           >
             <Layers size={14} />
-            apply to everything below
+            {allOwn ? 'key the clip under it' : 'apply to everything below'}
           </button>
         </>
       ) : null}

@@ -162,10 +162,10 @@ describe('new blurs', () => {
     const def = getEffect('rgb-trail')!;
     const code = strip(def.glsl);
     expect(def.params.map((p) => p.key)).toEqual(['distance', 'angle', 'spread']);
-    expect(code).toMatch(/acc\.r \+= tex\(uv - dir \* t\)\.r/);
-    expect(code).toContain('.g;');
-    expect(code).toContain('.b;');
-    expect(code).toContain('mix(c, acc / 10.0, u_amount)');
+    expect(code).toContain('sumR += tex(uv - dir * t);');
+    expect(code).toContain('sumG += tex(uv - dir * t * (1.0 - 0.5 * s));');
+    expect(code).toContain('sumB += tex(uv - dir * t * (1.0 - s));');
+    expect(code).toContain('mix(c, pick3(sumR, sumG, sumB) / 10.0, u_amount)');
     // 1 center tap + 3 channels x 10 loop iterations stays inside the 32 tap budget
     expect(code.match(/\btex\(/g)).toHaveLength(4);
   });

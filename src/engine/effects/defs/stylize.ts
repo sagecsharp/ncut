@@ -6,6 +6,7 @@ export const STYLIZE_EFFECTS: EffectDef[] = [
     id: 'rgb-split',
     name: 'rgb split',
     category: 'stylize',
+    alpha: 'moves',
     description: 'chromatic aberration, red and blue pulled apart',
     posterTime: 1,
     params: [
@@ -25,16 +26,15 @@ vec4 effect(vec2 uv) {
   float wob = 1.0 + p_jitter / 100.0 * (hash11(floor(u_time * 20.0) + u_seed) * 2.0 - 1.0);
   float mag = p_amount / 100.0 * 0.05 * wob * u_amount;
   vec2 off = offDir * mag / vec2(asp, 1.0);
-  float cr = tex(uv + off).r;
-  float cg = tex(uv).g;
-  float cb = tex(uv - off).b;
-  return vec4(cr, cg, cb, 1.0);
+  // each colour moves on its own, the outline is where any of them is
+  return pick3(tex(uv + off), tex(uv), tex(uv - off));
 }`,
   },
   {
     id: 'blur',
     name: 'blur',
     category: 'stylize',
+    alpha: 'moves',
     description: 'soft defocus blur, optionally only at the edges',
     posterTime: 1,
     params: [
@@ -48,21 +48,22 @@ vec4 effect(vec2 uv) {
   // 0 = same blur everywhere, 100 = sharp middle, blurred edges
   float edge = mix(1.0, smoothstep(0.15, 0.75, length(p)), p_edgeOnly / 100.0);
   float rad = p_radius / 100.0 * u_amount * edge;
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 28; i++) {
     float fi = float(i);
     float rr = sqrt((fi + 0.5) / 28.0);
     float th = fi * 2.39996323;
     vec2 o = vec2(cos(th), sin(th)) * rr * rad;
-    acc += tex(uv + vec2(o.x / asp, o.y)).rgb;
+    acc += tex(uv + vec2(o.x / asp, o.y));
   }
-  return vec4(acc / 28.0, 1.0);
+  return acc / 28.0;
 }`,
   },
   {
     id: 'crt',
     name: 'crt',
     category: 'stylize',
+    alpha: 'moves',
     description: 'old tube tv: sharpening halos, color bleed, scanlines',
     posterTime: 1,
     params: [
@@ -85,23 +86,24 @@ vec4 effect(vec2 uv) {
 
   // horizontal sharpening: unsharp mask with a 5 tap blur, 2 project pixels per step
   float w = 2.0 / u_size.x;
-  vec3 c = tex(uv).rgb;
-  vec3 bl = tex(uv - vec2(2.0 * w, 0.0)).rgb
-          + 4.0 * tex(uv - vec2(w, 0.0)).rgb
-          + 6.0 * c
-          + 4.0 * tex(uv + vec2(w, 0.0)).rgb
-          + tex(uv + vec2(2.0 * w, 0.0)).rgb;
-  bl /= 16.0;
+  vec4 c4 = tex(uv);
+  vec3 c = c4.rgb;
+  vec4 bl4 = tex(uv - vec2(2.0 * w, 0.0))
+          + 4.0 * tex(uv - vec2(w, 0.0))
+          + 6.0 * c4
+          + 4.0 * tex(uv + vec2(w, 0.0))
+          + tex(uv + vec2(2.0 * w, 0.0));
+  vec3 bl = bl4.rgb / 16.0;
   float sh = p_sharpen / 100.0 * k * 3.0;
   vec3 col = c + (c - bl) * sh;
 
   // chroma smeared sideways
   float bw = 2.0 / u_size.x;
-  vec3 cs = vec3(0.0);
+  vec4 cs4 = vec4(0.0);
   for (int i = 0; i < 7; i++) {
-    cs += tex(uv + vec2((float(i) - 3.0) * bw, 0.0)).rgb;
+    cs4 += tex(uv + vec2((float(i) - 3.0) * bw, 0.0));
   }
-  cs /= 7.0;
+  vec3 cs = cs4.rgb / 7.0;
   vec3 chr = cs - vec3(luma(cs));
   vec3 chr0 = c - vec3(luma(c));
   col += (chr - chr0) * sat(p_bleed / 100.0) * k;
@@ -113,13 +115,15 @@ vec4 effect(vec2 uv) {
   float sl = 0.5 + 0.5 * sin(uv0.y * u_size.y * TAU / 3.0);
   col *= 1.0 - p_scanlines / 100.0 * k * 0.35 * sl;
 
-  return vec4(col * mask, 1.0);
+  // outside the bent tube the colour goes black, the outline is the picture's
+  return vec4(col * mask, c4.a);
 }`,
   },
   {
     id: 'glitch',
     name: 'glitch',
     category: 'stylize',
+    alpha: 'moves',
     description: 'torn horizontal bands, smear, rgb split, crushed contrast',
     posterTime: 0.3,
     sync: { param: 'rate', cycles: 1 },
@@ -148,26 +152,29 @@ vec4 effect(vec2 uv) {
   float t2 = step(0.8, hash21(vec2(seg2, tt + 3.0)));
   shift += (hash21(vec2(seg2 + 5.0, tt)) * 2.0 - 1.0) * 0.15 * k * t2;
   float sp = p_split / 100.0 * 0.05 * u_amount * (0.5 + r1);
-  vec3 acc = vec3(0.0);
+  vec4 sumR = vec4(0.0);
+  vec4 sumG = vec4(0.0);
+  vec4 sumB = vec4(0.0);
   for (int i = 0; i < 3; i++) {
     float f = float(i) / 2.0;
     float x = uv.x + shift - smear * f;
-    acc.r += tex(vec2(x + sp, uv.y)).r;
-    acc.g += tex(vec2(x, uv.y)).g;
-    acc.b += tex(vec2(x - sp, uv.y)).b;
+    sumR += tex(vec2(x + sp, uv.y));
+    sumG += tex(vec2(x, uv.y));
+    sumB += tex(vec2(x - sp, uv.y));
   }
-  acc /= 3.0;
-  // crush to near white / near black
+  vec4 acc = pick3(sumR, sumG, sumB) / 3.0;
+  // crush to near white / near black, on the straight colour
   float cf = 1.0 + p_contrast / 100.0 * 3.0 * u_amount;
-  vec3 col = (acc - 0.5) * cf + 0.5;
+  vec3 col = (unpm(acc) - 0.5) * cf + 0.5;
   col *= 1.0 + (hash11(tt + 9.0) - 0.5) * 0.3 * k;
-  return vec4(col, 1.0);
+  return repm(col, acc.a);
 }`,
   },
   {
     id: 'vhs',
     name: 'vhs',
     category: 'stylize',
+    alpha: 'moves',
     description: 'worn tape: color noise streaks, wobble, tracking line',
     posterTime: 1,
     params: [
@@ -196,14 +203,15 @@ vec4 effect(vec2 uv) {
   dx += tl * trk * 0.02 * (lh - 0.3);
   vec2 q = vec2(uv.x + dx, uv.y);
 
-  vec3 c0 = tex(q).rgb;
+  vec4 s = tex(q);
+  vec3 c0 = unpm(s);
   // chroma bleed to the side
   float bw = 2.5 / u_size.x;
-  vec3 cs = vec3(0.0);
+  vec4 cs4 = vec4(0.0);
   for (int i = 0; i < 5; i++) {
-    cs += tex(q + vec2((float(i) - 2.0) * bw, 0.0)).rgb;
+    cs4 += tex(q + vec2((float(i) - 2.0) * bw, 0.0));
   }
-  cs /= 5.0;
+  vec3 cs = unpm(cs4 / 5.0);
   vec3 col = mix(c0, vec3(luma(c0)) + (cs - vec3(luma(cs))), sat(p_bleed / 100.0) * k);
 
   // slightly washed out
@@ -221,13 +229,15 @@ vec4 effect(vec2 uv) {
 
   // brighter tracking line
   col += tl * trk * 0.35;
-  return vec4(col, 1.0);
+  // the tape takes its outline along when it wobbles
+  return repm(col, s.a);
 }`,
   },
   {
     id: 'static',
     name: 'tv static',
     category: 'stylize',
+    alpha: 'moves',
     description: 'signal lost: colored noise dashes, optional shrink to a tube',
     posterTime: 0.5,
     sync: { param: 'rate', cycles: 1 },
@@ -258,7 +268,9 @@ vec4 effect(vec2 uv) {
   vec3 stat = mix(gray, rainbow, p_color / 100.0);
 
   float m = p_mix / 100.0 * u_amount;
-  vec3 col = mix(tex(uvT).rgb, stat, m);
+  vec4 s = tex(uvT);
+  // the static covers the picture, not the see-through parts around it
+  vec3 col = mix(unpm(s), stat, m);
 
   // rounded tube with bowed sides
   vec2 pc = (uvT - 0.5) * 2.0;
@@ -266,13 +278,14 @@ vec4 effect(vec2 uv) {
   float rr = mix(0.001, 0.3, tube);
   float sdf = length(max(q - (1.0 - rr), 0.0)) - rr;
   float mask = 1.0 - smoothstep(0.0, 0.03, sdf);
-  return vec4(col * mask, 1.0);
+  return repm(col * mask, s.a);
 }`,
   },
   {
     id: 'pixelate',
     name: 'pixelate',
     category: 'stylize',
+    alpha: 'moves',
     description: 'mosaic of flat color blocks',
     posterTime: 1,
     params: [

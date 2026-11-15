@@ -12,11 +12,12 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 /**
  * fog when switched on: the project background (if it is a plain hex color) as the haze color. it starts
  * at the canvas plane as the home camera sees it (so flat 3d clips at z 0 keep their colors) and is full
- * three of those distances further back.
+ * three of those distances further back. with a sky, its horizon color (the haze then matches the sky).
  */
-export function defaultFog(background: string, projectHeight = 1080): SceneFog {
+export function defaultFog(background: string, projectHeight = 1080, horizon?: string): SceneFog {
   const near = Math.max(1, Math.round(homeDistance(projectHeight > 0 ? projectHeight : 1080)));
-  return { color: isHex(background) ? background.slice(0, 7).toLowerCase() : '#000000', near, far: near * 4, amount: 1 };
+  const from = horizon !== undefined && isHex(horizon) ? horizon : background;
+  return { color: isHex(from) ? from.slice(0, 7).toLowerCase() : '#000000', near, far: near * 4, amount: 1 };
 }
 
 /** near moved; far is pushed along so it stays past near */

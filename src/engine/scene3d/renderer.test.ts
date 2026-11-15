@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { meshNeedsBlur } from './focus';
 import { identity, mul, scaling, translation } from './math';
 import { LIGHT_GAMMA, planeLight } from './light';
-import { LIGHT_LINE, LIT_VS, OUTLINE_CACHE_LIMIT, PLANE_FS, canReuseScratch, lightUniform, litFragment, lruOverflow, outlineKey, planeNeedsBlur, stackedTexelAlpha, uvWrapsU } from './renderer';
+import { LIGHT_LINE, LIT_VS, OUTLINE_CACHE_LIMIT, PLANE_FS, SKY_FS, SKY_VS, canReuseScratch, lightUniform, litFragment, lruOverflow, outlineKey, planeNeedsBlur, skyCubeSize, skyLevels, stackedTexelAlpha, uvWrapsU } from './renderer';
 
 // a camera at the origin looking down +z: depth = z (w = z), no perspective needed for the depth test
 const viewProj = (() => {
@@ -153,5 +153,36 @@ describe('lightUniform', () => {
     planeLight(model, eye, 0.5, env, want);
     want[3] = 0;
     expect(run(0.5, 'plane')).toEqual([...want]);
+  });
+});
+
+describe('sky', () => {
+  it('SKY_VS draws one triangle from u_ray and gl_VertexID', () => {
+    expect(SKY_VS).toContain('uniform mat3 u_ray;');
+    expect(SKY_VS).toContain('gl_VertexID');
+    expect(SKY_VS).toContain('v_dir = u_ray * vec3(p, 1.0);');
+  });
+  it('SKY_FS samples the cube with the blur as a bias and keeps the color under its alpha', () => {
+    expect(SKY_FS).toContain('uniform samplerCube u_sky;');
+    expect(SKY_FS).toContain('texture(u_sky, v_dir, u_bias)');
+    expect(SKY_FS).toContain('min(c.rgb * u_gain, vec3(c.a))');
+  });
+  it('the plane and lit shaders do not know the sky', () => {
+    for (const src of [PLANE_FS, LIT_VS, litFragment(PLANE_FS)]) {
+      expect(src).not.toContain('u_sky');
+      expect(src).not.toContain('samplerCube');
+    }
+  });
+  it('skyCubeSize takes the smallest of the picture, the channel and the gpu', () => {
+    expect(skyCubeSize(2048, 512, 16384)).toBe(512);
+    expect(skyCubeSize(1000, 2048, 0)).toBe(1000);
+    expect(skyCubeSize(4096, 2048, 1024)).toBe(1024);
+    expect(skyCubeSize(0.4, 2048, 0)).toBe(1);
+  });
+  it('skyLevels counts the mips down to 1', () => {
+    expect(skyLevels(2048)).toBe(12);
+    expect(skyLevels(1000)).toBe(10);
+    expect(skyLevels(1)).toBe(1);
+    expect(skyLevels(0)).toBe(1);
   });
 });

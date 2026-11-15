@@ -7,9 +7,12 @@
  */
 import type { Project } from '../../types';
 import type { DrawSource } from '../../engine/draw';
+import type { SkyPicture } from '../../engine/scene3d/sky';
+import { skyAssetIds } from '../../engine/scene3d/sky';
 import type { FontKit } from '../../lib/fontKit';
 import { KEYFRAME_SECONDS, renderSegment } from './segment';
 import type { SegmentJob, SegmentResult } from './segment';
+import { loadExportSky } from './sources';
 
 /** a part is at most this long, so the workers stay evenly loaded on long timelines and little is held in memory */
 export const MAX_SEGMENT_SECONDS = 20;
@@ -263,14 +266,36 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
     return { ...init.base, id: index, from: span.from, to: span.to, warmup, ...(capture && capture.length > 0 ? { capture } : {}) };
   };
 
+  // the parts on this thread share one decode of the sky: loaded by the first lane, closed when the last lane is out
+  let mainSky: Promise<SkyPicture | null> | null = null;
+  let lanes = 0;
+  const leaveLane = () => {
+    if (--lanes > 0) return;
+    const p = mainSky;
+    mainSky = null;
+    void p?.then((s) => s?.close()).catch(() => {});
+  };
+
   const runOnMain = async () => {
+    lanes++;
+    try {
+      await laneLoop();
+    } finally {
+      leaveLane();
+    }
+  };
+
+  const laneLoop = async () => {
     for (;;) {
       while (!failed && next < segments.length && !mayStart()) await new Promise<void>((wake) => waiting.push(wake));
       if (failed) return;
       const index = next++;
       if (index >= segments.length) return;
       try {
+        if (!mainSky) mainSky = loadExportSky({ project: init.project, blobOf: init.blobOf, onWarning: init.onWarning });
+        const picture = await mainSky;
         const r = await renderSegment(init.project, jobAt(index), {
+          sky: picture,
           blobOf: init.blobOf,
           loadImageElement: init.loadImageElement,
           onWarning: init.onWarning,
@@ -374,6 +399,13 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
       seen.add(clip.assetId);
       const blob = init.blobOf(clip.assetId);
       if (blob) blobs.push([clip.assetId, blob]);
+    }
+    // the sky's pictures too (they have no clip)
+    for (const id of skyAssetIds(init.project.sky)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const blob = init.blobOf(id);
+      if (blob) blobs.push([id, blob]);
     }
     send({ type: 'init', project: init.project, blobs, fontKit: init.fontKit });
   };

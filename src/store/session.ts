@@ -17,6 +17,7 @@ import { whenIdle } from '../storage/idle';
 import { whenMediaStored } from '../storage/pendingMedia';
 import { capturePoster, copyPoster, deletePoster, isPoster, pruneOrphanPosters, savePoster } from '../storage/posters';
 import { packProject, projectFileName, unpackProject } from '../storage/projectFile';
+import { remapSky } from '../engine/scene3d/sky';
 import { useEditor } from './editorStore';
 import { resetPlayback } from './playback';
 import { useUi } from './ui';
@@ -183,6 +184,7 @@ export async function duplicateProject(id: string): Promise<string | null> {
     for (const clip of copy.clips) {
       if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
     }
+    if (copy.sky) copy.sky = remapSky(copy.sky, idMap);
     await saveProject(copy);
   } catch (e) {
     await discardPartialCopy(copy.id);
@@ -241,6 +243,7 @@ export async function importProjectFile(file: Blob): Promise<string> {
     for (const clip of copy.clips) {
       if ('assetId' in clip) clip.assetId = idMap.get(clip.assetId) ?? clip.assetId;
     }
+    if (copy.sky) copy.sky = remapSky(copy.sky, idMap);
     await saveProject(copy);
   } catch (e) {
     await discardPartialCopy(copy.id);

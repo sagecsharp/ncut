@@ -1,10 +1,18 @@
-import { describe, expect, it } from 'vitest';
-import type { AudioClip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
+import { describe, expect, it, vi } from 'vitest';
+import type { AudioClip, Clip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { clipFxPasses, effectPassAt, hasEffectsAt, paintListAt, renderFrame, samePose, temporalReach } from './draw';
+import { clipFxPasses, effectPassAt, frameFx, hasEffectsAt, paintListAt, renderFrame, samePose, temporalReach } from './draw';
 import { clampIntoClip, targetIndex } from './clipFx';
 import type { DrawSource } from './draw';
 import { EFFECTS, getEffect } from './effects/registry';
+import { TRANSITIONS } from './transitions/registry';
+
+// node has no webgl: the toggle makes renderEffects give a picture, so an effect that runs as a layer would draw it
+const gpu = vi.hoisted(() => ({ on: false }));
+vi.mock('./effects/runner', async (orig) => {
+  const mod = await orig<typeof import('./effects/runner')>();
+  return { ...mod, renderEffects: (...a: Parameters<typeof mod.renderEffects>) => (gpu.on ? ({ tag: 'adj' } as never) : mod.renderEffects(...a)) };
+});
 
 let seq = 0;
 const FX = EFFECTS[0]!.id;
@@ -390,6 +398,169 @@ describe('effects on one clip', () => {
     expect(temporalReach(p1, 1)).not.toBeNull();
     const p2 = project([a, { ...adj, target: a.id }], tracks);
     expect(temporalReach(p2, 1)).toBeNull();
+  });
+});
+
+describe('a chroma key on a track of its own', () => {
+  const key = (trackId: string, over: Partial<EffectClip> = {}) => effect(trackId, 0, 5, { effect: 'chroma-key', ...over });
+  const text = (trackId: string) => ({ ...image(trackId, 0, 5), type: 'text' }) as unknown as Clip;
+  const ids = (p: Project, f: ReturnType<typeof frameFx>, clipId: string, t = 1) => clipFxPasses(p, f.fx, clipId, t)?.map((x) => x.def.id) ?? null;
+
+  it('frameFx is the plain target index when no own effect is on screen', () => {
+    const v = video('bot', 0, 5);
+    const e = effect('top', 0, 5, { target: v.id });
+    const p = project([v, e], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect(f.fx).toBe(targetIndex(p));
+    expect(f.bound).toBeNull();
+    const none = project([v], [track('bot', 'video')]);
+    expect(frameFx(none, 1)).toEqual({ fx: null, bound: null });
+  });
+
+  it('keys the video right under it', () => {
+    const v = video('bot', 0, 5);
+    const k = key('top');
+    const p = project([k, v], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect([...f.bound!]).toEqual([v.id]);
+    expect(ids(p, f, v.id)).toEqual(['chroma-key']);
+    expect(clipFxPasses(p, f.fx, v.id, 1)).toHaveLength(1);
+  });
+
+  it('skips text, shapes and other layers on the way down', () => {
+    const v = video('c', 0, 5);
+    const t = text('b');
+    const adj = effect('b2', 0, 5);
+    const k = key('a');
+    const p = project([k, adj, t, v], [track('a', 'video'), track('b2', 'video'), track('b', 'video'), track('c', 'video')]);
+    const f = frameFx(p, 1);
+    expect([...f.bound!]).toEqual([v.id]);
+    expect(f.fx!.has((t as { id: string }).id)).toBe(false);
+  });
+
+  it('keys the nearest picture, not one further down', () => {
+    const lower = video('c', 0, 5);
+    const near = image('b', 0, 5);
+    const k = key('a');
+    const p = project([k, near, lower], [track('a', 'video'), track('b', 'video'), track('c', 'video')]);
+    const f = frameFx(p, 1);
+    expect([...f.bound!]).toEqual([near.id]);
+    expect(ids(p, f, lower.id)).toBeNull();
+  });
+
+  it('runs after the effects that sit on the clip', () => {
+    const v = video('bot', 0, 5);
+    const own = effect('mid', 0, 5, { target: v.id });
+    const k = key('top');
+    const p = project([k, own, v], [track('top', 'video'), track('mid', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect(ids(p, f, v.id)).toEqual([FX, 'chroma-key']);
+    // the cached base index is not changed
+    expect(targetIndex(p)!.get(v.id)).toHaveLength(1);
+  });
+
+  it('two key layers on one clip run the lower first', () => {
+    const v = video('bot', 0, 5);
+    const high = key('top');
+    const low = key('mid');
+    const p = project([high, low, v], [track('top', 'video'), track('mid', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect(f.fx!.get(v.id)!.map((c) => c.id)).toEqual([low.id, high.id]);
+  });
+
+  it('does nothing with nothing under it', () => {
+    const k = key('top');
+    const t = text('bot');
+    const p = project([k, t], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect(f.bound).toBeNull();
+    expect(f.fx).toBeNull();
+    const alone = project([k], [track('top', 'video')]);
+    expect(frameFx(alone, 1).bound).toBeNull();
+  });
+
+  it('does nothing on a hidden track or outside its time', () => {
+    const v = video('bot', 0, 5);
+    const k = key('top');
+    const hidden = project([k, v], [track('top', 'video', true), track('bot', 'video')]);
+    expect(frameFx(hidden, 1).bound).toBeNull();
+    const late = project([key('top', { start: 10 }), v], [track('top', 'video'), track('bot', 'video')]);
+    expect(frameFx(late, 1).bound).toBeNull();
+    expect(frameFx(late, 11).bound).toBeNull();
+  });
+
+  it('keys both sides of a transition', () => {
+    const a = video('bot', 0, 5);
+    const b = video('bot', 5, 5, { transition: { id: TRANSITIONS[0]!.id, duration: 1 } });
+    const k = key('top', { start: 0, duration: 10 });
+    const p = project([k, a, b], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 5);
+    expect(f.bound).toEqual(new Set([a.id, b.id]));
+  });
+
+  it('with a target it is an ordinary targeted effect', () => {
+    const v = video('bot', 0, 5);
+    const k = key('top', { target: v.id });
+    const p = project([k, v], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(p, 1);
+    expect(f.bound).toBeNull();
+    expect(targetIndex(p)!.get(v.id)).toEqual([k]);
+    expect(f.fx).toBe(targetIndex(p));
+  });
+
+  it('is not an adjustment layer: renderFrame draws the clip once and does not throw', () => {
+    const v = video('bot', 0, 5);
+    const k = key('top');
+    const p = project([k, v], [track('top', 'video'), track('bot', 'video')]);
+    const ctx = new FakeCtx({ width: 1920, height: 1080 });
+    expect(() => renderFrame(asCtx(ctx), p, 1, (clip) => mkSource(clip.id))).not.toThrow();
+    expect(ctx.drawn).toEqual([v.id]);
+    expect(ctx.open).toBe(0);
+  });
+
+  it('does not run as an adjustment layer even when the gpu gives a picture', () => {
+    const v = video('bot', 0, 5);
+    const k = key('top');
+    const p = project([k, v], [track('top', 'video'), track('bot', 'video')]);
+    gpu.on = true;
+    try {
+      const ctx = new FakeCtx({ width: 1920, height: 1080 });
+      renderFrame(asCtx(ctx), p, 1, (clip) => mkSource(clip.id));
+      expect(ctx.drawn).toEqual([v.id]);
+      const lone = project([key('top'), text('bot')], [track('top', 'video'), track('bot', 'video')]);
+      const ctx2 = new FakeCtx({ width: 1920, height: 1080 });
+      renderFrame(asCtx(ctx2), lone, 1, (clip) => mkSource(clip.id));
+      expect(ctx2.drawn).toEqual([]);
+    } finally {
+      gpu.on = false;
+    }
+  });
+
+  it('keeps the plain index object when a layer is off screen or hidden', () => {
+    const v = video('bot', 0, 5);
+    const e = effect('mid', 0, 5, { target: v.id });
+    const tr = [track('top', 'video'), track('mid', 'video'), track('bot', 'video')];
+    const late = project([key('top', { start: 10 }), e, v], tr);
+    expect(frameFx(late, 1).fx).toBe(targetIndex(late));
+    expect(frameFx(late, 1).bound).toBeNull();
+    const hidden = project([key('top'), e, v], [track('top', 'video', true), track('mid', 'video'), track('bot', 'video')]);
+    expect(frameFx(hidden, 1).fx).toBe(targetIndex(hidden));
+  });
+
+  it('a frozen side keeps the key of its edge frame', () => {
+    const a = video('bot', 0, 5);
+    const b = video('bot', 5, 5, { transition: { id: TRANSITIONS[0]!.id, duration: 1 } });
+    // the layer ends at 5 and the transition runs to 5.5: a is frozen on its last frame
+    const ends = project([key('top', { start: 0, duration: 5 }), a, b], [track('top', 'video'), track('bot', 'video')]);
+    const f = frameFx(ends, 5.2);
+    expect(f.bound!.has(a.id)).toBe(true);
+    expect(clipFxPasses(ends, f.fx, a.id, clampIntoClip(a, 5.2))).toHaveLength(1);
+    expect(clipFxPasses(ends, f.fx, b.id, 5.2)).toBeNull();
+    // the layer starts at 5 and the transition starts at 4.5: b is frozen on its first frame
+    const starts = project([key('top', { start: 5, duration: 5 }), a, b], [track('top', 'video'), track('bot', 'video')]);
+    const g = frameFx(starts, 4.8);
+    expect(clipFxPasses(starts, g.fx, b.id, clampIntoClip(b, 4.8))).toHaveLength(1);
+    expect(clipFxPasses(starts, g.fx, a.id, 4.8)).toBeNull();
   });
 });
 

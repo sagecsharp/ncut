@@ -11,6 +11,7 @@ export const PACK2_DISTORT_EFFECTS: EffectDef[] = [
     id: 'fisheye',
     name: 'fisheye',
     category: 'distort',
+    alpha: 'moves',
     description: 'wide angle bulge: the middle swells, the edges squash, nothing stretches past the frame',
     posterTime: 0.5,
     params: [
@@ -35,6 +36,7 @@ vec4 effect(vec2 uv) {
     id: 'tunnel',
     name: 'tunnel',
     category: 'distort',
+    alpha: 'moves',
     description: 'the picture wraps into a tunnel that you fly through',
     posterTime: 1,
     sync: { param: 'speed', cycles: 0.5 },
@@ -55,16 +57,17 @@ vec4 effect(vec2 uv) {
   float lobes = 2.0 * floor(p_repeats + 0.5);
   float u = a / TAU * lobes + u_time * p_spin;
   float v = p_depth * 0.25 / max(r, 0.02) + u_time * p_speed;
-  vec3 t = tex(vec2(mir(u), mir(v))).rgb;
-  // far away (the middle) fades to black
-  t *= mix(1.0, smoothstep(0.0, 0.3, r), p_fog / 100.0);
-  return vec4(mix(tex(uv).rgb, t, u_amount), 1.0);
+  vec4 t = tex(vec2(mir(u), mir(v)));
+  // far away (the middle) fades to black. the colour only: the tunnel does not get see-through
+  t.rgb *= mix(1.0, smoothstep(0.0, 0.3, r), p_fog / 100.0);
+  return mix(tex(uv), t, u_amount);
 }`,
   },
   {
     id: 'stretch',
     name: 'stretch',
     category: 'distort',
+    alpha: 'moves',
     description: 'scales the picture wider or taller from the center',
     posterTime: 0.5,
     params: [
@@ -78,7 +81,7 @@ vec4 effect(vec2 uv) {
   vec2 q = (uv - 0.5) / max(sc, 0.01) + 0.5;
   if (p_edges > 1.5) {
     vec2 inside = step(vec2(0.0), q) * step(q, vec2(1.0));
-    return vec4(tex(q).rgb * inside.x * inside.y, 1.0);
+    return tex(q) * inside.x * inside.y;
   }
   if (p_edges > 0.5) q = vec2(mir(q.x), mir(q.y));
   return tex(q);
@@ -88,6 +91,7 @@ vec4 effect(vec2 uv) {
     id: 'tile',
     name: 'tile',
     category: 'distort',
+    alpha: 'moves',
     description: 'repeats the whole picture in a grid, optionally mirrored',
     posterTime: 0.5,
     sync: { param: 'scroll', cycles: 0.5 },
@@ -103,13 +107,14 @@ vec4 effect(vec2 uv) {
   vec2 g = uv * n + vec2(u_time * p_scroll, 0.0);
   vec2 q = p_mirror > 0.5 ? vec2(mir(g.x), mir(g.y)) : fract(g);
   // cross fade, so the grid appears smoothly
-  return vec4(mix(tex(uv).rgb, tex(q).rgb, u_amount), 1.0);
+  return mix(tex(uv), tex(q), u_amount);
 }`,
   },
   {
     id: 'heat-haze',
     name: 'heat haze',
     category: 'distort',
+    alpha: 'moves',
     description: 'small rising shimmer, like air over hot ground',
     posterTime: 1,
     params: [

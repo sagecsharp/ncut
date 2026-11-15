@@ -132,21 +132,22 @@ vec4 effect(vec2 uv) {
     id: 'chroma-key',
     name: 'chroma key',
     category: 'color',
-    description: 'removes one color from the picture and fills it with a gray. no transparency here',
+    alpha: 'own',
+    description: 'makes one color see-through. on a track of its own it keys the video or picture right under it',
     posterTime: 0.5,
     params: [
       { key: 'hue', label: 'key hue', min: 0, max: 360, step: 1, default: 120, unit: 'deg' },
       { key: 'tolerance', label: 'tolerance', min: 0, max: 100, step: 1, default: 30, unit: '%' },
       { key: 'softness', label: 'softness', min: 0, max: 100, step: 1, default: 30, unit: '%' },
       { key: 'spill', label: 'spill', min: 0, max: 100, step: 1, default: 60, unit: '%' },
-      { key: 'fill', label: 'fill', min: 0, max: 100, step: 1, default: 0, unit: '%' },
     ],
     glsl: `
-// effects run on the finished picture of everything below and always return an opaque frame
-// (the runner forces alpha to 1), so a keyed pixel cannot become see-through. it is replaced by a
-// plain gray (fill 0 = black, 100 = white) instead.
+// the key makes keyed pixels see-through. on one clip the clip gets holes and what is below shows. on a track of its
+// own (no target) it keys the video or picture right under it (frameFx in engine/draw.ts). the key and the spill read
+// the straight colour.
 vec4 effect(vec2 uv) {
-  vec3 c = tex(uv).rgb;
+  vec4 s = tex(uv);
+  vec3 c = unpm(s);
   vec3 hsv = rgb2hsv(c);
   // hue distance to the key in degrees, 0..180, wraps around the wheel
   float dh = abs(fract(hsv.x - p_hue / 360.0 + 0.5) - 0.5) * 360.0;
@@ -158,8 +159,7 @@ vec4 effect(vec2 uv) {
   // spill: the kept pixels around the key hue lose some of their color
   float close = (1.0 - smoothstep(tol + soft, tol + soft + 40.0, dh)) * colorful;
   vec3 kept = mix(c, vec3(luma(c)), close * p_spill / 100.0);
-  vec3 res = mix(kept, vec3(p_fill / 100.0), key);
-  return vec4(mix(c, res, u_amount), 1.0);
+  return repm(mix(c, kept, u_amount), s.a) * (1.0 - key * u_amount);
 }`,
   },
   {

@@ -9,6 +9,7 @@ import type { VideoCodec } from 'mediabunny';
 import type { Project } from '../../types';
 import { renderFrame } from '../../engine/draw';
 import type { DrawSource } from '../../engine/draw';
+import type { SkyPicture } from '../../engine/scene3d/sky';
 import { encodeGifFrame } from '../../lib/gif';
 import { createFrameSources } from './sources';
 import { scaledBitrate } from './encoderSetup';
@@ -83,6 +84,8 @@ export interface SegmentEnv {
   /** true = a video that cannot be decoded here is an error instead of a skipped clip (see sources.ts) */
   strictVideo?: boolean;
   onWarning?: (message: string) => void;
+  /** the sky pictures loaded once for all parts (sources.ts loadExportSky). not closed here. missing = each part loads its own */
+  sky?: SkyPicture | null;
   /** frames of this part that are done (called often: throttle on the receiving side) */
   onProgress?: (framesDone: number) => void;
   /**
@@ -154,6 +157,7 @@ async function renderGifSegment(project: Project, job: SegmentJob, env: SegmentE
     strictVideo: env.strictVideo,
     lenient: job.lenient,
     onWarning: env.onWarning,
+    sky: env.sky,
     signal: env.signal,
     stats,
   });
@@ -220,6 +224,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     strictVideo: env.strictVideo,
     lenient: job.lenient,
     onWarning: env.onWarning,
+    sky: env.sky,
     signal: env.signal,
     stats,
   });

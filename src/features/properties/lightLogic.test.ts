@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createProject } from '../../lib/factory';
-import type { Project, SceneLight } from '../../types';
+import type { MediaAsset, Project, SceneLight } from '../../types';
+import { skyLightOf } from '../../engine/scene3d/light';
 import { autoKey, defaultLight, sameLight, setSunHeight, setSunPercent, setSunTurn } from './lightLogic';
 
 const LIGHT: SceneLight = { sky: '#aabbcc', horizon: '#112233', ground: '#000000', sun: 0.4, sunColor: '#fff4e0', sunTurn: -35, sunHeight: 45 };
@@ -76,5 +77,19 @@ describe('lightLogic at the end of the timeline', () => {
     expect(defaultLight(p, 10)).toEqual(defaultLight(p, 10 - 1 / p.fps));
     expect(autoKey(p, 10)).toBe(autoKey(p, 10 - 1 / p.fps));
     expect(autoKey(p, 10)).not.toContain('#000000');
+  });
+
+  it('defaultLight starts from the sky when there is one', () => {
+    const picture: MediaAsset = { id: 'cross', name: 'cross', kind: 'image', mime: '', size: 10, duration: 0, width: 1024, height: 768, hasAudio: false, createdAt: 0 };
+    const light: SceneLight = { sky: '#6080c0', horizon: '#a0b0c0', ground: '#605040', sun: 0.3, sunColor: '#fff4e0', sunTurn: 10, sunHeight: 40 };
+    const p = plain();
+    const withSky: Project = { ...p, assets: [picture], sky: { asset: 'cross', turn: 30, brightness: 1, blur: 0, light } };
+    const sky = skyLightOf(withSky)!;
+    expect(sky).not.toBeNull();
+    expect(defaultLight(withSky, 0)).toEqual(sky);
+    expect(defaultLight(withSky, 0)).not.toBe(sky);
+    // a sky whose picture is gone, and no sky: as before
+    expect(defaultLight({ ...withSky, assets: [] }, 0)).toEqual(defaultLight(p, 0));
+    expect(defaultLight(p, 0).sun).toBe(0.4);
   });
 });

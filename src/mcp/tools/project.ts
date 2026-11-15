@@ -5,7 +5,10 @@ import { CANVAS_PRESETS, MAX_FPS } from '../../lib/factory';
 import { shell } from '../../lib/shell';
 import { defaultFog, FOG_GAP, FOG_MAX } from '../../features/properties/fogLogic';
 import { defaultLight, sameLight, sceneTime, setSunHeight, setSunPercent, setSunTurn } from '../../features/properties/lightLogic';
-import { autoLightAt } from '../../engine/scene3d/light';
+import { autoLightAt, skyLightOf } from '../../engine/scene3d/light';
+import { layoutOf, skyBlur, skyBrightness, skyTurn, skyTurnsOf, skyUsable, withSkyValues } from '../../engine/scene3d/sky';
+import { SkyError, skyFromAssets, skyFromFaces } from '../../media/skyImport';
+import { keepOf } from '../../features/properties/skyLogic';
 import { projectDuration } from '../../lib/timelineOps';
 import { faceNames } from '../../engine/scene3d/faces';
 import { getEffect } from '../../engine/effects/registry';
@@ -15,7 +18,7 @@ import type { ProjectSettingsPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { closeProject, createAndOpenProject, deleteStoredProject, openProjectById, useSaveState } from '../../store/session';
 import { useUi } from '../../store/ui';
-import type { Project, SceneFog, SceneLight } from '../../types';
+import type { Project, SceneFog, SceneLight, SceneSky } from '../../types';
 import { changedSince, clipBrief, needClip, needProject, needTrack, ok, oneStep, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 
@@ -50,6 +53,28 @@ function lightOf(p: Project): SceneLight | null {
   return l ? { sky: l.sky, horizon: l.horizon, ground: l.ground, sun: l.sun, sunColor: l.sunColor, sunTurn: l.sunTurn, sunHeight: l.sunHeight } : null;
 }
 
+/** the sky as the answers show it: the object, or null when there is none (missing: true when its pictures are gone) */
+function skyOf(p: Project): Record<string, unknown> | null {
+  const s = p.sky;
+  if (!s) return null;
+  const out: Record<string, unknown> = {};
+  if (typeof s.asset === 'string' && s.asset) {
+    out.asset = s.asset;
+    const a = p.assets.find((x) => x.id === s.asset);
+    const layout = a ? layoutOf(a.width, a.height) : null;
+    if (layout) out.layout = layout;
+  } else {
+    out.faces = s.faces;
+    out.turns = skyTurnsOf(s);
+  }
+  out.turn = skyTurn(s);
+  out.brightness = skyBrightness(s);
+  out.blur = skyBlur(s);
+  out.light = { ...s.light };
+  if (!skyUsable(p)) out.missing = true;
+  return out;
+}
+
 /** an export in progress would break when the project under it changes */
 function refuseWhileBusy(what: string): void {
   const busy = busyReason();
@@ -77,7 +102,7 @@ function layFog(p: Project, v: unknown, patch: { fog?: SceneFog | null; backgrou
   // the schema has no type for fog (null must pass), so the shape is checked here
   if (typeof v !== 'object' || Array.isArray(v)) throw new ToolError('fog must be an object like { color, near, far, amount } or null');
   const given = v as Record<string, unknown>;
-  const next: SceneFog = { ...(p.fog ?? defaultFog(patch.background ?? p.background, patch.height ?? p.height)) };
+  const next: SceneFog = { ...(p.fog ?? defaultFog(patch.background ?? p.background, patch.height ?? p.height, skyLightOf(p)?.horizon)) };
   if (typeof given.color === 'string') {
     if (!COLOR.test(given.color)) throw new ToolError('fog.color must be a hex color like #101010');
     next.color = given.color.toLowerCase();
@@ -120,6 +145,55 @@ function layLight(p: Project, v: unknown, patch: ProjectSettingsPatch, time: num
   if (p.light && sameLight(p.light, next)) return true;
   patch.light = next;
   return false;
+}
+
+/**
+ * checks args.sky and puts the new sky on the patch. media or faces make a new one (turn, brightness and blur stay from
+ * the sky the project has unless sent), turn, brightness or blur alone change the sky the project has. returns whether
+ * it is the sky the project has already, and what the seam check changed
+ */
+async function laySky(p: Project, v: unknown, patch: ProjectSettingsPatch): Promise<{ same: boolean; notes: string[] }> {
+  if (v === null) {
+    if (!p.sky) return { same: true, notes: [] };
+    patch.sky = null;
+    return { same: false, notes: [] };
+  }
+  // the schema has no type for sky (null must pass), so the shape is checked here
+  if (typeof v !== 'object' || Array.isArray(v)) throw new ToolError('sky must be an object like { media, turn, brightness, blur } or null');
+  const given = v as Record<string, unknown>;
+  if (given.light !== undefined) throw new ToolError('the light of a sky is measured from its pictures and cannot be sent. send light for an own light instead');
+  if (given.media !== undefined && given.faces !== undefined) throw new ToolError('send sky.media or sky.faces, not both');
+  if (given.turns !== undefined && given.faces === undefined) throw new ToolError('sky.turns goes with sky.faces');
+  const values: { turn?: number; brightness?: number; blur?: number } = {};
+  if (typeof given.turn === 'number') values.turn = given.turn;
+  if (typeof given.brightness === 'number') values.brightness = given.brightness;
+  if (typeof given.blur === 'number') values.blur = given.blur;
+  const keep = { ...keepOf(p.sky), ...values };
+  const list = (x: unknown, what: string): string[] => {
+    if (!Array.isArray(x) || !x.every((i) => typeof i === 'string')) throw new ToolError(`sky.${what} must be a list of media ids`);
+    return x as string[];
+  };
+  try {
+    if (given.media !== undefined) {
+      const made = await skyFromAssets(list(given.media, 'media'), keep);
+      patch.sky = withSkyValues(made.sky, { ...keepOf(useEditor.getState().project?.sky), ...values });
+      return { same: false, notes: made.notes };
+    }
+    if (given.faces !== undefined) {
+      const turns = Array.isArray(given.turns) ? (given.turns as number[]) : [0, 0, 0, 0, 0, 0];
+      const made = await skyFromFaces(list(given.faces, 'faces'), turns, keep);
+      patch.sky = withSkyValues(made.sky, { ...keepOf(useEditor.getState().project?.sky), ...values });
+      return { same: false, notes: made.notes };
+    }
+  } catch (e) {
+    if (e instanceof SkyError) throw new ToolError(e.message);
+    throw e;
+  }
+  if (!p.sky) throw new ToolError('the project has no sky. send sky.media (1 picture or 6) to make one');
+  const next: SceneSky = withSkyValues(p.sky, values);
+  if (next === p.sky) return { same: true, notes: [] };
+  patch.sky = next;
+  return { same: false, notes: [] };
 }
 
 export const projectTools: ToolDef[] = [
@@ -301,14 +375,15 @@ export const projectTools: ToolDef[] = [
     name: 'update_project',
     title: 'change project settings',
     description:
-      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240), background color (hex like #101010), fog or light of the open project, as one undo step. ' +
+      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240), background color (hex like #101010), fog, light or sky of the open project, as one undo step. ' +
       'clips keep their pixel positions when the canvas size changes. ' +
       'fog is haze over the 3d space: 3d clips blend toward its color the farther they are from the camera. near and far are distances from the camera in project pixels (far at least 10 past near), amount 0..1 is the strongest haze. 2d clips are never fogged. ' +
       'null switches fog off; an object may be given in part (it is laid over the fog the project has, or over a default fog when there is none). ' +
       'light is what 3d clips with lit (update_clip lit 0..1) are shaded by: sky, horizon, ground (hex), a sun (sun 0..1, sunColor, sunTurn, sunHeight); ' +
-      'null = take it from the scene (the background, the filled 2d shapes under the lowest 3d clip and the fog; pictures, video and text are not read; get_project autoLight shows what that gives at the playhead). light only darkens or tints: white light gives the picture back, a dark scene makes it darker. ' +
-      'an object may be given in part (laid over the own light, or when there is none over the scene sky, horizon and ground at the playhead plus a default sun: sun 0.4, sunColor #fff4e0, sunTurn -35, sunHeight 45; send sun 0 for the dome alone). ' +
-      'send only what changes; a call that changes nothing is an error. answers the project summary, the fog and the light (each an object, or null).',
+      'null = take it from the sky when there is one, else from the scene (the background, the filled 2d shapes under the lowest 3d clip and the fog; pictures, video and text are not read; get_project autoLight shows what that gives at the playhead). light only darkens or tints: white light gives the picture back, a dark scene makes it darker. ' +
+      'an object may be given in part (laid over the own light, or when there is none over the light the sky gives, its sun included, when there is a sky, else over the scene sky, horizon and ground at the playhead plus a default sun: sun 0.4, sunColor #fff4e0, sunTurn -35, sunHeight 45; send sun 0 for the dome alone). ' +
+      'sky is a skybox drawn behind every layer, far away, turning with the camera, made of image media of the project: { media } with 1 picture (a cross 4:3 or 3:4, a strip 6:1 or 1:6) or 6 side pictures in any order named like px nx py ny pz nz, posx ..., right left top bottom front back or rt lf up dn ft bk (word names get a seam check that may swap left and right or turn the top and bottom: notes says what it did), or { faces, turns? } with the 6 ids in side order. turn, brightness and blur may come with it or alone. lit 3d clips take their light from the sky unless there is an own light; that light is measured from the pictures and cannot be sent. 2:1 panoramas, hdr and exr are refused. null takes the sky off (its pictures stay in the media). ' +
+      'send only what changes; a call that changes nothing is an error. answers the project summary, the fog, the light and the sky (each an object, or null), and notes when the sides were changed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -329,7 +404,7 @@ export const projectTools: ToolDef[] = [
         },
         // no type here either: null takes the light from the scene
         light: {
-          description: 'the light of lit 3d clips, or null to take it from the scene. an object may be given in part (over no own light it starts with a 0.4 sun)',
+          description: 'the light of lit 3d clips, or null to take it from the sky when there is one, else from the scene. an object may be given in part (over no own light it starts with the light of the sky, or with a 0.4 sun)',
           properties: {
             sky: { type: 'string', maxLength: 9, description: 'hex color' },
             horizon: { type: 'string', maxLength: 9, description: 'hex color' },
@@ -340,9 +415,23 @@ export const projectTools: ToolDef[] = [
             sunHeight: { type: 'number', minimum: 0, maximum: 90, description: 'degrees, 90 = straight above' },
           },
         },
+        // no type here either: null takes the sky off
+        sky: {
+          description: 'a skybox from image media, or null for none. an object may be given in part (turn, brightness or blur alone change the sky the project has)',
+          properties: {
+            media: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 6, description: 'media ids: 1 cross or strip picture, or 6 side pictures named like px nx py ny pz nz or right left top bottom front back' },
+            faces: { type: 'array', items: { type: 'string' }, minItems: 6, maxItems: 6, description: 'instead of media: the 6 side pictures in the order right, left, top, bottom, front, back (names are not read)' },
+            turns: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 3 }, minItems: 6, maxItems: 6, description: 'with faces: quarter turns clockwise per side' },
+            turn: { type: 'number', minimum: -180, maximum: 180, description: 'degrees, like a camera pan: 90 = its right side ahead' },
+            brightness: { type: 'number', minimum: 0, maximum: 2, description: '1 = as the pictures are' },
+            blur: { type: 'number', minimum: 0, maximum: 1, description: '0 = sharp' },
+            // no type: the validator lets it through and laySky answers with the text that says what to send instead
+            light: { description: 'not taken: measured from the pictures. send light (top level) for an own light' },
+          },
+        },
       },
     },
-    run(args) {
+    async run(args) {
       const before = needProject();
       const patch: Parameters<ReturnType<typeof useEditor.getState>['updateProject']>[0] = {};
       const name = cleanName(args.name, 'name');
@@ -356,14 +445,17 @@ export const projectTools: ToolDef[] = [
       }
       const sameFog = args.fog !== undefined ? layFog(before, args.fog, patch) : false;
       const sameLight_ = args.light !== undefined ? layLight(before, args.light, patch, usePlayback.getState().time) : false;
+      const skyRes = args.sky !== undefined ? await laySky(before, args.sky, patch) : { same: false, notes: [] as string[] };
+      if (args.sky !== undefined && useEditor.getState().project?.id !== before.id) throw new ToolError('the open project changed while the sky pictures were read. nothing changed');
       if (Object.keys(patch).length === 0) {
-        if (sameFog || sameLight_) throw new ToolError('the project already has those settings, nothing changed');
-        throw new ToolError('nothing to change: send name, width, height, fps, background, fog or light');
+        if (sameFog || sameLight_ || skyRes.same) throw new ToolError('the project already has those settings, nothing changed');
+        throw new ToolError('nothing to change: send name, width, height, fps, background, fog, light or sky');
       }
+      const base = needProject();
       useEditor.getState().updateProject(patch);
-      if (!changedSince(before)) throw new ToolError('the project already has those settings, nothing changed');
+      if (!changedSince(base)) throw new ToolError('the project already has those settings, nothing changed');
       const after = needProject();
-      return ok({ ...projectBrief(after), fog: fogOf(after), light: lightOf(after) });
+      return ok({ ...projectBrief(after), fog: fogOf(after), light: lightOf(after), sky: skyOf(after), ...(skyRes.notes.length ? { notes: skyRes.notes } : {}) });
     },
   },
   {
@@ -371,7 +463,7 @@ export const projectTools: ToolDef[] = [
     title: 'read the project',
     description:
       'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked), every clip as one short line (id, type, track, start, end, name, ' +
-      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog and the light (each an object, or null), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
+      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog and the light (each an object, or null), the sky (an object or null: its pictures, turn, brightness, blur and the light measured from it, missing: true when its pictures are gone), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead; from the sky when there is one, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
       'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
@@ -381,6 +473,7 @@ export const projectTools: ToolDef[] = [
         ...projectBrief(p),
         fog: fogOf(p),
         light: lightOf(p),
+        sky: skyOf(p),
         autoLight: autoLightAt(p, sceneTime(p, usePlayback.getState().time)),
         trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked })),
         clipList: p.clips.map(clipBrief),

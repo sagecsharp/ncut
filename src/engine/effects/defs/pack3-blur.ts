@@ -11,6 +11,7 @@ export const PACK3_BLUR_EFFECTS: EffectDef[] = [
     id: 'soft-focus',
     name: 'soft focus',
     category: 'blur',
+    alpha: 'moves',
     description: 'the sharp picture mixed with a wide blur of itself, dreamy and glowing',
     posterTime: 0.5,
     params: [
@@ -20,30 +21,34 @@ export const PACK3_BLUR_EFFECTS: EffectDef[] = [
     ],
     glsl: `${DISC}
 vec4 effect(vec2 uv) {
-  vec3 c = tex(uv).rgb;
+  vec4 c = tex(uv);
   float asp = aspect();
   float rad = p_radius * 0.01;
   float rot0 = jitter(uv);
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   float tot = 0.0;
   for (int i = 0; i < 30; i++) {
     vec2 o = vogel(i, 30, rot0);
     float w = exp(-2.0 * dot(o, o));
-    acc += tex(uv + vec2(o.x / asp, o.y) * rad).rgb * w;
+    acc += tex(uv + vec2(o.x / asp, o.y) * rad) * w;
     tot += w;
   }
-  vec3 b = acc / tot;
+  vec4 b = acc / tot;
   // the picture melts into the blur, and the bright parts of the blur glow on top (screen)
-  vec3 soft = mix(c, b, p_softness * 0.01);
-  vec3 glowc = b * b * (p_glow * 0.01) * 0.9;
-  soft = 1.0 - (1.0 - soft) * (1.0 - clamp(glowc, 0.0, 1.0));
-  return vec4(mix(c, soft, u_amount), 1.0);
+  vec4 soft = mix(c, b, p_softness * 0.01);
+  // the glow is light: the straight colour of the blur times the light it gives
+  vec3 glowc = clamp(unpm(b) * b.rgb * (p_glow * 0.01) * 0.9, 0.0, 1.0);
+  soft.rgb = 1.0 - (1.0 - soft.rgb) * (1.0 - glowc);
+  // the glow reaches past the outline as far as it is bright
+  soft.a = 1.0 - (1.0 - soft.a) * (1.0 - max(glowc.r, max(glowc.g, glowc.b)));
+  return mix(c, soft, u_amount);
 }`,
   },
   {
     id: 'rgb-trail',
     name: 'rgb trail',
     category: 'blur',
+    alpha: 'moves',
     description: 'a one sided smear where red, green and blue trail by different lengths',
     posterTime: 1,
     params: [
@@ -53,21 +58,24 @@ vec4 effect(vec2 uv) {
     ],
     glsl: `
 vec4 effect(vec2 uv) {
-  vec3 c = tex(uv).rgb;
+  vec4 c = tex(uv);
   float ang = radians(p_angle);
   vec2 dir = vec2(cos(ang), sin(ang)) * (p_distance * 0.01);
   dir.x /= aspect();
   float s = p_spread * 0.01;
   // a static per pixel offset hides the steps of the 10 taps
   float jit = hash21(floor(uv * u_size));
-  vec3 acc = vec3(0.0);
+  vec4 sumR = vec4(0.0);
+  vec4 sumG = vec4(0.0);
+  vec4 sumB = vec4(0.0);
   for (int i = 0; i < 10; i++) {
     float t = (float(i) + jit) / 10.0;
-    acc.r += tex(uv - dir * t).r;
-    acc.g += tex(uv - dir * t * (1.0 - 0.5 * s)).g;
-    acc.b += tex(uv - dir * t * (1.0 - s)).b;
+    sumR += tex(uv - dir * t);
+    sumG += tex(uv - dir * t * (1.0 - 0.5 * s));
+    sumB += tex(uv - dir * t * (1.0 - s));
   }
-  return vec4(mix(c, acc / 10.0, u_amount), 1.0);
+  // each colour trails on its own, the outline is where any of them is
+  return mix(c, pick3(sumR, sumG, sumB) / 10.0, u_amount);
 }`,
   },
 ];

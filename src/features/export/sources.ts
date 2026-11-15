@@ -10,6 +10,8 @@ import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny';
 import type { WrappedCanvas } from 'mediabunny';
 import type { ImageClip, Project, VideoClip } from '../../types';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
+import { type SkyPicture, skyAssetIds, skyFaceSize, skyUsable, sourceFaceOf } from '../../engine/scene3d/sky';
+import { loadSkyFaces } from '../../media/skyFaces';
 import { neededForFrame } from './reach';
 import { frameTime } from './range';
 
@@ -116,6 +118,12 @@ export interface FrameSourcesInit extends FrameGrid {
   /** asset ids strictVideo does not apply to (the main thread cannot decode them either) */
   lenient?: readonly string[];
   onWarning?: (message: string) => void;
+  /**
+   * the sky pictures loaded by the caller (loadExportSky), once for many parts. a picture here is not loaded again and
+   * not closed by dispose (the caller closes it); null = no sky (a project without one, or one that could not be read).
+   * missing = this instance loads and closes its own.
+   */
+  sky?: SkyPicture | null;
   signal?: AbortSignal;
   /** decodeMs grows by the time spent waiting for decoded frames */
   stats?: { decodeMs: number };
@@ -138,6 +146,33 @@ function abortError(): DOMException {
 /** a video failed where strictVideo is set */
 export class StrictVideoError extends Error {}
 
+/**
+ * the sky pictures of a project for an export, read once at the face size the preview uses. null = nothing to draw: no
+ * sky (no work then), a file that is missing or that cannot be read (a warning, the sky is left out; with strictImages
+ * a real decode failure throws instead, so a worker hands the export back to the main thread).
+ */
+export async function loadExportSky(init: {
+  project: Project;
+  blobOf: (assetId: string) => Blob | undefined;
+  strictImages?: boolean;
+  onWarning?: (message: string) => void;
+}): Promise<SkyPicture | null> {
+  const { project, blobOf, onWarning } = init;
+  if (!project.sky || !skyUsable(project)) return null;
+  const size = skyFaceSize(sourceFaceOf(project.sky, project.assets), project.height);
+  // a file that is missing is left out the same way on every thread (a worker has no blob for it either)
+  if (skyAssetIds(project.sky).some((id) => !blobOf(id))) {
+    onWarning?.('could not read the sky pictures, the sky is left out');
+    return null;
+  }
+  const picture = await loadSkyFaces(project.sky, project.assets, blobOf, size);
+  if (!picture) {
+    if (init.strictImages) throw new Error('the sky pictures cannot be read here');
+    onWarning?.('could not read the sky pictures, the sky is left out');
+  }
+  return picture;
+}
+
 export function createFrameSources(init: FrameSourcesInit): FrameSources {
   const { project, fps, rangeStart, totalFrames, blobOf, onWarning, signal } = init;
   const from = Math.max(0, init.from ?? 0);
@@ -151,10 +186,17 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
 
   const strictFor = (assetId: string) => !!init.strictVideo && !init.lenient?.includes(assetId);
 
-  const resolver: SourceResolver = (clip: VideoClip | ImageClip) => {
-    if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
-    return images.get(clip.assetId) ?? null;
-  };
+  // a sky handed in is the caller's: not loaded and not closed here
+  const shared = init.sky !== undefined;
+  let sky: SkyPicture | null = init.sky ?? null;
+  const resolver: SourceResolver = Object.assign(
+    (clip: VideoClip | ImageClip) => {
+      if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
+      return images.get(clip.assetId) ?? null;
+    },
+    // the project of an export does not change: its one sky
+    { sky: () => sky },
+  );
 
   const dispose = async () => {
     for (const feed of feeds.values()) {
@@ -179,6 +221,8 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
       if (typeof ImageBitmap !== 'undefined' && src.image instanceof ImageBitmap) src.image.close();
     }
     images.clear();
+    if (!shared) sky?.close();
+    sky = shared ? init.sky ?? null : null;
   };
 
   /**
@@ -296,6 +340,8 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
         onWarning?.(`could not decode video "${asset.name}", the clip is skipped`);
       }
     }
+    // the sky: read once at the face size the preview uses, so both look the same (a shared one is already here)
+    if (!shared && !sky) sky = await loadExportSky({ project, blobOf, strictImages: init.strictImages, onWarning });
   };
 
   /** an image clip that is on screen somewhere in [from, to) */

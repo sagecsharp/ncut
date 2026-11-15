@@ -88,6 +88,7 @@ vec4 effect(vec2 uv) {
     id: 'old-film',
     name: 'old film',
     category: 'stylize',
+    alpha: 'moves',
     description: 'worn film: grain, scratches, dust, flicker, gate wobble and a dark vignette',
     posterTime: 0.5,
     params: [
@@ -105,7 +106,8 @@ vec4 effect(vec2 uv) {
   float sd = u_seed + floor(u_time * 12.0) * 1.37;
   // gate wobble: the whole frame twitches a tiny bit
   vec2 jt = (vec2(hash11(sd + 2.0), hash11(sd + 5.0)) - 0.5) * 0.006 * k;
-  vec3 c = tex(uv + jt).rgb;
+  vec4 s = tex(uv + jt);
+  vec3 c = unpm(s);
   // exposure flicker
   c *= 1.0 + (hash11(sd + 11.0) - 0.5) * 0.4 * p_flicker / 100.0 * k;
   // faded warm tone
@@ -136,7 +138,7 @@ vec4 effect(vec2 uv) {
   // vignette
   float r = length((uv - 0.5) * vec2(asp, 1.0));
   c *= 1.0 - smoothstep(0.3, 0.95, r) * 0.75 * p_vignette / 100.0 * k;
-  return vec4(c, 1.0);
+  return repm(c, s.a);
 }`,
   },
   {
@@ -170,6 +172,7 @@ vec4 effect(vec2 uv) {
     id: 'dither',
     name: 'dither',
     category: 'stylize',
+    alpha: 'moves',
     description: 'ordered dither down to a few levels: crunchy retro bitmap look',
     posterTime: 0.5,
     params: [
@@ -188,21 +191,24 @@ float bayer8(ivec2 pp) {
 }
 
 vec4 effect(vec2 uv) {
-  vec3 base = tex(uv).rgb;
+  vec4 base = tex(uv);
   float cs = max(p_cell, 1.0);
   vec2 cell = floor(uv * u_size / cs);
-  vec3 c = tex((cell + 0.5) * cs / u_size).rgb;
+  // the cell takes the colour and the outline of its centre
+  vec4 s = tex((cell + 0.5) * cs / u_size);
+  vec3 c = unpm(s);
   float n = max(floor(p_levels + 0.5), 2.0);
   vec3 src = p_palette < 0.5 ? c : vec3(luma(c));
   vec3 q = floor(src * (n - 1.0) + bayer8(ivec2(cell))) / (n - 1.0);
   if (p_palette > 1.5) q = vec3(0.12, 1.0, 0.3) * q.g;
-  return vec4(mix(base, q, u_amount), 1.0);
+  return mix(base, repm(q, s.a), u_amount);
 }`,
   },
   {
     id: 'bloom',
     name: 'bloom',
     category: 'stylize',
+    alpha: 'moves',
     description: 'bright areas bleed a soft glow into their surroundings',
     posterTime: 0.5,
     params: [
@@ -212,7 +218,7 @@ vec4 effect(vec2 uv) {
     ],
     glsl: `${DISC}
 vec4 effect(vec2 uv) {
-  vec3 c = tex(uv).rgb;
+  vec4 c = tex(uv);
   float asp = aspect();
   float rad = p_radius / 100.0 * u_amount;
   float th = p_threshold / 100.0;
@@ -222,15 +228,15 @@ vec4 effect(vec2 uv) {
   for (int i = 0; i < 32; i++) {
     vec2 o = vogel(i, 32, rot0);
     float w = exp(-2.0 * dot(o, o));
-    vec3 s = tex(uv + vec2(o.x / asp, o.y) * rad).rgb;
-    // only what is brighter than the threshold glows
-    float b = sat((luma(s) - th) / max(1.0 - th, 0.05));
-    acc += s * b * w;
+    vec4 s = tex(uv + vec2(o.x / asp, o.y) * rad);
+    // only what is brighter than the threshold glows, by how much of the pixel it covers
+    float b = sat((luma(unpm(s)) - th) / max(1.0 - th, 0.05));
+    acc += s.rgb * b * w;
     tot += w;
   }
   vec3 glow = sat(acc / tot * p_strength / 100.0 * 2.0 * u_amount);
-  // screen blend
-  return vec4(1.0 - (1.0 - c) * (1.0 - glow), 1.0);
+  // screen blend. the glow is light: it reaches past the outline as far as it is bright
+  return vec4(1.0 - (1.0 - c.rgb) * (1.0 - glow), 1.0 - (1.0 - c.a) * (1.0 - max(glow.r, max(glow.g, glow.b))));
 }`,
   },
   {

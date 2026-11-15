@@ -688,6 +688,28 @@ export interface SceneLight {
   sunHeight: number;
 }
 
+/**
+ * a skybox: a cube map drawn behind every layer, far away, that turns with the camera. made of image media of the
+ * project. 3d clips with lit take their light from it (light) unless the project has an own light. the math is in
+ * engine/scene3d/sky.ts.
+ */
+export interface SceneSky {
+  /** one picture with all six sides: a cross 4:3, a tall cross 3:4, a strip 6:1 or a column 1:6 (its shape says which). or faces */
+  asset?: string;
+  /** six pictures, one per side, in the order right, left, top, bottom, front, back (px nx py ny pz nz). or asset */
+  faces?: string[];
+  /** with faces: quarter turns clockwise per side, 0..3, same order. missing = none */
+  turns?: number[];
+  /** degrees -180..180, like a camera pan: 90 = the right side (px) is ahead of the home camera */
+  turn: number;
+  /** 0..2, 1 = as the pictures are */
+  brightness: number;
+  /** 0..1, softens the sky. 0 = sharp */
+  blur: number;
+  /** the light lit 3d clips get from it at turn 0 and brightness 1. measured from the pictures when the sky is set, never while rendering */
+  light: SceneLight;
+}
+
 /** a named point on the timeline (snaps, jump with shortcuts) */
 export interface Marker {
   id: string;
@@ -721,8 +743,10 @@ export interface Project {
   markers?: Marker[];
   /** haze over the 3d space. null / missing = none. */
   fog?: SceneFog | null;
-  /** the light of lit 3d clips. null / missing = taken from the scene: the background, the filled 2d shapes under the lowest 3d clip and the fog. */
+  /** the light of lit 3d clips. null / missing = taken from the sky when there is one, else from the scene: the background, the filled 2d shapes under the lowest 3d clip and the fog. */
   light?: SceneLight | null;
+  /** a skybox behind every layer. null / missing = none: the background as always. */
+  sky?: SceneSky | null;
 }
 
 /** lightweight row for the projects screen */

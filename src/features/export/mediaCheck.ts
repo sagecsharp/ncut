@@ -5,6 +5,7 @@
  */
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
 import type { Project } from '../../types';
+import { skyAssetIds } from '../../engine/scene3d/sky';
 
 export type ImageKind = 'png' | 'jpeg' | 'gif' | 'webp' | 'bmp' | 'avif';
 
@@ -58,6 +59,7 @@ export async function checkPartsMedia(project: Project, blobOf: (assetId: string
     if (clip.type === 'image') pictures.add(clip.assetId);
     else if (clip.type === 'video') videos.add(clip.assetId);
   }
+  for (const id of skyAssetIds(project.sky)) pictures.add(id);
   let images = true;
   const lenient: string[] = [];
   await Promise.all([

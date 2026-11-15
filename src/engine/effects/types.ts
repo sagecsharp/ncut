@@ -9,7 +9,8 @@
  *
  * available (declared by the prelude in glsl.ts):
  *   tex(vec2 uv)        the picture below the effect. clamp-to-edge: sampling outside 0..1 repeats
- *                       the edge pixels (that is the look we want when a picture moves or zooms out)
+ *                       the edge pixels of the frame, not of the clip (that is the look we want when a
+ *                       picture moves or zooms out)
  *   u_time              seconds since the effect clip started
  *   u_duration          length of the effect clip in seconds
  *   u_amount            strength 0..1 (clip amount x fade in/out)
@@ -19,6 +20,7 @@
  *   p_<key>             one float uniform per entry of `params`
  *   helpers             PI, TAU, aspect(), hash11/hash21/hash22/hash31, noise1, noise2, fbm, snoise1,
  *                       rot(), luma(), hsv2rgb(), rgb2hsv(), xform(), sat()
+ *                       unpm(), repm(), pick3() (effects with alpha only, see glsl.ts)
  *
  * rules:
  *  1. identity at u_amount = 0, and continuous in u_amount. fades ramp the effect in and out, so
@@ -33,7 +35,10 @@
  *  4. keep it cheap: one pass, at most ~32 texture taps, loops with constant bounds.
  *  5. correct aspect: circles must stay round on 16:9 and 9:16. work in aspect-corrected space
  *     (multiply x by aspect()) for radial / rotational math, see xform().
- *  6. the output alpha is forced to 1. return rgb in 0..1.
+ *  6. the output is opaque: return rgb in 0..1, the alpha is forced to 1. an effect with `alpha` ('moves' or 'own') is
+ *     also built to run on the premultiplied picture of one clip: there tex() gives premultiplied colour and the alpha
+ *     it returns is the new outline. write it with the helpers and the rules in glsl.ts (unpm, repm, pick3). in the
+ *     plain build those helpers are identities, so the same code is the old maths on an opaque frame.
  */
 
 export type EffectCategory = 'motion' | 'blur' | 'color' | 'distort' | 'stylize' | 'overlay';
@@ -46,6 +51,19 @@ export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
   { id: 'stylize', label: 'stylize' },
   { id: 'overlay', label: 'overlay' },
 ];
+
+/**
+ * what an effect does to the outline of a clip it is put on (EffectClip.target). on an adjustment layer the frame is
+ * opaque and every kind runs the same plain way.
+ *  - keep (no `alpha`): it recolours in place. on a clip its result is cut to the outline the clip has.
+ *  - moves: it moves, spreads or smears pixels (motion, blur, distortion, the looks that shift, bend or glow). the
+ *    shader carries the alpha, so the outline moves with the picture.
+ *  - own: it makes see-through holes (chroma key). without target it keys the video or picture right under it.
+ */
+export type EffectAlpha = 'keep' | 'moves' | 'own';
+
+/** which build of an effect's shader runs (runner.ts fragmentSource). see glsl.ts */
+export type EffectVariant = 'plain' | 'alpha' | 'cut';
 
 export interface EffectParam {
   /** glsl-safe identifier: lowercase letters, digits (not first), camelCase. the uniform is p_<key>. */
@@ -82,6 +100,8 @@ export interface EffectDef {
   /** lowercase display name */
   name: string;
   category: EffectCategory;
+  /** what the effect does to the outline of a clip it is put on. missing = keep. see EffectAlpha */
+  alpha?: Exclude<EffectAlpha, 'keep'>;
   /** one short lowercase line for tooltips */
   description: string;
   params: EffectParam[];

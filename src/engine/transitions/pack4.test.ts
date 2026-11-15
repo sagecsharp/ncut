@@ -85,6 +85,14 @@ describe('pack 4 registration', () => {
   });
 });
 
+describe('prism alpha', () => {
+  it('prism takes the outline of all three colour fronts', () => {
+    expect(GLSL_PACK4.prism).toContain('max(al.r, max(al.g, al.b))');
+    expect(GLSL_PACK4.prism).toContain('vec3 al = vec3(mix(A.a, B.a, mr), mix(A.a, B.a, mg), mix(A.a, B.a, mb));');
+    expect(GLSL_PACK4.prism).not.toContain('min(rgb');
+  });
+});
+
 describe.each(EXPECTED.map((id) => [id, GLSL_PACK4[id]!] as const))('pack 4 transition %s', (id, src) => {
   const code = strip(src);
   it('is wrapped: exactly a at p = 0, exactly b at p = 1, one tr_main', () => {

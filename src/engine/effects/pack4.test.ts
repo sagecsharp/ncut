@@ -41,11 +41,12 @@ describe('pack 4', () => {
     expect(code).toContain('i < 8');
   });
 
-  it('the distortions only move pixels (on a clip they run on its alpha too)', () => {
+  it('glass and prism move pixels and carry the alpha', () => {
     // nothing may be added to the color: a transparent pixel must stay transparent
     for (const id of ['glass', 'prism']) {
       const code = strip(getEffect(id)!.glsl);
       expect(code, id).not.toMatch(/\+\s*vec3\(/);
+      expect(getEffect(id)!.alpha, id).toBe('moves');
     }
   });
 

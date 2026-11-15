@@ -1,6 +1,7 @@
 import { roundShown } from '../../components/ui/numberFormat';
 import { memo } from 'react';
 import { NumberField } from '../../components/ui/NumberField';
+import { skyLightOf } from '../../engine/scene3d/light';
 import { useEditor } from '../../store/editorStore';
 import type { SceneFog } from '../../types';
 import { ColorField, Row, Section, SliderRow, Switch } from './controls';
@@ -14,7 +15,11 @@ export const FogSection = memo(function FogSection({ fog, background }: { fog: S
   return (
     <Section id="fog" title="fog">
       <Row label="fog" title="fade 3d clips into a color with distance" wide>
-        <Switch checked={!!fog} title="fog on or off" onChange={(on) => setFog(on ? defaultFog(background, useEditor.getState().project?.height) : null)} />
+        <Switch checked={!!fog} title="fog on or off" onChange={(on) => {
+            const p = useEditor.getState().project;
+            setFog(on ? defaultFog(background, p?.height, p ? skyLightOf(p)?.horizon : undefined) : null);
+          }}
+        />
       </Row>
       {fog ? (
         <>

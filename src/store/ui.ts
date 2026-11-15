@@ -4,10 +4,17 @@ import { uid } from '../lib/id';
 
 export type DialogName = 'export' | 'settings' | 'shortcuts';
 
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: string;
   kind: 'info' | 'error' | 'success';
   message: string;
+  /** a button on the toast. a toast with one stays 10 s */
+  action?: ToastAction;
 }
 
 /** 'output' = what gets exported. 'scene' = the 3d world seen from a free editor camera. */
@@ -24,7 +31,7 @@ export interface UiState {
   openDialog(name: DialogName): void;
   closeDialog(): void;
   /** show a short message bottom-center. auto-dismisses. */
-  toast(message: string, kind?: Toast['kind']): void;
+  toast(message: string, kind?: Toast['kind'], action?: ToastAction): void;
   dismissToast(id: string): void;
 }
 
@@ -45,10 +52,11 @@ export const useUi = create<UiState>()((set, get) => ({
   closeDialog() {
     set({ dialog: null });
   },
-  toast(message, kind = 'info') {
+  toast(message, kind = 'info', action) {
     const id = uid('tst');
-    set({ toasts: [...get().toasts, { id, kind, message }].slice(-4) });
-    setTimeout(() => get().dismissToast(id), kind === 'error' ? 6000 : 3000);
+    const t: Toast = action ? { id, kind, message, action } : { id, kind, message };
+    set({ toasts: [...get().toasts, t].slice(-4) });
+    setTimeout(() => get().dismissToast(id), action ? 10000 : kind === 'error' ? 6000 : 3000);
   },
   dismissToast(id) {
     set({ toasts: get().toasts.filter((t) => t.id !== id) });

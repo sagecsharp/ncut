@@ -9,10 +9,23 @@ export function Toasts() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`toast${t.kind === 'error' ? ' is-error' : t.kind === 'success' ? ' is-success' : ''}`}
+          className={`toast${t.kind === 'error' ? ' is-error' : t.kind === 'success' ? ' is-success' : ''}${t.action ? ' has-action' : ''}`}
           onClick={() => dismiss(t.id)}
         >
           {t.message}
+          {t.action ? (
+            <button
+              className="btn btn-sm"
+              title={t.action.label}
+              onClick={(e) => {
+                e.stopPropagation();
+                dismiss(t.id);
+                t.action!.run();
+              }}
+            >
+              {t.action.label}
+            </button>
+          ) : null}
         </div>
       ))}
     </div>

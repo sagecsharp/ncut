@@ -144,6 +144,7 @@ const addEffect: ToolDef = {
     'add an effect clip, in one undo step. an effect is a layer that changes the picture of everything on the tracks below it, or only of one clip when target is given. effect is the id (list_options with kind "effects" lists ids, params with min, max and default). ' +
     'target: the id of a video, image, text or shape clip; then the effect covers that clip\'s time range unless start / duration are given, and sits on a track above it. ' +
     'without target: start (default the playhead) and duration (default 3 s) place it on the top track (a new top track when that has no room); track picks a video track instead. ' +
+    'chroma-key (alpha own) without target is no layer over everything: it keys the video or image clip right under it. ' +
     'amount is the overall strength 0..1 (default 1), params an object of numbers by param key ({ "radius": 12 }; an unknown key is an error that lists the keys). answers the brief of the new clip. change it later with update_clip.',
   inputSchema: {
     type: 'object',

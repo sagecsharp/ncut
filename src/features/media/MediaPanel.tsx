@@ -9,6 +9,8 @@ import { Dialog } from '../../components/ui/Dialog';
 import { ACCEPTED_TYPES, deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { getThumbnail } from '../../media/derived';
 import { beginDrag, endDrag, isFileDrag } from '../../lib/dnd';
+import { skyUses } from '../../engine/scene3d/sky';
+import { offerSky, removeAssetText } from '../properties/skyLogic';
 import type { MediaAsset, MediaKind } from '../../types';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { EffectsTab } from './EffectsTab';
@@ -283,6 +285,7 @@ interface PendingRemove {
   id: string;
   name: string;
   clips: number;
+  inSky: boolean;
 }
 
 function MediaTab() {
@@ -312,6 +315,7 @@ function MediaTab() {
   const [selKind, selAsset] = swapSel ? (swapSel.split('|') as [MediaKind, string]) : [null, null];
   // the clips are only read while the filter is on, so other edits do not re-render the grid
   const clipsForUsed = useEditor((s) => (unusedOnly ? s.project?.clips : undefined));
+  const skyForUsed = useEditor((s) => (unusedOnly ? s.project?.sky : undefined));
 
   const onSwap = useCallback((assetId: string) => {
     const st = useEditor.getState();
@@ -325,7 +329,8 @@ function MediaTab() {
     const asset = project.assets.find((a) => a.id === id);
     if (!asset) return;
     const clips = project.clips.filter((c) => 'assetId' in c && c.assetId === id).length;
-    if (clips > 0) setPending({ id, name: asset.name, clips });
+    const inSky = skyUses(project.sky, id);
+    if (clips > 0 || inSky) setPending({ id, name: asset.name, clips, inSky });
     else void deleteAsset(id);
   }, []);
 
@@ -337,13 +342,13 @@ function MediaTab() {
 
   const visible = useMemo(() => {
     if (!assets) return [];
-    const used = unusedOnly && clipsForUsed ? usedAssetIds(clipsForUsed) : new Set<string>();
+    const used = unusedOnly && clipsForUsed ? usedAssetIds(clipsForUsed, skyForUsed) : new Set<string>();
     return sortAssets(filterAssets(assets, { kind: filter, query, unusedOnly, used }), sort);
-  }, [assets, filter, query, unusedOnly, clipsForUsed, sort]);
+  }, [assets, filter, query, unusedOnly, clipsForUsed, skyForUsed, sort]);
 
   const onPick = () => fileRef.current?.click();
   const onFiles = (files: FileList | null) => {
-    if (files && files.length > 0) void importFiles(Array.from(files));
+    if (files && files.length > 0) void importFiles(Array.from(files)).then(offerSky);
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -369,7 +374,7 @@ function MediaTab() {
     depth.current = 0;
     setDragging(false);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) void importFiles(files);
+    if (files.length > 0) void importFiles(files).then(offerSky);
   };
 
   const hasAssets = !!assets && assets.length > 0;
@@ -503,9 +508,7 @@ function MediaTab() {
         }
       >
         <p>
-          {pending
-            ? `"${pending.name}" is used by ${pending.clips} clip${pending.clips === 1 ? '' : 's'} on the timeline. removing it deletes ${pending.clips === 1 ? 'that clip' : 'those clips'} too. this clears undo history.`
-            : ''}
+          {pending ? removeAssetText(pending.name, pending.clips, pending.inSky) : ''}
         </p>
       </Dialog>
 

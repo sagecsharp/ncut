@@ -2,8 +2,8 @@
  * runs effect passes on the gpu. one webgl2 context per channel (preview, export, thumbnails),
  * programs compiled lazily and cached, passes chained through two framebuffers.
  */
-import { MAIN, PRELUDE, VERTEX_SRC } from './glsl';
-import type { EffectDef, EffectPass } from './types';
+import { ALPHA_BLOCK, CUT_BLOCK, MAIN, MAIN_ALPHA, MAIN_CUT, PLAIN_BLOCK, PRELUDE, VERTEX_SRC } from './glsl';
+import type { EffectDef, EffectPass, EffectVariant } from './types';
 import { createCanvas } from '../../lib/canvas';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
@@ -23,13 +23,18 @@ export interface RenderEffectsOptions {
 
 const KEY_RE = /^[a-z][a-zA-Z0-9]*$/;
 
-export function fragmentSource(def: EffectDef): string {
+const VARIANT_BLOCK: Record<EffectVariant, string> = { plain: PLAIN_BLOCK, alpha: ALPHA_BLOCK, cut: CUT_BLOCK };
+const VARIANT_MAIN: Record<EffectVariant, string> = { plain: MAIN, alpha: MAIN_ALPHA, cut: MAIN_CUT };
+
+export function fragmentSource(def: EffectDef, variant: EffectVariant = 'plain'): string {
   let uniforms = '';
   for (const p of def.params) {
     if (!KEY_RE.test(p.key)) throw new Error(`effect ${def.id}: bad param key "${p.key}"`);
     uniforms += `uniform float p_${p.key};\n`;
   }
-  return `${PRELUDE}\n${uniforms}\n${def.glsl}\n${MAIN}`;
+  // the plain build of a keep effect is the old source, byte for byte
+  if (variant === 'plain' && !def.alpha) return `${PRELUDE}\n${uniforms}\n${def.glsl}\n${MAIN}`;
+  return `${PRELUDE}\n${VARIANT_BLOCK[variant]}\n${uniforms}\n${def.glsl}\n${VARIANT_MAIN[variant]}`;
 }
 
 function makeCanvas(): GLCanvas | null {
@@ -76,15 +81,15 @@ class Runner {
     return tex;
   }
 
-  private ensureTargets(w: number, h: number, count = 2): void {
+  private ensureTargets(w: number, h: number): void {
     const gl = this.gl;
-    if (this.targets.length === count && this.targetW === w && this.targetH === h) return;
+    if (this.targets.length === 2 && this.targetW === w && this.targetH === h) return;
     for (const t of this.targets) {
       gl.deleteFramebuffer(t.fbo);
       gl.deleteTexture(t.tex);
     }
     this.targets = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < 2; i++) {
       const tex = this.makeTexture();
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       const fbo = gl.createFramebuffer();
@@ -139,14 +144,18 @@ class Runner {
     }
   }
 
-  /** compiled program for an effect, or null when its shader is broken (logged once) */
-  program(def: EffectDef): Program | null {
-    const cached = this.programs.get(def.id);
+  /**
+   * compiled program for an effect build, or null when its shader is broken (logged once). the cache and error key is
+   * the id for the plain build and 'id|variant' for the others.
+   */
+  program(def: EffectDef, variant: EffectVariant = 'plain'): Program | null {
+    const key = variant === 'plain' ? def.id : `${def.id}|${variant}`;
+    const cached = this.programs.get(key);
     if (cached !== undefined) return cached;
     let result: Program | null = null;
     let error = '';
     try {
-      const built = this.build(fragmentSource(def));
+      const built = this.build(fragmentSource(def, variant));
       if (typeof built === 'string') error = built;
       else result = built;
     } catch (e) {
@@ -154,23 +163,11 @@ class Runner {
       error = e instanceof Error ? e.message : String(e);
     }
     if (!result && !this.dead) {
-      this.errors.set(def.id, error);
-      console.error(`[ncut] effect "${def.id}" failed to compile:
+      this.errors.set(key, error);
+      console.error(`[ncut] effect "${key}" failed to compile:
 ${error}`);
     }
-    this.programs.set(def.id, result);
-    return result;
-  }
-
-  /** one of the built in helper programs of the premultiplied path (null = broken, tried once) */
-  private aux(name: string, fsSrc: string): Program | null {
-    const cached = this.programs.get(name);
-    if (cached !== undefined) return cached;
-    const built = this.build(fsSrc);
-    const result = typeof built === 'string' ? null : built;
-    if (!result && !this.dead) console.error(`[ncut] effect helper "${name}" failed to compile:
-${built as string}`);
-    this.programs.set(name, result);
+    this.programs.set(key, result);
     return result;
   }
 
@@ -241,11 +238,11 @@ ${built as string}`);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  private readyPasses(passes: EffectPass[]): { pass: EffectPass; prog: Program }[] {
+  private readyPasses(passes: EffectPass[], variantOf: (def: EffectDef) => EffectVariant = () => 'plain'): { pass: EffectPass; prog: Program }[] {
     const ready: { pass: EffectPass; prog: Program }[] = [];
     for (const pass of passes) {
       if (!(pass.amount > 0)) continue;
-      const prog = this.program(pass.def);
+      const prog = this.program(pass.def, variantOf(pass.def));
       if (prog) ready.push({ pass, prog });
     }
     return ready;
@@ -285,24 +282,24 @@ ${built as string}`);
   }
 
   /**
-   * the premultiplied path (see renderEffectsPremul). needs a runner made with an alpha canvas.
-   * picture chain: the source uploaded premultiplied (rgb * a) -> passes -> X. alpha chain: the source's alpha as a
-   * grey picture -> the same passes -> Y. a last pass writes (X.rgb, Y.r) to the canvas, premultiplied. four
-   * targets: each chain ping-pongs in its own pair, so X survives while Y is made.
+   * the alpha path (see renderEffectsAlpha). needs a runner made with an alpha canvas. the source is uploaded
+   * premultiplied, a pass with alpha runs its alpha build, one without its cut build. two targets, ping pong, the last
+   * pass onto the canvas (premultiplied, with the alpha the passes made).
    */
-  renderPremul(source: TexImageSource, w: number, h: number, passes: EffectPass[], sizeW: number, sizeH: number): GLCanvas | null {
+  renderAlpha(source: TexImageSource, w: number, h: number, passes: EffectPass[], sizeW: number, sizeH: number): GLCanvas | null {
     const gl = this.gl;
-    const ready = this.readyPasses(passes);
+    const ready = this.readyPasses(passes, (d) => (d.alpha ? 'alpha' : 'cut'));
     if (ready.length === 0 || this.dead || gl.isContextLost()) return null;
-    const grey = this.aux('~alpha-grey', ALPHA_GREY_SRC);
-    const join = this.aux('~alpha-join', ALPHA_JOIN_SRC);
-    if (!grey || !join) return null;
+    // a broken alpha or cut build: the plain run takes the clip
+    let live = 0;
+    for (const p of passes) if (p.amount > 0) live++;
+    if (ready.length !== live) return null;
 
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
     }
-    this.ensureTargets(w, h, 4);
+    if (ready.length > 1) this.ensureTargets(w, h);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
@@ -317,72 +314,18 @@ ${built as string}`);
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, w, h);
 
-    // picture chain in targets 0 / 1
     let input: WebGLTexture = this.srcTex;
     for (let i = 0; i < ready.length; i++) {
-      const target = this.targets[i % 2]!;
-      this.runPass(ready[i]!.pass, ready[i]!.prog, input, target, w, h, sizeW, sizeH);
-      input = target.tex;
+      const { pass, prog } = ready[i]!;
+      const last = i === ready.length - 1;
+      const target = last ? null : this.targets[i % 2]!;
+      this.runPass(pass, prog, input, target, w, h, sizeW, sizeH);
+      if (target) input = target.tex;
     }
-    const picture = input;
-
-    // alpha chain in targets 2 / 3: the grey picture first, then the same passes over it
-    const t2 = this.targets[2]!;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, t2.fbo);
-    gl.useProgram(grey.program);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
-    gl.uniform1i(this.loc(grey, 'u_tex'), 0);
-    gl.uniform1f(this.loc(grey, 'u_flip'), 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    input = t2.tex;
-    for (let i = 0; i < ready.length; i++) {
-      const target = this.targets[2 + ((i + 1) % 2)]!;
-      this.runPass(ready[i]!.pass, ready[i]!.prog, input, target, w, h, sizeW, sizeH);
-      input = target.tex;
-    }
-    const alpha = input;
-
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.useProgram(join.program);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, picture);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, alpha);
-    gl.uniform1i(this.loc(join, 'u_tex'), 0);
-    gl.uniform1i(this.loc(join, 'u_alpha'), 1);
-    gl.uniform1f(this.loc(join, 'u_flip'), -1);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.activeTexture(gl.TEXTURE0);
     return this.canvas;
   }
 }
-
-/** the alpha of the uploaded picture as a grey picture (white = opaque) */
-const ALPHA_GREY_SRC = `#version 300 es
-precision highp float;
-precision highp sampler2D;
-in vec2 v_uv;
-out vec4 outColor;
-uniform sampler2D u_tex;
-void main() {
-  float a = texture(u_tex, v_uv).a;
-  outColor = vec4(a, a, a, 1.0);
-}`;
-
-/** picture (premultiplied rgb) + alpha (grey) -> one premultiplied rgba pixel. rgb never exceeds alpha. */
-const ALPHA_JOIN_SRC = `#version 300 es
-precision highp float;
-precision highp sampler2D;
-in vec2 v_uv;
-out vec4 outColor;
-uniform sampler2D u_tex;
-uniform sampler2D u_alpha;
-void main() {
-  float a = clamp(texture(u_alpha, v_uv).r, 0.0, 1.0);
-  vec3 c = min(clamp(texture(u_tex, v_uv).rgb, 0.0, 1.0), vec3(a));
-  outColor = vec4(c, a);
-}`;
 
 const runners = new Map<string, Runner | null>();
 let warned = false;
@@ -461,17 +404,14 @@ export function renderEffects(
 }
 
 /**
- * renderEffects for effects that only move or mix pixels (blur, distort), on a picture with transparency.
- * the plain path uploads un-premultiplied (see-through texels are rgb 0,0,0) and every shader returns alpha 1, so a
- * blur mixes black into the picture and cannot grow past the old outline. here:
- *  - the picture is uploaded PREMULTIPLIED (rgb * a), so the passes mix colour weighted by coverage;
- *  - the alpha is carried as a second picture: the source's alpha as a grey image (white = opaque) goes through the
- *    very same passes, and what comes out is the new alpha;
- *  - the result is (new premultiplied rgb, new alpha) as one premultiplied pixel, so the returned canvas (it has an
- *    alpha channel) can be drawn straight over anything and the shape is soft where the effect spread it.
- * costs one extra run of the passes. null when nothing ran. the canvas is reused by the next call on the channel.
+ * renderEffects for a picture with transparency, when at least one pass has an alpha (EffectDef.alpha). the picture is
+ * uploaded premultiplied. a pass with alpha runs its alpha build: tex() gives premultiplied colour and it returns
+ * premultiplied colour with its own alpha (the outline moves, spreads or gets holes). a pass without runs its cut build:
+ * it reads straight colour and its result is cut to the alpha the pixel has at that point. the canvas keeps the alpha
+ * and is premultiplied, so it can be drawn straight over anything. null when nothing ran (no passes, amount 0, a pass
+ * with no working build, no webgl2). the canvas is reused by the next call on the channel: draw it somewhere right away.
  */
-export function renderEffectsPremul(
+export function renderEffectsAlpha(
   source: TexImageSource,
   width: number,
   height: number,
@@ -481,16 +421,29 @@ export function renderEffectsPremul(
   if (passes.length === 0 || width < 1 || height < 1) return null;
   const runner = getRunner(opts.channel ?? 'default', true);
   if (!runner) return null;
-  return runner.renderPremul(source, width, height, passes, opts.projectWidth ?? width, opts.projectHeight ?? height);
+  return runner.renderAlpha(source, width, height, passes, opts.projectWidth ?? width, opts.projectHeight ?? height);
 }
 
-/** compile every effect and report the broken ones. for tests in the browser console. */
+/**
+ * compile every effect and report the broken ones. for tests in the browser console. it also compiles the alpha build
+ * (effects with alpha) or the cut build (the rest, not temporal) on the alpha runner and reports 'id|variant'.
+ */
 export function checkEffects(defs: EffectDef[]): { id: string; error: string }[] {
   const runner = getRunner('default');
   if (!runner) return [{ id: '*', error: 'webgl2 is not available' }];
   const out: { id: string; error: string }[] = [];
   for (const def of defs) {
     if (!runner.program(def)) out.push({ id: def.id, error: runner.errorOf(def.id) ?? 'unknown error' });
+  }
+  const pm = getRunner('default', true);
+  if (pm) {
+    for (const def of defs) {
+      if (def.temporal) continue;
+      const variant: EffectVariant = def.alpha ? 'alpha' : 'cut';
+      if (pm.program(def, variant)) continue;
+      const id = `${def.id}|${variant}`;
+      out.push({ id, error: pm.errorOf(id) ?? 'unknown error' });
+    }
   }
   return out;
 }

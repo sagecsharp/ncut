@@ -83,6 +83,7 @@ vec4 effect(vec2 uv) {
     id: 'directional-blur',
     name: 'directional blur',
     category: 'blur',
+    alpha: 'moves',
     description: 'smears the picture along one direction, like a fast pan',
     posterTime: 1,
     params: [
@@ -95,18 +96,19 @@ vec4 effect(vec2 uv) {
   float ang = radians(p_angle);
   vec2 dir = vec2(cos(ang), sin(ang)) * len;
   dir.x /= aspect();
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 28; i++) {
     float t = float(i) / 27.0 - 0.5;
-    acc += tex(uv + dir * t).rgb;
+    acc += tex(uv + dir * t);
   }
-  return vec4(acc / 28.0, 1.0);
+  return acc / 28.0;
 }`,
   },
   {
     id: 'zoom-blur',
     name: 'zoom blur',
     category: 'blur',
+    alpha: 'moves',
     description: 'streaks rushing out from a point, like a crash zoom',
     posterTime: 1,
     params: [
@@ -118,18 +120,19 @@ vec4 effect(vec2 uv) {
 vec4 effect(vec2 uv) {
   vec2 c = vec2(p_centerX, p_centerY) * 0.01;
   float s = p_strength * 0.01 * u_amount;
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 28; i++) {
     float t = float(i) / 27.0;
-    acc += tex(c + (uv - c) * (1.0 - s * t * 0.5)).rgb;
+    acc += tex(c + (uv - c) * (1.0 - s * t * 0.5));
   }
-  return vec4(acc / 28.0, 1.0);
+  return acc / 28.0;
 }`,
   },
   {
     id: 'spin-blur',
     name: 'spin blur',
     category: 'blur',
+    alpha: 'moves',
     description: 'smears the picture around a point, like a spinning wheel',
     posterTime: 1,
     params: [
@@ -143,14 +146,14 @@ vec4 effect(vec2 uv) {
   float ang = radians(p_angle) * u_amount;
   vec2 q = uv - c;
   q.x *= aspect();
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 28; i++) {
     float t = float(i) / 27.0 - 0.5;
     vec2 r = rot(q, ang * t);
     r.x /= aspect();
-    acc += tex(c + r).rgb;
+    acc += tex(c + r);
   }
-  return vec4(acc / 28.0, 1.0);
+  return acc / 28.0;
 }`,
   },
 ];

@@ -51,6 +51,7 @@ function effects(category: string | undefined): unknown {
       id: e.id,
       name: e.name,
       category: e.category,
+      alpha: e.alpha ?? 'keep',
       description: e.description,
       params: e.params.map((p) => ({
         key: p.key,
@@ -62,7 +63,7 @@ function effects(category: string | undefined): unknown {
         ...(p.options ? { options: p.options } : {}),
       })),
     })),
-    note: 'add_effect takes the id. params go in as { key: number }; a param with options takes the index of the option (0 = the first)',
+    note: 'add_effect takes the id. params go in as { key: number }; a param with options takes the index of the option (0 = the first). alpha says what the effect does to a clip it is put on: keep = it stays inside the clip outline, moves = the outline moves and spreads with the picture, own = it makes see-through holes (chroma-key; without target it keys the video or picture right under it)',
   };
 }
 

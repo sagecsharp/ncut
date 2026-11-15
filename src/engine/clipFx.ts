@@ -5,7 +5,8 @@
 import type { EffectClip, Project, Track } from '../types';
 import { isVisualClip } from '../types';
 import { clipEnd } from '../lib/timelineOps';
-import type { EffectPass } from './effects/types';
+import { getEffect } from './effects/registry';
+import type { EffectAlpha, EffectPass } from './effects/types';
 
 /** target clip id -> the effect clips that point at it, in the order they run (see buildTargetIndex) */
 export type TargetIndex = Map<string, EffectClip[]>;
@@ -97,30 +98,76 @@ export function clampIntoClip(clip: { start: number; duration: number }, time: n
   return Math.min(last, Math.max(clip.start, time));
 }
 
+/** what an effect does to the outline of a clip (EffectDef.alpha, missing = keep) */
+export function fxAlpha(def: { alpha?: Exclude<EffectAlpha, 'keep'> }): EffectAlpha {
+  return def.alpha ?? 'keep';
+}
+
+/** true when the passes need the alpha run: one of them moves pixels or makes its own see-through areas */
+export function needsAlphaRun(passes: readonly EffectPass[]): boolean {
+  return passes.some((p) => !!p.def.alpha);
+}
+
+const ownCache = new WeakMap<object, { n: number; own: ReadonlyMap<string, EffectClip> | null }>();
+
 /**
- * true for effects that only move or mix pixels they find in the picture (blur, distortion). such an effect works on
- * the premultiplied picture and its alpha can be carried through the same pass (see paintWithFx). the other
- * categories (color, stylize, overlay, motion ...) invent or rescale colors, so they are not linear that way.
+ * the effect clips with an own alpha (chroma key) and no target, by id. such a clip is no adjustment layer: per frame it
+ * keys the video or picture right under it (frameFx in draw.ts). null when the project has none. kept per clips array
+ * like targetIndex (identity, guarded by the length).
  */
-export function isMixingFx(category: string): boolean {
-  return category === 'blur' || category === 'distort';
-}
-
-/** a stretch of passes of one kind, in run order */
-export interface FxRun {
-  /** true = every pass only moves / mixes pixels (premultiplied path) */
-  mixing: boolean;
-  passes: EffectPass[];
-}
-
-/** split a pass list into stretches of the same kind, order kept. empty list = no runs. */
-export function fxRuns(passes: readonly EffectPass[]): FxRun[] {
-  const out: FxRun[] = [];
-  for (const pass of passes) {
-    const mixing = isMixingFx(pass.def.category);
-    const last = out[out.length - 1];
-    if (last && last.mixing === mixing) last.passes.push(pass);
-    else out.push({ mixing, passes: [pass] });
+export function ownLayers(project: Project): ReadonlyMap<string, EffectClip> | null {
+  const hit = ownCache.get(project.clips);
+  if (hit && hit.n === project.clips.length) return hit.own;
+  let own: Map<string, EffectClip> | null = null;
+  for (const c of project.clips) {
+    if (c.type === 'effect' && !c.target && getEffect(c.effect)?.alpha === 'own') (own ??= new Map()).set(c.id, c);
   }
+  ownCache.set(project.clips, { n: project.clips.length, own });
+  return own;
+}
+
+/** an own layer on screen at a frame, with the index of its track (0 = top) */
+export interface OwnLayer {
+  clip: EffectClip;
+  track: number;
+}
+
+/** something an own layer can key at a frame: a track index and the ids of the clips it would key there */
+export interface BindTarget {
+  track: number;
+  keys: readonly string[];
+}
+
+/**
+ * which clips the own layers key at a frame. each layer takes the nearest target below it (the smallest track index
+ * greater than its own) that has keys, and binds to every key of it (a transition has two). layers are taken bottom
+ * first (track index from high to low, stable), so the lists are in run order. clip id -> layers. empty map = none.
+ */
+export function bindOwnLayers(layers: readonly OwnLayer[], targets: readonly BindTarget[]): Map<string, EffectClip[]> {
+  const out = new Map<string, EffectClip[]>();
+  const sorted = [...layers].sort((a, b) => b.track - a.track);
+  for (const layer of sorted) {
+    let best: BindTarget | null = null;
+    for (const t of targets) {
+      if (t.track <= layer.track || t.keys.length === 0) continue;
+      if (!best || t.track < best.track) best = t;
+    }
+    if (!best) continue;
+    for (const key of best.keys) {
+      const list = out.get(key);
+      if (list) list.push(layer.clip);
+      else out.set(key, [layer.clip]);
+    }
+  }
+  return out;
+}
+
+/**
+ * a TargetIndex with the bound own layers added after each clip's targeted effects. the base index is not changed
+ * (it is the cached one): the lists of the bound clips are new arrays.
+ */
+export function withOwnLayers(base: TargetIndex | null, bound: ReadonlyMap<string, readonly EffectClip[]>): TargetIndex {
+  const out: TargetIndex = new Map(base ?? []);
+  for (const [id, layers] of bound) out.set(id, [...(base?.get(id) ?? []), ...layers]);
   return out;
 }

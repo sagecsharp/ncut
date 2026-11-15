@@ -5,17 +5,20 @@
  * - `render`  times renderFrame alone, with the gpu forced to finish every frame
  * - `export`  runs the real exporter and reports where the time went
  * - `litScene` a lit 3d scene (sky, floor, cards, solids, a video screen) with options; { lit: false } is the same scene with no lit field
+ * - `skyScene` litScene in front of a labelled skybox ({ alone } keeps a 2d clip under everything, { sky: false } is the baseline)
  * - `coldFrame` the first frame on a fresh renderer against the second: what the lit shader compile costs
  * - `golden`  stores frames in indexeddb ('ncut-bench') and compares later builds against them, so a
  *             speedup can prove that it did not change a single pixel
  */
 import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, EncodedPacketSink, EncodedVideoPacketSource, Input, Mp4OutputFormat, Output, VideoSampleSink } from 'mediabunny';
-import type { Clip, MediaAsset, Project, VideoClip } from '../types';
+import type { Clip, ImageClip, MediaAsset, Project, SceneLight, VideoClip } from '../types';
 import { CANVAS_PRESETS, createCameraClip, createClipFromAsset, createEffectClip, createProject, createShapeClip, createTextClip, createTrack } from '../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../lib/templates';
 import { ensureProjectFonts } from '../lib/fonts';
 import { projectDuration } from '../lib/timelineOps';
+import type { DrawSource, SourceResolver } from '../engine/draw';
 import { releaseRenderResources, renderFrame } from '../engine/draw';
+import { SKY_SIDES, type SkyPicture, skyFaceSize, sourceFaceOf } from '../engine/scene3d/sky';
 import { beginExport, endExport } from '../engine/exportState';
 import { exportProject, outputSize } from '../features/export/exporter';
 import type { ExportOptions, ExportStats } from '../features/export/exporter';
@@ -423,6 +426,85 @@ function litScene(o: LitSceneOptions = {}): Project {
   return p;
 }
 
+/** px nx py ny pz nz: red, cyan, sky blue, brown, green, magenta (notes/sky/make-cube.js) */
+const BENCH_SKY_COLORS = ['#d03030', '#30c0c0', '#a0c8ff', '#604020', '#30b030', '#c030c0'];
+/** a fixed light for the labelled sky (the measured one would come from the media package) */
+const BENCH_SKY_LIGHT: SceneLight = { sky: '#a0c8ff', horizon: '#808080', ground: '#604020', sun: 0, sunColor: '#fff4e0', sunTurn: -35, sunHeight: 45 };
+const benchSkies = new Map<number, SkyPicture>();
+
+/** six labelled sides of size x size: the color, the side name in bold black in the middle, a white square top left */
+function benchSky(size: number): SkyPicture {
+  const have = benchSkies.get(size);
+  if (have) return have;
+  const faces = SKY_SIDES.map((name, i) => {
+    const c = new OffscreenCanvas(size, size);
+    const x = c.getContext('2d')!;
+    x.fillStyle = BENCH_SKY_COLORS[i]!;
+    x.fillRect(0, 0, size, size);
+    x.fillStyle = '#000000';
+    x.font = `bold ${Math.round(size * 0.28)}px sans-serif`;
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillText(name, size / 2, size / 2);
+    x.fillStyle = '#ffffff';
+    x.fillRect(size / 32, size / 32, size / 8, size / 8);
+    return c;
+  });
+  // kept for the next run: close does nothing
+  const pic: SkyPicture = { key: `bench|${size}`, size, faces, close() {} };
+  benchSkies.set(size, pic);
+  return pic;
+}
+
+interface SkySceneOptions extends LitSceneOptions {
+  /** the side of the sky pictures in pixels (default 1024) */
+  face?: number;
+  /** true: keep the 2d gradient under everything, so the sky is drawn alone (and hidden) */
+  alone?: boolean;
+  turn?: number;
+  brightness?: number;
+  blur?: number;
+  /** false: the same scene without a sky (the baseline) */
+  sky?: boolean;
+}
+
+/** litScene in front of the labelled sky: six image media (no files, the bench resolver hands the pictures) and project.sky on them */
+function skyScene(o: SkySceneOptions = {}): Project {
+  const p = litScene(o);
+  if (o.sky === false) return p;
+  if (!o.alone) {
+    const gone = p.clips.find((c) => c.name === 'sky');
+    if (gone) {
+      p.clips = p.clips.filter((c) => c !== gone);
+      p.tracks = p.tracks.filter((t) => t.id !== gone.trackId);
+    }
+  }
+  const face = o.face ?? 1024;
+  const ids = SKY_SIDES.map((s) => `bench-sky-${s}`);
+  const assets: MediaAsset[] = SKY_SIDES.map((s, i) => ({
+    id: ids[i]!,
+    name: `bench_${s}.png`,
+    kind: 'image',
+    mime: 'image/png',
+    size: 0,
+    duration: 0,
+    width: face,
+    height: face,
+    hasAudio: false,
+    createdAt: 0,
+  }));
+  p.assets = [...p.assets, ...assets];
+  p.sky = { faces: ids, turn: o.turn ?? 0, brightness: o.brightness ?? 1, blur: o.blur ?? 0, light: BENCH_SKY_LIGHT };
+  return p;
+}
+
+/** what the bench draws pictures with: nothing for a project without a sky (exactly as before), plus the labelled sky */
+function resolverFor(project: Project): SourceResolver {
+  if (!project.sky) return nothing;
+  const size = skyFaceSize(sourceFaceOf(project.sky, project.assets), project.height);
+  return Object.assign((_clip: VideoClip | ImageClip, _t: number): DrawSource | null => null, { sky: () => benchSky(size) });
+}
+
 // ---------- timing ----------
 
 function summary(ms: number[]) {
@@ -465,6 +547,7 @@ interface RenderOptions {
 /** time renderFrame over a project without media (templates, text, shapes, 3d, effects on them) */
 async function render(project: Project, o: RenderOptions = {}) {
   await ensureProjectFonts(project);
+  const resolve = resolverFor(project);
   const { canvas, ctx } = makeCanvas(project, o.scale ?? 1);
   const flush = o.flush === false ? null : makeProbe();
   const from = o.from ?? 0;
@@ -474,12 +557,12 @@ async function render(project: Project, o: RenderOptions = {}) {
   beginExport();
   try {
     // warm up: shaders, textures, fonts
-    renderFrame(ctx, project, from, nothing);
+    renderFrame(ctx, project, from, resolve);
     flush?.(canvas);
     for (let i = 0; i < n; i++) {
       const t = from + ((to - from) * i) / n;
       const t0 = performance.now();
-      renderFrame(ctx, project, t, nothing);
+      renderFrame(ctx, project, t, resolve);
       flush?.(canvas);
       times.push(performance.now() - t0);
       if (i % 30 === 29) await new Promise((r) => setTimeout(r, 0));
@@ -500,6 +583,7 @@ async function render(project: Project, o: RenderOptions = {}) {
  */
 async function coldFrame(project: Project, o: { time?: number; scale?: number } = {}) {
   await ensureProjectFonts(project);
+  const resolve = resolverFor(project);
   const { canvas, ctx } = makeCanvas(project, o.scale ?? 1);
   const probe = makeProbe();
   const time = o.time ?? 0;
@@ -509,11 +593,11 @@ async function coldFrame(project: Project, o: { time?: number; scale?: number } 
     // a fresh 3d renderer: its programs compile inside the timed frame
     releaseRenderResources('export');
     const t0 = performance.now();
-    renderFrame(ctx, project, time, nothing);
+    renderFrame(ctx, project, time, resolve);
     probe(canvas);
     const cold = performance.now() - t0;
     const t1 = performance.now();
-    renderFrame(ctx, project, time, nothing);
+    renderFrame(ctx, project, time, resolve);
     probe(canvas);
     const warm = performance.now() - t1;
     return { coldMs: r(cold), warmMs: r(warm), hitchMs: r(cold - warm) };
@@ -772,13 +856,14 @@ async function grab(project: Project, set: FrameSet): Promise<Golden> {
     return { ...size, frames };
   }
   await ensureProjectFonts(project);
+  const resolve = resolverFor(project);
   const { canvas, ctx, width, height } = makeCanvas(project, scale);
   beginExport();
   try {
     for (const t of set.at) {
       // twice: the first drawing of a frame may still be loading a texture
-      renderFrame(ctx, project, t, nothing);
-      renderFrame(ctx, project, t, nothing);
+      renderFrame(ctx, project, t, resolve);
+      renderFrame(ctx, project, t, resolve);
       frames.push({ key: `t${t}`, data: readPixels(canvas) });
     }
   } finally {
@@ -858,6 +943,7 @@ export const bench = {
   tone,
   videoProject,
   litScene,
+  skyScene,
   coldFrame,
   render,
   export: exportRun,

@@ -68,6 +68,7 @@ import {
 import { uid } from '../lib/id';
 import { relinkCopies, repointSplitHalves, unlinkRemoved, wouldCycle } from '../lib/links';
 import { faceClipId, faceSourceIds, remapFaces } from '../engine/scene3d/faces';
+import { skyUses } from '../engine/scene3d/sky';
 import { BPM_MAX, BPM_MIN, type EffectBeat, parseBeatOffset, parseBpm, parseEffectBeat, sameEffectBeat } from '../lib/tempo';
 import { clamp } from '../lib/time';
 import {
@@ -163,7 +164,7 @@ export interface ClipMove {
   start: number;
 }
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light'>>;
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light' | 'sky'>>;
 export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>;
 
 export interface EditorState {
@@ -757,6 +758,9 @@ export const useEditor = create<EditorState>()((set, get) => {
         assets: project.assets.filter((a) => a.id !== assetId),
         clips: gone.size > 0 ? removeClipsKeepingPose(project, gone) : project.clips,
       };
+      // the sky goes with one of its pictures. undo keeps the current media list, so a sky that comes back with an undo
+      // has its picture missing and is simply not drawn (sky.ts skyUsable): no need to clear the history for it
+      if (skyUses(project.sky, assetId)) next.sky = null;
       // history holds whole projects: a step that still has a clip of this asset cannot be gone back to.
       // when no step has one (an unused asset), undo and redo stay as they are.
       const inHistory = [...get().past, ...get().future].some((p) => p.clips.some(uses));

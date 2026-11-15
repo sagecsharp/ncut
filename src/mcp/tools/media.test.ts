@@ -29,7 +29,12 @@ function asset(id: string, kind: MediaAsset['kind'], duration: number, name = id
   return { id, name, kind, mime: '', size: 10, duration, width: kind === 'audio' ? 0 : 640, height: kind === 'audio' ? 0 : 360, hasAudio: kind !== 'image', createdAt: 0 };
 }
 
-const past = () => useEditor.getState().past.length;
+const SIDES = ['px', 'nx', 'py', 'ny', 'pz', 'nz'];
+function square(id: string, name: string): MediaAsset {
+  return { ...asset(id, 'image', 0, name), width: 512, height: 512 };
+}
+
+const past = () =>useEditor.getState().past.length;
 const project = () => useEditor.getState().project!;
 
 beforeEach(() => {
@@ -84,6 +89,19 @@ describe('import_media', () => {
     });
     const none = await call('import_media', {}, { files: [{ name: 'empty.mp3', bytes }], ticket: null });
     expect(none.text).toContain('none of the files could be imported: empty.mp3 (unreadable)');
+  });
+
+  it('import_media says when the new files look like a skybox', async () => {
+    const six = SIDES.map((s) => square(`sky_${s}`, `sky_${s}.png`));
+    mocks.importFiles.mockImplementationOnce(async () => {
+      for (const a of six) useEditor.getState().addAsset(a);
+      return [...six].reverse();
+    });
+    const r = await call('import_media', {}, { files: six.map((a) => ({ name: a.name, bytes })), ticket: null });
+    expect(r.json!.looksLikeSky).toEqual(six.map((a) => a.id));
+    mocks.importFiles.mockResolvedValueOnce([asset('n1', 'image', 0, 'photo.png')]);
+    const plain = await call('import_media', {}, { files: [{ name: 'photo.png', bytes }], ticket: null });
+    expect(plain.json!.looksLikeSky).toBeUndefined();
   });
 
   it('needs an open project and a sane argument', async () => {
@@ -226,6 +244,32 @@ describe('remove_media', () => {
     expect(r.json!.media).toBe(1);
     expect(ids()).toEqual(['v1']);
     expect(project().clips).toHaveLength(1);
+  });
+
+  const withSky = () => {
+    const six = SIDES.map((s) => square(`sky_${s}`, `sky_${s}.png`));
+    for (const a of six) useEditor.getState().addAsset(a);
+    const light = { sky: '#808080', horizon: '#808080', ground: '#404040', sun: 0, sunColor: '#ffffff', sunTurn: 0, sunHeight: 45 };
+    useEditor.getState().updateProject({ sky: { faces: six.map((a) => a.id), turn: 0, brightness: 1, blur: 0, light } });
+    return six;
+  };
+
+  it('remove_media refuses a sky picture by id', async () => {
+    const six = withSky();
+    const r = await call('remove_media', { ids: [six[2]!.id] });
+    expect(r.error).toBe(true);
+    expect(r.text).toBe(`the media ${six[2]!.id} ("${six[2]!.name}") is part of the sky. take the sky off first (update_project sky: null)`);
+    expect(ids()).toContain(six[2]!.id);
+    expect(project().sky).toBeTruthy();
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+  });
+
+  it('remove_media unused leaves the sky pictures', async () => {
+    const six = withSky();
+    const r = await call('remove_media', { unused: true });
+    expect(r.json!.removed.map((x: { id: string }) => x.id)).toEqual(['v1', 'v2', 'i1', 'a1']);
+    expect(ids()).toEqual(six.map((a) => a.id));
+    expect(project().sky).toBeTruthy();
   });
 
   it('unused: true with nothing unused is refused', async () => {

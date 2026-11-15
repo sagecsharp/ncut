@@ -6,6 +6,7 @@ export const DISTORT_EFFECTS: EffectDef[] = [
     id: 'lens',
     name: 'glass lens',
     category: 'distort',
+    alpha: 'moves',
     description: 'round glass lens, clear inside, smeared rainbow blur outside',
     posterTime: 1,
     params: [
@@ -37,21 +38,24 @@ vec4 effect(vec2 uv) {
   float k = smoothstep(0.98, 1.15, t);
   float blurLen = p_blur / 100.0 * 0.3 * k * u_amount;
   float disp = p_dispersion / 100.0 * 0.08 * k * u_amount;
-  vec3 acc = vec3(0.0);
+  vec4 sumR = vec4(0.0);
+  vec4 sumG = vec4(0.0);
+  vec4 sumB = vec4(0.0);
   for (int i = 0; i < 8; i++) {
     float f = float(i) / 7.0 - 0.5;
     float s = f * blurLen;
-    acc.r += tex((pb * (1.0 + disp + s)) / vec2(asp, 1.0) + 0.5).r;
-    acc.g += tex((pb * (1.0 + s)) / vec2(asp, 1.0) + 0.5).g;
-    acc.b += tex((pb * (1.0 - disp + s)) / vec2(asp, 1.0) + 0.5).b;
+    sumR += tex((pb * (1.0 + disp + s)) / vec2(asp, 1.0) + 0.5);
+    sumG += tex((pb * (1.0 + s)) / vec2(asp, 1.0) + 0.5);
+    sumB += tex((pb * (1.0 - disp + s)) / vec2(asp, 1.0) + 0.5);
   }
-  return vec4(acc / 8.0, 1.0);
+  return pick3(sumR, sumG, sumB) / 8.0;
 }`,
   },
   {
     id: 'pinch',
     name: 'pinch',
     category: 'distort',
+    alpha: 'moves',
     description: 'pincushion squeeze, corners pulled out. negative = fisheye bulge',
     posterTime: 1,
     sync: { param: 'speed', cycles: 0.25 },
@@ -74,6 +78,7 @@ vec4 effect(vec2 uv) {
     id: 'ripple',
     name: 'ripple',
     category: 'distort',
+    alpha: 'moves',
     description: 'water rings with rainbow edges from a wandering center',
     posterTime: 1,
     sync: { param: 'speed', cycles: 1 },
@@ -101,16 +106,15 @@ vec4 effect(vec2 uv) {
   float dr = amp * (1.0 + 0.5 * disp) * sin(ph - disp * 1.2);
   float dg = amp * sin(ph);
   float db = amp * (1.0 - 0.5 * disp) * sin(ph + disp * 1.2);
-  float cr = tex(rip_uv(p, c, dir, dr)).r;
-  float cg = tex(rip_uv(p, c, dir, dg)).g;
-  float cb = tex(rip_uv(p, c, dir, db)).b;
-  return vec4(cr, cg, cb, 1.0);
+  // each colour is moved on its own, the outline is where any of them is
+  return pick3(tex(rip_uv(p, c, dir, dr)), tex(rip_uv(p, c, dir, dg)), tex(rip_uv(p, c, dir, db)));
 }`,
   },
   {
     id: 'wave',
     name: 'wave',
     category: 'distort',
+    alpha: 'moves',
     description: 'wavy flag / heat haze bending in both directions',
     posterTime: 1.5,
     params: [
@@ -139,6 +143,7 @@ vec4 effect(vec2 uv) {
     id: 'swirl',
     name: 'swirl',
     category: 'distort',
+    alpha: 'moves',
     description: 'twirl around the center, strongest in the middle',
     posterTime: 1,
     sync: { param: 'speed', cycles: 0.5 },
@@ -165,6 +170,7 @@ vec4 effect(vec2 uv) {
     id: 'mirror',
     name: 'kaleidoscope',
     category: 'distort',
+    alpha: 'moves',
     description: 'mirrors the picture into slowly turning wedges',
     posterTime: 1,
     sync: { param: 'rotate', cycles: 0.25 },

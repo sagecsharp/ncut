@@ -131,3 +131,62 @@ void main() {
   vec4 c = effect(v_uv);
   outColor = vec4(clamp(c.rgb, 0.0, 1.0), 1.0);
 }`;
+
+/*
+ * the alpha helpers. only an effect with `alpha` ('moves' / 'own') gets them, in every build (and FX_ALPHA, 1 in the
+ * alpha build, 0 else). in the alpha build tex() gives premultiplied colour (rgb already times a) and effect() returns
+ * premultiplied colour with its own alpha (MAIN_ALPHA keeps it). in the plain build they are identities and MAIN drops
+ * the alpha, so the same code is the old maths on an opaque frame.
+ * rules for an effect with alpha:
+ *  - moving and mixing samples (taps, averages, weighted sums, a mix between two samples): on the whole vec4.
+ *  - each colour moved on its own (rgb split, ripple, lens, glitch, rgb trail): three vec4 samples or sums, then pick3.
+ *    the alpha is the max of the three, the outline of all the ghosts.
+ *  - non-linear colour work (contrast, thresholds, tone curves, tint from luma, noise or specks mixed in): unpm() to
+ *    straight colour, the old lines, then repm() with the alpha of the sample. light added this way only lands on the
+ *    picture.
+ *  - light that spreads past the outline (bloom, the glow of soft focus) brings its own alpha:
+ *    a = 1 - (1 - a) * (1 - max(glow.r, max(glow.g, glow.b))).
+ *  - shading that is part of the look (vignette, scanlines, rib shading, fog, a tube mask) darkens .rgb only. shading is
+ *    not a hole.
+ *  - never scale rgb by .a by hand and never return vec4(..., 1.0): use repm.
+ *  - if a gpu gives the plain build a different pixel than the old code, keep the old lines under #if FX_ALPHA / #else.
+ */
+export const PLAIN_BLOCK = `#define FX_ALPHA 0
+vec3 unpm(vec4 c) { return c.rgb; }
+vec4 repm(vec3 rgb, float a) { return vec4(rgb, 1.0); }
+vec4 pick3(vec4 r, vec4 g, vec4 b) { return vec4(r.r, g.g, b.b, 1.0); }
+`;
+
+export const ALPHA_BLOCK = `#define FX_ALPHA 1
+/** straight colour of a premultiplied pixel, black where nothing covers it */
+vec3 unpm(vec4 c) { return c.a > 0.0 ? min(c.rgb / c.a, vec3(1.0)) : vec3(0.0); }
+/** a straight colour back on the coverage a */
+vec4 repm(vec3 rgb, float a) { return vec4(rgb * a, a); }
+/** each colour from its own sample. the outline is where any of them is */
+vec4 pick3(vec4 r, vec4 g, vec4 b) { return vec4(r.r, g.g, b.b, max(r.a, max(g.a, b.a))); }
+`;
+
+/** a keep effect inside an alpha run: it reads straight colour, like the plain run, and MAIN_CUT cuts it to the alpha */
+export const CUT_BLOCK = `#define FX_ALPHA 0
+vec4 fx_straight(vec2 uv) {
+  vec4 c = texture(u_tex, uv);
+  return vec4(c.a > 0.0 ? min(c.rgb / c.a, vec3(1.0)) : vec3(0.0), c.a);
+}
+#define tex(uv) fx_straight(uv)
+`;
+
+/** an effect with alpha on one clip: effect() returns premultiplied rgba, its alpha is the new outline */
+export const MAIN_ALPHA = `
+void main() {
+  vec4 c = effect(v_uv);
+  float a = clamp(c.a, 0.0, 1.0);
+  outColor = vec4(clamp(c.rgb, 0.0, a), a);
+}`;
+
+/** a keep effect inside an alpha run: opaque colour out, cut to the alpha the picture has at this pixel, premultiplied */
+export const MAIN_CUT = `
+void main() {
+  vec4 c = effect(v_uv);
+  float a = texture(u_tex, v_uv).a;
+  outColor = vec4(clamp(c.rgb, 0.0, 1.0) * a, a);
+}`;

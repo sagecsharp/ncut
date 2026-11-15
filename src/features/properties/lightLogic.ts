@@ -1,5 +1,5 @@
 import type { Project, SceneLight } from '../../types';
-import { DEFAULT_SUN, autoLightAt } from '../../engine/scene3d/light';
+import { DEFAULT_SUN, autoLightAt, skyLightOf } from '../../engine/scene3d/light';
 import { clampFrameTime } from '../../lib/frameTime';
 import { projectDuration } from '../../lib/timelineOps';
 
@@ -11,8 +11,10 @@ export function sceneTime(project: Project, time: number): number {
   return clampFrameTime(time, projectDuration(project), project.fps);
 }
 
-/** the own light when it is switched on: the dome the scene gives at the time, and the default sun */
+/** the own light when it is switched on: what the sky gives, or the dome the scene gives at the time and the default sun */
 export function defaultLight(project: Project, time: number): SceneLight {
+  const fromSky = skyLightOf(project);
+  if (fromSky) return { ...fromSky };
   const { sky, horizon, ground } = autoLightAt(project, sceneTime(project, time));
   return { sky, horizon, ground, ...DEFAULT_SUN };
 }

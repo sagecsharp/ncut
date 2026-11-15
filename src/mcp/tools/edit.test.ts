@@ -13,6 +13,13 @@ async function text(t = 'hi', start = 0): Promise<string> {
   return r.data.id as string;
 }
 
+describe('chroma key', () => {
+  it('chroma key has no fill param any more', async () => {
+    const id = (await call('add_effect', { effect: 'chroma-key' })).data.id as string;
+    await refused('update_clip', { id, patch: { params: { fill: 0 } } }, /no param fill/);
+  });
+});
+
 describe('update_clip', () => {
   it('mixes transform, a plain field and effect params in ONE undo step', async () => {
     const t = await text();

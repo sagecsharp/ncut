@@ -9,6 +9,7 @@ import { ColorField, Pair, Row, Section } from './controls';
 import { beginEdit, even, liveOpts } from './edit';
 import { FogSection } from './FogSection';
 import { LightSection } from './LightSection';
+import { SkySection } from './SkySection';
 
 const ProjectSettings = memo(function ProjectSettings({
   name,
@@ -161,6 +162,7 @@ export function ProjectInspector() {
           fps={project.fps}
           background={project.background}
         />
+        <SkySection sky={project.sky} />
         <FogSection fog={project.fog} background={project.background} />
         <LightSection light={project.light} />
         <ProjectStats

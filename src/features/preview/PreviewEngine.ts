@@ -7,10 +7,13 @@
  * - while playing the media elements play on their own, we only correct them when they drift.
  * - while paused we draw only when something changed (one rAF), never a permanent loop.
  */
-import type { AudioClip, Clip, ImageClip, Project, VideoClip } from '../../types';
+import type { AudioClip, Clip, ImageClip, MediaAsset, Project, SceneSky, VideoClip } from '../../types';
 import { releaseRenderResources, renderFrame, renderSceneView } from '../../engine/draw';
+import { releaseSky } from '../../engine/scene3d/renderer';
+import { type SkyPicture, skyAssetIds, skyFaceSize, skyKey, skyUsable, sourceFaceOf } from '../../engine/scene3d/sky';
+import { loadSkyFaces } from '../../media/skyFaces';
 import { isExporting } from '../../engine/exportState';
-import type { DrawSource } from '../../engine/draw';
+import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { valueAt } from '../../lib/anim';
 import { onFontsChanged } from '../../lib/fonts';
 import { APPEARANCE_EVENT } from '../../lib/appearance';
@@ -141,6 +144,10 @@ export class PreviewEngine {
   private hasDrawn = false;
   private gen = 0;
   private disposed = false;
+  /** the sky's pictures for the renderer, read once per pictures and face size */
+  /** called when the sky's pictures arrive (the camera inset joins it to redraw) */
+  private readonly skyReady = new Set<() => void>();
+  private skyEntry: { sky: SceneSky; assets: readonly MediaAsset[]; height: number; key: string; pic: SkyPicture | null } | null = null;
   private holdSince = 0;
   private holdTimer = 0;
   private readonly neededScratch = new Set<string>();
@@ -190,6 +197,7 @@ export class PreviewEngine {
         // any change of the store (not only the project) is painted by the next tick, as before
         this.mustDraw = true;
         if (s.project === prev.project) return;
+        if (this.skyEntry && !(s.project && skyUsable(s.project))) this.dropSky();
         if (s.project && prev.project && (s.project.width !== prev.project.width || s.project.height !== prev.project.height)) {
           this.applyBackingSize();
           // bitmaps are decoded bounded by the project size: decode again at the new bound
@@ -328,6 +336,9 @@ export class PreviewEngine {
     this.discardAll(this.parked.clear());
     for (const img of this.images.values()) this.closeImage(img);
     this.images.clear();
+    this.skyEntry?.pic?.close();
+    this.skyEntry = null;
+    this.skyReady.clear();
     if (this.audioCtx) {
       void this.audioCtx.close().catch(() => undefined);
       this.audioCtx = null;
@@ -541,25 +552,77 @@ export class PreviewEngine {
     return false;
   }
 
-  /** the picture of a media clip right now (the pooled element / decoded image). also used by the camera inset. */
-  readonly resolve = (clip: VideoClip | ImageClip, _sourceTime: number): DrawSource | null => {
-    if (clip.type === 'video') {
-      const entry = this.pool.get(clip.id);
-      if (!entry || entry.kind !== 'video') return null;
-      const v = entry.el as HTMLVideoElement;
-      // the feed's frame first: a seeking element can have nothing to draw for a moment (readyState drops)
-      const scrubbed = this.scrubSource(entry);
-      if (scrubbed) return scrubbed;
-      if (v.readyState < 2 || v.videoWidth === 0) return null;
-      if (!entry.source) entry.source = { image: v, width: v.videoWidth, height: v.videoHeight };
-      else {
-        entry.source.width = v.videoWidth;
-        entry.source.height = v.videoHeight;
+  /** the picture of a media clip right now (the pooled element / decoded image), and the sky's pictures. also used by the camera inset. */
+  readonly resolve: SourceResolver = Object.assign(
+    (clip: VideoClip | ImageClip, _sourceTime: number): DrawSource | null => {
+      if (clip.type === 'video') {
+        const entry = this.pool.get(clip.id);
+        if (!entry || entry.kind !== 'video') return null;
+        const v = entry.el as HTMLVideoElement;
+        // the feed's frame first: a seeking element can have nothing to draw for a moment (readyState drops)
+        const scrubbed = this.scrubSource(entry);
+        if (scrubbed) return scrubbed;
+        if (v.readyState < 2 || v.videoWidth === 0) return null;
+        if (!entry.source) entry.source = { image: v, width: v.videoWidth, height: v.videoHeight };
+        else {
+          entry.source.width = v.videoWidth;
+          entry.source.height = v.videoHeight;
+        }
+        return entry.source;
       }
-      return entry.source;
+      return this.imageSource(clip.assetId);
+    },
+    { sky: (sky: SceneSky) => this.skyPicture(sky) },
+  );
+
+  /** the sky's faces for the renderer: read once per pictures and face size, null while they load */
+  private skyPicture(sky: SceneSky): SkyPicture | null {
+    const project = useEditor.getState().project;
+    if (!project) return null;
+    const cur = this.skyEntry;
+    if (cur && cur.sky === sky && cur.assets === project.assets && cur.height === project.height) return cur.pic;
+    const size = skyFaceSize(sourceFaceOf(sky, project.assets), project.height);
+    const key = `${skyKey(sky)}|${size}|${skyAssetIds(sky).map((id) => getAssetUrl(id) ?? '').join(',')}`;
+    if (cur && cur.key === key) {
+      // only turn, brightness or blur changed (or an unrelated media edit): the same pictures
+      cur.sky = sky;
+      cur.assets = project.assets;
+      cur.height = project.height;
+      return cur.pic;
     }
-    return this.imageSource(clip.assetId);
-  };
+    cur?.pic?.close();
+    const entry = { sky, assets: project.assets, height: project.height, key, pic: null as SkyPicture | null };
+    this.skyEntry = entry;
+    void loadSkyFaces(sky, project.assets, getAssetBlob, size).then((pic) => {
+      if (this.disposed || this.skyEntry !== entry) {
+        pic?.close();
+        return;
+      }
+      entry.pic = pic;
+      if (pic) {
+        this.mustDraw = true;
+        this.invalidate();
+        for (const f of [...this.skyReady]) f();
+      }
+    });
+    return null;
+  }
+
+  /** call f when the sky's pictures have loaded. gives back the way to stop */
+  onSkyReady(f: () => void): () => void {
+    this.skyReady.add(f);
+    return () => this.skyReady.delete(f);
+  }
+
+  /** the sky went away: its pictures and the cubes of both preview channels go */
+  private dropSky(): void {
+    const e = this.skyEntry;
+    if (!e) return;
+    this.skyEntry = null;
+    e.pic?.close();
+    releaseSky('default');
+    releaseSky('inset');
+  }
 
   /**
    * paused, the playhead is being dragged: the frame of the entry's scrub feed, when that is nearer to the wanted

@@ -39,4 +39,10 @@ describe('fog logic', () => {
     setFogNear(f, 9000);
     expect(f.near).toBe(1158);
   });
+  it('defaultFog takes the sky horizon when given', () => {
+    expect(defaultFog('#102030', 1080, '#8899aa').color).toBe('#8899aa');
+    expect(defaultFog('#102030', 1080, '#8899aaff').color).toBe('#8899aa');
+    expect(defaultFog('#102030', 1080, 'sky').color).toBe('#102030');
+    expect(defaultFog('#102030', 1080, undefined).color).toBe('#102030');
+  });
 });

@@ -78,6 +78,7 @@ export const PACK4_DISTORT_EFFECTS: EffectDef[] = [
     id: 'glass',
     name: 'glass',
     category: 'distort',
+    alpha: 'moves',
     description: 'the picture seen through frosted, ribbed or block glass',
     posterTime: 0.5,
     params: [
@@ -90,39 +91,40 @@ vec4 effect(vec2 uv) {
   float cell = max(p_grain, 1.0);
   vec2 px = uv * u_size;
   float k = p_strength * 0.01 * u_amount;
-  vec3 c;
+  vec4 c;
   if (p_kind < 0.5) {
     // three taps, each grain looks somewhere else
     vec2 id = floor(px / cell);
-    c = vec3(0.0);
+    c = vec4(0.0);
     for (int i = 0; i < 3; i++) {
       vec2 j = hash22(id + u_seed + float(i) * 19.7) - 0.5;
       vec2 off = j * k * 0.05;
       off.x /= aspect();
-      c += tex(uv + off).rgb;
+      c += tex(uv + off);
     }
     c /= 3.0;
   } else if (p_kind < 1.5) {
     // upright ribs: each one is a small lens
     float w = cell * 6.0;
     float f = fract(px.x / w) - 0.5;
-    c = tex(uv + vec2(f * w * 1.6 * k / u_size.x, 0.0)).rgb;
-    c *= 1.0 - 0.25 * k * abs(f) * 2.0;
+    c = tex(uv + vec2(f * w * 1.6 * k / u_size.x, 0.0));
+    c.rgb *= 1.0 - 0.25 * k * abs(f) * 2.0;
   } else {
     // square blocks: each one shows a shrunk piece of the picture
     float w = cell * 10.0;
     vec2 f = fract(px / w) - 0.5;
-    c = tex(uv + f * w * 1.4 * k / u_size).rgb;
+    c = tex(uv + f * w * 1.4 * k / u_size);
     float rim = max(abs(f.x), abs(f.y)) * 2.0;
-    c *= 1.0 - 0.35 * k * smoothstep(0.8, 1.0, rim);
+    c.rgb *= 1.0 - 0.35 * k * smoothstep(0.8, 1.0, rim);
   }
-  return vec4(c, 1.0);
+  return c;
 }`,
   },
   {
     id: 'prism',
     name: 'prism',
     category: 'distort',
+    alpha: 'moves',
     description: 'splits the colors apart toward the edges like a cheap lens',
     posterTime: 0.5,
     params: [
@@ -136,15 +138,20 @@ vec4 effect(vec2 uv) {
   float edge = p_falloff < 0.5 ? sat(dot(da, da) * 2.5) : 1.0;
   float k = p_strength * 0.0012 * u_amount * edge;
   vec3 acc = vec3(0.0);
+  vec3 al = vec3(0.0);
   vec3 wsum = vec3(0.0);
   // 12 taps across the spectrum: red is magnified least, blue most
   for (int i = 0; i < 12; i++) {
     float t = float(i) / 11.0;
     vec3 w = sat(vec3(1.0 - 2.0 * t, 1.0 - abs(2.0 * t - 1.0), 2.0 * t - 1.0)) + 0.02;
-    acc += tex(0.5 + d * (1.0 - k * (t - 0.5) * 2.0)).rgb * w;
+    vec4 s = tex(0.5 + d * (1.0 - k * (t - 0.5) * 2.0));
+    acc += s.rgb * w;
+    al += s.a * w;
     wsum += w;
   }
-  return vec4(acc / wsum, 1.0);
+  // each colour has its own outline, the pixel's is where any of them is
+  vec3 a3 = al / wsum;
+  return vec4(acc / wsum, max(a3.r, max(a3.g, a3.b)));
 }`,
   },
 ];
@@ -262,6 +269,7 @@ vec4 effect(vec2 uv) {
     id: 'led-screen',
     name: 'led screen',
     category: 'stylize',
+    alpha: 'moves',
     description: 'the picture on a wall of lamps: dots, rgb stripes or squares',
     posterTime: 0.5,
     params: [
@@ -271,11 +279,13 @@ vec4 effect(vec2 uv) {
     ],
     glsl: `
 vec4 effect(vec2 uv) {
-  vec3 c0 = tex(uv).rgb;
+  vec4 c0 = tex(uv);
   float s = max(p_size, 3.0);
   vec2 px = uv * u_size;
   vec2 f = fract(px / s);
-  vec3 col = tex((floor(px / s) + 0.5) * s / u_size).rgb;
+  // the lamp shows its cell, and the wall takes the outline of the cells
+  vec4 lamp = tex((floor(px / s) + 0.5) * s / u_size);
+  vec3 col = lamp.rgb;
   // one project pixel in cell units, for soft lamp edges
   float aa = 0.75 / s;
   vec3 res;
@@ -294,13 +304,14 @@ vec4 effect(vec2 uv) {
     res = col * q.x * q.y * 1.15;
   }
   res *= p_brightness * 0.01;
-  return vec4(mix(c0, res, u_amount), 1.0);
+  return mix(c0, vec4(res, lamp.a), u_amount);
 }`,
   },
   {
     id: 'hologram',
     name: 'hologram',
     category: 'stylize',
+    alpha: 'moves',
     description: 'a one color projection with scan lines, rows that slip and a flicker',
     posterTime: 0.6,
     params: [
@@ -311,12 +322,13 @@ vec4 effect(vec2 uv) {
     ],
     glsl: `
 vec4 effect(vec2 uv) {
-  vec3 c0 = tex(uv).rgb;
+  vec4 c0 = tex(uv);
   // now and then a band of rows slips sideways for a moment
   float beat = floor(u_time * 12.0);
   float on = step(0.9, hash21(vec2(floor(uv.y * 14.0), beat) + u_seed * 1.7));
   float slip = (hash21(vec2(floor(uv.y * 90.0), beat) + u_seed) - 0.5) * on;
-  vec3 c = tex(uv + vec2(slip * p_jitter * 0.0008 * u_amount, 0.0)).rgb;
+  vec4 sl = tex(uv + vec2(slip * p_jitter * 0.0008 * u_amount, 0.0));
+  vec3 c = unpm(sl);
   vec3 tintc = p_color < 0.5 ? vec3(0.25, 0.9, 1.0) : p_color < 1.5 ? vec3(0.4, 1.0, 0.55) : p_color < 2.5 ? vec3(1.0, 0.35, 0.8) : vec3(1.0, 0.75, 0.3);
   vec3 res = tintc * (luma(c) * 1.2 + 0.05);
   // scan lines in project pixels. when they get thinner than the real pixels they turn into their average
@@ -326,7 +338,8 @@ vec4 effect(vec2 uv) {
   // a bright band that travels up
   res += tintc * (1.0 - smoothstep(0.0, 0.08, abs(fract(uv.y + u_time * 0.25) - 0.5))) * 0.12;
   res *= 1.0 - p_flicker * 0.0035 * hash11(floor(u_time * 24.0) + u_seed);
-  return vec4(mix(c0, res, u_amount), 1.0);
+  // the slipped rows take their outline with them
+  return mix(c0, repm(res, sl.a), u_amount);
 }`,
   },
   {

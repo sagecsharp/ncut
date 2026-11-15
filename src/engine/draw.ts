@@ -14,7 +14,7 @@ import { blurPlan } from './blurStyle';
 import { beatGridOf } from './beatFx';
 import { type BeatGrid, LINE_NUDGE, cycleLength, cyclePhase, parseEffectBeat, pulseEnvelope } from '../lib/tempo';
 import { applyClipMotion, hasClipMotion } from './clipAnim';
-import { type TargetIndex, clampIntoClip, effectsOnClip, fxRuns, isTargetedEffect, targetIndex } from './clipFx';
+import { type BindTarget, type OwnLayer, type TargetIndex, bindOwnLayers, clampIntoClip, effectsOnClip, isTargetedEffect, needsAlphaRun, ownLayers, targetIndex, withOwnLayers } from './clipFx';
 import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook, isKeyActive, releaseClipLook } from './clipLook';
 import { hasMask, maskSignature, maskedPicture, releaseMaskResources } from './mask';
@@ -22,7 +22,7 @@ import { StillCopies, keptStep } from './stillCopies';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
-import { releaseEffectRunner, renderEffects, renderEffectsPremul } from './effects/runner';
+import { releaseEffectRunner, renderEffects, renderEffectsAlpha } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
 import { mul, scaling, translation } from './scene3d/math';
@@ -30,6 +30,7 @@ import { faceArea, faceClipId, faceColor, faceFill, faceFit, faceSource, faceSou
 import { clipModelMatrix } from './scene3d/model';
 import { sceneLightAt, usesLight } from './scene3d/light';
 import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene, warmSceneLight } from './scene3d/renderer';
+import { SKY_ID, type SkyDraw, type SkyPictureOf, skyDrawFor } from './scene3d/sky';
 import { drawShape, lineOnSolid, shapeSignature, shapeSpill } from './shape';
 import { parseHexColor } from './clipLook';
 import { drawText, finite, measureText, textSignature, textSpill } from './text';
@@ -135,8 +136,10 @@ export function imagePixelSize(image: unknown, fallbackW: number, fallbackH: num
 /**
  * return the picture for a clip at a source time (seconds into the asset; 0 for images),
  * or null when it is not available (still loading / missing) - the clip is skipped.
+ * `sky`: the pictures of the project's sky (Project.sky), or null while they load. missing = no sky is drawn (the
+ * bench, thumbnails).
  */
-export type SourceResolver = (clip: VideoClip | ImageClip, sourceTime: number) => DrawSource | null;
+export type SourceResolver = ((clip: VideoClip | ImageClip, sourceTime: number) => DrawSource | null) & { sky?: SkyPictureOf };
 
 /** axis-aligned box of a clip before rotation, in canvas pixels. cx/cy is the center. */
 export interface ClipBox {
@@ -1547,8 +1550,10 @@ function guarded(ctx: Ctx, id: string, fn: () => void): boolean {
  * render a run of 3d clips through the camera and lay the result over what is already on the canvas.
  * `op` is how the result mixes with the canvas (a clip with a blend mode is drawn as a run of its own,
  * see paintLayers: it does not depth-test against its neighbours).
+ * `sky`: the sky behind the run (only the first run of a frame has it, see paintLayers). a run with no
+ * layers and a sky draws the sky alone.
  */
-function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, channel: Channel, lines: Lines3D[] = NO_LINES, op: GlobalCompositeOperation = 'source-over'): void {
+function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, channel: Channel, lines: Lines3D[] = NO_LINES, op: GlobalCompositeOperation = 'source-over', sky: SkyDraw | null = null): void {
   const canvas = ctx.canvas as AnyCanvas | undefined;
   if (!canvas) return;
   const planes: Plane3D[] = [];
@@ -1572,7 +1577,7 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   let anyLit = false;
   for (const p of planes) if (p.lit !== undefined) { anyLit = true; break; }
   // undefined keeps the focus bound to the camera rig
-  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null, undefined, anyLit ? sceneLightAt(project, layers[0]!.time) : null);
+  const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null, undefined, anyLit ? sceneLightAt(project, layers[0]!.time) : null, sky);
   // a project with lit clips but none in this frame: compile the lit program in the background for the first lit frame
   if (!anyLit && usesLight(project)) warmSceneLight(channel);
   if (!out) return;
@@ -1608,6 +1613,7 @@ type PaintItem =
 function paintItemsAt(project: Project, time: number, above: number): PaintItem[] {
   const out: PaintItem[] = [];
   const onSides = faceSourceSet(project);
+  const own = ownLayers(project);
   for (let i = project.tracks.length - 1; i > above; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
@@ -1615,8 +1621,9 @@ function paintItemsAt(project: Project, time: number, above: number): PaintItem[
     let span: TransitionSpan | null = null;
     for (const clip of clipsOnTrack(project, track.id)) {
       if (clip.type === 'effect') {
-        // an effect with a target is not an adjustment layer: it is run on its clip, see paintWithFx
-        if (isTargetedEffect(clip)) continue;
+        // an effect with a target is not an adjustment layer: it is run on its clip, see paintWithFx. an own effect
+        // (chroma key) without target is not one either: it keys the video or picture under it, see frameFx
+        if (isTargetedEffect(clip) || own?.has(clip.id)) continue;
         if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
         continue;
       }
@@ -1644,6 +1651,8 @@ interface Env {
   depth: number;
   /** the effects that sit on one clip, null when the project has none (the old path, nothing extra runs) */
   fx: TargetIndex | null;
+  /** the clips an own layer (a chroma key on a track of its own) is bound to at this frame (see frameFx). null / missing = none */
+  bound?: ReadonlySet<string> | null;
 }
 
 /** temporal effects nested deeper than this are ignored (each level multiplies the work) */
@@ -1923,6 +1932,67 @@ export function clipFxPasses(project: Project, fx: TargetIndex | null, clipId: s
   return passes;
 }
 
+/** what renderFrame hands the paint walk about the effects that sit on one clip at a frame */
+export interface FrameFx {
+  /** the targeted effects plus the own layers bound at this frame. null = none at all (the old path) */
+  fx: TargetIndex | null;
+  /** ids of the clips an own layer is bound to at this frame. null = none */
+  bound: ReadonlySet<string> | null;
+}
+
+/**
+ * the effects that sit on one clip at `time`: the targeted ones (targetIndex) and, for every own effect without target
+ * on screen (a chroma key on a track of its own), the nearest video or image clip below it in the paint order (both
+ * sides of a transition), after that clip's own effects. other layers, text and shapes on the way down are skipped.
+ * a project without own layers costs one map lookup.
+ */
+export function frameFx(project: Project, time: number): FrameFx {
+  const base = targetIndex(project);
+  const own = ownLayers(project);
+  if (!own) return { fx: base, bound: null };
+  // a frozen side of a transition looks its effects up at its edge frame, so a layer that ended or starts within
+  // half a transition of the frame still binds (effectsOnClip checks the time again for every lookup)
+  let reach = -1;
+  const layers: OwnLayer[] = [];
+  for (const clip of own.values()) {
+    const track = project.tracks.findIndex((t) => t.id === clip.trackId);
+    const t = project.tracks[track];
+    if (!t || t.kind !== 'video' || t.hidden) continue;
+    if (!onAt(clip, time)) {
+      if (reach < 0) reach = longestTransition(project) / 2;
+      if (time < clip.start - reach - 1e-6 || time >= clipEnd(clip) + reach + 1e-6) continue;
+    }
+    layers.push({ clip, track });
+  }
+  if (layers.length === 0) return { fx: base, bound: null };
+  const picture = (c: VisualClip | null): c is VisualClip => !!c && (c.type === 'video' || c.type === 'image');
+  const targets: BindTarget[] = [];
+  const pics = new Map<string, VisualClip>();
+  for (const it of paintItemsAt(project, time, -1)) {
+    const keys = it.kind === 'clip' ? [it.clip].filter(picture) : it.kind === 'transition' ? [it.span.from, it.span.to].filter(picture) : [];
+    for (const c of keys) pics.set(c.id, c);
+    if (keys.length > 0) targets.push({ track: it.track, keys: keys.map((c) => c.id) });
+  }
+  const bound = new Map<string, EffectClip[]>();
+  for (const [id, list] of bindOwnLayers(layers, targets)) {
+    const pic = pics.get(id)!;
+    const live = list.filter((l) => onAt(l, time) || onAt(l, clampIntoClip(pic, time)));
+    if (live.length > 0) bound.set(id, live);
+  }
+  if (bound.size === 0) return { fx: base, bound: null };
+  return { fx: withOwnLayers(base, bound), bound: new Set(bound.keys()) };
+}
+
+function onAt(clip: EffectClip, time: number): boolean {
+  return time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6;
+}
+
+function longestTransition(project: Project): number {
+  let max = 0;
+  for (const c of project.clips) if (isVisualClip(c) && c.transition && c.transition.duration > max) max = c.transition.duration;
+  return max;
+}
+
 /**
  * draw ONE clip with effects on it. `draw` paints the clip alone (nothing else of the frame) into a transparent
  * scratch canvas of the frame's size and transform, so the effect sees the clip where it is on screen. the passes run
@@ -1930,19 +2000,14 @@ export function clipFxPasses(project: Project, fx: TargetIndex | null, clipId: s
  * the clip's opacity, fades and per-clip motion blur are part of the picture `draw` makes (so the effect gets the
  * clip as it would have been drawn); the blend mode is applied at the end.
  *
- * alpha: the effects framework uploads the picture un-premultiplied (see-through texels are rgb 0,0,0) and forces the
- * output alpha to 1. the passes go in runs of the same kind (fxRuns), one run after the other, and the scratch canvas
- * carries picture + alpha between them (as an ordinary premultiplied 2d canvas):
- *  - a run of effects that only move or mix pixels (categories blur and distort) goes through renderEffectsPremul. the
- *    picture is uploaded premultiplied, so a blur mixes colour weighted by coverage (white text stays white, no black
- *    leaks in from the see-through texels), and the new alpha is made by running the same passes over the old alpha
- *    as a grey picture (white = opaque). the result is laid in as one premultiplied picture with that alpha, and NOT
- *    cut back to the old outline: a blur on a text or a small picture goes soft past its old edge, a shake moves it.
- *  - a run of any other kind (color, stylize, overlay, motion ...: not linear in that way) keeps the plain path: the
- *    un-premultiplied picture goes in, and the result is cut back to the alpha the picture has at that point
- *    ('source-in' with it as the destination), so a text with a glitch is still text on a see-through background.
- * a chain that mixes both goes run by run, so a later colour effect is cut at the outline the blur before it made.
- * a clip whose passes are all of one kind costs one gpu run (two chains for the blur kind: picture + alpha).
+ * alpha (EffectDef.alpha, the rules are in engine/effects/glsl.ts):
+ *  - only keep effects: the plain run. the picture goes in un-premultiplied, the effects return opaque colour and the
+ *    result is cut back to the outline the picture has ('source-in'), so a text with a tint is still text.
+ *  - at least one moves or own effect: one alpha run over all the passes (renderEffectsAlpha). the picture goes in
+ *    premultiplied. a moves or own effect returns premultiplied colour with its own alpha, so the outline moves,
+ *    spreads or gets holes with the picture. a keep effect in the same run reads straight colour and is cut to the
+ *    alpha at that point. the result replaces the picture ('copy').
+ * when the alpha run gives nothing (no webgl2 alpha context) the plain run is the fallback.
  * false = could not (no scratch canvas): nothing was drawn, the caller draws the clip plain.
  */
 function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: GlobalCompositeOperation | null, env: Env, draw: (target: Ctx) => void): boolean {
@@ -1952,34 +2017,22 @@ function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: Globa
   clearScratch(pic);
   draw(pic.ctx);
   const opts = { projectWidth: project.width, projectHeight: project.height, channel: env.channel };
-  for (const run of fxRuns(passes)) {
-    const w = pic.canvas.width;
-    const h = pic.canvas.height;
-    let done = false;
-    if (run.mixing) {
-      const out = renderEffectsPremul(pic.canvas, w, h, run.passes, opts);
-      if (out) {
-        // already premultiplied with its own alpha: it replaces the picture
-        pic.ctx.save();
-        pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        pic.ctx.globalAlpha = 1;
-        pic.ctx.globalCompositeOperation = 'copy';
-        pic.ctx.drawImage(out, 0, 0, w, h);
-        pic.ctx.restore();
-        done = true;
-      }
-    }
-    if (!done) {
-      const out = renderEffects(pic.canvas, w, h, run.passes, opts);
-      if (out) {
-        pic.ctx.save();
-        pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        pic.ctx.globalAlpha = 1;
-        pic.ctx.globalCompositeOperation = 'source-in';
-        pic.ctx.drawImage(out, 0, 0, w, h);
-        pic.ctx.restore();
-      }
-    }
+  const w = pic.canvas.width;
+  const h = pic.canvas.height;
+  let out = needsAlphaRun(passes) ? renderEffectsAlpha(pic.canvas, w, h, passes, opts) : null;
+  // premultiplied with its own alpha: it replaces the picture
+  let mode: GlobalCompositeOperation = 'copy';
+  if (!out) {
+    out = renderEffects(pic.canvas, w, h, passes, opts);
+    mode = 'source-in';
+  }
+  if (out) {
+    pic.ctx.save();
+    pic.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    pic.ctx.globalAlpha = 1;
+    pic.ctx.globalCompositeOperation = mode;
+    pic.ctx.drawImage(out, 0, 0, w, h);
+    pic.ctx.restore();
   }
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2047,6 +2100,8 @@ const sideMemo = new SideMemo();
  * can change what paintAlone draws is in the key (frozenSideKey). `sc` = the scratch canvas the side is painted into.
  */
 function sideKeyOf(project: Project, raw: VisualClip, paintTime: number, frozen: boolean, frameTime: number, env: Env, sc: Scratch): string | null {
+  // a key layer can change while the side stays frozen: no memo for a bound clip
+  if (env.bound?.has(raw.id)) return null;
   if (!constantSideKind(raw.type, raw.threeD, frozen)) return null;
   let image: { source: object; width: number; height: number } | null = null;
   if (raw.type === 'image') {
@@ -2176,7 +2231,9 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       for (const sm of samples) total += sm.weight;
       clearScratch(acc);
       for (const sm of samples) {
-        paintLayers(sc.ctx, project, Math.max(0, time + sm.offset), inner, it.track);
+        // the key layers bind per moment: a cut or a layer edge inside the reach changes what is keyed
+        const st = Math.max(0, time + sm.offset);
+        paintLayers(sc.ctx, project, st, { ...inner, ...frameFx(project, st) }, it.track);
         acc.ctx.save();
         acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
         acc.ctx.globalAlpha = sm.weight / total;
@@ -2204,12 +2261,18 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
 
   // consecutive 3d clips share one depth sorted scene. a 2d clip, a transition or an effect in between splits it.
   let bin: Layer3D[] = [];
+  // the sky (project.sky) goes with the first flush: inside the first run of 3d clips (one render), or alone right
+  // before the first thing that paints. every painting path calls flush3d first. a temporal blend above (first > 0)
+  // has it in each of its samples already
+  let sky: SkyDraw | null = first === 0 && project.sky ? skyDrawFor(project, env.resolve.sky, env.channel, getRig()) : null;
   const flush3d = () => {
-    if (bin.length === 0) return;
+    if (bin.length === 0 && !sky) return;
     // emptied first: a failure inside must not leave the same clips to fail again at every flush
     const run = bin;
+    const s = sky;
     bin = [];
-    guarded(ctx, run[0]!.clip.id, () => draw3d(ctx, project, run, getRig(), env.channel));
+    sky = null;
+    guarded(ctx, run.length > 0 ? run[0]!.clip.id : SKY_ID, () => draw3d(ctx, project, run, getRig(), env.channel, NO_LINES, 'source-over', s));
   };
   // effect clips stack up until the next picture is drawn on top of them (or the frame ends),
   // then run together in one gpu round trip
@@ -2303,7 +2366,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
  */
 export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: SourceResolver, opts: RenderOptions = {}): void {
   const quality = Math.min(1, Math.max(0.1, opts.quality ?? 1));
-  paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0, fx: targetIndex(project) }, -1);
+  paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0, ...frameFx(project, time) }, -1);
 }
 
 /**
@@ -2361,7 +2424,6 @@ export function renderSceneView(
     seg(frame, camRig.eye, far[i]!);
     seg(frame, far[i]!, far[(i + 1) % 4]!);
   }
-  draw3d(ctx, project, layers, rig, channelOf(ctx), [
-    { points: frame, color: lineColor },
-  ]);
+  const channel = channelOf(ctx);
+  draw3d(ctx, project, layers, rig, channel, [{ points: frame, color: lineColor }], 'source-over', project.sky ? skyDrawFor(project, resolve.sky, channel, rig) : null);
 }

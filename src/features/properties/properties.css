@@ -171,6 +171,12 @@
   flex: 1;
   min-width: 0;
 }
+/* a name next to buttons: one line, cut with dots instead of wrapping under them */
+.props-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .props-diamond {
   flex-shrink: 0;
   color: var(--text-faint);

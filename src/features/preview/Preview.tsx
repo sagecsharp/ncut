@@ -50,6 +50,7 @@ export function Preview() {
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<PreviewEngine | null>(null);
+  const skyListeners = useRef(new Set<() => void>());
   const spaceRef = useRef({ hover: false, down: false, used: false });
   const panRef = useRef<{ pointerId: number; x: number; y: number; panX: number; panY: number } | null>(null);
   const panNext = useRef<{ x: number; y: number } | null>(null);
@@ -73,6 +74,10 @@ export function Preview() {
     if (!stage || !frame || !canvas) return;
     const engine = new PreviewEngine(canvas);
     engineRef.current = engine;
+    // the inset (a child, its effect ran before this one) asked for the sky before the engine existed: it hears it from here
+    const offSky = engine.onSkyReady(() => {
+      for (const f of [...skyListeners.current]) f();
+    });
     let stageW = 0;
     let stageH = 0;
 
@@ -134,6 +139,7 @@ export function Preview() {
       unsub();
       unView();
       unMode();
+      offSky();
       engine.dispose();
       engineRef.current = null;
     };
@@ -212,6 +218,15 @@ export function Preview() {
 
   // the inset draws with the engine's media sources (read when needed: the engine is made after the first render)
   const getResolve = useCallback((): SourceResolver | null => engineRef.current?.resolve ?? null, []);
+
+  // listeners live here, not on the engine: the engine is made after the inset subscribes
+  const onSkyReady = useCallback((f: () => void): (() => void) => {
+    const set = skyListeners.current;
+    set.add(f);
+    return () => {
+      set.delete(f);
+    };
+  }, []);
 
   const toggleFullscreen = useCallback(() => {
     const stage = stageRef.current;
@@ -460,7 +475,7 @@ export function Preview() {
           <canvas ref={canvasRef} className="preview-canvas" />
           <GuidesOverlay />
           <TransformOverlay />
-          <CameraInset getResolve={getResolve} />
+          <CameraInset getResolve={getResolve} onSkyReady={onSkyReady} />
           {empty && <div className="preview-hint">import media to get started</div>}
         </div>
       </div>

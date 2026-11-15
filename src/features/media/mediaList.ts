@@ -1,5 +1,6 @@
 /** which assets the media tab lists and in what order. pure: no react, no store. */
-import type { Clip, MediaAsset, MediaKind } from '../../types';
+import type { Clip, MediaAsset, MediaKind, SceneSky } from '../../types';
+import { skyAssetIds } from '../../engine/scene3d/sky';
 
 export type MediaFilter = 'all' | MediaKind;
 export type MediaSort = 'added' | 'newest' | 'name' | 'longest';
@@ -11,10 +12,11 @@ export const MEDIA_SORTS: readonly { id: MediaSort; label: string; tip: string }
   { id: 'longest', label: 'longest', tip: 'longest duration first' },
 ];
 
-/** ids of the assets that at least one clip points at */
-export function usedAssetIds(clips: readonly Clip[]): Set<string> {
+/** ids of the assets that at least one clip points at, and the sky's pictures */
+export function usedAssetIds(clips: readonly Clip[], sky?: SceneSky | null): Set<string> {
   const used = new Set<string>();
   for (const c of clips) if ('assetId' in c && c.assetId) used.add(c.assetId);
+  for (const id of skyAssetIds(sky)) used.add(id);
   return used;
 }
 

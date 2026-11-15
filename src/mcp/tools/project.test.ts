@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearBusy, setBusy } from '../../lib/busy';
 import { defaultFog } from '../../features/properties/fogLogic';
-import { autoLightAt } from '../../engine/scene3d/light';
+import { autoLightAt, skyLightOf } from '../../engine/scene3d/light';
 import { defaultLight } from '../../features/properties/lightLogic';
 import { CANVAS_PRESETS, createProject } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import type { CanvasPreset } from '../../lib/factory';
-import type { Project } from '../../types';
+import { SkyError, skyFromAssets } from '../../media/skyImport';
+import type { MediaAsset, Project, SceneLight } from '../../types';
 import { callTool } from '../registry';
 import type { ToolResult } from '../types';
 
@@ -40,6 +41,25 @@ vi.mock('../../storage/db', () => ({ listProjects: async () => {
   },
 }));
 vi.mock('../../media/importer', () => ({ importFiles: async () => [] }));
+
+// the made sky: the pictures from the ids, turn, brightness and blur from keep, a fixed light
+const sky = vi.hoisted(() => ({
+  light: { sky: '#6080c0', horizon: '#a0b0c0', ground: '#605040', sun: 0.3, sunColor: '#fff4e0', sunTurn: 10, sunHeight: 40 },
+  notes: [] as string[],
+}));
+vi.mock('../../media/skyImport', () => {
+  class SkyError extends Error {}
+  const made = (source: Record<string, unknown>, keep: { turn?: number; brightness?: number; blur?: number } = {}) => ({
+    sky: { ...source, turn: keep.turn ?? 0, brightness: keep.brightness ?? 1, blur: keep.blur ?? 0, light: { ...sky.light } },
+    notes: [...sky.notes],
+  });
+  return {
+    SkyError,
+    skyFromAssets: vi.fn(async (ids: string[], keep?: object) => (ids.length === 1 ? made({ asset: ids[0] }, keep) : made({ faces: [...ids] }, keep))),
+    skyFromFaces: vi.fn(async (faces: string[], turns: number[], keep?: object) => made({ faces: [...faces], ...(turns.some((t) => t) ? { turns: [...turns] } : {}) }, keep)),
+    importSkyFiles: vi.fn(),
+  };
+});
 
 async function call(name: string, args: Record<string, unknown> = {}) {
   const r = (await callTool(name, args)) as ToolResult;
@@ -242,7 +262,7 @@ describe('fog', () => {
   });
 
   it('an empty call names fog', async () => {
-    expect((await call('update_project', {})).text).toMatch(/fps, background, fog or light/);
+    expect((await call('update_project', {})).text).toMatch(/fps, background, fog, light or sky/);
   });
 
   it('get_project shows the fog, or null', async () => {
@@ -321,7 +341,7 @@ describe('light', () => {
   });
 
   it('an empty call names light', async () => {
-    expect((await call('update_project', {})).text).toMatch(/background, fog or light/);
+    expect((await call('update_project', {})).text).toMatch(/background, fog, light or sky/);
   });
 
   it('get_project has light null and the light the scene gives', async () => {
@@ -333,6 +353,115 @@ describe('light', () => {
     expect(r.json!.autoLight.ground).toMatch(/^#[0-9a-f]{6}$/);
     await call('update_project', { light: LIGHT });
     expect((await call('get_project')).json!.light).toEqual(LIGHT);
+  });
+});
+
+describe('sky', () => {
+  const SKY_LIGHT: SceneLight = { ...sky.light };
+  const picture = (id: string, w: number, h: number, name = id): MediaAsset => ({ id, name, kind: 'image', mime: '', size: 10, duration: 0, width: w, height: h, hasAudio: false, createdAt: 0 });
+  const skyNow = () => project().sky;
+  beforeEach(() => {
+    sky.notes = [];
+    useEditor.getState().addAsset(picture('cross', 1024, 768));
+    for (const s of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) useEditor.getState().addAsset(picture(`f_${s}`, 512, 512));
+  });
+
+  it('sky media makes a sky in one undo step and answers it', async () => {
+    const before = past();
+    const r = await call('update_project', { sky: { media: ['cross'] } });
+    expect(r.json!.sky).toEqual({ asset: 'cross', layout: 'cross', turn: 0, brightness: 1, blur: 0, light: SKY_LIGHT });
+    expect(skyNow()).toMatchObject({ asset: 'cross', turn: 0, brightness: 1, blur: 0 });
+    expect(past()).toBe(before + 1);
+    expect(r.json!.notes).toBeUndefined();
+    useEditor.getState().undo();
+    expect(skyNow() ?? null).toBeNull();
+  });
+
+  it('sky null takes it off, and again is nothing changed', async () => {
+    expect((await call('update_project', { sky: null })).text).toMatch(/nothing changed/);
+    await call('update_project', { sky: { media: ['cross'] } });
+    const before = past();
+    const r = await call('update_project', { sky: null });
+    expect(r.json!.sky).toBeNull();
+    expect(skyNow() ?? null).toBeNull();
+    expect(past()).toBe(before + 1);
+    expect((await call('update_project', { sky: null })).text).toMatch(/nothing changed/);
+    expect(past()).toBe(before + 1);
+  });
+
+  it('sky turn alone changes the sky, and is refused without one', async () => {
+    const none = await call('update_project', { sky: { turn: 90 } });
+    expect(none.text).toBe('the project has no sky. send sky.media (1 picture or 6) to make one');
+    await call('update_project', { sky: { media: ['cross'], blur: 0.5 } });
+    const before = past();
+    const r = await call('update_project', { sky: { turn: 90, brightness: 1.5 } });
+    expect(r.json!.sky).toMatchObject({ asset: 'cross', turn: 90, brightness: 1.5, blur: 0.5 });
+    expect(past()).toBe(before + 1);
+    expect((await call('update_project', { sky: { turn: 90 } })).text).toMatch(/nothing changed/);
+    // new pictures keep the values of the sky before
+    const again = await call('update_project', { sky: { media: ['f_px', 'f_nx', 'f_py', 'f_ny', 'f_pz', 'f_nz'] } });
+    expect(again.json!.sky).toMatchObject({ faces: ['f_px', 'f_nx', 'f_py', 'f_ny', 'f_pz', 'f_nz'], turns: [0, 0, 0, 0, 0, 0], turn: 90, brightness: 1.5, blur: 0.5 });
+  });
+
+  it('media and faces together are refused', async () => {
+    const six = ['f_px', 'f_nx', 'f_py', 'f_ny', 'f_pz', 'f_nz'];
+    expect((await call('update_project', { sky: { media: ['cross'], faces: six } })).text).toBe('send sky.media or sky.faces, not both');
+    expect((await call('update_project', { sky: { media: ['cross'], turns: [0, 0, 0, 0, 0, 0] } })).text).toBe('sky.turns goes with sky.faces');
+    expect((await call('update_project', { sky: [1] })).text).toMatch(/sky must be an object like/);
+    expect(skyNow() ?? null).toBeNull();
+  });
+
+  it('a light on the sky is refused', async () => {
+    const r = await call('update_project', { sky: { media: ['cross'], light: SKY_LIGHT } });
+    expect(r.error).toBe(true);
+    expect(r.text).toBe('the light of a sky is measured from its pictures and cannot be sent. send light for an own light instead');
+    expect(skyNow() ?? null).toBeNull();
+  });
+
+  it('a sky read while another project opened changes nothing', async () => {
+    const made = await skyFromAssets(['cross'], {});
+    vi.mocked(skyFromAssets).mockImplementationOnce(async () => {
+      useEditor.getState().openProject(createProject('other'));
+      return made;
+    });
+    const r = await call('update_project', { sky: { media: ['cross'] }, name: 'x' });
+    expect(r.error).toBe(true);
+    expect(r.text).toBe('the open project changed while the sky pictures were read. nothing changed');
+    expect(project().name).toBe('other');
+    expect(skyNow() ?? null).toBeNull();
+    expect(past()).toBe(0);
+  });
+
+  it('a SkyError comes back as the tool error', async () => {
+    const mod = await import('../../media/skyImport');
+    vi.mocked(mod.skyFromAssets).mockRejectedValueOnce(new SkyError('"cross" is not a picture'));
+    const before = past();
+    const r = await call('update_project', { sky: { media: ['cross'] } });
+    expect(r.error).toBe(true);
+    expect(r.text).toBe('"cross" is not a picture');
+    expect(past()).toBe(before);
+  });
+
+  it('notes come back when the sides were changed', async () => {
+    sky.notes = ['fixed the sides to fit their seams: swapped left and right'];
+    const r = await call('update_project', { sky: { media: ['f_px', 'f_nx', 'f_py', 'f_ny', 'f_pz', 'f_nz'] } });
+    expect(r.json!.notes).toEqual(['fixed the sides to fit their seams: swapped left and right']);
+  });
+
+  it('get_project lists the sky and autoLight is its dome', async () => {
+    expect((await call('get_project')).json!.sky).toBeNull();
+    // a sky on a project with a usable picture and a light
+    useEditor.getState().updateProject({ sky: { asset: 'cross', turn: 0, brightness: 1, blur: 0, light: { ...SKY_LIGHT } } });
+    const r = await call('get_project');
+    expect(r.json!.sky).toMatchObject({ asset: 'cross', layout: 'cross' });
+    expect(r.json!.sky.missing).toBeUndefined();
+    const dome = skyLightOf(project())!;
+    expect(r.json!.autoLight).toEqual({ sky: dome.sky, horizon: dome.horizon, ground: dome.ground });
+    // the picture is gone: missing, and autoLight falls back to the scene
+    useEditor.getState().removeAsset('cross');
+    expect(project().sky ?? null).toBeNull();
+    useEditor.getState().updateProject({ sky: { asset: 'cross', turn: 0, brightness: 1, blur: 0, light: { ...SKY_LIGHT } } });
+    expect((await call('get_project')).json!.sky.missing).toBe(true);
   });
 });
 

@@ -60,10 +60,16 @@ describe('effect pack 2 registry', () => {
     }
   });
 
-  it('chroma key says plainly that it cannot make pixels transparent', () => {
+  it('chroma key makes the key color see-through', () => {
     const def = getEffect('chroma-key')!;
-    expect(def.description).toContain('no transparency');
-    expect(def.glsl).toContain('opaque');
+    expect(def.alpha).toBe('own');
+    expect(def.params.map((p) => p.key)).toEqual(['hue', 'tolerance', 'softness', 'spill']);
+    expect(def.glsl).not.toContain('p_fill');
+    expect(def.glsl).toContain('(1.0 - key * u_amount)');
+    // the alpha comes from the clip's own alpha, never a fixed 1
+    expect(def.glsl).toContain('vec3 c = unpm(s);');
+    expect(def.glsl).toContain('return repm(mix(c, kept, u_amount), s.a) * (1.0 - key * u_amount);');
+    expect(def.description).toContain('see-through');
   });
 });
 

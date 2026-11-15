@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioClip, EffectClip, ImageClip, Project, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { buildTargetIndex, clampIntoClip, effectsOnClip, fxRuns, isMixingFx, isTargetedEffect, targetIndex } from './clipFx';
+import { bindOwnLayers, buildTargetIndex, clampIntoClip, effectsOnClip, fxAlpha, isTargetedEffect, needsAlphaRun, ownLayers, targetIndex, withOwnLayers } from './clipFx';
+import { getEffect } from './effects/registry';
 import type { EffectDef, EffectPass } from './effects/types';
 
 let seq = 0;
@@ -174,43 +175,110 @@ describe('clampIntoClip', () => {
   });
 });
 
-describe('isMixingFx and fxRuns', () => {
-  const pass = (category: string): EffectPass => ({
-    def: { id: category, name: category, category: category as EffectDef['category'], description: '', params: [], glsl: '' },
-    time: 0,
-    duration: 1,
-    amount: 1,
-    seed: 0,
-    params: {},
+function fxOf(trackId: string, effect: string, target?: string | null, start = 0, duration = 5): EffectClip {
+  return { ...fx(trackId, start, duration, target), effect };
+}
+function stubPass(id: string): EffectPass {
+  return { def: { ...getEffect(id)! }, time: 0, duration: 1, amount: 1, seed: 0, params: {} };
+}
+
+describe('alpha kinds on passes', () => {
+  it('fxAlpha: missing is keep', () => {
+    expect(fxAlpha({})).toBe('keep');
+    expect(fxAlpha(getEffect('invert')!)).toBe('keep');
+    expect(fxAlpha(getEffect('shake')!)).toBe('moves');
+    expect(fxAlpha(getEffect('chroma-key')!)).toBe('own');
   });
-  it('only blur and distort mix pixels', () => {
-    expect(isMixingFx('blur')).toBe(true);
-    expect(isMixingFx('distort')).toBe(true);
-    for (const c of ['color', 'stylize', 'overlay', 'motion']) expect(isMixingFx(c)).toBe(false);
+  it('needsAlphaRun is true only with a moves or own pass', () => {
+    expect(needsAlphaRun([])).toBe(false);
+    expect(needsAlphaRun([stubPass('invert'), stubPass('sepia')])).toBe(false);
+    expect(needsAlphaRun([stubPass('invert'), stubPass('shake')])).toBe(true);
+    expect(needsAlphaRun([stubPass('chroma-key')])).toBe(true);
   });
-  it('no passes, no runs', () => {
-    expect(fxRuns([])).toEqual([]);
+});
+
+describe('ownLayers', () => {
+  const tracks = [track('top'), track('bot')];
+  it('lists the untargeted own effects only', () => {
+    const v = video('bot', 0, 5);
+    const key = fxOf('top', 'chroma-key', null);
+    const targeted = fxOf('top', 'chroma-key', v.id);
+    const shake = fxOf('top', 'shake', null);
+    const p = project([v, key, targeted, shake], tracks);
+    const own = ownLayers(p)!;
+    expect([...own.keys()]).toEqual([key.id]);
+    expect(own.get(key.id)).toBe(key);
   });
-  it('one kind stays one run', () => {
-    const runs = fxRuns([pass('blur'), pass('distort')]);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]!.mixing).toBe(true);
-    expect(runs[0]!.passes).toHaveLength(2);
+  it('is null without one', () => {
+    const v = video('bot', 0, 5);
+    expect(ownLayers(project([v, fxOf('top', 'shake', null)], tracks))).toBeNull();
+    expect(ownLayers(project([v], tracks))).toBeNull();
   });
-  it('a mixed chain splits in order, neighbours of a kind join', () => {
-    const runs = fxRuns([pass('color'), pass('blur'), pass('blur'), pass('stylize'), pass('overlay'), pass('distort')]);
-    expect(runs.map((r) => [r.mixing, r.passes.length])).toEqual([
-      [false, 1],
-      [true, 2],
-      [false, 2],
-      [true, 1],
-    ]);
+  it('is kept per clips array', () => {
+    const v = video('bot', 0, 5);
+    const key = fxOf('top', 'chroma-key', null);
+    const p = project([v, key], tracks);
+    expect(ownLayers(p)).toBe(ownLayers(p));
+    const p2 = { ...p, clips: [v] };
+    expect(ownLayers(p2)).toBeNull();
+    expect(ownLayers(p)).not.toBeNull();
   });
-  it('every effect in the registry is sorted by its declared category', async () => {
-    const { EFFECTS } = await import('./effects/registry');
-    for (const def of EFFECTS) {
-      const runs = fxRuns([{ ...pass('x'), def }]);
-      expect(runs[0]!.mixing).toBe(def.category === 'blur' || def.category === 'distort');
-    }
+});
+
+describe('bindOwnLayers', () => {
+  const layer = (track: number, id = `k${track}`) => ({ clip: { ...fxOf('t', 'chroma-key', null), id }, track });
+  it('binds a layer to the nearest target below it', () => {
+    const l = layer(0);
+    const out = bindOwnLayers([l], [{ track: 3, keys: ['far'] }, { track: 1, keys: ['near'] }, { track: 2, keys: ['mid'] }]);
+    expect([...out.keys()]).toEqual(['near']);
+    expect(out.get('near')).toEqual([l.clip]);
+  });
+  it('skips targets without keys', () => {
+    const l = layer(0);
+    const out = bindOwnLayers([l], [{ track: 1, keys: [] }, { track: 2, keys: ['v'] }]);
+    expect([...out.keys()]).toEqual(['v']);
+  });
+  it('binds nothing when nothing is below', () => {
+    expect(bindOwnLayers([layer(0)], []).size).toBe(0);
+    expect(bindOwnLayers([layer(2)], [{ track: 2, keys: ['same'] }]).size).toBe(0);
+  });
+  it('never binds a target above the layer', () => {
+    expect(bindOwnLayers([layer(3)], [{ track: 0, keys: ['a'] }, { track: 2, keys: ['b'] }]).size).toBe(0);
+  });
+  it('stacks two layers on one target, the lower first', () => {
+    const upper = layer(0, 'upper');
+    const lower = layer(1, 'lower');
+    const out = bindOwnLayers([upper, lower], [{ track: 2, keys: ['v'] }]);
+    expect(out.get('v')!.map((c) => c.id)).toEqual(['lower', 'upper']);
+  });
+  it('a target with two keys (a transition) gets the layer on both', () => {
+    const l = layer(0);
+    const out = bindOwnLayers([l], [{ track: 1, keys: ['a', 'b'] }]);
+    expect(out.get('a')).toEqual([l.clip]);
+    expect(out.get('b')).toEqual([l.clip]);
+  });
+});
+
+describe('withOwnLayers', () => {
+  it('appends after the targeted effects and leaves the base alone', () => {
+    const v = video('bot', 0, 5);
+    const w = video('bot', 5, 5);
+    const e = fxOf('top', 'shake', v.id);
+    const key = fxOf('top', 'chroma-key', null);
+    const base = buildTargetIndex(project([v, w, e], [track('top'), track('bot')]))!;
+    const baseList = base.get(v.id)!;
+    const out = withOwnLayers(base, new Map([[v.id, [key]], [w.id, [key]]]));
+    expect(out).not.toBe(base);
+    expect(out.get(v.id)).toEqual([e, key]);
+    expect(out.get(w.id)).toEqual([key]);
+    expect(base.get(v.id)).toBe(baseList);
+    expect(baseList).toEqual([e]);
+    expect(base.has(w.id)).toBe(false);
+  });
+  it('works without a base index', () => {
+    const key = fxOf('top', 'chroma-key', null);
+    const out = withOwnLayers(null, new Map([['v', [key]]]));
+    expect(out.get('v')).toEqual([key]);
+    expect(out.size).toBe(1);
   });
 });

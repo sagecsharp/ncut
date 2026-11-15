@@ -1,4 +1,5 @@
 /** media tools (docs/MCP.md): bring files into the project, put media on the timeline, swap media */
+import { skyCandidates, skyUses } from '../../engine/scene3d/sky';
 import { usedAssetIds } from '../../features/media/mediaList';
 import { busyFor } from '../../lib/busy';
 import { deleteAsset, importFiles, useImporting } from '../../media/importer';
@@ -26,7 +27,7 @@ export const mediaTools: ToolDef[] = [
       'adds video, audio and image files from disk to the open project\'s media (not to the timeline: add_media_clip does that). ' +
       'paths is required: 1 to 16 absolute paths with a drive letter, like C:/clips/a.mp4. ' +
       'video: mp4 m4v mov webm mkv ogv avi ts mts 3gp. audio: mp3 wav ogg oga m4a aac flac opus weba aiff aif. image: png jpg jpeg gif webp bmp avif svg. ' +
-      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio). files that cannot be read are left out and listed in "skipped" (name and why). desktop app only.',
+      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio). files that cannot be read are left out and listed in "skipped" (name and why). when the new files look like a skybox, looksLikeSky holds their ids: update_project { sky: { media: looksLikeSky } } makes it the sky. desktop app only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -51,7 +52,8 @@ export const mediaTools: ToolDef[] = [
         const named = skipped.map((s) => `${s.name} (${s.why})`).join(', ');
         throw new ToolError(`none of the files could be imported${named ? `: ${named}` : ''}. see the list of formats in this tool's description`);
       }
-      return ok({ media: added.map(assetBrief), ...(skipped.length > 0 ? { skipped } : {}) });
+      const sets = skyCandidates(added);
+      return ok({ media: added.map(assetBrief), ...(skipped.length > 0 ? { skipped } : {}), ...(sets.length > 0 ? { looksLikeSky: sets[0] } : {}) });
     },
   },
   {
@@ -153,7 +155,7 @@ export const mediaTools: ToolDef[] = [
       'removes media from the open project and deletes its stored file from the app for good (the file on disk it was imported from is not touched). it cannot be undone: media is not part of the undo history. ' +
       'ids: media ids from get_project or import_media (1 to 200). unused: true removes every media item no clip uses, instead of ids. send one of the two. ' +
       'media that clips use is refused unless with_clips: true, which deletes those clips too and clears the whole undo history. it is refused when one of those clips is on a locked track. ' +
-      'unused: true is refused while files are being imported. removing unused media can also clear the undo history when an undo step still holds a clip of it: the answer says so in undoCleared. refused while an export runs. ' +
+      'pictures of the sky are refused (take the sky off first with update_project sky: null) and unused: true leaves them. unused: true is refused while files are being imported. removing unused media can also clear the undo history when an undo step still holds a clip of it: the answer says so in undoCleared. refused while an export runs. ' +
       'answers what was removed (id, name), how many clips went with it, undoCleared and how many media are left.',
     inputSchema: {
       type: 'object',
@@ -173,13 +175,16 @@ export const mediaTools: ToolDef[] = [
       if (unused && useImporting.getState().count > 0) {
         throw new ToolError('cannot remove unused media while files are being imported (a drop onto the timeline places its clips only when every file is in). try again when the import is done, or name the media in ids');
       }
-      const used = usedAssetIds(p.clips);
+      const used = usedAssetIds(p.clips, p.sky);
       // duplicates count once
       const ids = byIds ? [...new Set((args.ids as unknown[]).map(String))] : p.assets.filter((a) => !used.has(a.id)).map((a) => a.id);
       if (unused && ids.length === 0) throw new ToolError('no unused media, nothing changed');
       const list = ids.map((id) => needAsset(id));
       const busy = busyFor(['export', 'mcp-export']);
       if (busy) throw new ToolError(`cannot remove media while ${busy}. wait for it (export_status) or stop it (export_cancel)`);
+      for (const a of list) {
+        if (skyUses(p.sky, a.id)) throw new ToolError(`the media ${a.id} ("${a.name}") is part of the sky. take the sky off first (update_project sky: null)`);
+      }
       const using = list
         .map((a) => ({ a, clips: p.clips.filter((c) => 'assetId' in c && c.assetId === a.id) }))
         .filter((u) => u.clips.length > 0);

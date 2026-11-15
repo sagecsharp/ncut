@@ -2,7 +2,9 @@
  * the 3d renderer, unlit or lit by light.ts: textured planes with a depth buffer, plus plain colored lines for editor
  * helpers. a render with a lit plane uses a second program (LIT_VS / LIT_FS), every other render the plane program as it
  * always was. one webgl2 context per channel, like the effects runner. the result is a transparent canvas
- * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there.
+ * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there. a render with a sky
+ * (renderScene `sky`) first draws the sky with a program of its own (SKY_VS / SKY_FS), a render without one makes the
+ * calls it always made.
  */
 import type { SceneFog, Shape3D } from '../../types';
 import { createCanvas } from '../../lib/canvas';
@@ -14,6 +16,7 @@ import { type LightRig, planeLight } from './light';
 import { type MeshGroup, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 import { solidOutline } from './outline3d';
+import type { SkyDraw } from './sky';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -305,6 +308,40 @@ export function litFragment(src: string): string {
   return src.replace(decl, 'uniform vec4 u_light;\nin vec3 v_light;\n' + decl).replace(fog, LIGHT_LINE + fog);
 }
 const LIT_FS = litFragment(PLANE_FS);
+/** the sky: one triangle over the whole frame, the cube direction of each pixel from u_ray (sky.ts skyRay) */
+export const SKY_VS = `#version 300 es
+uniform mat3 u_ray;
+out vec3 v_dir;
+void main() {
+  // (-1, -1) (3, -1) (-1, 3): covers the frame, no buffer needed
+  vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+  v_dir = u_ray * vec3(p, 1.0);
+  gl_Position = vec4(p, 1.0, 1.0);
+}
+`;
+export const SKY_FS = `#version 300 es
+precision highp float;
+uniform samplerCube u_sky;
+uniform float u_gain;
+uniform float u_bias;
+in vec3 v_dir;
+out vec4 outColor;
+void main() {
+  vec4 c = texture(u_sky, v_dir, u_bias);
+  // premultiplied: brightness scales the color, never past its alpha
+  outColor = vec4(min(c.rgb * u_gain, vec3(c.a)), c.a);
+}
+`;
+/** the face size a renderer uploads: the picture's, at most the channel's cap and the gpu's cube limit, at least 1 */
+export function skyCubeSize(picSize: number, maxFace: number, maxCube: number): number {
+  return Math.max(1, Math.floor(Math.min(picSize, maxFace, maxCube > 0 ? maxCube : maxFace)));
+}
+/** mip levels of an n x n face down to 1 x 1 */
+export function skyLevels(n: number): number {
+  return Math.floor(Math.log2(Math.max(1, n))) + 1;
+}
+/** the cube limit to use when a context answers 0 */
+const SKY_UPLOAD_FALLBACK = 2048;
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec3 a_pos;
 uniform mat4 u_vp;
@@ -541,6 +578,18 @@ class SceneRenderer {
   /** textures of the sides of the solid being drawn: not evicted before it is drawn */
   private pinned = new Set<WebGLTexture>();
   private aniso: { ext: EXT_texture_filter_anisotropic; max: number } | null = null;
+  /** the sky program, linked on the first render with a sky. 'failed' = warned once, no sky is drawn */
+  private skyProg: { program: WebGLProgram; ray: WebGLUniformLocation | null; gain: WebGLUniformLocation | null; bias: WebGLUniformLocation | null; sky: WebGLUniformLocation | null } | null = null;
+  private skyState: 'none' | 'ready' | 'failed' = 'none';
+  private skyVao: WebGLVertexArrayObject | null = null;
+  /** the cube of the last sky and what it holds (`${pic.key}|${n}`). one per renderer */
+  private skyTex: WebGLTexture | null = null;
+  private skyTexKey = '';
+  /** a key whose upload failed (a closed bitmap): not tried again */
+  private skyBadKey = '';
+  private maxCube = 0;
+  /** a canvas for faces of another size than the upload (the inset, a small gpu limit) */
+  private skyFitCanvas: GLCanvas | null = null;
   dead = false;
 
   constructor(canvas: GLCanvas, gl: WebGL2RenderingContext) {
@@ -629,6 +678,18 @@ class SceneRenderer {
       }
       gl.deleteProgram(this.lineProg);
       gl.deleteProgram(this.outlineProg);
+      if (this.skyTex) gl.deleteTexture(this.skyTex);
+      this.skyTex = null;
+      if (this.skyProg) gl.deleteProgram(this.skyProg.program);
+      this.skyProg = null;
+      if (this.skyVao) gl.deleteVertexArray(this.skyVao);
+      this.skyVao = null;
+      if (this.skyFitCanvas) {
+        this.skyFitCanvas.width = 0;
+        this.skyFitCanvas.height = 0;
+      }
+      this.skyFitCanvas = null;
+      this.skyState = 'none';
       gl.getExtension('WEBGL_lose_context')?.loseContext();
       // the antialiased depth + color buffer goes with a 1x1 canvas
       this.canvas.width = 1;
@@ -732,6 +793,120 @@ class SceneRenderer {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) || 'link failed');
     return p;
+  }
+
+  private skyProgram(): NonNullable<SceneRenderer['skyProg']> | null {
+    if (this.skyState === 'ready') return this.skyProg;
+    if (this.skyState === 'failed') return null;
+    const gl = this.gl;
+    try {
+      const program = this.link(SKY_VS, SKY_FS);
+      this.skyProg = {
+        program,
+        ray: gl.getUniformLocation(program, 'u_ray'),
+        gain: gl.getUniformLocation(program, 'u_gain'),
+        bias: gl.getUniformLocation(program, 'u_bias'),
+        sky: gl.getUniformLocation(program, 'u_sky'),
+      };
+      this.skyVao = gl.createVertexArray();
+      this.skyState = 'ready';
+      return this.skyProg;
+    } catch (e) {
+      console.warn('[ncut] the sky program failed, the sky is not drawn', e);
+      this.skyState = 'failed';
+      return null;
+    }
+  }
+
+  /** a face as an n x n picture: itself when it is that size, else drawn into the fit canvas */
+  private fitFace(face: TexImageSource, n: number): TexImageSource {
+    const f = face as { width?: number; height?: number };
+    if (f.width === n && f.height === n) return face;
+    let c = this.skyFitCanvas;
+    if (!c) {
+      c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(n, n) : createCanvas();
+      this.skyFitCanvas = c;
+    }
+    if (c.width !== n || c.height !== n) {
+      c.width = n;
+      c.height = n;
+    }
+    const x = c.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+    if (!x) throw new Error('no 2d context for the sky');
+    x.clearRect(0, 0, n, n);
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(face as CanvasImageSource, 0, 0, n, n);
+    return c;
+  }
+
+  /** the cube of a sky: uploaded once per picture key and size, with mips. null when it cannot be */
+  private skyTexture(sky: SkyDraw): WebGLTexture | null {
+    const gl = this.gl;
+    if (!this.maxCube) this.maxCube = (gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE) as number) || SKY_UPLOAD_FALLBACK;
+    const n = skyCubeSize(sky.pic.size, sky.maxFace, this.maxCube);
+    const key = `${sky.pic.key}|${n}`;
+    if (this.skyTex && this.skyTexKey === key) return this.skyTex;
+    if (this.skyBadKey === key) return null;
+    this.dropSky();
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE2);
+    try {
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex);
+      gl.texStorage2D(gl.TEXTURE_CUBE_MAP, skyLevels(n), gl.RGBA8, n, n);
+      for (let i = 0; i < 6; i++) gl.texSubImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, 0, 0, n, n, gl.RGBA, gl.UNSIGNED_BYTE, this.fitFace(sky.pic.faces[i]!, n));
+      gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    } catch (e) {
+      gl.deleteTexture(tex);
+      this.skyBadKey = key;
+      console.warn('[ncut] the sky could not be uploaded', e);
+      return null;
+    } finally {
+      gl.activeTexture(gl.TEXTURE0);
+      // the fit canvas is only needed during the upload
+      if (this.skyFitCanvas) {
+        this.skyFitCanvas.width = 0;
+        this.skyFitCanvas.height = 0;
+      }
+    }
+    this.skyTex = tex;
+    this.skyTexKey = key;
+    return tex;
+  }
+
+  /** draw the sky over the cleared frame: depth off, so the planes after it are not touched */
+  private drawSky(sky: SkyDraw): void {
+    const prog = this.skyProgram();
+    if (!prog) return;
+    const tex = this.skyTexture(sky);
+    if (!tex) return;
+    const gl = this.gl;
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.useProgram(prog.program);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex);
+    gl.uniform1i(prog.sky, 2);
+    gl.uniformMatrix3fv(prog.ray, false, sky.ray);
+    gl.uniform1f(prog.gain, sky.gain);
+    gl.uniform1f(prog.bias, sky.bias);
+    gl.bindVertexArray(this.skyVao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+  }
+
+  /** give back the cube (the sky went away). the program stays */
+  dropSky(): void {
+    if (this.skyTex) this.gl.deleteTexture(this.skyTex);
+    this.skyTex = null;
+    this.skyTexKey = '';
+    this.skyBadKey = '';
   }
 
   /** the gpu mesh for a shape, built on first use */
@@ -1107,7 +1282,7 @@ class SceneRenderer {
     }
   }
 
-  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null, light: LightRig | null = null): GLCanvas | null {
+  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null, light: LightRig | null = null, sky: SkyDraw | null = null): GLCanvas | null {
     const gl = this.gl;
     if (this.isLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -1128,6 +1303,8 @@ class SceneRenderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.CULL_FACE);
+    // the sky first, behind everything (its own program; the plane program is bound again below)
+    if (sky) this.drawSky(sky);
 
     // back to front (see order.ts), so see-through pixels blend over what is behind them.
     // each plane is drawn twice: its solid pixels write depth, which sorts out planes that cut
@@ -1374,20 +1551,27 @@ export function renderScene(
   focus?: FocusRig | null,
   /** the light of lit planes (light.ts sceneLightAt). null = none: every plane is drawn unlit with the plane program. */
   light: LightRig | null = null,
+  /** the sky behind the planes (sky.ts skyDrawFor). null = none. a render with only a sky draws the sky alone */
+  sky: SkyDraw | null = null,
 ): GLCanvas | null {
-  if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0)) return null;
+  if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0 && !sky)) return null;
   let r = getRenderer(channel);
   if (!r) return null;
   const fo = focus === undefined ? boundFocus(viewProj) : focus;
-  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo, light);
+  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky);
   if (out || !r.isLost()) return out;
   // the context was lost: try once more on a fresh renderer (getRenderer drops the lost one)
   r = getRenderer(channel);
-  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo, light) : null;
+  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky) : null;
 }
 
 /** start compiling the lit program of a channel's renderer before its first lit frame. no renderer yet = nothing to do. */
 export function warmSceneLight(channel: string): void {
   const r = renderers.get(channel);
   if (r) r.startLit();
+}
+
+/** give back the sky cube of a channel's renderer (the sky was taken off). no renderer = nothing to do */
+export function releaseSky(channel: string): void {
+  renderers.get(channel)?.dropSky();
 }

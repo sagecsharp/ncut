@@ -10,12 +10,14 @@
  * the picture stays srgb: rgb * f is the linear picture lit by L, back in srgb. every term is 0..1, so f is 0..1: a
  * premultiplied color stays valid and nothing is clamped.
  *
- * without an own light (Project.light missing) the dome is read off the project data behind the 3d clips, never off
- * pixels (preview, export and export workers agree): the background and the 2d shape clips painted under the lowest 3d
+ * without an own light, a project with a usable sky (Project.sky) takes the light that was measured from the sky
+ * pictures when the sky was set (skyLightOf): turned with the sky, times its brightness, the horizon mixed with the fog.
+ * without a sky the dome is read off the project data behind the 3d clips, never off pixels (preview, export and
+ * export workers agree): the background and the 2d shape clips painted under the lowest 3d
  * clip, at fixed points of the frame. sky = the upper part, horizon = the middle row mixed with the fog color by the fog
  * amount, ground = AUTO_GROUND of the horizon. no sun.
  */
-import type { Clip, Project, SceneLight, ShapeClip, Transform } from '../../types';
+import type { Clip, MediaAsset, Project, SceneFog, SceneLight, SceneSky, ShapeClip, Transform } from '../../types';
 import { isVisualClip, stretchX, stretchY } from '../../types';
 import { resolveClip } from '../../lib/anim';
 import { clipEnd, fadeFactor } from '../../lib/timelineOps';
@@ -23,6 +25,7 @@ import { applyClipMotion, hasClipMotion } from '../clipAnim';
 import { worldTransformOf } from '../parent';
 import { faceSourceSet } from './faces';
 import { fogOn, parseFogColor, type Rgb } from './fog';
+import { skyBrightness, skyTurn, skyUsable, wrapDeg } from './sky';
 
 /** srgb to linear light and back. LIT_VS has the same number (1.0 / 2.2): keep them equal */
 export const LIGHT_GAMMA = 2.2;
@@ -117,6 +120,64 @@ export function lightRigFrom(light: SceneLight): LightRig {
   const rig: LightRig = { env };
   rigMemo.set(light, rig);
   return rig;
+}
+
+/** true when a stored light has the fields the math reads (the light of a sky read from a file is checked here) */
+function lightShaped(l: unknown): l is SceneLight {
+  const o = l as Record<string, unknown> | null;
+  return (
+    !!o &&
+    typeof o === 'object' &&
+    typeof o.sky === 'string' &&
+    typeof o.horizon === 'string' &&
+    typeof o.ground === 'string' &&
+    typeof o.sunColor === 'string' &&
+    typeof o.sun === 'number' &&
+    typeof o.sunTurn === 'number' &&
+    typeof o.sunHeight === 'number'
+  );
+}
+
+const skyMemo = new WeakMap<object, { fog: SceneFog | null | undefined; assets: readonly MediaAsset[]; light: SceneLight | null }>();
+
+/**
+ * the light the sky gives lit 3d clips: its measured light (turn 0, brightness 1) with the sun turned by the sky's
+ * turn, the colors times brightness ^ LIGHT_GAMMA in linear light (at most 1), the horizon mixed with the fog color by
+ * the fog amount like the scene light. null = no sky, its pictures are gone or its light is broken. the same sky, fog
+ * and media list give the same object (so lightRigFrom keeps one rig).
+ */
+export function skyLightOf(project: Pick<Project, 'sky' | 'fog' | 'assets'>): SceneLight | null {
+  const sky: SceneSky | null | undefined = project.sky;
+  if (!sky || typeof sky !== 'object') return null;
+  const hit = skyMemo.get(sky);
+  if (hit && hit.fog === project.fog && hit.assets === project.assets) return hit.light;
+  let light: SceneLight | null = null;
+  if (skyUsable(project) && lightShaped(sky.light)) {
+    const l = sky.light;
+    const k = Math.pow(skyBrightness(sky), LIGHT_GAMMA);
+    const lin = (hex: string): Rgb => {
+      const c = hexToLinear(hex);
+      return [Math.min(1, c[0] * k), Math.min(1, c[1] * k), Math.min(1, c[2] * k)];
+    };
+    let horizon = lin(l.horizon);
+    const fog = project.fog;
+    if (fogOn(fog)) {
+      const f = Math.min(1, fog.amount);
+      const fc = hexToLinear(fog.color);
+      horizon = [horizon[0] + (fc[0] - horizon[0]) * f, horizon[1] + (fc[1] - horizon[1]) * f, horizon[2] + (fc[2] - horizon[2]) * f];
+    }
+    light = {
+      sky: linearToHex(lin(l.sky)),
+      horizon: linearToHex(horizon),
+      ground: linearToHex(lin(l.ground)),
+      sun: l.sun,
+      sunColor: linearToHex(lin(l.sunColor)),
+      sunTurn: wrapDeg(l.sunTurn + skyTurn(sky)),
+      sunHeight: l.sunHeight,
+    };
+  }
+  skyMemo.set(sky, { fog: project.fog, assets: project.assets, light });
+  return light;
 }
 
 /**
@@ -395,13 +456,17 @@ function autoRig(project: Project, time: number): LightRig {
   return rig;
 }
 
-/** the light of lit planes at a time: the own light, or the one from the scene */
+/** the light of lit planes at a time: the own light, the light of the sky, or the one from the scene */
 export function sceneLightAt(project: Project, time: number): LightRig {
-  return project.light ? lightRigFrom(project.light) : autoRig(project, time);
+  if (project.light) return lightRigFrom(project.light);
+  const sky = project.sky ? skyLightOf(project) : null;
+  return sky ? lightRigFrom(sky) : autoRig(project, time);
 }
 
-/** what the scene gives at a time, whether or not an own light is set */
+/** what the scene gives at a time, whether or not an own light is set: the sky's dome when there is a usable sky */
 export function autoLightAt(project: Project, time: number): AutoLight {
+  const sky = project.sky ? skyLightOf(project) : null;
+  if (sky) return { sky: sky.sky, horizon: sky.horizon, ground: sky.ground };
   const e = autoRig(project, time).env;
   return {
     sky: linearToHex([e[0]!, e[1]!, e[2]!]),

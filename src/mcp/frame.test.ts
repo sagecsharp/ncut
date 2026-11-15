@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, fontWarning, frameSize, LIMIT_MAX_SIZE } from './frame';
+import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, fontWarning, frameSize, frameTimeFor, LIMIT_MAX_SIZE } from './frame';
+import { skyUsable } from '../engine/scene3d/sky';
+import type { Project } from '../types';
 
 describe('fontWarning', () => {
   it('names the family and the fallback', () => {
@@ -47,5 +49,21 @@ describe('bytesToBase64', () => {
     expect(bytesToBase64(new Uint8Array([104, 105]))).toBe('aGk=');
     const big = new Uint8Array(0x8000 * 3 + 17).map((_, i) => (i * 31 + 7) & 255);
     expect(bytesToBase64(big)).toBe(Buffer.from(big).toString('base64'));
+  });
+});
+
+describe('frameTimeFor', () => {
+  const base = { fps: 30, clips: [], tracks: [], assets: [] } as unknown as Project;
+  const sky = { asset: 'a', turns: 0 };
+  it('refuses a project without clips and without a usable sky', () => {
+    expect(() => frameTimeFor(base, 2)).toThrow(/the project is empty, there is no picture to draw/);
+    // a sky whose pictures are not in the project is not a picture
+    expect(() => frameTimeFor({ ...base, sky } as unknown as Project, 2)).toThrow(/the project is empty/);
+  });
+  it('draws time 0 for a project with only a usable sky', () => {
+    const assets = [{ id: 'a', kind: 'image', name: 'sky', width: 4000, height: 3000, duration: 0 }];
+    const p = { ...base, sky, assets } as unknown as Project;
+    expect(skyUsable(p)).toBe(true);
+    expect(frameTimeFor(p, 5)).toBe(0);
   });
 });

@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react';
 import { roundShown } from '../../components/ui/numberFormat';
+import { skyLightOf } from '../../engine/scene3d/light';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { SceneLight } from '../../types';
@@ -15,6 +16,7 @@ function AutoChips() {
   // while playing: quarter seconds, so the colors are not worked out on every frame. paused: the exact playhead
   const t = usePlayback((s) => (s.playing ? Math.floor(s.time * 4) / 4 : s.time));
   const key = useMemo(() => (project ? autoKey(project, t) : ''), [project, t]);
+  const fromSky = useEditor((s) => !!s.project && !!s.project.sky && skyLightOf(s.project) !== null);
   const [sky, horizon, ground] = key.split(' ');
   const chip = (name: string, hex: string | undefined) =>
     hex ? (
@@ -25,7 +27,7 @@ function AutoChips() {
       />
     ) : null;
   return (
-    <Row label="from the scene" title="the light the scene gives right now: sky, horizon, ground" wide>
+    <Row label={fromSky ? 'from the sky' : 'from the scene'} title={fromSky ? 'the light the sky gives: sky, horizon, ground' : 'the light the scene gives right now: sky, horizon, ground'} wide>
       <span style={{ display: 'inline-flex', gap: 6 }}>
         {chip('sky', sky)}
         {chip('horizon', horizon)}
@@ -97,7 +99,7 @@ export const LightSection = memo(function LightSection({ light }: { light: Scene
         <AutoChips />
       )}
       <div className="props-hint">
-        lights the 3d clips that have lit on. light only darkens or tints: white light leaves a clip as it is, a dark scene makes it darker (lower how lit to soften it). without an own light it comes from the background, the filled 2d shapes under the lowest 3d clip and the fog (pictures, video and text are not read). 2d clips are not affected
+        lights the 3d clips that have lit on. light only darkens or tints: white light leaves a clip as it is, a dark scene makes it darker (lower how lit to soften it). without an own light it comes from the sky when the project has one, else from the background, the filled 2d shapes under the lowest 3d clip and the fog (pictures, video and text are not read). 2d clips are not affected
       </div>
     </Section>
   );

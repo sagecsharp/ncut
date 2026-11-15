@@ -6,6 +6,7 @@ export const MOTION_EFFECTS: EffectDef[] = [
     id: 'shake',
     name: 'shake',
     category: 'motion',
+    alpha: 'moves',
     description: 'handheld camera shake, random left / right / up / down',
     posterTime: 0.4,
     params: [
@@ -24,6 +25,7 @@ vec4 effect(vec2 uv) {
     id: 'shake-hop',
     name: 'hop shake',
     category: 'motion',
+    alpha: 'moves',
     description: 'the picture jumps between the corners and the middle, each spot held for a moment',
     posterTime: 0.02,
     sync: { param: 'speed', cycles: 1 },
@@ -54,6 +56,7 @@ vec4 effect(vec2 uv) {
     id: 'tilt',
     name: 'tilt',
     category: 'motion',
+    alpha: 'moves',
     description: 'rotation wobble around the center with a small sideways sway',
     posterTime: 0.4,
     sync: { param: 'speed', cycles: 1 },
@@ -77,6 +80,7 @@ vec4 effect(vec2 uv) {
     id: 'tilt-swing',
     name: 'swing',
     category: 'motion',
+    alpha: 'moves',
     description: 'the picture swings left and right around the center and rests a moment at each side',
     posterTime: 0.45,
     sync: { param: 'speed', cycles: 1 },
@@ -102,6 +106,7 @@ vec4 effect(vec2 uv) {
     id: 'zoom-pulse',
     name: 'zoom pulse',
     category: 'motion',
+    alpha: 'moves',
     description: 'the picture punches in or out on a beat and eases back',
     posterTime: 0.15,
     sync: { param: 'rate', cycles: 1 },
@@ -129,6 +134,7 @@ vec4 effect(vec2 uv) {
     id: 'zoom-punch',
     name: 'zoom punch',
     category: 'motion',
+    alpha: 'moves',
     description: 'the picture punches in on a beat, stays a moment and eases back, the twist changes side every time',
     posterTime: 0.35,
     sync: { param: 'rate', cycles: 1 },
@@ -164,6 +170,7 @@ vec4 effect(vec2 uv) {
     id: 'whip',
     name: 'whip',
     category: 'motion',
+    alpha: 'moves',
     description: 'spin and zoom whip with a white flash at the peak',
     posterTime: 1.5,
     params: [
@@ -183,23 +190,23 @@ vec4 effect(vec2 uv) {
   float zm = p_zoom / 100.0 * bump * u_amount;
   float span = p_blur / 100.0;
   // taps along a combined rotation + zoom path around the center
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 24; i++) {
     float f = float(i) / 23.0 - 0.5;
     float a = spin * (1.0 + f * span * 2.0);
     float z = (1.0 + zm) * exp(f * span * zm * 2.0);
-    acc += tex(xform(uv, vec2(0.0), a, z)).rgb;
+    acc += tex(xform(uv, vec2(0.0), a, z));
   }
-  vec3 col = acc / 24.0;
-  // white exposure flash at the peak
-  col = mix(col, vec3(1.0), sat(p_flash / 100.0 * peak * u_amount));
-  return vec4(col, 1.0);
+  vec4 col = acc / 24.0;
+  // white exposure flash at the peak, only where the picture is
+  return repm(mix(unpm(col), vec3(1.0), sat(p_flash / 100.0 * peak * u_amount)), col.a);
 }`,
   },
   {
     id: 'whip-spin',
     name: 'spin whip',
     category: 'motion',
+    alpha: 'moves',
     description: 'a whole turn with a zoom: a small wind up, a fast blurred spin, a long ease out and a flash',
     posterTime: 1,
     params: [
@@ -228,7 +235,7 @@ float wh_zoom(float p) {
 }
 
 vec4 effect(vec2 uv) {
-  vec3 c = tex(uv).rgb;
+  vec4 c = tex(uv);
   float p = clamp(u_time / max(u_duration, 0.001), 0.0, 1.0);
   float turn = TAU * p_turns;
   float zoom = p_zoom / 100.0;
@@ -242,24 +249,25 @@ vec4 effect(vec2 uv) {
   // the wind up goes one way, the turn the other
   float ang = -turn * wh_turn(p);
   float zm = 1.0 + zoom * wh_zoom(p);
-  vec3 acc = vec3(0.0);
+  vec4 acc = vec4(0.0);
   for (int i = 0; i < 24; i++) {
     float f = float(i) / 23.0 - 0.5;
-    acc += tex(xform(uv, vec2(0.0), ang + f * arc, zm + f * dz)).rgb;
+    acc += tex(xform(uv, vec2(0.0), ang + f * arc, zm + f * dz));
   }
-  vec3 col = acc / 24.0;
+  vec4 col = acc / 24.0;
   // exposure flash: up fast while the spin starts, then a long straight fall
   float fl = p < 0.32 ? sat((p - 0.235) / 0.085) : sat(1.0 - (p - 0.32) / 0.385);
-  // a slightly warm light
-  col += p_flash / 100.0 * fl * vec3(1.0, 0.99, 0.86);
+  // a slightly warm light, only where the picture is
+  col = repm(unpm(col) + p_flash / 100.0 * fl * vec3(1.0, 0.99, 0.86), col.a);
   // a turn cannot be half done: the strength fades the whole move in and out
-  return vec4(mix(c, col, u_amount), 1.0);
+  return mix(c, col, u_amount);
 }`,
   },
   {
     id: 'drift',
     name: 'drift',
     category: 'motion',
+    alpha: 'moves',
     description: 'slow floating camera: small move, slight rotation, breathing zoom',
     posterTime: 1.0,
     params: [

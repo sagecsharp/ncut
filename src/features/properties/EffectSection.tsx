@@ -32,7 +32,7 @@ interface EffectSectionProps {
 }
 
 /** "applies to": everything below the effect's track, or one visual clip. a clip that is gone can be cleared. */
-function AppliesTo({ id, target }: { id: string; target: string | null }) {
+function AppliesTo({ id, target, own }: { id: string; target: string | null; own: boolean }) {
   const self = useClip(id);
   const picked = useClip(target ?? undefined);
   const found = !!picked && isVisualClip(picked);
@@ -44,8 +44,8 @@ function AppliesTo({ id, target }: { id: string; target: string | null }) {
     <>
       <ParentSelect
         label="applies to"
-        title="put this effect on one clip, or on everything below it"
-        noneLabel="everything below"
+        title={own ? 'put this effect on one clip, or let it key the video or picture right under it' : 'put this effect on one clip, or on everything below it'}
+        noneLabel={own ? 'the clip under it' : 'everything below'}
         value={target ?? ''}
         current={label}
         build={build}
@@ -69,7 +69,7 @@ function AppliesTo({ id, target }: { id: string; target: string | null }) {
       {target && !found ? (
         <div className="props-buttons">
           <span className="props-hint">missing clip, the effect does nothing</span>
-          <button type="button" className="btn btn-sm" title="go back to everything below" onClick={() => set(null)}>
+          <button type="button" className="btn btn-sm" title={own ? 'go back to the clip under it' : 'go back to everything below'} onClick={() => set(null)}>
             clear
           </button>
         </div>
@@ -134,7 +134,7 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
         </select>
       </Row>
       <div className="props-hint">{def.description}</div>
-      <AppliesTo id={id} target={target ?? null} />
+      <AppliesTo id={id} target={target ?? null} own={def?.alpha === 'own'} />
       <AnimField
         slider
         id={id}
