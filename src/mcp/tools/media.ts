@@ -1,7 +1,10 @@
 /** media tools (docs/MCP.md): bring files into the project, put media on the timeline, swap media */
-import { importFiles } from '../../media/importer';
+import { usedAssetIds } from '../../features/media/mediaList';
+import { busyFor } from '../../lib/busy';
+import { deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { importProjectFile } from '../../store/session';
+import { useUi } from '../../store/ui';
 import type { MediaAsset } from '../../types';
 import { clipBrief, needAsset, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
@@ -75,6 +78,8 @@ export const mediaTools: ToolDef[] = [
         const unreadable = BAD_FILE.includes(why) ? '. the file is not a project ncut can read' : '';
         throw new ToolError(`could not import ${file.name}${why ? `: ${why}` : ''}${unreadable}`);
       }
+      // the projects screen shows the new project
+      useUi.getState().projectsChanged();
       return ok({ id, note: 'stored as a new project, not opened. open_project opens it' });
     },
   },
@@ -139,6 +144,76 @@ export const mediaTools: ToolDef[] = [
         throw new ToolError(`the media of the clip ${clip.id} could not be replaced (the clip or media is gone, the kinds differ or the track is locked)`);
       }
       return ok(clipBrief(needClip(clip.id)));
+    },
+  },
+  {
+    name: 'remove_media',
+    title: 'remove media from the project',
+    description:
+      'removes media from the open project and deletes its stored file from the app for good (the file on disk it was imported from is not touched). it cannot be undone: media is not part of the undo history. ' +
+      'ids: media ids from get_project or import_media (1 to 200). unused: true removes every media item no clip uses, instead of ids. send one of the two. ' +
+      'media that clips use is refused unless with_clips: true, which deletes those clips too and clears the whole undo history. it is refused when one of those clips is on a locked track. ' +
+      'unused: true is refused while files are being imported. removing unused media can also clear the undo history when an undo step still holds a clip of it: the answer says so in undoCleared. refused while an export runs. ' +
+      'answers what was removed (id, name), how many clips went with it, undoCleared and how many media are left.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 200, description: 'media ids' },
+        unused: { type: 'boolean', description: 'true: every media item no clip uses' },
+        with_clips: { type: 'boolean', description: 'also delete the clips that use the media. default false' },
+      },
+    },
+    annotations: { destructiveHint: true },
+    async run(args) {
+      const p = needProject();
+      const byIds = Array.isArray(args.ids);
+      const unused = args.unused === true;
+      if (byIds === unused) throw new ToolError('send ids (media ids from get_project) or unused: true, one of the two');
+      if (unused && args.with_clips === true) throw new ToolError('with_clips does not go with unused: true, unused media has no clips');
+      if (unused && useImporting.getState().count > 0) {
+        throw new ToolError('cannot remove unused media while files are being imported (a drop onto the timeline places its clips only when every file is in). try again when the import is done, or name the media in ids');
+      }
+      const used = usedAssetIds(p.clips);
+      // duplicates count once
+      const ids = byIds ? [...new Set((args.ids as unknown[]).map(String))] : p.assets.filter((a) => !used.has(a.id)).map((a) => a.id);
+      if (unused && ids.length === 0) throw new ToolError('no unused media, nothing changed');
+      const list = ids.map((id) => needAsset(id));
+      const busy = busyFor(['export', 'mcp-export']);
+      if (busy) throw new ToolError(`cannot remove media while ${busy}. wait for it (export_status) or stop it (export_cancel)`);
+      const using = list
+        .map((a) => ({ a, clips: p.clips.filter((c) => 'assetId' in c && c.assetId === a.id) }))
+        .filter((u) => u.clips.length > 0);
+      if (using.length > 0 && args.with_clips !== true) {
+        const named = using.map((u) => `${u.a.id} ("${u.a.name}") is used by ${u.clips.length} ${u.clips.length === 1 ? 'clip' : 'clips'}`).join(', ');
+        throw new ToolError(
+          `the media ${named}. delete_clips them first, or send with_clips: true to delete them too (that clears the undo history)`,
+        );
+      }
+      for (const u of using) for (const c of u.clips) needUnlocked(c);
+      const steps = () => useEditor.getState().past.length + useEditor.getState().future.length;
+      const stepsBefore = steps();
+      const clipsBefore = p.clips.length;
+      // every deleteAsset takes its media out of the store before its first await, so all of them leave right after the checks,
+      // before a stored copy is waited on (nothing can put a clip of a later one on the timeline in between)
+      const pending = list.map((a) => deleteAsset(a.id));
+      // every deleteAsset has dropped its media by now (before its first await): count here, the user can edit while the blobs go
+      const cut = clipsBefore - (useEditor.getState().project?.clips.length ?? clipsBefore);
+      const cleared = stepsBefore > 0 && steps() === 0;
+      const results = await Promise.allSettled(pending);
+      const removed: { id: string; name: string }[] = [];
+      const failed: string[] = [];
+      results.forEach((r, i) => {
+        const a = list[i]!;
+        if (r.status === 'fulfilled') removed.push({ id: a.id, name: a.name });
+        else failed.push(`${a.id} (${r.reason instanceof Error ? r.reason.message : String(r.reason)})`);
+      });
+      const gone = removed.length > 0 ? removed.map((r) => r.id).join(', ') : 'none';
+      if (failed.length > 0) throw new ToolError(`removing the media ${failed.join(', ')} failed. removed: ${gone}`);
+      if (useEditor.getState().project?.id !== p.id) {
+        throw new ToolError(`the project was closed or switched while media was being removed. removed: ${gone}`);
+      }
+      const after = needProject();
+      return ok({ removed, clips: cut, undoCleared: cleared, media: after.assets.length });
     },
   },
 ];

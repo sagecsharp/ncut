@@ -263,6 +263,15 @@ export function ProjectsScreen() {
     };
   }, [refresh]);
 
+  // the agent (mcp) can delete or add stored projects while this screen is up
+  const projectsVersion = useUi((s) => s.projectsVersion);
+  const seenVersion = useRef(projectsVersion);
+  useEffect(() => {
+    if (seenVersion.current === projectsVersion) return;
+    seenVersion.current = projectsVersion;
+    void refresh();
+  }, [projectsVersion, refresh]);
+
   const [appearanceOpen, setAppearanceOpen] = useState(false);
 
   const openNew = useCallback(() => {

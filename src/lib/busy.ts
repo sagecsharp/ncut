@@ -17,6 +17,15 @@ export function busyReason(): string | null {
   return null;
 }
 
+/** the label of the first of these keys that is busy, or null. for work that only some kinds of running work should hold up (an export, not a media copy) */
+export function busyFor(keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const label = reasons.get(key);
+    if (label !== undefined) return label;
+  }
+  return null;
+}
+
 /** for tests */
 export function clearBusy(): void {
   reasons.clear();

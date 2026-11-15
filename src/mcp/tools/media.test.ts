@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearBusy, setBusy } from '../../lib/busy';
 import { createProject } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
+import { useUi } from '../../store/ui';
 import type { MediaAsset } from '../../types';
 import { callTool } from '../registry';
 import type { ToolCtx, ToolResult } from '../types';
 
-const mocks = vi.hoisted(() => ({ importFiles: vi.fn(), importProjectFile: vi.fn() }));
-vi.mock('../../media/importer', () => ({ importFiles: mocks.importFiles }));
+const mocks = vi.hoisted(() => ({ importFiles: vi.fn(), importProjectFile: vi.fn(), deleteAsset: vi.fn(), importing: { count: 0 } }));
+vi.mock('../../media/importer', () => ({ importFiles: mocks.importFiles, deleteAsset: mocks.deleteAsset, useImporting: { getState: () => mocks.importing } }));
 vi.mock('../../store/session', () => ({
   openProjectById: async () => true,
   createAndOpenProject: async () => ({}),
@@ -33,6 +35,10 @@ const project = () => useEditor.getState().project!;
 beforeEach(() => {
   mocks.importFiles.mockReset();
   mocks.importProjectFile.mockReset();
+  // the real one also drops the media from the store
+  mocks.deleteAsset.mockReset().mockImplementation(async (id: string) => useEditor.getState().removeAsset(id));
+  mocks.importing.count = 0;
+  clearBusy();
   useEditor.getState().closeProject();
   useEditor.getState().openProject(createProject('media'));
   const s = useEditor.getState();
@@ -97,6 +103,16 @@ describe('import_project', () => {
     expect(mocks.importProjectFile.mock.calls[0]![0]).toBeInstanceOf(Blob);
     expect(mocks.importProjectFile.mock.calls[0]![0].size).toBe(4);
     expect(project().name).toBe('media');
+  });
+
+  it('bumps the projects version on success only', async () => {
+    const v0 = useUi.getState().projectsVersion;
+    mocks.importProjectFile.mockRejectedValue(new Error('QuotaExceededError'));
+    await call('import_project', {}, { files: [{ name: 'a.ncut', bytes: new ArrayBuffer(4) }], ticket: null });
+    expect(useUi.getState().projectsVersion).toBe(v0);
+    mocks.importProjectFile.mockResolvedValue('prj_new');
+    await call('import_project', {}, { files: [{ name: 'a.ncut', bytes: new ArrayBuffer(4) }], ticket: null });
+    expect(useUi.getState().projectsVersion).toBe(v0 + 1);
   });
 
   it('does not blame the file for a storage failure', async () => {
@@ -183,5 +199,178 @@ describe('replace_media', () => {
     expect((await call('replace_media', { id: v, asset: 'v2' })).text).toMatch(/locked track/);
     expect(past()).toBe(locked);
     expect(before).toBeLessThanOrEqual(locked);
+  });
+});
+
+describe('remove_media', () => {
+  const ids = () => project().assets.map((a) => a.id);
+  const addClip = async (asset: string) => (await call('add_media_clip', { asset })).json!.id as string;
+
+  it('removes one unused media and answers it', async () => {
+    const r = await call('remove_media', { ids: ['v2'] });
+    expect(r.json).toEqual({ removed: [{ id: 'v2', name: 'clip two' }], clips: 0, undoCleared: false, media: 3 });
+    expect(ids()).toEqual(['v1', 'i1', 'a1']);
+  });
+
+  it('removes several, a duplicate id counts once', async () => {
+    const r = await call('remove_media', { ids: ['v1', 'a1', 'v1'] });
+    expect(r.json!.removed.map((x: { id: string }) => x.id)).toEqual(['v1', 'a1']);
+    expect(mocks.deleteAsset).toHaveBeenCalledTimes(2);
+    expect(ids()).toEqual(['v2', 'i1']);
+  });
+
+  it('unused: true removes the unused ones and keeps the used ones', async () => {
+    await addClip('v1');
+    const r = await call('remove_media', { unused: true });
+    expect(r.json!.removed.map((x: { id: string }) => x.id)).toEqual(['v2', 'i1', 'a1']);
+    expect(r.json!.media).toBe(1);
+    expect(ids()).toEqual(['v1']);
+    expect(project().clips).toHaveLength(1);
+  });
+
+  it('unused: true with nothing unused is refused', async () => {
+    for (const id of ['v1', 'v2', 'i1', 'a1']) await addClip(id);
+    const r = await call('remove_media', { unused: true });
+    expect(r.text).toMatch(/no unused media, nothing changed/);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+  });
+
+  it('refuses used media without with_clips and names it and the clip count', async () => {
+    await addClip('v1');
+    await addClip('v1');
+    await addClip('v2');
+    const r = await call('remove_media', { ids: ['v1', 'v2', 'a1'] });
+    expect(r.error).toBe(true);
+    expect(r.text).toContain('v1 ("clip one") is used by 2 clips');
+    expect(r.text).toContain('v2 ("clip two") is used by 1 clip');
+    expect(r.text).toMatch(/with_clips: true/);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+    expect(ids()).toHaveLength(4);
+  });
+
+  it('with_clips removes the clips too and reports clips and undoCleared', async () => {
+    await addClip('v1');
+    await addClip('v1');
+    expect(past()).toBeGreaterThan(0);
+    const r = await call('remove_media', { ids: ['v1'], with_clips: true });
+    expect(r.json).toEqual({ removed: [{ id: 'v1', name: 'clip one' }], clips: 2, undoCleared: true, media: 3 });
+    expect(project().clips).toHaveLength(0);
+    expect(past()).toBe(0);
+  });
+
+  it('refuses a clip on a locked track even with with_clips', async () => {
+    const id = await addClip('v1');
+    useEditor.getState().updateTrack(project().clips.find((c) => c.id === id)!.trackId, { locked: true });
+    const r = await call('remove_media', { ids: ['v1'], with_clips: true });
+    expect(r.text).toMatch(/locked track/);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+    expect(project().clips).toHaveLength(1);
+  });
+
+  it('refuses an unknown id and removes nothing, also as the second id', async () => {
+    const r = await call('remove_media', { ids: ['v1', 'nope'] });
+    expect(r.text).toMatch(/no media with the id nope/);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+    expect(ids()).toHaveLength(4);
+  });
+
+  it('wants exactly one of ids and unused, and with_clips does not go with unused', async () => {
+    expect((await call('remove_media', { ids: ['v1'], unused: true })).text).toMatch(/ids .* or unused: true/);
+    expect((await call('remove_media', {})).text).toMatch(/ids .* or unused: true/);
+    expect((await call('remove_media', { unused: false })).text).toMatch(/ids .* or unused: true/);
+    expect((await call('remove_media', { unused: true, with_clips: true })).text).toMatch(/with_clips/);
+    expect((await call('remove_media', { ids: [] })).error).toBe(true);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+  });
+
+  it('is refused while an export runs but not while imported media is being saved', async () => {
+    setBusy('export', 'an export is still running');
+    expect((await call('remove_media', { ids: ['v2'] })).text).toMatch(/cannot remove media while an export is still running/);
+    setBusy('export', null);
+    setBusy('mcp-export', 'an export is still running');
+    expect((await call('remove_media', { ids: ['v2'] })).error).toBe(true);
+    setBusy('mcp-export', null);
+    expect(ids()).toHaveLength(4);
+    setBusy('media-store', 'saving imported media');
+    expect((await call('remove_media', { ids: ['v2'] })).error).toBe(false);
+    expect(ids()).toHaveLength(3);
+  });
+
+  it('needs an open project', async () => {
+    useEditor.getState().closeProject();
+    expect((await call('remove_media', { ids: ['v1'] })).error).toBe(true);
+  });
+
+  it('says what was removed when one fails, the rest still go', async () => {
+    mocks.deleteAsset.mockImplementation(async (id: string) => {
+      useEditor.getState().removeAsset(id);
+      if (id === 'i1') throw new Error('disk gone');
+    });
+    const r = await call('remove_media', { ids: ['v1', 'v2', 'i1', 'a1'] });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(/i1 \(disk gone\)/);
+    expect(r.text).toMatch(/removed: v1, v2, a1/);
+  });
+
+  it('takes every media out before waiting on a stored copy', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    mocks.deleteAsset.mockImplementation(async (id: string) => {
+      useEditor.getState().removeAsset(id);
+      if (id === 'v1') await gate;
+    });
+    const running = call('remove_media', { ids: ['v1', 'v2'] });
+    await vi.waitFor(() => expect(mocks.deleteAsset).toHaveBeenCalledWith('v1'));
+    expect(ids()).toEqual(['i1', 'a1']);
+    release();
+    const r = await running;
+    expect(r.json!.removed.map((x: { id: string }) => x.id)).toEqual(['v1', 'v2']);
+  });
+
+  it('counts clips and the undo history before the wait, edits made meanwhile do not change the answer', async () => {
+    await addClip('v1');
+    await addClip('v1');
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    mocks.deleteAsset.mockImplementation(async (id: string) => {
+      useEditor.getState().removeAsset(id);
+      await gate;
+    });
+    const running = call('remove_media', { ids: ['v1'], with_clips: true });
+    await vi.waitFor(() => expect(mocks.deleteAsset).toHaveBeenCalledWith('v1'));
+    // the user edits while the stored copy is waited on: a new clip and a new undo step
+    await addClip('v2');
+    expect(past()).toBeGreaterThan(0);
+    release();
+    const r = await running;
+    expect(r.json).toEqual({ removed: [{ id: 'v1', name: 'clip one' }], clips: 2, undoCleared: true, media: 3 });
+    expect(project().clips).toHaveLength(1);
+  });
+
+  it('names what was removed when the project closes during the call', async () => {
+    mocks.deleteAsset.mockImplementation(async (id: string) => {
+      useEditor.getState().removeAsset(id);
+      if (id === 'v2') useEditor.getState().closeProject();
+    });
+    const r = await call('remove_media', { ids: ['v1', 'v2'] });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(/closed or switched/);
+    expect(r.text).toMatch(/removed: v1, v2/);
+  });
+
+  it('unused: true is refused while files are being imported, ids still work', async () => {
+    mocks.importing.count = 1;
+    const r = await call('remove_media', { unused: true });
+    expect(r.text).toMatch(/being imported/);
+    expect(mocks.deleteAsset).not.toHaveBeenCalled();
+    expect(ids()).toHaveLength(4);
+    expect((await call('remove_media', { ids: ['v2'] })).error).toBe(false);
+    mocks.importing.count = 0;
+    expect((await call('remove_media', { unused: true })).error).toBe(false);
+  });
+
+  it('is marked destructive', async () => {
+    const { TOOLS } = await import('../registry');
+    expect(TOOLS.find((t) => t.name === 'remove_media')!.annotations?.destructiveHint).toBe(true);
   });
 });

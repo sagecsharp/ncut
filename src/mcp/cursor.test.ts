@@ -175,6 +175,8 @@ describe('what a call points at before it runs', () => {
     expect(before('import_media', { paths: [] })).toEqual({ kind: 'media' });
     expect(before('add_media_clip', { asset: 'a1' })).toEqual({ kind: 'media', id: 'a1' });
     expect(before('replace_media', { id: 'c1', asset: 'a2' })).toEqual({ kind: 'media', id: 'a2' });
+    expect(before('remove_media', { ids: ['a1', 'a2'] })).toEqual({ kind: 'media', id: 'a1' });
+    expect(before('remove_media', { unused: true })).toEqual({ kind: 'media' });
   });
 
   it('the canvas: a transform with x / y points at where the clip now sits', () => {
@@ -203,6 +205,8 @@ describe('what a call points at before it runs', () => {
     expect(before('open_project', { id: 'p1' })).toEqual({ kind: 'projects', id: 'p1' });
     expect(before('create_project', {})).toEqual({ kind: 'projects', create: true });
     expect(before('close_project', {})).toEqual({ kind: 'projects' });
+    expect(before('delete_project', { id: 'p1', name: 'x' })).toEqual({ kind: 'projects', id: 'p1' });
+    expect(before('delete_project', {})).toEqual({ kind: 'projects' });
     expect(before('import_project', {})).toEqual({ kind: 'projects' });
   });
 
@@ -230,6 +234,10 @@ describe('what a finished call points at', () => {
     expect(after('import_media', {}, { media: [] })).toEqual({ kind: 'media' });
   });
 
+  it('remove_media: the media panel, the card is gone', () => {
+    expect(after('remove_media', { ids: ['a1'] }, { removed: [{ id: 'a1' }] })).toEqual({ kind: 'media' });
+  });
+
   it('split_clips: the new halves, duplicate_clips: the copies', () => {
     expect(after('split_clips', { time: 2 }, { created: ['n1', 'n2'], clips: [] })).toEqual({ kind: 'clips', ids: ['n1', 'n2'] });
     expect(after('duplicate_clips', { ids: ['a'] }, { copies: [{ id: 'k1', from: 'a' }, { id: 'k2' }] })).toEqual({ kind: 'clips', ids: ['k1', 'k2'] });
@@ -238,6 +246,7 @@ describe('what a finished call points at', () => {
   it('open_project and create_project end on the preview, replace_media on the clip', () => {
     expect(after('open_project', { id: 'p' }, {})).toEqual({ kind: 'preview' });
     expect(after('create_project', {}, {})).toEqual({ kind: 'preview' });
+    expect(after('delete_project', { id: 'p', name: 'x' }, {})).toEqual({ kind: 'projects' });
     expect(after('replace_media', { id: 'c1', asset: 'a' }, {})).toEqual({ kind: 'clip', id: 'c1' });
   });
 

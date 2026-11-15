@@ -17,7 +17,10 @@ export interface UiState {
   dialog: DialogName | null;
   toasts: Toast[];
   previewMode: PreviewMode;
+  projectsVersion: number;
   setPreviewMode(mode: PreviewMode): void;
+  /** bumped when stored projects change outside the projects screen (mcp) */
+  projectsChanged(): void;
   openDialog(name: DialogName): void;
   closeDialog(): void;
   /** show a short message bottom-center. auto-dismisses. */
@@ -29,8 +32,12 @@ export const useUi = create<UiState>()((set, get) => ({
   dialog: null,
   toasts: [],
   previewMode: 'output',
+  projectsVersion: 0,
   setPreviewMode(mode) {
     if (get().previewMode !== mode) set({ previewMode: mode });
+  },
+  projectsChanged() {
+    set({ projectsVersion: get().projectsVersion + 1 });
   },
   openDialog(name) {
     set({ dialog: name });

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearBusy, setBusy } from '../../lib/busy';
+import { defaultFog } from '../../features/properties/fogLogic';
 import { CANVAS_PRESETS, createProject } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import type { CanvasPreset } from '../../lib/factory';
 import type { Project } from '../../types';
 import { callTool } from '../registry';
@@ -14,6 +16,9 @@ const session = vi.hoisted(() => ({
   openProjectById: vi.fn(),
   createAndOpenProject: vi.fn(),
   closeProject: vi.fn(),
+  deleteStoredProject: vi.fn(),
+  // runs while listProjects waits, to change things like the ui would
+  whileListing: null as (() => void) | null,
 }));
 vi.mock('../../store/session', async () => {
   const { create } = await import('zustand');
@@ -21,12 +26,17 @@ vi.mock('../../store/session', async () => {
     openProjectById: session.openProjectById,
     createAndOpenProject: session.createAndOpenProject,
     closeProject: session.closeProject,
+    deleteStoredProject: session.deleteStoredProject,
     flushAutosave: async () => {},
     importProjectFile: async () => 'prj_x',
     useSaveState: create(() => ({ state: 'saved' })),
   };
 });
-vi.mock('../../storage/db', () => ({ listProjects: async () => session.stored }));
+vi.mock('../../storage/db', () => ({ listProjects: async () => {
+    session.whileListing?.();
+    return session.stored;
+  },
+}));
 vi.mock('../../media/importer', () => ({ importFiles: async () => [] }));
 
 async function call(name: string, args: Record<string, unknown> = {}) {
@@ -44,7 +54,9 @@ beforeEach(() => {
   useEditor.getState().openProject(createProject('test'));
   usePlayback.getState().seek(0);
   session.stored = [];
+  session.whileListing = null;
   session.openProjectById.mockReset().mockResolvedValue(true);
+  session.deleteStoredProject.mockReset().mockResolvedValue(undefined);
   session.closeProject.mockReset().mockImplementation(async () => useEditor.getState().closeProject());
   session.createAndOpenProject.mockReset().mockImplementation(async (name?: string, preset?: CanvasPreset, fps?: number) => {
     const p = createProject(name, preset, fps);
@@ -143,7 +155,228 @@ describe('projects', () => {
     expect((await call('update_project', {})).text).toMatch(/nothing to change/);
     expect((await call('update_project', { background: 'red' })).text).toMatch(/hex color/);
     expect((await call('update_project', { fps: 500 })).error).toBe(true);
-    expect((await call('update_project', { fog: 1 })).text).toMatch(/not a known field/);
+    expect((await call('update_project', { bogus: 1 })).text).toMatch(/not a known field/);
+  });
+});
+
+describe('fog', () => {
+  const FOG = { color: '#223344', near: 500, far: 3000, amount: 0.5 };
+  const fogNow = () => project().fog;
+
+  it('sets a full fog as one undo step and answers it', async () => {
+    const before = past();
+    const r = await call('update_project', { fog: { color: '#ABCDEF', near: 500.4, far: 3000, amount: 0.123456 } });
+    expect(r.json!.fog).toEqual({ color: '#abcdef', near: 500, far: 3000, amount: 0.1235 });
+    expect(fogNow()).toEqual({ color: '#abcdef', near: 500, far: 3000, amount: 0.1235 });
+    expect(past()).toBe(before + 1);
+  });
+
+  it('lays a part over the fog the project has', async () => {
+    await call('update_project', { fog: FOG });
+    const r = await call('update_project', { fog: { amount: 0.25 } });
+    expect(r.json!.fog).toEqual({ ...FOG, amount: 0.25 });
+  });
+
+  it('an object when there is no fog starts from the defaults', async () => {
+    const d = defaultFog(project().background, project().height);
+    const r = await call('update_project', { fog: {} });
+    expect(r.json!.fog).toEqual(d);
+    const other = await call('update_project', { fog: { amount: 0.5 } });
+    expect(other.json!.fog).toEqual({ ...d, amount: 0.5 });
+  });
+
+  it('the default fog follows a height and background sent in the same call', async () => {
+    const r = await call('update_project', { height: 2160, background: '#336699', fog: {} });
+    expect(r.json!.fog).toEqual(defaultFog('#336699', 2160));
+    expect(fogNow()).toEqual(defaultFog('#336699', 2160));
+  });
+
+  it('a part over the default uses the new height too', async () => {
+    const r = await call('update_project', { height: 2160, fog: { amount: 0.5 } });
+    expect(r.json!.fog).toEqual({ ...defaultFog(project().background, 2160), amount: 0.5 });
+  });
+
+  it('null switches it off, and is refused when there is none', async () => {
+    expect((await call('update_project', { fog: null })).text).toMatch(/nothing changed/);
+    await call('update_project', { fog: FOG });
+    const before = past();
+    const r = await call('update_project', { fog: null });
+    expect(r.json!.fog).toBeNull();
+    expect(fogNow() ?? null).toBeNull();
+    expect(past()).toBe(before + 1);
+  });
+
+  it('the same values are refused as nothing changed', async () => {
+    await call('update_project', { fog: FOG });
+    const before = past();
+    expect((await call('update_project', { fog: { ...FOG } })).text).toMatch(/nothing changed/);
+    expect((await call('update_project', { fog: { near: 500 } })).text).toMatch(/nothing changed/);
+    expect((await call('update_project', { fog: { color: '#223344' }, width: 1920 })).text).toMatch(/nothing changed/);
+    expect(past()).toBe(before);
+  });
+
+  it('a fog change next to another setting still goes through', async () => {
+    await call('update_project', { fog: FOG });
+    const r = await call('update_project', { fog: { ...FOG }, name: 'both' });
+    expect(r.json).toMatchObject({ name: 'both', fog: FOG });
+  });
+
+  it('refuses bad values and leaves the project as it was', async () => {
+    await call('update_project', { fog: FOG });
+    const before = past();
+    const kept = fogNow();
+    expect((await call('update_project', { fog: { color: 'red' } })).text).toMatch(/fog.color must be a hex color like #101010/);
+    expect((await call('update_project', { fog: { far: 120 } })).text).toMatch(/fog.far \(120\) must be at least 10 past fog.near \(500\)/);
+    expect((await call('update_project', { fog: { near: 2995 } })).text).toMatch(/fog.far \(3000\) must be at least 10 past fog.near \(2995\)/);
+    for (const bad of [{ near: -1 }, { near: 50000 }, { far: 5 }, { far: 50001 }, { amount: 1.5 }, { amount: -0.1 }, { near: 'x' }]) {
+      expect((await call('update_project', { fog: bad })).error, JSON.stringify(bad)).toBe(true);
+    }
+    for (const bad of [1, 'x', [], true]) {
+      expect((await call('update_project', { fog: bad })).text, JSON.stringify(bad)).toMatch(/fog must be an object like \{ color, near, far, amount \} or null/);
+    }
+    expect((await call('update_project', { fog: { density: 1 } })).text).toMatch(/not a known field/);
+    expect(fogNow()).toBe(kept);
+    expect(past()).toBe(before);
+  });
+
+  it('an empty call names fog', async () => {
+    expect((await call('update_project', {})).text).toMatch(/fps, background or fog/);
+  });
+
+  it('get_project shows the fog, or null', async () => {
+    expect((await call('get_project')).json!.fog).toBeNull();
+    await call('update_project', { fog: FOG });
+    expect((await call('get_project')).json!.fog).toEqual(FOG);
+    // the short brief stays without it
+    expect((await call('get_state')).json!.project).not.toHaveProperty('fog');
+  });
+});
+
+describe('delete_project', () => {
+  const listed = (id: string, name: string) => ({ id, name, width: 1920, height: 1080, fps: 30, duration: 0, clipCount: 0, updatedAt: 1, createdAt: 1 });
+
+  it('deletes a stored project that is not open', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    const r = await call('delete_project', { id: 'prj_a', name: ' old cut ' });
+    expect(r.json).toEqual({ deleted: 'prj_a', name: 'old cut', wasOpen: false });
+    expect(session.deleteStoredProject).toHaveBeenCalledWith('prj_a');
+  });
+
+  it('says wasOpen for the open one', async () => {
+    const open = project();
+    session.stored = [listed(open.id, open.name)];
+    const r = await call('delete_project', { id: open.id, name: open.name });
+    expect(r.json).toEqual({ deleted: open.id, name: open.name, wasOpen: true });
+    expect(session.deleteStoredProject).toHaveBeenCalledWith(open.id);
+  });
+
+  it('a wrong name is refused, points at the project with that name and never hands out the name of the one at the id', async () => {
+    session.stored = [listed('prj_a', 'old cut'), listed('prj_b', 'new cut')];
+    const r = await call('delete_project', { id: 'prj_a', name: 'new cut' });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(/nothing was deleted: the id prj_a and the name "new cut" are not the same project/);
+    expect(r.text).toMatch(/the project called "new cut" has the id prj_b/);
+    expect(r.text).not.toMatch(/old cut/);
+    expect(r.text).not.toMatch(/send its exact name/);
+    const r2 = await call('delete_project', { id: 'prj_a', name: 'Old Cut' });
+    expect(r2.error).toBe(true);
+    expect(r2.text).toMatch(/no stored project has that name/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('a shared name needs updated too', async () => {
+    session.stored = [listed('prj_a', 'untitled project'), { ...listed('prj_b', 'untitled project'), updatedAt: 2 }];
+    expect((await call('delete_project', { id: 'prj_a', name: 'untitled project' })).text).toMatch(/2 projects are called "untitled project". send updated/);
+    expect((await call('delete_project', { id: 'prj_a', name: 'untitled project', updated: 2 })).error).toBe(true);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+    const r = await call('delete_project', { id: 'prj_a', name: 'untitled project', updated: 1 });
+    expect(r.json).toEqual({ deleted: 'prj_a', name: 'untitled project', wasOpen: false });
+    expect(session.deleteStoredProject).toHaveBeenCalledWith('prj_a');
+  });
+
+  it('a wrong updated gets its own text, with and without a twin, a missing one keeps the old text', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    const lone = await call('delete_project', { id: 'prj_a', name: 'old cut', updated: 5 });
+    expect(lone.error).toBe(true);
+    expect(lone.text).toMatch(/nothing was deleted: updated \(5\) is not the last change time of the project prj_a/);
+    expect(lone.text).toMatch(/call list_projects again/);
+    session.stored = [listed('prj_a', 'untitled project'), { ...listed('prj_b', 'untitled project'), updatedAt: 2 }];
+    const twin = await call('delete_project', { id: 'prj_a', name: 'untitled project', updated: 2 });
+    expect(twin.text).toMatch(/updated \(2\) is not the last change time of the project prj_a/);
+    expect(twin.text).not.toMatch(/projects are called/);
+    expect(twin.text).not.toMatch(/prj_b/);
+    expect((await call('delete_project', { id: 'prj_a', name: 'untitled project' })).text).toMatch(/2 projects are called/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('names every id when more than one project has the sent name', async () => {
+    session.stored = [listed('prj_a', 'old cut'), listed('prj_b', 'new cut'), listed('prj_c', 'new cut')];
+    const r = await call('delete_project', { id: 'prj_a', name: 'new cut' });
+    expect(r.text).toMatch(/the projects called "new cut" have the ids prj_b, prj_c/);
+  });
+
+  it('is refused when an export starts while the list is read', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    session.whileListing = () => setBusy('export', 'an export is still running');
+    const r = await call('delete_project', { id: 'prj_a', name: 'old cut' });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(/cannot delete a project while an export is still running/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('a stored name longer than 200 characters can still be deleted', async () => {
+    const long = `${'x'.repeat(200)} copy`;
+    session.stored = [listed('prj_a', long)];
+    const r = await call('delete_project', { id: 'prj_a', name: long });
+    expect(r.json).toEqual({ deleted: 'prj_a', name: long, wasOpen: false });
+    expect(session.deleteStoredProject).toHaveBeenCalledWith('prj_a');
+  });
+
+  it('an unknown id is refused', async () => {
+    expect((await call('delete_project', { id: 'nope', name: 'x' })).text).toMatch(/no project with the id nope. list_projects lists the projects/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('the schema needs both id and name', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    expect((await call('delete_project', { id: 'prj_a' })).text).toMatch(/name is missing/);
+    expect((await call('delete_project', { name: 'old cut' })).text).toMatch(/id is missing/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('is refused while an export runs', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    setBusy('export', 'an export is still running');
+    expect((await call('delete_project', { id: 'prj_a', name: 'old cut' })).text).toMatch(/cannot delete a project while an export is still running/);
+    expect(session.deleteStoredProject).not.toHaveBeenCalled();
+  });
+
+  it('a failing delete comes back as an error', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    session.deleteStoredProject.mockRejectedValue(new Error('disk full'));
+    const r = await call('delete_project', { id: 'prj_a', name: 'old cut' });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(/could not delete the project prj_a: disk full/);
+  });
+
+  it('tells the projects screen to reload after a delete, also a failed one', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    const v0 = useUi.getState().projectsVersion;
+    await call('delete_project', { id: 'prj_a', name: 'old cut' });
+    expect(useUi.getState().projectsVersion).toBe(v0 + 1);
+    session.deleteStoredProject.mockRejectedValue(new Error('disk full'));
+    await call('delete_project', { id: 'prj_a', name: 'old cut' });
+    expect(useUi.getState().projectsVersion).toBe(v0 + 2);
+  });
+
+  it('does not touch the projects version on a refusal', async () => {
+    session.stored = [listed('prj_a', 'old cut')];
+    const v0 = useUi.getState().projectsVersion;
+    await call('delete_project', { id: 'prj_a', name: 'new cut' });
+    await call('delete_project', { id: 'nope', name: 'x' });
+    setBusy('export', 'an export is still running');
+    await call('delete_project', { id: 'prj_a', name: 'old cut' });
+    expect(useUi.getState().projectsVersion).toBe(v0);
   });
 });
 
@@ -309,10 +542,12 @@ describe('the schema', () => {
   it('has the documented tools with annotations', async () => {
     const { listTools } = await import('../registry');
     const tools = new Map(listTools().tools.map((t) => [t.name, t]));
-    for (const n of ['get_state', 'list_projects', 'open_project', 'create_project', 'close_project', 'update_project', 'get_project', 'get_clip', 'select_clips', 'seek', 'undo', 'redo', 'add_track', 'update_track', 'remove_track', 'add_marker', 'remove_marker']) {
+    for (const n of ['get_state', 'list_projects', 'open_project', 'create_project', 'close_project', 'delete_project', 'update_project', 'get_project', 'get_clip', 'select_clips', 'seek', 'undo', 'redo', 'add_track', 'update_track', 'remove_track', 'add_marker', 'remove_marker']) {
       expect(tools.has(n), n).toBe(true);
     }
     expect(tools.get('remove_track')!.annotations?.destructiveHint).toBe(true);
+    expect(tools.get('delete_project')!.annotations?.destructiveHint).toBe(true);
+    expect(tools.get('delete_project')!.description).toMatch(/when it is the open project, it is closed first/);
     expect(tools.get('get_project')!.annotations?.readOnlyHint).toBe(true);
   });
 });

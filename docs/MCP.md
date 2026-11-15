@@ -16,7 +16,7 @@ to listen on a port).
   writes next to its settings. it needs node on the path. the token is not in that config, the script reads it.
 - "new token" makes every old config stop working.
 - ncut has to be running, with the server on. tools act on the project that is open in the window, and every
-  edit is a normal undo step.
+  edit is a normal undo step (except media imports and removals and deleting a project, which cannot be undone).
 - while a client works you see its cursor in the window, with a name tag (see "cursors"). "show cursors" under the server switch turns that off.
 
 ## shape
@@ -120,7 +120,7 @@ rules for every tool:
 - every tool takes an optional `cursor` (a short name, see "cursors"). `callTool` takes it off before the validation, so a tool never sees it and still refuses unknown fields.
 - times are timeline seconds unless a field says otherwise (at most 86400, a day). sizes and positions are project pixels. x 0 / y 0 is the middle of the canvas.
 - a value outside its range, a made up id (blend mode, transition, motion, clip) or an object of the wrong shape is refused with the reason, never clamped or stored as it came. a nested object may be given in part: it is laid over what the clip has.
-- a tool that changes the project makes exactly one undo step (helpers `oneStep`).
+- a tool that changes the project makes exactly one undo step (helpers `oneStep`). media and stored projects are not part of the history: `import_media`, `remove_media` and `delete_project` make none and cannot be undone, and `remove_media` can clear the history (its answer says so in `undoCleared`).
 - nothing is done silently: a refused edit (locked track, unknown id, a value that changed nothing) is an error result that says why and what to call instead.
 - answers are compact json text. ids are the app's own ids (`get_project` lists them).
 - tools never open dialogs and never show toasts for their own errors.
@@ -131,8 +131,9 @@ project and view (tools/project.ts):
 - `open_project` { id }: the project that is already open is not opened again (the answer says so, the undo history stays).
 - `create_project` { name?, preset?: '16:9' | '9:16' | '1:1' | '4:3' | '4:5' | '21:9', width?, height?, fps? }: makes and opens it.
 - `close_project` {}: back to the projects screen (saved first).
-- `update_project` { name?, width?, height?, fps?, background? }
-- `get_project` {}: tracks top to bottom (id, kind, name, muted / hidden / locked), every clip as a short line (helpers `clipBrief`), media (id, name, kind, duration, size), markers, duration.
+- `delete_project` { id, name, updated? }: deletes a stored project and its media for good. `name` must be the project's exact name (from `list_projects`), so a wrong id cannot delete the wrong project. when other projects share that name, `updated` from `list_projects` must match too. when it is the open project, it is closed first (another open project stays open). refused while an export runs. there is no undo for it.
+- `update_project` { name?, width?, height?, fps?, background?, fog? }: `fog` is haze over the 3d space { color, near, far, amount } (3d clips blend toward the color the farther they are from the camera, 2d clips are never fogged). `null` switches it off, an object may be given in part. the answer carries `fog` (the object or null), and so does `get_project`.
+- `get_project` {}: tracks top to bottom (id, kind, name, muted / hidden / locked), every clip as a short line (helpers `clipBrief`), media (id, name, kind, duration, size), markers, fog (the object or null), duration.
 - `get_clip` { id }: the whole clip as stored, plus `animatable` (prop, label, min, max, unit) and, for a solid, its side names.
 - `select_clips` { ids }, `seek` { time }, `undo` { steps? }, `redo` { steps? }
 - `add_track` { kind: 'video' | 'audio', index?, name? }, `update_track` { id, name?, muted?, hidden?, locked? }, `remove_track` { id } (takes its clips with it; a locked track is refused)
@@ -148,6 +149,7 @@ media (tools/media.ts):
 - `import_project` { path }: adds a .ncut file as a new project. answers its id (not opened).
 - `add_media_clip` { asset, track?, start? }: a clip of that media on the timeline.
 - `replace_media` { id, asset }: the clip shows other media of the same kind.
+- `remove_media` { ids? | unused?, with_clips? }: removes media and its stored file for good, not undoable. `unused: true` takes every media no clip uses. media that clips use is refused unless `with_clips: true`, which deletes those clips too and clears the undo history. it is refused when one of those clips is on a locked track. refused while an export runs. `unused: true` is also refused while files are being imported. answers what was removed, clips, undoCleared and the media left.
 
 new clips (tools/add.ts):
 - `add_text` { text?, preset?, track?, start?, duration?, fields? }
@@ -193,7 +195,7 @@ cursors (tools/cursor.ts):
 while a client works, ncut draws a mouse cursor with a name tag over the window and flies it to the thing each tool call touches. it is for the user: it shows what the agent is doing. it never changes the project, never takes a click and costs no undo step.
 
 what the user sees:
-- an arrow in one of 8 colors, a tag with the name and under it what the tool does ("moves a clip"). the cursor flies (about 350 ms) to the clip, track, time on the ruler, spot on the canvas, media card, inspector, preview, top bar button (undo, redo, export) or project card the call touches. a tool that makes something (add_text, add_track, add_media_clip, duplicate_clips ...) moves on to what it made when it is done. a tool that removes its target (delete_clips, remove_track, remove_marker) points at it before it is gone. a pure lookup (get_state, list_options, get_project) only changes the label, the cursor stays where it was.
+- an arrow in one of 8 colors, a tag with the name and under it what the tool does ("moves a clip"). the cursor flies (about 350 ms) to the clip, track, time on the ruler, spot on the canvas, media card, inspector, preview, top bar button (undo, redo, export) or project card the call touches. a tool that makes something (add_text, add_track, add_media_clip, duplicate_clips ...) moves on to what it made when it is done. a tool that removes its target (delete_clips, remove_track, remove_marker, delete_project, remove_media) points at it before it is gone. a pure lookup (get_state, list_options, get_project) only changes the label, the cursor stays where it was.
 - a call that finished makes a ring grow around the arrow. a call that failed shows "failed" in the tag and a red square instead of the ring.
 - the cursor stays on its target while the user scrolls, zooms or resizes. a target that is scrolled out of the timeline is shown at the edge of the timeline; the user's scroll and zoom are never changed by a cursor. a target that can not be found (no editor open) leaves the cursor where it was; a cursor that never had a spot starts at the top middle of the window.
 - it fades and goes 12 seconds after its last activity (30 seconds when it shows a `point_at` note). a note stays through your next calls and goes 30 seconds after it was set.

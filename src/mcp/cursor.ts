@@ -199,6 +199,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
   open_project: { label: 'opens a project', before: (a) => ({ kind: 'projects', ...(str(a.id) ? { id: str(a.id) } : {}) }), after: () => PREVIEW },
   create_project: { label: 'makes a project', before: () => ({ kind: 'projects', create: true }), after: () => PREVIEW },
   close_project: { label: 'closes the project', before: () => ({ kind: 'projects' }) },
+  delete_project: { label: 'deletes a project', before: (a) => ({ kind: 'projects', ...(str(a.id) ? { id: str(a.id) } : {}) }), after: () => ({ kind: 'projects' }) },
   update_project: { label: 'changes the project settings', before: () => INSPECTOR },
   get_project: lookup('reads the project'),
   get_clip: { label: 'reads a clip', before: () => INSPECTOR },
@@ -218,6 +219,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
   import_project: { label: 'imports a project', before: () => ({ kind: 'projects' }) },
   add_media_clip: { label: 'puts media on the timeline', before: (a) => media(a.asset), after: (_a, res) => clip(res?.id) },
   replace_media: { label: 'swaps the media of a clip', before: (a) => media(a.asset), after: (a) => clip(a.id) },
+  remove_media: { label: 'removes media', before: (a) => (a.unused === true ? media() : media(strs(a.ids)[0])), after: () => media() },
   // new clips
   add_text: makesClip('adds text', (a) => track(a.track)),
   add_shape: makesClip('adds a shape', (a) => track(a.track)),

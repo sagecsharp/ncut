@@ -3,14 +3,16 @@ import { animProps } from '../../lib/anim';
 import { busyReason } from '../../lib/busy';
 import { CANVAS_PRESETS, MAX_FPS } from '../../lib/factory';
 import { shell } from '../../lib/shell';
+import { defaultFog, FOG_GAP, FOG_MAX } from '../../features/properties/fogLogic';
 import { projectDuration } from '../../lib/timelineOps';
 import { faceNames } from '../../engine/scene3d/faces';
 import { getEffect } from '../../engine/effects/registry';
 import { listProjects } from '../../storage/db';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import { closeProject, createAndOpenProject, openProjectById, useSaveState } from '../../store/session';
-import type { Project } from '../../types';
+import { closeProject, createAndOpenProject, deleteStoredProject, openProjectById, useSaveState } from '../../store/session';
+import { useUi } from '../../store/ui';
+import type { Project, SceneFog } from '../../types';
 import { changedSince, clipBrief, needClip, needProject, needTrack, ok, oneStep, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 
@@ -34,6 +36,11 @@ function projectBrief(p: Project): Record<string, unknown> {
   };
 }
 
+/** the fog as the answers show it: the object, or null when there is none */
+function fogOf(p: Project): SceneFog | null {
+  return p.fog ? { color: p.fog.color, near: p.fog.near, far: p.fog.far, amount: p.fog.amount } : null;
+}
+
 /** an export in progress would break when the project under it changes */
 function refuseWhileBusy(what: string): void {
   const busy = busyReason();
@@ -46,6 +53,34 @@ function cleanName(v: unknown, what: string): string | undefined {
   const clean = name.trim();
   if (!clean) throw new ToolError(`${what} cannot be empty`);
   return clean;
+}
+
+/**
+ * checks args.fog and puts the new fog on the patch. a default fog comes from the background and height after this call (they are on the patch already). returns true when it is the fog the project has already
+ * (the store compares objects by identity and would write a step for it)
+ */
+function layFog(p: Project, v: unknown, patch: { fog?: SceneFog | null; background?: string; height?: number }): boolean {
+  if (v === null) {
+    if (!p.fog) return true;
+    patch.fog = null;
+    return false;
+  }
+  // the schema has no type for fog (null must pass), so the shape is checked here
+  if (typeof v !== 'object' || Array.isArray(v)) throw new ToolError('fog must be an object like { color, near, far, amount } or null');
+  const given = v as Record<string, unknown>;
+  const next: SceneFog = { ...(p.fog ?? defaultFog(patch.background ?? p.background, patch.height ?? p.height)) };
+  if (typeof given.color === 'string') {
+    if (!COLOR.test(given.color)) throw new ToolError('fog.color must be a hex color like #101010');
+    next.color = given.color.toLowerCase();
+  }
+  // whole pixels like the inspector
+  if (typeof given.near === 'number') next.near = Math.round(given.near);
+  if (typeof given.far === 'number') next.far = Math.round(given.far);
+  if (typeof given.amount === 'number') next.amount = Number(given.amount.toFixed(4));
+  if (next.far < next.near + FOG_GAP) throw new ToolError(`fog.far (${next.far}) must be at least ${FOG_GAP} past fog.near (${next.near})`);
+  if (p.fog && p.fog.color === next.color && p.fog.near === next.near && p.fog.far === next.far && p.fog.amount === next.amount) return true;
+  patch.fog = next;
+  return false;
 }
 
 export const projectTools: ToolDef[] = [
@@ -170,11 +205,68 @@ export const projectTools: ToolDef[] = [
     },
   },
   {
+    name: 'delete_project',
+    title: 'delete a project',
+    description:
+      'deletes a stored project with all of its media for good. there is no undo and no trash. send its id and its exact name from list_projects, plus updated from list_projects when another project has the same name (so a wrong id cannot delete the wrong project). ' +
+      'when it is the open project, it is closed first, after that tools that need a project fail until open_project or create_project (another open project stays open). refused while an export runs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'project id from list_projects' },
+        name: { type: 'string', description: 'the exact name of that project, from list_projects' },
+        updated: { type: 'number', description: 'its last change time (updated) from list_projects. needed when another project has the same name' },
+      },
+      required: ['id', 'name'],
+    },
+    annotations: { destructiveHint: true },
+    async run(args) {
+      refuseWhileBusy('delete a project');
+      const id = String(args.id);
+      const given = String(args.name).trim();
+      const list = await listProjects();
+      const found = list.find((p) => p.id === id);
+      if (!found) throw new ToolError(`no project with the id ${id}. list_projects lists the projects`);
+      if (found.name.trim() !== given) {
+        const meant = list.filter((p) => p.name.trim() === given).map((p) => p.id);
+        throw new ToolError(
+          `nothing was deleted: the id ${id} and the name "${given}" are not the same project` +
+            (meant.length ? `. the ${meant.length > 1 ? 'projects' : 'project'} called "${given}" ${meant.length > 1 ? 'have the ids' : 'has the id'} ${meant.join(', ')}` : '. no stored project has that name') +
+            '. check list_projects for the project the user means',
+        );
+      }
+      const twins = list.filter((p) => p.id !== id && p.name.trim() === given).length;
+      if ((twins > 0 || args.updated !== undefined) && args.updated !== found.updatedAt) {
+        throw new ToolError(
+          args.updated === undefined
+            ? `${twins + 1} projects are called "${given}". send updated (its last change time from list_projects) too, so the right one is deleted`
+            : `nothing was deleted: updated (${String(args.updated)}) is not the last change time of the project ${id}. it changed since you listed it: call list_projects again and check it is still the project the user means`,
+        );
+      }
+      // an export can start from the ui while the list was read: check again before the project is closed under it
+      refuseWhileBusy('delete a project');
+      const wasOpen = useEditor.getState().project?.id === id;
+      try {
+        await deleteStoredProject(id);
+      } catch (e) {
+        const why = e instanceof Error ? e.message : '';
+        throw new ToolError(`could not delete the project ${id}${why ? `: ${why}` : ''}. list_projects shows what is still stored`);
+      } finally {
+        // a delete that failed halfway can still have changed the list
+        useUi.getState().projectsChanged();
+      }
+      return ok({ deleted: id, name: found.name, wasOpen });
+    },
+  },
+  {
     name: 'update_project',
     title: 'change project settings',
     description:
-      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240) or background color (hex like #101010) of the open project, as one undo step. ' +
-      'clips keep their pixel positions when the canvas size changes. send only what changes; a call that changes nothing is an error. answers the project summary.',
+      'changes the name, canvas size (pixels, 16..7680), frame rate (1..240), background color (hex like #101010) or fog of the open project, as one undo step. ' +
+      'clips keep their pixel positions when the canvas size changes. ' +
+      'fog is haze over the 3d space: 3d clips blend toward its color the farther they are from the camera. near and far are distances from the camera in project pixels (far at least 10 past near), amount 0..1 is the strongest haze. 2d clips are never fogged. ' +
+      'null switches fog off; an object may be given in part (it is laid over the fog the project has, or over a default fog when there is none). ' +
+      'send only what changes; a call that changes nothing is an error. answers the project summary and the fog (an object, or null).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -183,6 +275,16 @@ export const projectTools: ToolDef[] = [
         height: { type: 'integer', minimum: 16, maximum: 7680 },
         fps: { type: 'number', minimum: 1, maximum: MAX_FPS },
         background: { type: 'string', maxLength: 9, description: 'hex color: #rgb, #rrggbb or #rrggbbaa' },
+        // no type here: the validator refuses null for an object, and null switches the fog off
+        fog: {
+          description: 'haze over the 3d space, or null for none. an object may be given in part',
+          properties: {
+            color: { type: 'string', maxLength: 9, description: 'hex color: #rgb, #rrggbb or #rrggbbaa' },
+            near: { type: 'number', minimum: 0, maximum: FOG_MAX - FOG_GAP, description: 'distance from the camera where the haze starts, project pixels' },
+            far: { type: 'number', minimum: FOG_GAP, maximum: FOG_MAX, description: 'distance where it reaches amount, project pixels' },
+            amount: { type: 'number', minimum: 0, maximum: 1, description: 'strongest haze' },
+          },
+        },
       },
     },
     run(args) {
@@ -197,10 +299,15 @@ export const projectTools: ToolDef[] = [
         if (!COLOR.test(args.background)) throw new ToolError('background must be a hex color like #101010');
         patch.background = args.background;
       }
-      if (Object.keys(patch).length === 0) throw new ToolError('nothing to change: send name, width, height, fps or background');
+      const sameFog = args.fog !== undefined ? layFog(before, args.fog, patch) : false;
+      if (Object.keys(patch).length === 0) {
+        if (sameFog) throw new ToolError('the project already has those settings, nothing changed');
+        throw new ToolError('nothing to change: send name, width, height, fps, background or fog');
+      }
       useEditor.getState().updateProject(patch);
       if (!changedSince(before)) throw new ToolError('the project already has those settings, nothing changed');
-      return ok(projectBrief(needProject()));
+      const after = needProject();
+      return ok({ ...projectBrief(after), fog: fogOf(after) });
     },
   },
   {
@@ -208,7 +315,7 @@ export const projectTools: ToolDef[] = [
     title: 'read the project',
     description:
       'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked), every clip as one short line (id, type, track, start, end, name, ' +
-      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers and the duration, all in seconds and project pixels. ' +
+      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog (an object, or null) and the duration, all in seconds and project pixels. ' +
       'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
@@ -216,6 +323,7 @@ export const projectTools: ToolDef[] = [
       const p = needProject();
       return ok({
         ...projectBrief(p),
+        fog: fogOf(p),
         trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked })),
         clipList: p.clips.map(clipBrief),
         mediaList: p.assets.map((a) => ({ id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio })),
