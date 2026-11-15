@@ -14,6 +14,9 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.3.2': [
+    'settings open without a project: the projects screen has a settings button, and ctrl+, works there like in the editor. theme, tint, wallpaper, layout reset, unity 3d controls, mcp and updates are all in it',
+  ],
   '0.3.1': [
     'lit 3d clips: a 3d video, image, text or shape can take the light of the scene. switch "lit" on in its 3d section, "how lit" says how much (it can be keyed). the light comes from the background, the 2d shapes under the 3d clips and the fog, with nothing to set up: tops take the sky, sides the horizon, undersides the ground. or set an own light with a sun under project > light. light only darkens or tints a clip, a white surrounding leaves it as it is',
     'new template "lit room"',
