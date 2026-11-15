@@ -1,16 +1,10 @@
-import { ArrowLeftRight, RotateCcw } from 'lucide-react';
+import { ArrowLeftRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
-import { McpSettings } from '../../components/ui/McpSettings';
-import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
-import { useUi } from '../../store/ui';
-import { resetLayout } from '../editor/layoutReset';
-import { useSceneControls } from '../preview/sceneControls';
-import { Switch } from '../properties/controls';
+import { AppSettings } from './AppSettings';
 import type { ProjectSettingsPatch } from '../../store/editorStore';
 import './shell.css';
 
@@ -52,8 +46,6 @@ export function ProjectSettingsDialog({ open, onClose }: ProjectSettingsDialogPr
 }
 
 function SettingsForm({ onClose }: { onClose: () => void }) {
-  const sceneScheme = useSceneControls((s) => s.scheme);
-  const setSceneScheme = useSceneControls((s) => s.setScheme);
   const [initial] = useState(() => useEditor.getState().project);
   const [width, setWidth] = useState(initial?.width ?? 1920);
   const [height, setHeight] = useState(initial?.height ?? 1080);
@@ -103,33 +95,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
         </>
       }
     >
-      <h3 className="shell-settings-heading">appearance</h3>
-      <AppearanceSettings />
-      <div className="field">
-        <span className="field-label">panel layout</span>
-        <button
-          className="btn"
-          title="put the panels back to their default sizes"
-          onClick={() => {
-            resetLayout();
-            useUi.getState().toast('layout reset');
-          }}
-        >
-          <RotateCcw size={14} />
-          reset layout
-        </button>
-      </div>
-      <div className="field">
-        <span className="field-label">unity 3d controls</span>
-        <Switch
-          checked={sceneScheme === 'unity'}
-          title="drive the 3d scene view like unity: left drag orbits, w e r pick the tool. off: like blender (middle drag orbits, g r s move, rotate and scale)"
-          onChange={(on) => setSceneScheme(on ? 'unity' : 'blender')}
-        />
-      </div>
-
-      <McpSettings />
-      <UpdateSettings />
+      <AppSettings />
 
       <h3 className="shell-settings-heading shell-settings-heading-sep">project</h3>
       <label className="field">

@@ -8,7 +8,7 @@ to listen on a port).
 
 ## for the user
 
-- turn it on: project settings (or the appearance button on the projects screen) -> "mcp server".
+- turn it on: settings (the gear button in the editor header or on the projects screen, ctrl+,) -> "mcp server".
 - claude code: press "copy claude code command" and run it in a terminal. it looks like
   `claude mcp add --transport http ncut http://127.0.0.1:<port>/mcp --header "Authorization: Bearer <token>"`.
 - other http clients: "copy http config" (url + the Authorization header).
@@ -213,7 +213,7 @@ limits:
 - a color is picked when the cursor appears (the lowest of the 8 not in use) and kept while it lives.
 
 the switch:
-- "show cursors" in the mcp settings (project settings, or the appearance dialog on the projects screen), on by default. it is kept in localStorage under `ncut.mcpCursors` as json (`{"show":false}`); bad json or no storage = on.
+- "show cursors" in the mcp settings (the settings, from the editor or the projects screen), on by default. it is kept in localStorage under `ncut.mcpCursors` as json (`{"show":false}`); bad json or no storage = on.
 - off: nothing is tracked, cursors that are there go at once, `point_at` still answers (and says nothing is drawn).
 
 where it lives: `src/mcp/cursor.ts` (name rules, one target rule + label per tool; a test fails for a tool without a rule), `src/store/mcpCursors.ts` (the cursors, idle sweep, the switch), `src/features/mcp/` (the layer, `locate.ts` turns a target into a point on the screen). the layer is in the page at z-index 150, `aria-hidden`, `pointer-events: none`. frames and timers only run while at least one cursor exists.

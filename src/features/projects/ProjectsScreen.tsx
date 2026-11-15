@@ -1,11 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Copy, Download, FolderOpen, Palette, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Copy, Download, FolderOpen, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react';
 import type { ProjectSummary } from '../../types';
-import { AppearanceSettings } from '../../components/ui/AppearanceSettings';
 import { Dialog } from '../../components/ui/Dialog';
-import { McpSettings } from '../../components/ui/McpSettings';
-import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../../lib/templates';
 import { formatDuration } from '../../lib/time';
@@ -19,6 +16,7 @@ import {
   renameStoredProject,
 } from '../../store/session';
 import { useUi } from '../../store/ui';
+import { AppSettings } from '../shell/AppSettings';
 import { listProjects } from '../../storage/db';
 import { loadPoster } from '../../storage/posters';
 import { PROJECT_FILE_EXT } from '../../storage/projectFile';
@@ -29,6 +27,7 @@ type SortMode = 'recent' | 'name';
 const SEARCH_THRESHOLD = 6;
 const MAX_PREVIEW_W = 200;
 const MAX_PREVIEW_H = 120;
+const NON_TEXT_INPUTS = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'file', 'submit', 'reset']);
 
 function fail(e: unknown, fallback: string): void {
   console.error(e);
@@ -272,7 +271,7 @@ export function ProjectsScreen() {
     void refresh();
   }, [projectsVersion, refresh]);
 
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openNew = useCallback(() => {
     setNewName('untitled project');
@@ -301,6 +300,22 @@ export function ProjectsScreen() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [openNew]);
+
+  // ctrl+, opens the settings, like in the editor: not while typing and not under another dialog
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Comma' || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.defaultPrevented || e.isComposing) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.tagName === 'TEXTAREA')) return;
+      if (t && t.tagName === 'INPUT' && !NON_TEXT_INPUTS.has((t as HTMLInputElement).type)) return;
+      if (document.querySelector('.dialog-backdrop')) return;
+      e.preventDefault();
+      setSettingsOpen(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const onOpen = useCallback(
     async (id: string) => {
@@ -450,8 +465,8 @@ export function ProjectsScreen() {
           <span className="projects-name">ncut</span>
         </div>
         <p className="projects-tagline">local-only video editor. no accounts, no watermark.</p>
-        <button className="icon-btn" onClick={() => setAppearanceOpen(true)} title="appearance: theme and tint" aria-label="appearance">
-          <Palette size={16} />
+        <button className="icon-btn" onClick={() => setSettingsOpen(true)} title="settings (ctrl+,)" aria-label="settings">
+          <Settings size={16} />
         </button>
         <input
           ref={fileInput}
@@ -476,10 +491,8 @@ export function ProjectsScreen() {
         </button>
       </header>
 
-      <Dialog open={appearanceOpen} title="appearance" onClose={() => setAppearanceOpen(false)} width={380}>
-        <AppearanceSettings />
-        <McpSettings />
-        <UpdateSettings />
+      <Dialog open={settingsOpen} title="settings" onClose={() => setSettingsOpen(false)} width={420}>
+        <AppSettings />
       </Dialog>
 
       <main className="projects-main">

@@ -4,7 +4,7 @@ the desktop app keeps itself up to date: it asks github now and then whether a n
 
 ## for the user
 
-- what you see: whether a new version is out or downloading, "restart now" when one is ready, a "check now" button, the switch "update automatically", and (for the plain folder build) a link to the releases page. it is the section "updates" in the settings (the appearance dialog on the projects screen and the project settings in the editor), and a toast says once when a version is ready.
+- what you see: whether a new version is out or downloading, "restart now" when one is ready, a "check now" button, the switch "update automatically", and (for the plain folder build) a link to the releases page. it is the section "updates" in the settings (the settings button on the projects screen and in the editor header, ctrl+, in both), and a toast says once when a version is ready.
 - a new version is downloaded in the background while you work. with "update automatically" on it installs when you close ncut (with it off the text says "press restart to update": a normal close applies nothing then). "restart now" does the same at once and starts the new version. if an export is running ncut asks first, like every close; "keep working" cancels the restart.
 - nothing opens a dialog on its own. a failed check or download only shows a short reason in the update line, and the next try comes later (an hour after a failure).
 - switch it off: turn "update automatically" off. then ncut never asks github on its own, never downloads on its own and never installs on close. "check now" still works when you press it, and "restart now" still applies an update that is already downloaded.
