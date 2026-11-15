@@ -14,6 +14,11 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.3.3': [
+    'skyboxes: import a cube map under project > sky (a cross, a strip or six pictures named like px, posx, right or rt), or press "use as sky" after importing one. it is drawn behind every layer, turns with the camera, and lit 3d clips take their light from it. mcp: update_project takes sky',
+    'effects on a clip now move its outline with the picture (shake, zoom, blur, glitch and the like), before the picture moved inside the old outline',
+    'the chroma key effect makes the color really see-through, it used to fill it with black. on a track of its own it keys the video or picture right under it',
+  ],
   '0.3.2': [
     'settings open without a project: the projects screen has a settings button, and ctrl+, works there like in the editor. theme, tint, wallpaper, layout reset, unity 3d controls, mcp and updates are all in it',
   ],
