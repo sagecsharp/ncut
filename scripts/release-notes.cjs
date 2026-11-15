@@ -14,6 +14,12 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.3.1': [
+    'lit 3d clips: a 3d video, image, text or shape can take the light of the scene. switch "lit" on in its 3d section, "how lit" says how much (it can be keyed). the light comes from the background, the 2d shapes under the 3d clips and the fog, with nothing to set up: tops take the sky, sides the horizon, undersides the ground. or set an own light with a sun under project > light. light only darkens or tints a clip, a white surrounding leaves it as it is',
+    'new template "lit room"',
+    '3d video with motion blur exports about twice as fast',
+    'mcp: update_project takes fog and light, update_clip takes lit, delete_project deletes a stored project, remove_media removes media (by id, or all that no clip uses)',
+  ],
   '0.3.0': [
     'auto update: the desktop app asks github now and then whether a newer release is out, downloads it in the background, checks it against the checksum github gives for it, and installs it when you close ncut. "restart to update" in the settings does it at once. the installed app runs its setup silently, the portable exe is replaced in place and keeps its name. settings > updates, with an off switch and "check now"',
     'this is the first version that can update itself: 0.1.0 and 0.2.0 can not, so get this one by hand once',
