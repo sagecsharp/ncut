@@ -8,6 +8,12 @@ import { cleanRange, inOutSpan } from '../lib/inOut';
 import type { TimeRange } from '../features/export/range';
 import { exportProject, isAudioContainer, isGifContainer, outputSize } from '../features/export/exporter';
 import type { ExportContainer, ExportHooks, ExportOptions, ExportProgress, ExportQuality } from '../features/export/exporter';
+import { deliveryFromArgs } from '../features/export/deliveryArgs';
+import type { DeliveryArgs } from '../features/export/deliveryArgs';
+import { DEFAULT_DELIVERY, deliverySize, isDefaultDelivery } from '../features/export/delivery';
+import type { ExportDelivery } from '../features/export/delivery';
+import type { ExportLoudness, LoudnessReport } from '../features/export/loudnessTypes';
+import { EXPORT_PRESETS, presetChoices } from '../features/export/presets';
 import { isStillContainer, stillSize } from '../features/export/still';
 import { effectiveGifFps } from '../lib/gif';
 import { isExporting } from '../engine/exportState';
@@ -24,8 +30,8 @@ const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 export const EXPORT_BUSY = 'an export is already running (the export dialog or an earlier export_video). export_status tells how far it is, export_cancel stops it';
 
-/** what export_video takes (validate.ts already checked the types and enums) */
-export interface ExportArgs {
+/** what export_video takes (validate.ts already checked the types and enums). the delivery arguments are deliveryArgs.ts DeliveryArgs */
+export interface ExportArgs extends DeliveryArgs {
   format?: ExportContainer;
   quality?: ExportQuality;
   scale?: number;
@@ -36,6 +42,16 @@ export interface ExportArgs {
   range?: 'all' | 'inout';
   audio?: boolean;
   name?: string;
+  /** true = start nothing, answer what the export would make (the tool does that, planMcpExport only plans) */
+  check?: boolean;
+  /** the loudness choice (loudnessArgs.ts loudnessFromArgs). missing or null = the sound as it is */
+  loudness?: ExportLoudness | null;
+}
+
+/** does this export have sound in its file? (a format with sound and audio not false: the same rule planMcpExport uses) */
+export function exportHasSound(args: Pick<ExportArgs, 'format' | 'preset' | 'audio'>): boolean {
+  const container: ExportContainer = args.format ?? EXPORT_PRESETS.find((p) => p.id === args.preset)?.container ?? 'mp4';
+  return !isGifContainer(container) && !isStillContainer(container) && (isAudioContainer(container) || args.audio !== false);
 }
 
 /** everything decided from the arguments, before anything runs */
@@ -65,7 +81,10 @@ export function cleanFileName(name: string, fallback: string): string {
 
 /** the part of the arguments that makes the export: defaults, the range, the size, the file name. throws ToolError */
 export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned {
-  const container: ExportContainer = args.format ?? 'mp4';
+  // a preset fills what is not given: format, quality, frame rate, size (scale)
+  const preset = args.preset !== undefined ? (EXPORT_PRESETS.find((p) => p.id === args.preset) ?? null) : null;
+  const choices = preset ? presetChoices(preset, project.fps, project) : null;
+  const container: ExportContainer = args.format ?? choices?.container ?? 'mp4';
   const duration = projectDuration(project);
   if (!(duration > 0)) throw new ToolError('the project is empty, there is nothing to export. add clips first');
   // a picture is the frame at start: it has no end, no frame rate and no sound
@@ -106,7 +125,7 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
   if (cut) notes.push(`start / end were cut to the project, the part that is exported is ${round3(range.start)} to ${round3(range.end)} s`);
   const gif = isGifContainer(container);
   const audioOnly = isAudioContainer(container);
-  let fps = args.fps ?? project.fps;
+  let fps = args.fps ?? choices?.fps ?? project.fps;
   if (gif && fps > effectiveGifFps(fps)) {
     fps = effectiveGifFps(fps);
     notes.push(`a gif plays at most ${fps} fps, so it is ${fps} fps`);
@@ -119,17 +138,31 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
     if (unused.length > 0) notes.push(`a picture is one frame (the one at start) without sound: ${unused.join(', ')} ${unused.length > 1 ? 'were' : 'was'} ignored`);
     if (container === 'png' && args.quality !== undefined) notes.push('a png has no loss, quality was ignored');
   }
-  const scale = args.scale ?? 1;
-  const size = still ? stillSize(project, scale) : outputSize(project, scale);
+  const scale = args.scale ?? choices?.scale ?? 1;
+  const includeAudio = !gif && !still && (audioOnly || args.audio !== false);
+  const made = deliveryFromArgs(container, args, { width: project.width, height: project.height, fps }, includeAudio);
+  if (!made.ok) throw new ToolError(made.message);
+  notes.push(...made.notes);
+  let delivery: ExportDelivery | undefined = made.delivery;
+  if (delivery?.size && args.scale !== undefined && args.width === undefined) {
+    notes.push("the preset's size was dropped: the given scale is used");
+    delivery = { ...delivery, size: null };
+    if (isDefaultDelivery(delivery)) delivery = undefined;
+  }
+  if (args.loudness && !includeAudio) throw new ToolError('loudness needs a format with sound');
+  const base = still ? stillSize(project, scale) : outputSize(project, scale);
+  const size = deliverySize(base, container, { ...(delivery ?? DEFAULT_DELIVERY), notes: [] });
   const options: ExportOptions = {
     container,
     scale,
     fps,
-    quality: args.quality ?? 'high',
-    includeAudio: !gif && !still && (audioOnly || args.audio !== false),
+    quality: args.quality ?? choices?.quality ?? 'high',
+    includeAudio,
     range,
+    ...(delivery ? { delivery } : {}),
+    ...(args.loudness ? { loudness: args.loudness } : {}),
   };
-  const base = cleanFileName(args.name ?? '', cleanFileName(project.name, 'ncut-export'));
+  const fileBase = cleanFileName(args.name ?? '', cleanFileName(project.name, 'ncut-export'));
   return {
     options,
     range,
@@ -138,7 +171,7 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
     height: size.height,
     frames: still ? 1 : rangeFrameCount(range, fps),
     fps,
-    fileName: `${base}.${container}`,
+    fileName: `${fileBase}.${container}`,
     notes,
   };
 }
@@ -156,6 +189,8 @@ export type JobState =
       /** a plain note: where the file went, or that it only stayed in memory */
       note: string;
       warnings: string[];
+      /** what the loudness choice did, null when there was none (or nothing to report) */
+      loudness: LoudnessReport | null;
     }
   | { state: 'failed'; message: string }
   | { state: 'cancelled' };
@@ -178,6 +213,21 @@ export interface JobDeps {
   now(): number;
 }
 
+/** the choices of a delivery that are not auto, in the names of the export_video arguments (h264 and h265 for avc and hevc) */
+export function deliveryAnswer(d: ExportDelivery | undefined): Record<string, unknown> | null {
+  if (!d) return null;
+  const out: Record<string, unknown> = {};
+  if (d.codec !== 'auto') out.codec = d.codec === 'avc' ? 'h264' : d.codec === 'hevc' ? 'h265' : d.codec;
+  if (d.bitrate !== null) out.bitrate_mbps = Math.round(d.bitrate / 1e5) / 10;
+  if (d.keySeconds !== null) out.key_seconds = d.keySeconds;
+  if (d.size) Object.assign(out, { width: d.size.width, height: d.size.height, fit: d.size.fit });
+  if (d.audioCodec !== 'auto') out.audio_codec = d.audioCodec;
+  if (d.audioBitrate !== null) out.audio_kbps = Math.round(d.audioBitrate / 1000);
+  if (d.sampleRate !== 48000) out.sample_rate = d.sampleRate;
+  if (d.transparent) out.transparent = true;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 export interface StartInfo {
   status: 'started';
   file: string;
@@ -192,6 +242,10 @@ export interface StartInfo {
   time?: number;
   /** the length of the file (0 for a picture) */
   seconds: number;
+  /** the advanced choices that are set, in the names of the arguments. only when there are some */
+  delivery?: Record<string, unknown>;
+  /** the loudness choice, only when there is one */
+  loudness?: { target_lufs: number | null; peak_limit_dbtp: number | null };
   notes: string[];
 }
 
@@ -228,9 +282,13 @@ export function createExportJob(deps: JobDeps): ExportJob {
 
   async function execute(project: Project, planned: ExportPlanned, ticket: number | null, ac: AbortController, t0: number): Promise<void> {
     const warnings: string[] = [];
+    let loudness: LoudnessReport | null = null;
     const total = planned.frames;
     const hooks: ExportHooks = {
       signal: ac.signal,
+      onLoudness: (r) => {
+        loudness = r;
+      },
       onWarning: (m) => {
         if (!warnings.includes(m)) warnings.push(m);
       },
@@ -269,6 +327,7 @@ export function createExportJob(deps: JobDeps): ExportJob {
           saved: null,
           note: 'not written to disk: there is no desktop shell here, the file stays in memory',
           warnings,
+          loudness,
         });
       }
       // from here on the file is on its way to disk, a cancel can not stop that
@@ -295,6 +354,7 @@ export function createExportJob(deps: JobDeps): ExportJob {
           saved: null,
           note: 'the shell could not save the file by itself, so the app asked the user where to save it. there is no known path, do not assume one',
           warnings,
+          loudness,
         });
       }
       deps.attention();
@@ -306,6 +366,7 @@ export function createExportJob(deps: JobDeps): ExportJob {
         saved: ticket,
         note: 'saved to the save folder',
         warnings,
+        loudness,
       });
     } catch (e) {
       if (ac.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return finish({ state: 'cancelled' });
@@ -325,7 +386,7 @@ export function createExportJob(deps: JobDeps): ExportJob {
       state = {
         state: 'running',
         fileName: planned.fileName,
-        phase: 'audio',
+        phase: planned.options.loudness ? 'loudness' : 'audio',
         progress: 0,
         frame: 0,
         totalFrames: planned.frames,
@@ -344,6 +405,8 @@ export function createExportJob(deps: JobDeps): ExportJob {
         format: planned.container,
         ...picture,
         seconds: isStillContainer(planned.container) ? 0 : round3(planned.range.end - planned.range.start),
+        ...(deliveryAnswer(planned.options.delivery) ? { delivery: deliveryAnswer(planned.options.delivery)! } : {}),
+        ...(planned.options.loudness ? { loudness: { target_lufs: planned.options.loudness.target, peak_limit_dbtp: planned.options.loudness.ceiling } } : {}),
         notes: planned.notes,
       };
     },

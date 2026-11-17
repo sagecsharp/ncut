@@ -5,6 +5,7 @@ import { createProject } from '../../lib/factory';
 import { dragDelta, formatTrimDelta, planFor, readoutText } from './trimDrag';
 import { planMoveEdit, planRipple, planSlide, planSlip, planStretch } from './trimModes';
 import type { TrimPlan } from './trimModes';
+import { outOfSyncText, syncSuffix } from './trimText';
 import { trimPress } from './trimPress';
 import type { PressMods, PressZone } from './trimPress';
 
@@ -124,5 +125,31 @@ describe('planFor', () => {
     expect(planFor({ ...press(P, 'a', 'body'), mode: 'move' }, P, d, [])).toBeNull();
     expect(planFor(press(P, 'c', 'end'), { ...P, clips: P.clips.filter((c) => c.id !== 'c') }, d, [])).toBeNull();
     expect(planFor(press(P, 'a', 'end'), { ...P, clips: P.clips.filter((c) => c.id !== 'b') }, d, [])).toBeNull();
+  });
+});
+
+describe('sync text', () => {
+  it('syncSuffix', () => {
+    expect(syncSuffix({})).toBe('');
+    expect(syncSuffix({ freeBehind: [], drift: [] })).toBe('');
+    expect(syncSuffix({ freeBehind: ['v2'] })).toBe(', sync lock off tracks stay');
+    expect(syncSuffix({ drift: ['a'] })).toBe(', 1 clip out of sync');
+    expect(syncSuffix({ freeBehind: ['v2'], drift: ['a', 'b'] })).toBe(', sync lock off tracks stay, 2 clips out of sync');
+  });
+
+  it('outOfSyncText names sync lock off tracks only when a named clip sits on one', () => {
+    const off = { ...track('v2'), name: 'music', syncLock: false as const };
+    const lockedOff = { ...track('v3', true), syncLock: false as const };
+    const q = { ...proj([video('v1', 'a', 0, 2), video('v2', 'b', 0, 2), video('v3', 'c', 0, 2)]), tracks: [track('v1'), off, lockedOff] };
+    expect(outOfSyncText(q, ['a'])).toBe('out of sync now: "a"');
+    expect(outOfSyncText(q, ['a', 'b'])).toBe('out of sync now: "a", "b" (sync lock is off on music)');
+    expect(outOfSyncText(q, ['c'])).toBe('out of sync now: "c"');
+  });
+
+  it('the readout says sync lock off tracks stay', () => {
+    const base: TrimPlan = { mode: 'ripple', ops: [], delta: -3 / 30, stop: null, moved: [], lockedBehind: [], key: 'ripple:0', freeBehind: ['v2'], drift: ['b'] };
+    const q = { ...P, clips: P.clips.map((c) => (c.id === 'a' ? { ...c, duration: 3 } : c)) };
+    expect(readoutText(base, null, q, 'a', 30)).toBe('ripple -3f, length 00:03:00, sync lock off tracks stay, 1 clip out of sync');
+    expect(readoutText({ ...base, lockedBehind: ['v1'] }, null, q, 'a', 30)).toBe('ripple -3f, length 00:03:00, locked tracks stay, sync lock off tracks stay, 1 clip out of sync');
   });
 });

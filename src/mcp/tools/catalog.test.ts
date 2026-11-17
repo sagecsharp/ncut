@@ -4,6 +4,7 @@ import { CLIP_MOTIONS_IN } from '../../engine/clipAnim';
 import { TRANSITIONS } from '../../engine/transitions/registry';
 import { SHAPE_PRESETS } from '../../features/media/shapePresets';
 import { TEXT_PRESETS } from '../../features/media/textPresets';
+import { EASINGS } from '../../lib/anim';
 import { createCameraClip, createClipFromAsset, createEffectClip, createProject, createShapeClip, createTextClip } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import type { Clip, MediaAsset } from '../../types';
@@ -108,6 +109,8 @@ describe('list_options', () => {
     expect(r.json!.blendModes).toContain('screen');
     expect(r.json!.maskShapes).toContain('ellipse');
     expect(r.json!.easings.find((e: any) => e.id === 'ease').label).toBe('smooth');
+    expect(r.json!.easings.find((e: any) => e.id === 'bezier').label).toBe('custom (handles)');
+    expect(r.json!.easings.length).toBe(EASINGS.length + 1);
     expect(r.json!.lookAt.map((l: any) => l.id)).toEqual(['none', 'camera', 'cameraY', 'clip']);
     expect(r.json!.faceFits.map((l: any) => l.id)).toEqual(['fill', 'fit', 'stretch']);
     expect(r.json!.canvasPresets[0]).toEqual({ id: '16:9', width: 1920, height: 1080 });
@@ -164,7 +167,9 @@ describe('the fields reference matches the store', () => {
     const made = clipsOfEveryType();
     const project = createProject('fields');
     project.assets = [asset('video'), asset('image'), asset('audio')];
-    project.clips = Object.values(made);
+    // the matte example names a clip that has to exist: a shape clip of its own
+    const extra = createShapeClip(project.tracks[0]!.id, 20);
+    project.clips = [...Object.values(made), extra];
     useEditor.getState().openProject(project);
     for (const { rows, types } of GROUPS) {
       for (const row of rows) {
@@ -173,7 +178,8 @@ describe('the fields reference matches the store', () => {
           const where = `${type}.${row.field}`;
           if (row.field in clip) continue;
           expect(row.example, `${where} is not on a fresh clip, it needs an example`).not.toBeUndefined();
-          useEditor.getState().updateClip(clip.id, { [row.field]: row.example });
+          const value = row.field === 'matte' ? { ...(row.example as object), clip: extra.id } : row.example;
+          useEditor.getState().updateClip(clip.id, { [row.field]: value });
           const after = useEditor.getState().project!.clips.find((c) => c.id === clip.id)!;
           expect(row.field in after, `${where} was dropped by updateClip`).toBe(true);
           expect((after as unknown as Record<string, unknown>)[row.field], where).not.toBeUndefined();
@@ -205,6 +211,19 @@ describe('the fields reference states the ranges the store and update_clip enfor
     expect(row(VIDEO_FIELDS, 'volume').type).toContain('0..2');
     expect(row(PICTURE_FIELDS, 'mask').note).toContain('height 0..3');
     expect(row(PICTURE_FIELDS, 'transform').note).toContain('opacity 0..1');
+  });
+  it('the grade row names lut', () => {
+    const grade = row(PICTURE_FIELDS, 'grade');
+    expect(grade.type).toBe('{ liftR..offsetY, curves, lut, off } | null');
+    expect(grade.note).toContain('lut { media, mix 0..1, last, tv }');
+    expect(grade.note.endsWith('a lut that is missing or cannot be read is left out.')).toBe(true);
+    expect(row(EFFECT_FIELDS, 'grade').note).toContain('lut { media');
+  });
+  it('the matte row sits after mask', () => {
+    const names = PICTURE_FIELDS.map((r) => r.field);
+    expect(names.indexOf('matte')).toBe(names.indexOf('mask') + 1);
+    expect(row(PICTURE_FIELDS, 'matte').type).toBe('{ clip, mode } | null');
+    expect(row(PICTURE_FIELDS, 'matte').note).toContain('alpha-inv');
   });
   it('writes the grade and pan rows', () => {
     const grade = row(PICTURE_FIELDS, 'grade');

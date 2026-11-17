@@ -37,7 +37,7 @@ import { touchingAfter, touchingBefore } from './trimModes';
 import type { TrimMode, TrimPlan } from './trimModes';
 import { modeLabel, trimPress } from './trimPress';
 import type { PressMods, PressZone, TrimCursor, TrimPress } from './trimPress';
-import { TRIM_TEXT, lockedTracksText, trimStopText } from './trimText';
+import { TRIM_TEXT, lockedTracksText, outOfSyncText, trimStopText } from './trimText';
 import { interaction, notifyView, subscribeView, view } from './view';
 
 export interface MenuRequest {
@@ -995,6 +995,7 @@ export function createGestures(env: GestureEnv) {
     const project = st.project;
     const ui = useUi.getState();
     if (project && plan.lockedBehind.length > 0) ui.toast(TRIM_TEXT.lockedStay.replace('{tracks}', lockedTracksText(project, plan.lockedBehind)));
+    if (project && plan.drift?.length) ui.toast(outOfSyncText(project, plan.drift));
     if (!ui.trimMode) return;
     if (press.mode === 'ripple' && press.edge) ui.setTrimEdge({ clipId: press.clipId, edge: press.edge, both: false, alone: press.alone });
     else if (press.mode === 'move-edit' && press.leftId !== undefined) ui.setTrimEdge({ clipId: press.leftId, edge: 'end', both: true, alone: press.alone });
@@ -1185,6 +1186,7 @@ export function createGestures(env: GestureEnv) {
     if (target.closest('.timeline-head')) return;
     // a selected edge lives until the next press in the lanes: a click on an edge in trim mode picks it again on release
     useUi.getState().setTrimEdge(null);
+    useUi.getState().setCrossfadePick(null);
     const st = store();
     const project = st.project;
     if (!project) return;

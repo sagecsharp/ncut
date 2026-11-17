@@ -12,6 +12,8 @@ import type { DrawSource } from '../../engine/draw';
 import type { SkyPicture } from '../../engine/scene3d/sky';
 import { encodeGifFrame } from '../../lib/gif';
 import { createFrameSources } from './sources';
+import { createFrameDrawer } from './frameFit';
+import type { FrameDrawer, FramePlacement } from './frameFit';
 import { scaledBitrate } from './encoderSetup';
 import type { EncoderSetup } from './encoderSetup';
 
@@ -50,6 +52,12 @@ export interface SegmentJob {
   encoder?: EncoderSetup;
   /** asset ids of video files the main thread cannot decode either (mediaCheck.ts): skipping them here is no difference */
   lenient?: string[];
+  /** seconds between key frames. missing = KEYFRAME_SECONDS */
+  keySeconds?: number;
+  /** true = see-through: an alpha canvas, no background, the encoder keeps alpha (webm vp9 only) */
+  alpha?: boolean;
+  /** missing = the frame fills the output as always. set = drawn at the project's shape and placed (frameFit.ts) */
+  place?: FramePlacement;
 }
 
 export interface SegmentStats {
@@ -207,8 +215,9 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
   // what the encoder is told: the same bits for every frame, at a rate the gpu encoder takes
   const rate = job.encoder?.fps ?? fps;
   const bitrate = job.encoder ? scaledBitrate(job.bitrate, rate, fps) : job.bitrate;
-  // the key frame rhythm of the whole export (one every KEYFRAME_SECONDS of its own time), whatever part this is
-  const keyStep = (i: number) => Math.floor(i / fps / KEYFRAME_SECONDS);
+  const keySeconds = job.keySeconds ?? KEYFRAME_SECONDS;
+  // the key frame rhythm of the whole export (one every keySeconds of its own time), whatever part this is
+  const keyStep = (i: number) => Math.floor(i / fps / keySeconds);
   const stats: SegmentStats = { wallMs: 0, firstFrameMs: 0, openMs: 0, decodeMs: 0, renderMs: 0, encodeMs: 0, finalizeMs: 0 };
   const startedAt = performance.now();
   const sources = createFrameSources({
@@ -223,6 +232,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     strictImages: env.strictImages,
     strictVideo: env.strictVideo,
     lenient: job.lenient,
+    ...(job.alpha ? { alpha: true } : {}),
     onWarning: env.onWarning,
     sky: env.sky,
     signal: env.signal,
@@ -231,6 +241,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
   const capture = job.capture && job.capture.length > 0 ? new Set(job.capture) : null;
   let output: Output | null = null;
   let finished = false;
+  let drawer: FrameDrawer | null = null;
   const canvas = new OffscreenCanvas(width, height);
   try {
     const t0 = performance.now();
@@ -241,18 +252,20 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     const format = job.container === 'mp4' ? new Mp4OutputFormat({ fastStart: false }) : new WebMOutputFormat();
     const target = new BufferTarget();
     output = new Output({ format, target });
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d', { alpha: !!job.alpha });
     if (!ctx) throw new Error('2d canvas is not available');
-    ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+    const d = createFrameDrawer(canvas, ctx, project, job.place ?? null, !!job.alpha);
+    drawer = d;
     const source = new CanvasSource(canvas, {
       codec: job.codec,
       quality: new Quality({ bitrate }),
-      keyFrameInterval: KEYFRAME_SECONDS,
+      keyFrameInterval: keySeconds,
+      ...(job.alpha ? { alpha: 'keep' as const } : {}),
       ...(job.encoder ? { hardwareAcceleration: 'prefer-hardware' as const } : {}),
       ...(job.encoder?.codecString ? { fullCodecString: job.encoder.codecString } : {}),
       ...(job.acceleration ? { hardwareAcceleration: job.acceleration } : {}),
     });
-    output.addVideoTrack(source, { frameRate: rate });
+    output.addVideoTrack(source, { frameRate: rate, ...(job.alpha ? { canBeTransparent: true } : {}) });
     await output.start();
     stats.openMs = performance.now() - t0;
 
@@ -262,7 +275,8 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
       if (env.signal?.aborted) throw abortError();
       await sources.step(i, async (t) => {
         const a = performance.now();
-        renderFrame(ctx, project, t, sources.resolver);
+        renderFrame(d.target, project, t, sources.resolver, job.alpha ? { transparent: true } : undefined);
+        d.finish();
         if (i >= from && capture?.has(i)) await env.onCapture?.(i, canvas);
         const b = performance.now();
         // run-in frames never start a group (the encoder's very first frame is a key frame by itself)
@@ -298,6 +312,7 @@ export async function renderSegment(project: Project, job: SegmentJob, env: Segm
     throw err;
   } finally {
     await sources.dispose();
+    drawer?.dispose();
     canvas.width = 0;
     canvas.height = 0;
   }

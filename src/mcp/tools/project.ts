@@ -13,6 +13,8 @@ import { cleanRange, inOutSpan, sameRange, withIn, withOut } from '../../lib/inO
 import { frameIndexAt, marksOf } from '../../lib/marks';
 import { dbToGain, gainToDb, OFF_DB, patchTrack } from '../../lib/mix';
 import { mateOf, syncOffset } from '../../lib/soundPair';
+import { matteUserIds } from '../../engine/matte';
+import { syncLockOf, TRACK_H_MAX, TRACK_H_MIN, trackHeightOf, withHeight } from '../../lib/trackTools';
 import { snapToFrame } from '../../lib/time';
 import { clipEnd, projectDuration } from '../../lib/timelineOps';
 import { faceNames } from '../../engine/scene3d/faces';
@@ -531,10 +533,10 @@ export const projectTools: ToolDef[] = [
     name: 'get_project',
     title: 'read the project',
     description:
-      'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked), every clip as one short line (id, type, track, start, end, name, ' +
+      'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked, and height in px or syncLock false when set), every clip as one short line (id, type, track, start, end, name, ' +
       'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size, and marks { in, out } when set), markers, the fog and the light (each an object, or null), the sky (an object or null: its pictures, turn, brightness, blur and the light measured from it, missing: true when its pictures are gone), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead; from the sky when there is one, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
       'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer. ' +
-      'range: the in and out points or null. tracks show volume, volumeDb and pan, the project its output, only when set.',
+      'range: the in and out points or null. tracks show volume, volumeDb and pan, the project its output, only when set. a lut in the media has lut { size3, size1, title? }.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
     run() {
@@ -545,11 +547,11 @@ export const projectTools: ToolDef[] = [
         light: lightOf(p),
         sky: skyOf(p),
         autoLight: autoLightAt(p, sceneTime(p, usePlayback.getState().time)),
-        trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked, ...mixOf(t) })),
+        trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked, ...(t.height !== undefined ? { height: trackHeightOf(t) } : {}), ...(t.syncLock === false ? { syncLock: false } : {}), ...mixOf(t) })),
         clipList: p.clips.map(clipBrief),
         mediaList: p.assets.map((a) => {
           const m = marksOf(a);
-          return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio, ...(m ? { marks: { ...(m.in !== undefined ? { in: round(m.in) } : {}), ...(m.out !== undefined ? { out: round(m.out) } : {}) } } : {}) };
+          return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio, ...(a.kind === 'lut' && a.lut ? { lut: { size3: a.lut.size3, size1: a.lut.size1, ...(a.lut.title !== undefined ? { title: a.lut.title } : {}) } } : {}), ...(m ? { marks: { ...(m.in !== undefined ? { in: round(m.in) } : {}), ...(m.out !== undefined ? { out: round(m.out) } : {}) } } : {}) };
         }),
         markerList: (p.markers ?? []).map((m) => ({ id: m.id, time: round(m.time), name: m.name })),
         range: rangeOf(p.range),
@@ -562,7 +564,7 @@ export const projectTools: ToolDef[] = [
     title: 'read one clip',
     description:
       'one clip exactly as stored (every field, keyframes included), plus "animatable": the properties set_keyframe and update_clip can animate (prop, label, min, max, unit), ' +
-      'for a 3d solid "sides": the side names set_sides takes, and for one side of a separated sound pair "pair" { other, offset } (seconds, + = this clip later). for what the fields mean see list_options with kind "fields". ids come from get_project.',
+      'for a 3d solid "sides": the side names set_sides takes, and for one side of a separated sound pair "pair" { other, offset } (seconds, + = this clip later), and for a clip that is the matte of others "matteOf": their ids. for what the fields mean see list_options with kind "fields". ids come from get_project.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'clip id' } },
@@ -588,6 +590,8 @@ export const projectTools: ToolDef[] = [
         const off = syncOffset(needProject().clips, clip.id);
         out.pair = off === null || Number.isNaN(off) ? { other: mate.id, speeds: 'differ' } : { other: mate.id, offset: round(off) };
       }
+      const users = matteUserIds(needProject().clips, clip.id);
+      if (users.length > 0) out.matteOf = [...users];
       return ok(out);
     },
   },
@@ -738,7 +742,8 @@ export const projectTools: ToolDef[] = [
     description:
       'renames a track or sets muted (silences its audio), hidden (video tracks only: its pictures are not drawn) or locked (its clips cannot be edited or selected). ' +
       'volume or volumeDb sets the track fader (+12 db at most), pan where the track sits. both apply to the preview and the export. solo is for listening in the app only and has no tool. ' +
-      'one undo step. send only what changes; a call that changes nothing is an error. ids come from get_project.',
+      'height is the row height on the timeline in px (28 to 240, null for the normal height), a view setting that is no undo step. index moves the track in the list (0 = top, clamped inside its video or audio group, a locked track is refused). syncLock false keeps the track where it is when ripple, insert or extract edit other tracks. ' +
+      'the rest is one undo step. send only what changes; a call that changes nothing is an error. ids come from get_project.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -750,6 +755,9 @@ export const projectTools: ToolDef[] = [
         volume: { type: 'number', minimum: 0, maximum: 3.98, description: 'fader level, linear: 1 = as recorded (0 db), 0 = off' },
         volumeDb: { type: 'number', maximum: 12, description: 'fader level in db: 0 = as recorded, -6 = half, -90 or less = off' },
         pan: { type: 'number', minimum: -1, maximum: 1, description: '-1 left, 0 the middle, 1 right' },
+        height: { description: 'row height on the timeline in px, 28 to 240, or null for the normal height (56 video, 48 audio). a view setting: not an undo step' },
+        index: { type: 'integer', minimum: 0, maximum: 200, description: 'new position in the track list (0 = top), clamped inside the video or audio group. for video tracks the order is what draws on top' },
+        syncLock: { type: 'boolean', description: 'on (default): ripple, insert and extract on other tracks move this track too. false: it stays where it is unless the edit is on it' },
       },
       required: ['id'],
     },
@@ -771,13 +779,46 @@ export const projectTools: ToolDef[] = [
         if (typeof args.pan !== 'number' || !Number.isFinite(args.pan) || args.pan < -1 || args.pan > 1) throw new ToolError('pan must be -1 (left) to 1 (right)');
         patch.pan = args.pan;
       }
-      if (Object.keys(patch).length === 0) throw new ToolError('nothing to change: send name, muted, hidden, locked, volume, volumeDb or pan');
-      // an equal change makes no step, so compare here
-      if (!patchTrack(track, patch)) throw new ToolError(`the track ${track.id} already has those settings, nothing changed`);
-      useEditor.getState().updateTrack(track.id, patch);
+      if (typeof args.syncLock === 'boolean') patch.syncLock = args.syncLock;
+      let height: number | null | undefined;
+      if (args.height !== undefined) {
+        if (args.height !== null && (typeof args.height !== 'number' || !Number.isFinite(args.height) || args.height < TRACK_H_MIN || args.height > TRACK_H_MAX)) {
+          throw new ToolError(`height must be ${TRACK_H_MIN} to ${TRACK_H_MAX} px, or null for the normal height`);
+        }
+        height = args.height;
+      }
+      const index = optNumber(args.index);
+      if (Object.keys(patch).length === 0 && height === undefined && index === undefined) {
+        throw new ToolError('nothing to change: send name, muted, hidden, locked, syncLock, volume, volumeDb, pan, height or index');
+      }
+      // check everything first: an equal change makes no step, so compare here
+      const patched = Object.keys(patch).length > 0 ? patchTrack(track, patch) : null;
+      let to = -1;
+      const from = before.tracks.findIndex((t) => t.id === track.id);
+      if (index !== undefined) {
+        if ((patched ?? track).locked) throw new ToolError(`the track ${track.id} (${track.name}) is locked. unlock it with update_track first`);
+        // clamped inside its own group, like the store does
+        const videoCount = before.tracks.filter((t) => t.kind === 'video').length;
+        const lo = track.kind === 'video' ? 0 : videoCount;
+        const hi = track.kind === 'video' ? videoCount - 1 : before.tracks.length - 1;
+        to = Math.min(hi, Math.max(lo, index));
+      }
+      const moves = index !== undefined && to !== from;
+      const sizes = height !== undefined && withHeight(track, height) !== track;
+      if (!patched && !moves && !sizes) throw new ToolError(`the track ${track.id} already has those settings, nothing changed`);
+      if (patched || moves) {
+        oneStep((opts) => {
+          if (patched) useEditor.getState().updateTrack(track.id, patch, opts);
+          if (moves) useEditor.getState().moveTrack(track.id, to, opts);
+        });
+      }
+      if (sizes) useEditor.getState().setTrackHeights({ [track.id]: height ?? null });
       if (!changedSince(before)) throw new ToolError(`the track ${track.id} could not be changed`);
       const now = needTrack(track.id);
-      return ok({ id: now.id, kind: now.kind, name: now.name, muted: now.muted, hidden: now.hidden, locked: now.locked, ...mixOf(now) });
+      return ok({
+        id: now.id, kind: now.kind, name: now.name, muted: now.muted, hidden: now.hidden, locked: now.locked,
+        index: needProject().tracks.findIndex((t) => t.id === now.id), height: trackHeightOf(now), syncLock: syncLockOf(now), ...mixOf(now),
+      });
     },
   },
   {

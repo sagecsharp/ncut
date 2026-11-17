@@ -3,8 +3,11 @@ import type { ClipGrade, GradeCurves } from '../types';
 import { GRADE_KEYS, normalizeGrade, sameGrade } from '../lib/gradeData';
 import { hueOf } from '../lib/gradeMath';
 import type { Rgb3 } from '../lib/gradeMath';
-import { DEMO_GRADE, bakeCurves, ditherAt, gradeColor, gradeData, gradeSignature } from './grade';
+import type { LutTable } from '../lib/cube';
+import { DEMO_GRADE, bakeCurves, ditherAt, gradeColor, gradeData, gradeLutColor, gradeShows, gradeSignature } from './grade';
 import type { GradeData } from './grade';
+import { lutColor } from './gradeLut';
+import { withLuts } from './lutScope';
 
 const KR = 0.2126;
 const KG = 0.7152;
@@ -337,5 +340,94 @@ describe('gamma on black', () => {
     const d = { ...neutralData(), gamma: [0.25, 0.25, 0.25] as [number, number, number] };
     expect(gradeColor([0, 0, 0], d)).toEqual([0, 0, 0]);
     expect(gradeColor([1, 1, 1], d)).toEqual([1, 1, 1]);
+  });
+});
+
+/** a 3d table made by hand: red, green and blue swapped around and bent */
+function filmTable(key: string): LutTable {
+  const n = 5;
+  const data3 = new Float32Array(n * n * n * 3);
+  for (let b = 0; b < n; b++) {
+    for (let g = 0; g < n; g++) {
+      for (let r = 0; r < n; r++) data3.set([(r / 4) ** 0.8, 0.95 * (g / 4) + 0.03, (b / 4) ** 1.2], ((b * n + g) * n + r) * 3);
+    }
+  }
+  return { title: '', size3: n, data3, min3: [0, 0, 0], max3: [1, 1, 1], size1: 0, data1: new Float32Array(0), min1: [0, 0, 0], max1: [1, 1, 1], identity: false, key };
+}
+const TABLE = filmTable('film');
+const scope = <T>(fn: () => T): T => withLuts((id) => (id === 'm' ? TABLE : null), fn);
+
+describe('the lut in the grade data', () => {
+  it('no live lut deep equals the old GradeData', () => {
+    const old = { lift: [0.1, 0, 0], gain: [1, 1, 1], gamma: [1, 1, 1], offset: [0, 0, 0], on: [1, 0, 0, 1], tone: [0, 0, 0, 0], table: null, key: '' };
+    expect(gradeData({ liftR: 0.2 })).toStrictEqual(old);
+    // a lut that names a media with no table (no scope, or not loaded) adds nothing
+    expect(gradeData({ liftR: 0.2, lut: { media: 'm' } })).toStrictEqual(old);
+    expect(withLuts(() => null, () => gradeData({ liftR: 0.2, lut: { media: 'm' } }))).toStrictEqual(old);
+    expect('lut' in gradeData({ liftR: 0.2, lut: { media: 'm' } })!).toBe(false);
+  });
+
+  it('a lut only grade: on 0 0 0 1 and the bind', () => {
+    expect(gradeData({ lut: { media: 'm' } })).toBeNull();
+    const d = scope(() => gradeData({ lut: { media: 'm', mix: 0.5, last: true } }))!;
+    expect(d).not.toBeNull();
+    expect(d.on).toEqual([0, 0, 0, 1]);
+    expect(d.tone).toEqual([0, 0, 0, 0]);
+    expect(d.table).toBeNull();
+    expect(d.key).toBe('');
+    expect(d.lut).toEqual({ table: TABLE, mix: 0.5, last: true, tv: false });
+    // with wheels the bind comes along
+    const w = scope(() => gradeData({ liftR: 0.2, lut: { media: 'm' } }))!;
+    expect(w.on[0]).toBe(1);
+    expect(w.lut!.table).toBe(TABLE);
+    // off and mix 0 give nothing
+    expect(scope(() => gradeData({ lut: { media: 'm' }, off: true }))).toBeNull();
+    expect(scope(() => gradeData({ lut: { media: 'm', mix: 0 } }))).toBeNull();
+  });
+
+  it('the signature follows mix, last, tv and key only with a lut', () => {
+    const base = gradeSignature({ liftR: 0.2 });
+    expect(gradeSignature({ liftR: 0.2, lut: { media: 'm' } })).toBe(base);
+    const at = (lut: object, g: ClipGrade = { liftR: 0.2 }): string => scope(() => gradeSignature({ ...g, lut: { media: 'm', ...lut } }));
+    expect(at({})).toBe(`${base}|Lfilm:1`);
+    expect(at({ mix: 0.5 })).toBe(`${base}|Lfilm:0.5`);
+    expect(at({ last: true })).toBe(`${base}|Lfilm:1l`);
+    expect(at({ tv: true })).toBe(`${base}|Lfilm:1t`);
+    expect(at({ last: true, tv: true, mix: 0.25 })).toBe(`${base}|Lfilm:0.25lt`);
+    const other = withLuts(() => filmTable('other'), () => gradeSignature({ liftR: 0.2, lut: { media: 'm' } }));
+    expect(other).toBe(`${base}|Lother:1`);
+    // a lut only grade has a signature once its table is there
+    expect(gradeSignature({ lut: { media: 'm' } })).toBe('');
+    expect(at({}, {})).toMatch(/^g0,.*\|\|Lfilm:1$/);
+  });
+
+  it('gradeShows is false without a table', () => {
+    expect(gradeShows({ lut: { media: 'm' } })).toBe(false);
+    expect(scope(() => gradeShows({ lut: { media: 'm' } }))).toBe(true);
+    expect(scope(() => gradeShows({ lut: { media: 'm', mix: 0 } }))).toBe(false);
+    expect(scope(() => gradeShows({ lut: { media: 'other' } }))).toBe(false);
+    expect(gradeShows({ liftR: 0.2, lut: { media: 'm' } })).toBe(true);
+    expect(gradeShows({ liftR: 0.2, off: true, lut: { media: 'm' } })).toBe(false);
+    expect(gradeShows(undefined)).toBe(false);
+    expect(gradeShows({})).toBe(false);
+  });
+
+  it('gradeLutColor is gradeColor without a lut', () => {
+    const d = data({ liftR: 0.1, gainB: -0.2, curves: { y: [[0, 0], [0.5, 0.6], [1, 1]] } });
+    for (const c of GRID) expect(gradeLutColor(c, d)).toEqual(gradeColor(c, d));
+  });
+
+  it('gradeLutColor puts the lut before the wheels or after the curves', () => {
+    const g: ClipGrade = { liftR: 0.1, gainB: -0.2, gammaY: 0.2 };
+    const first = scope(() => gradeData({ ...g, lut: { media: 'm' } }))!;
+    const last = scope(() => gradeData({ ...g, lut: { media: 'm', last: true } }))!;
+    for (const c of GRID) {
+      near(gradeLutColor(c, first), gradeColor(lutColor(c, first.lut!), first));
+      near(gradeLutColor(c, last), lutColor(gradeColor(c, last), last.lut!));
+    }
+    // the order matters
+    const a = gradeLutColor([0.3, 0.5, 0.7], first);
+    const b = gradeLutColor([0.3, 0.5, 0.7], last);
+    expect(Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])).toBeGreaterThan(1e-3);
   });
 });

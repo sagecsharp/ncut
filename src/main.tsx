@@ -18,6 +18,9 @@ import { projectPoint } from './engine/scene3d/camera';
 import { preloadEditor } from './features/editor/loadEditor';
 import { worldClip } from './features/preview/attached';
 import { mixDebug } from './features/preview/mixRoute';
+import { loudnessDebug } from './features/export/loudnessDebug';
+import { graphDebug, useGraph } from './features/timeline/graphState';
+import { keyPanelDebug, useKeyPanel } from './features/timeline/keyPanelState';
 import { projectRig } from './features/preview/overlayMath';
 import { clipSpots } from './features/preview/pivotMath';
 import { scopeDebug } from './features/preview/scopeTap';
@@ -88,8 +91,11 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
     rig: { getClipBox, pictureBox, worldClip, pivotPlan, clipSpots, meetSpot, projectRig, projectPoint },
     fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern, TRANSITIONS, checkTransitions, renderTransition },
     mix: { useSolo, debug: mixDebug },
+    loudness: loudnessDebug,
     scopes: { debug: scopeDebug, useScopes },
     editTargets: useEditTargets,
+    keys: { useKeyPanel, debug: keyPanelDebug },
+    graph: { useGraph, debug: graphDebug },
   };
 }
 

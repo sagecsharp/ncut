@@ -1,6 +1,6 @@
 /* how every number of the properties feels: its unit, hard range, usual range (the face), step, snap and rest. pure. */
 import type { ClipType } from '../../types';
-import { MIN_CLIP_DURATION, MIN_SPEED, MAX_SPEED } from '../../types';
+import { DEFAULT_CROSSFADE, MAX_CROSSFADE_SIDE, MIN_CLIP_DURATION, MIN_SPEED, MAX_SPEED } from '../../types';
 import type { EffectParam } from '../../engine/effects/types';
 import { DEFAULT_CHROMA_KEY } from '../../engine/clipLook';
 import { DEFAULT_MASK } from '../../engine/mask';
@@ -110,6 +110,7 @@ export const FEEL = {
   trackPan: { unit: '', scale: 100, min: -100, max: 100, soft: [-100, 100], step: 1, snap: 10, rest: 0, origin: 0 },
   speed: { unit: 'x', min: MIN_SPEED, max: MAX_SPEED, soft: [MIN_SPEED, MAX_SPEED], step: 0.05, precision: 2, snap: 0.25, rest: 1 },
   fade: { unit: 's', min: 0, soft: [0, 5], step: 0.1, precision: 2, snap: 0.5, rest: 0 },
+  crossfade: { unit: 's', min: 0, max: 2 * MAX_CROSSFADE_SIDE, soft: [0, 2], step: 0.05, precision: 2, snap: 0.25, rest: DEFAULT_CROSSFADE },
   fontSize: { unit: 'px', min: 4, max: 1000, soft: [4, 300], step: 1, snap: 10, anim: { prop: 'fontSize', types: ['text'] } },
 
   // text style
@@ -173,6 +174,7 @@ export const FEEL = {
   gradeOffsetG: { unit: '', scale: 100, min: -100, max: 100, soft: [-25, 25], step: 0.1, precision: 1, snap: 5, rest: 0, origin: 0, anim: { prop: 'grade.offsetG', types: V4 } },
   gradeOffsetB: { unit: '', scale: 100, min: -100, max: 100, soft: [-25, 25], step: 0.1, precision: 1, snap: 5, rest: 0, origin: 0, anim: { prop: 'grade.offsetB', types: V4 } },
   gradeOffsetY: { unit: '', scale: 100, min: -100, max: 100, soft: [-25, 25], step: 0.1, precision: 1, snap: 5, rest: 0, origin: 0, anim: { prop: 'grade.offsetY', types: V4 } },
+  gradeLutMix: { ...PCT, min: 0, max: 100, soft: [0, 100], step: 1, snap: 10, rest: 100 },
   keyRange: { ...PCT, min: 0, max: 100, soft: [0, 100], step: 1, snap: 10, rest: DEFAULT_CHROMA_KEY.tolerance * 100, anim: { prop: 'chromaKey.tolerance', types: V4 } },
   keySoftness: { ...PCT, min: 0, max: 100, soft: [0, 100], step: 1, snap: 10, rest: DEFAULT_CHROMA_KEY.softness * 100, anim: { prop: 'chromaKey.softness', types: V4 } },
   keySpill: { ...PCT, min: 0, max: 100, soft: [0, 100], step: 1, snap: 10, rest: DEFAULT_CHROMA_KEY.spill * 100, anim: { prop: 'chromaKey.spill', types: V4 } },

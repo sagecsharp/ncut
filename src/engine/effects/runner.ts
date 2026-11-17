@@ -6,6 +6,8 @@ import { ALPHA_BLOCK, CUT_BLOCK, MAIN, MAIN_ALPHA, MAIN_CUT, PLAIN_BLOCK, PRELUD
 import type { EffectDef, EffectPass, EffectVariant } from './types';
 import { createCanvas } from '../../lib/canvas';
 import type { GradeData } from '../grade';
+import { bindLutUniforms, LutGpu, setLutUnits } from '../lutGl';
+import { gradeDefFor } from './defs/grade';
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
@@ -21,6 +23,9 @@ export interface RenderEffectsOptions {
   /** which gpu context to use. things that render at the same time must not share one. */
   channel?: string;
 }
+
+/** the effect id of the grade with a lut (defs/grade.ts GRADE_LUT_DEF) */
+const GRADE_LUT_ID = 'grade-lut';
 
 const KEY_RE = /^[a-z][a-zA-Z0-9]*$/;
 
@@ -57,6 +62,8 @@ class Runner {
   /** the grade curve table (unit 1), made on the first grade pass. gradeKey is the table it holds */
   private gradeTex: WebGLTexture | null = null;
   private gradeKey = '';
+  /** the lut tables on this context, made on the first lut pass */
+  private luts: LutGpu | null = null;
   dead = false;
 
   constructor(canvas: GLCanvas, gl: WebGL2RenderingContext) {
@@ -171,6 +178,7 @@ class Runner {
       console.error(`[ncut] effect "${key}" failed to compile:
 ${error}`);
     }
+    if (result && def.id === GRADE_LUT_ID) setLutUnits(this.gl, result.program);
     this.programs.set(key, result);
     return result;
   }
@@ -190,6 +198,8 @@ ${error}`);
       gl.deleteTexture(this.srcTex);
       if (this.gradeTex) gl.deleteTexture(this.gradeTex);
       this.gradeTex = null;
+      this.luts?.dispose();
+      this.luts = null;
       gl.deleteVertexArray(this.vao);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
       this.canvas.width = 1;
@@ -241,12 +251,12 @@ ${error}`);
       const v = pass.params[p.key];
       gl.uniform1f(this.loc(prog, `p_${p.key}`), typeof v === 'number' && Number.isFinite(v) ? v : p.default);
     }
-    if (pass.grade) this.bindGrade(prog, pass.grade);
+    if (pass.grade) this.bindGrade(prog, pass.grade, pass.def.id === GRADE_LUT_ID);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   /** the grade uniforms and its curve table (unit 1, nearest: R32F is not filterable). targets bind on unit 0 */
-  private bindGrade(prog: Program, g: GradeData): void {
+  private bindGrade(prog: Program, g: GradeData, lut: boolean): void {
     const gl = this.gl;
     gl.uniform3f(this.loc(prog, 'u_gLift'), g.lift[0], g.lift[1], g.lift[2]);
     gl.uniform3f(this.loc(prog, 'u_gGain'), g.gain[0], g.gain[1], g.gain[2]);
@@ -254,29 +264,45 @@ ${error}`);
     gl.uniform3f(this.loc(prog, 'u_gOff'), g.offset[0], g.offset[1], g.offset[2]);
     gl.uniform4f(this.loc(prog, 'u_gOn'), g.on[0], g.on[1], g.on[2], g.on[3]);
     gl.uniform4f(this.loc(prog, 'u_gTone'), g.tone[0], g.tone[1], g.tone[2], g.tone[3]);
-    if (!g.table) return;
-    gl.activeTexture(gl.TEXTURE1);
-    if (!this.gradeTex) {
-      this.gradeTex = this.makeTexture();
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    } else {
-      gl.bindTexture(gl.TEXTURE_2D, this.gradeTex);
+    // a lut program samples unit 1 even with no curves: it gets the curve texture, or a 1 x 1 zero one
+    if (g.table || lut) {
+      gl.activeTexture(gl.TEXTURE1);
+      if (!this.gradeTex) {
+        this.gradeTex = this.makeTexture();
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        if (!g.table) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 1, 1, 0, gl.RED, gl.FLOAT, new Float32Array(1));
+          this.gradeKey = '';
+        }
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, this.gradeTex);
+      }
+      if (g.table && g.key !== this.gradeKey) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 7, 0, gl.RED, gl.FLOAT, g.table);
+        this.gradeKey = g.key;
+      }
+      gl.uniform1i(this.loc(prog, 'u_gCurves'), 1);
+      gl.activeTexture(gl.TEXTURE0);
     }
-    if (g.key !== this.gradeKey) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 7, 0, gl.RED, gl.FLOAT, g.table);
-      this.gradeKey = g.key;
+    if (lut && g.lut) {
+      this.luts ??= new LutGpu(gl);
+      bindLutUniforms(gl, (n) => this.loc(prog, n), g.lut, this.luts.bind(g.lut.table));
     }
-    gl.uniform1i(this.loc(prog, 'u_gCurves'), 1);
-    gl.activeTexture(gl.TEXTURE0);
   }
 
   private readyPasses(passes: EffectPass[], variantOf: (def: EffectDef) => EffectVariant = () => 'plain'): { pass: EffectPass; prog: Program }[] {
     const ready: { pass: EffectPass; prog: Program }[] = [];
     for (const pass of passes) {
       if (!(pass.amount > 0)) continue;
-      const prog = this.program(pass.def, variantOf(pass.def));
-      if (prog) ready.push({ pass, prog });
+      let run = pass;
+      let prog = this.program(run.def, variantOf(run.def));
+      if (!prog && pass.def.id === GRADE_LUT_ID) {
+        // the lut build is broken: the grade without its lut, same variant
+        run = { ...pass, def: gradeDefFor(null) };
+        prog = this.program(run.def, variantOf(run.def));
+      }
+      if (prog) ready.push({ pass: run, prog });
     }
     return ready;
   }

@@ -12,7 +12,10 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { REASON_TEXT, reasonFor, reasonSnapshot } from '../shell/reasons';
-import { cuttableAt, lockedTracksHit, planCloseUp, planRangeRemoval, splitOrigins, transitionsToDrop } from './rangeEdit';
+import { crossfadesToDrop } from './crossfadePlan';
+import { cuttableAt, lockedTracksHit, planCloseUp, planRangeRemoval, splitOrigins, syncOffTracksHit, transitionsToDrop } from './rangeEdit';
+import { movingTracks, pairDrift } from './syncShift';
+import { outOfSyncText } from './trimText';
 
 export type RangeEditKind = 'lift' | 'extract';
 export interface RangeEditResult {
@@ -27,6 +30,10 @@ export interface RangeEditResult {
   moved: number;
   slivers: number;
   lockedTracks: number;
+  /** extract: unlocked sync lock off tracks that stayed where they were */
+  syncOffTracks?: number;
+  /** clips that went out of sync: a pair in sync where one moved and its mate stayed. clip ids */
+  outOfSync?: string[];
 }
 
 const HINT_KEY = 'ncut.hint.markIn';
@@ -198,9 +205,10 @@ export function runRangeEdit(kind: RangeEditKind): RangeEditResult {
   if (!p0) return nothing({ reason: 'open a project first' });
   const extract = kind === 'extract';
   const block = rangeEditBlock(p0, extract);
-  if (block) return nothing({ reason: block === 'both' ? REASON_TEXT.inOutBoth : block === 'nothing' ? REASON_TEXT.inOutNothing : REASON_TEXT.inOutLocked });
+  if (block) return nothing({ reason: block === 'both' ? REASON_TEXT.inOutBoth : block === 'nothing' ? REASON_TEXT.inOutNothing : block === 'sync-off' ? REASON_TEXT.inOutSyncOff : REASON_TEXT.inOutLocked });
   const span = editSpan(p0.range)!;
   const lockedTracks = lockedTracksHit(p0, span, extract);
+  const open = extract ? movingTracks(p0.tracks, new Set()) : editableTrackIds(p0);
   const skip = { skipHistory: true };
   const stop = (reason: string): RangeEditResult => {
     ed.rollback();
@@ -209,14 +217,14 @@ export function runRangeEdit(kind: RangeEditKind): RangeEditResult {
   ed.pushHistory();
   try {
     const cur = (): Project => useEditor.getState().project!;
-    const atEnd = cuttableAt(cur(), span.end);
-    if (atEnd.length > 0) ed.splitClips(span.end, atEnd, skip);
-    const atStart = cuttableAt(cur(), span.start);
-    if (atStart.length > 0) ed.splitClips(span.start, atStart, skip);
+    const atEnd = cuttableAt(cur(), span.end, open);
+    if (atEnd.length > 0) ed.splitClips(span.end, atEnd, { ...skip, open });
+    const atStart = cuttableAt(cur(), span.start, open);
+    if (atStart.length > 0) ed.splitClips(span.start, atStart, { ...skip, open });
     const afterSplits = cur();
     const origins = splitOrigins(p0, afterSplits);
     const known = new Set(p0.clips.map((c) => c.id));
-    const plan = planRangeRemoval(afterSplits, span);
+    const plan = planRangeRemoval(afterSplits, span, open);
     if (plan.blocked) return stop(`${kind} stopped: "${plan.blocked.name}" could not be split at the in or out point`);
     if (plan.deletes.length > 0) ed.deleteClips(plan.deletes, skip);
     let trimmed = 0;
@@ -227,11 +235,13 @@ export function runRangeEdit(kind: RangeEditKind): RangeEditResult {
       if (cur() !== was) trimmed++;
     }
     let moved = 0;
+    let outOfSync: string[] = [];
     if (extract) {
-      const cu = planCloseUp(cur(), span);
+      const cu = planCloseUp(cur(), span, open);
       if (cu.clash) return stop(`extract stopped: "${cu.clash.clip.name}" would overlap "${cu.clash.other.name}"`);
       if (cu.moves.length > 0) {
         const was = cur();
+        outOfSync = pairDrift(was.clips, new Set(cu.moves.map((m) => m.id)), new Set());
         if (!ed.moveClips(cu.moves, skip)) {
           const m = cu.moves.find((x) => was.clips.some((c) => c.id === x.id));
           const c = m ? was.clips.find((x) => x.id === m.id) : undefined;
@@ -245,13 +255,19 @@ export function runRangeEdit(kind: RangeEditKind): RangeEditResult {
       const back = cur().clips.find((x) => x.id === c.id);
       if (back && isVisualClip(back) && !back.transition) ed.updateClip(c.id, { transition: c.transition }, skip);
     }
+    for (const c of afterSplits.clips) {
+      if ((c.type !== 'video' && c.type !== 'audio') || !c.crossfade) continue;
+      const back = cur().clips.find((x) => x.id === c.id);
+      if (back && (back.type === 'video' || back.type === 'audio') && !back.crossfade) ed.updateClip(c.id, { crossfade: c.crossfade }, skip);
+    }
     for (const id of transitionsToDrop(p0, cur(), origins)) ed.updateClip(id, { transition: null }, skip);
+    for (const id of crossfadesToDrop(p0, cur(), origins)) ed.updateClip(id, { crossfade: null }, skip);
     const done = cur();
     const hit = firstOverlap(p0, done);
     if (hit) return stop(`${kind} stopped: "${hit.a}" would overlap "${hit.b}"`);
     if (!extract) {
-      const open = editableTrackIds(done);
-      const left = done.clips.find((c) => open.has(c.trackId) && c.start < span.end - EPS && clipEnd(c) > span.start + EPS);
+      const unlocked = editableTrackIds(done);
+      const left = done.clips.find((c) => unlocked.has(c.trackId) && c.start < span.end - EPS && clipEnd(c) > span.start + EPS);
       if (left) return stop(`lift stopped: "${left.name}" is still between the in and out points`);
     }
     if (done === p0) {
@@ -263,17 +279,24 @@ export function runRangeEdit(kind: RangeEditKind): RangeEditResult {
     const now = new Set(done.clips.map((c) => c.id));
     const removed = p0.clips.filter((c) => !now.has(c.id)).length;
     const splits = done.clips.filter((c) => !known.has(c.id)).length;
-    return { ok: true, in: span.start, out: span.end, removed, trimmed, splits, moved, slivers: plan.slivers, lockedTracks };
+    const syncOff = extract ? syncOffTracksHit(p0, span).length : 0;
+    return {
+      ok: true, in: span.start, out: span.end, removed, trimmed, splits, moved, slivers: plan.slivers, lockedTracks,
+      ...(syncOff > 0 ? { syncOffTracks: syncOff } : {}),
+      ...(outOfSync.length > 0 ? { outOfSync } : {}),
+    };
   } catch (e) {
     ed.rollback();
     throw e;
   }
 }
 
-function rangeEditToast(kind: RangeEditKind, r: RangeEditResult): string {
+function rangeEditToast(kind: RangeEditKind, r: RangeEditResult, p: Project | null): string {
   const len = formatSeconds(r.out - r.in);
   let text = kind === 'lift' ? `lifted ${len} between the in and out points, the gap stays` : `extracted ${len}, the clips after it moved up`;
   if (r.lockedTracks > 0) text += `. ${r.lockedTracks} locked track${r.lockedTracks > 1 ? 's' : ''} stayed where ${r.lockedTracks > 1 ? 'they were' : 'it was'}`;
+  if (r.syncOffTracks) text += `. ${r.syncOffTracks} track${r.syncOffTracks > 1 ? 's' : ''} with sync lock off stayed as ${r.syncOffTracks > 1 ? 'they were' : 'it was'}`;
+  if (r.outOfSync?.length && p) text += '. ' + outOfSyncText(p, r.outOfSync);
   if (r.slivers > 0) text += `. ${r.slivers} piece${r.slivers > 1 ? 's' : ''} shorter than 0.05 s went too`;
   return text;
 }
@@ -285,7 +308,7 @@ function runAndToast(kind: RangeEditKind): void {
     return;
   }
   const r = runRangeEdit(kind);
-  if (r.ok) toast(rangeEditToast(kind, r));
+  if (r.ok) toast(rangeEditToast(kind, r, useEditor.getState().project));
   else if (r.reason) useUi.getState().toast(r.reason, 'error');
 }
 

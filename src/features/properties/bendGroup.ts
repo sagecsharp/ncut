@@ -10,6 +10,7 @@ import { DEG, dot, length, normalize, sub } from '../../engine/scene3d/math';
 import type { Vec3 } from '../../engine/scene3d/math';
 import { clipWorldModel } from '../../engine/scene3d/model';
 import { evalKeys } from '../../lib/anim';
+import { sameHandles } from '../../lib/keyBezier';
 import { clamp } from '../../lib/time';
 import type { BendAlong, Keyframe, Project, VisualClip } from '../../types';
 import { resolveShown, worldClip } from '../preview/attached';
@@ -168,12 +169,12 @@ export interface BendState {
 /** a clip's bend angle: from its keys at `time` when it has some, else the stored one */
 function angleOf(c: VisualClip, time: number | undefined): number {
   const keys = c.keyframes?.['bend.angle'];
-  if (keys && keys.length > 0 && time !== undefined) return evalKeys(keys, time - c.start);
+  if (keys && keys.length > 0 && time !== undefined) return evalKeys(keys, time - c.start, c, 'bend.angle');
   return c.bend?.angle ?? 0;
 }
 
 const sameKeys = (a: readonly Keyframe[], b: readonly Keyframe[]): boolean =>
-  a.length === b.length && a.every((k, i) => Math.abs(k.t - b[i]!.t) < 1e-6 && Math.abs(k.v - b[i]!.v) < 1e-9 && k.ease === b[i]!.ease);
+  a.length === b.length && a.every((k, i) => Math.abs(k.t - b[i]!.t) < 1e-6 && Math.abs(k.v - b[i]!.v) < 1e-9 && k.ease === b[i]!.ease && sameHandles(k, b[i]!));
 
 /**
  * the state of a selection as a group bend, from the leader (clips[0]): its world curvature rad(angle) / (span k) and

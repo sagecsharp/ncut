@@ -32,6 +32,7 @@ import { PixelProbe } from './PixelProbe';
 import { TrimView } from './TrimView';
 import { insertMedia } from '../timeline/insertMedia';
 import { takeOf } from '../timeline/dropPayload';
+import { putLutOn } from '../properties/lutActions';
 import { SourceView } from './SourceView';
 import { SPLIT_MIN_W, paneLayout, splitBlock } from './sourceLayout';
 import { useSourcePrefs } from './sourcePrefs';
@@ -434,6 +435,8 @@ export function Preview() {
     const start = usePlayback.getState().time;
     // a transition belongs on a clip in the timeline, not on the picture
     if (payload.kind === 'transition') return;
+    // a lut goes in the grade of the selected clips
+    if (payload.kind === 'lut') { const t = putLutOn(store.selection, payload.assetId); if (t) useUi.getState().toast(t); return; }
     const id =
       payload.kind === 'asset'
         ? insertMedia(payload.assetId, { start, ...takeOf(payload) })

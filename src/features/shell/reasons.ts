@@ -2,23 +2,30 @@
  * why an action would do nothing right now. a reason is only given when the action provably changes nothing
  * (project, selection, playhead, clipboard), so a reason can never take power away from anyone.
  * pure on purpose: it must not import the shortcut table, timeline/actions, the session or anything that touches the dom.
+ * it must not import keyLaneActions, graphActions, trackActions or nudgeActions either: they import this file.
  */
 import { MIN_CLIP_DURATION, isTimedClip, isVisualClip } from '../../types';
-import type { Clip, Project } from '../../types';
-import { hasKeyframes } from '../../lib/anim';
-import { canGrade, hasGrade } from '../../lib/gradeData';
+import type { Clip, ClipGrade, Project } from '../../types';
+import { EASINGS, hasKeyframes } from '../../lib/anim';
+import { canGrade, hasGrade, lutOf } from '../../lib/gradeData';
 import { cleanRange, inOutSpan, markClipSpan, rangeEditBlock, selectionSpan } from '../../lib/inOut';
 import { parentOf } from '../../lib/links';
 import { NO_SOLO, isMixFlat, soloActive } from '../../lib/mix';
 import { marksOf } from '../../lib/marks';
 import { matchFrameAt, planReverseMatch } from '../../lib/matchFrame';
 import { clipEnd, projectDuration } from '../../lib/timelineOps';
+import { normalHeights, stepHeights, stepIndex, syncOffAfter, tracksOf } from '../../lib/trackTools';
+import { isAdjustActive } from '../../engine/clipLook';
+import { isExporting } from '../../engine/exportState';
+import { matteField, matteSelectIds, planMatteAbove } from '../../engine/matte';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { selectableIds } from '../../store/selectableIds';
 import { useSolo } from '../../store/solo';
 import { useSource } from '../../store/source';
 import { useUi } from '../../store/ui';
-import type { TrimEdge } from '../../store/ui';
+import type { CrossfadePick, KeyRef, TrimEdge } from '../../store/ui';
+import { hasKeyCopy } from '../properties/keyClipboard';
 import { hasGradeCopy } from '../properties/gradeClipboard';
 import { planTrimToPlayhead } from '../timeline/trimPlan';
 import { pickFreezeTarget } from '../preview/freezePlan';
@@ -27,6 +34,9 @@ import { effectsOn } from '../timeline/effectTarget';
 import { planCloseGaps } from '../timeline/gaps';
 import { GAP_SECONDS, planInsertGap } from '../timeline/gapInsert';
 import { clipHasSound } from '../timeline/beatActions';
+import { crossfadeReason, pickCounts } from '../timeline/crossfadePlan';
+import { CROSS_TEXT } from '../timeline/crossfadeText';
+import { useKeyPanel } from '../timeline/keyPanelState';
 import { AUTO_TARGETS, editReason, selectedTargets } from '../timeline/editPlan';
 import type { EditMode, EditTargets } from '../timeline/editPlan';
 import { EDIT_TEXT } from '../timeline/editText';
@@ -57,10 +67,19 @@ export interface ReasonInput {
   gradeCopied?: boolean;
   /** the three point edit targets */
   editTargets?: EditTargets;
+  /** the selected keyframes of the keyframe panel (optional: tests build literals) */
+  keySel?: readonly KeyRef[];
+  /** keyframes are on the keyframe clipboard */
+  keyCopied?: boolean;
+  /** the keyframe panel is open */
+  keyPanelOpen?: boolean;
+  /** the picked crossfade (optional: tests build literals) */
+  crossfadePick?: CrossfadePick | null;
 }
 
 export const REASON_TEXT = {
   ...SOUND_TEXT,
+  ...CROSS_TEXT,
   noUndo: 'nothing to undo',
   noRedo: 'nothing to redo',
   addClip: 'add a clip first',
@@ -108,6 +127,8 @@ export const REASON_TEXT = {
   inOutLocked: 'the clips between the in and out points are on locked tracks',
   noSolo: 'no track is on solo',
   mixFlat: 'every fader is at 0 db and every pan in the middle already',
+  noMixSound: 'no clip with sound to measure',
+  measureExport: 'an export is running: measure when it ends',
   sourceHasKeys: 'the source view has the keys: click the timeline first',
   noEditBefore: 'no earlier edit',
   noEditAfter: 'no later edit',
@@ -121,6 +142,31 @@ export const REASON_TEXT = {
   exactExport: 'an export is running: exact waits until it ends',
   scopesNoPicture: 'this view has no picture to measure',
   lastScope: 'one scope always shows: close the scopes to hide them all',
+  selectKeys: 'select keyframes first: click a diamond in the keyframe panel or drag a box around some',
+  openKeyPanel: 'open the keyframe panel first',
+  copyKeysFirst: 'copy keyframes first',
+  keysAtStart: 'the keyframes are at the start of their clip',
+  keysAtEnd: 'the keyframes are at the end of their clip',
+  keyInTheWay: 'another keyframe of that value is in the way: select it too, or go past it',
+  keysNotHere: 'the copied keyframes do not fit the selected clips',
+  noHandles: 'no handles to change there: bounce, elastic and hold have none, a first or last keyframe has one side only',
+  easeNothing: 'the selected keyframes have nothing to ease: each is alone in its value',
+  keysAtValueMin: 'a selected keyframe is at the lowest value it can have',
+  keysAtValueMax: 'a selected keyframe is at the highest value it can have',
+  tracksTallest: 'every track is as tall as it goes',
+  tracksShortest: 'every track is as short as it goes',
+  tracksNormal: 'every track has its normal height',
+  trackNormal: 'the track has its normal height',
+  trackTop: 'the track is as high as it goes (video tracks stay above audio tracks)',
+  trackBottom: 'the track is as low as it goes (audio tracks stay below video tracks)',
+  inOutSyncOff: 'the clips between the in and out points are on tracks with sync lock off',
+  gapSyncOff: 'the clips after the playhead are on tracks with sync lock off',
+  noLut: 'the selected clips have no lut',
+  nothingToSave: 'the selected clip has no color or grade to save',
+  lutNotClip: 'a lut is not a clip: drag it onto a clip, or pick it in the grade',
+  oneVisual: 'select one video, image, text or shape clip first',
+  noMatte: 'the selected clips have no matte',
+  noMatteHere: 'the selected clips have no matte and are not the matte of a clip',
 } as const;
 
 /** every id reasonFor answers */
@@ -196,6 +242,7 @@ export const REASON_IDS: ReadonlySet<string> = new Set([
   'solo-selection',
   'solo-off',
   'mixer-reset',
+  'measure-loudness',
   'go-to-time',
   'edit-prev',
   'edit-next',
@@ -215,6 +262,52 @@ export const REASON_IDS: ReadonlySet<string> = new Set([
   'append-edit',
   'edit-targets-selected',
   'export',
+  'export-advanced',
+  'export-transparent',
+  'export-codec',
+  'export-bitrate',
+  'export-interval',
+  'export-size',
+  'export-audio',
+  'export-youtube',
+  'export-youtube-4k',
+  'export-vimeo',
+  'export-reels',
+  'export-master',
+  'export-loudness',
+  'keys-delete',
+  'keys-copy',
+  'keys-nudge-left',
+  'keys-nudge-right',
+  'keys-paste',
+  'keys-select-all',
+  ...EASINGS.map((e) => 'keys-ease-' + e.id),
+  'key-easy-ease',
+  'key-ease-into',
+  'key-ease-out-of',
+  'key-value-up',
+  'key-value-down',
+  'keys-join-handles',
+  'keys-ease-bezier',
+  'crossfade',
+  'crossfade-track',
+  'crossfade-track-off',
+  'fade-shape-power',
+  'fade-shape-linear',
+  'fade-shape-smooth',
+  'tracks-taller',
+  'tracks-shorter',
+  'tracks-normal',
+  'track-up',
+  'track-down',
+  'sync-lock-toggle',
+  'lut-on',
+  'lut-off',
+  'lut-save',
+  'matte-show',
+  'matte-above',
+  'matte-remove',
+  'matte-select',
 ]);
 
 /** the six "no edit" texts by scope and direction */
@@ -244,6 +337,14 @@ function timeKeyReason(id: string, s: ReasonInput, p: Project): string | null {
   const plan = planNudge(p, s.selection, n);
   if (plan.stop) return trimStopText(plan.stop, p);
   return plan.moves.length === 0 ? T.selectClip : null;
+}
+
+const KEY_EASE_IDS: ReadonlySet<string> = new Set([...EASINGS.map((e) => 'keys-ease-' + e.id), 'keys-ease-bezier']);
+
+/** the keyframe panel's own rows: it must be open and some keyframe selected */
+function keySelReason(s: ReasonInput): string | null {
+  const T = REASON_TEXT;
+  return !s.keyPanelOpen ? T.openKeyPanel : (s.keySel ?? []).length === 0 ? T.selectKeys : null;
 }
 
 const SOURCE_IDS = new Set(['mark-in', 'mark-out', 'mark-clip', 'clear-in-out', 'go-in', 'go-out', 'play-in-out', 'match-frame']);
@@ -285,6 +386,10 @@ export function reasonSnapshot(): ReasonInput {
     solo: useSolo.getState().solo,
     gradeCopied: hasGradeCopy(),
     editTargets: currentTargets(s.project?.id ?? null),
+    keySel: ui.keySel,
+    keyCopied: hasKeyCopy(),
+    keyPanelOpen: useKeyPanel.getState().open,
+    crossfadePick: ui.crossfadePick,
   };
 }
 
@@ -370,6 +475,7 @@ export function reasonFor(id: string, s: ReasonInput): string | null {
     case 'edge-next':
     case 'key-prev':
     case 'key-next': {
+      if (pickCounts(p, sel, s.crossfadePick ?? null)) return null;
       const e = s.trimEdge ?? null;
       if (e) {
         const n = id === 'edge-prev' ? -1 : id === 'edge-next' ? 1 : id === 'key-prev' ? -10 : 10;
@@ -424,7 +530,7 @@ export function reasonFor(id: string, s: ReasonInput): string | null {
       if (noSel) return T.selectClip;
       return picked.some((c) => effectsOn(p.clips, c.id).length > 0) ? null : T.noEffects;
     case 'insert-gap':
-      return planInsertGap(p.clips, p.tracks, time, GAP_SECONDS).length === 0 ? T.noClipsAfter : null;
+      return planInsertGap(p.clips, p.tracks, time, GAP_SECONDS).length > 0 ? null : syncOffAfter(p, time) ? T.gapSyncOff : T.noClipsAfter;
     case 'close-gaps':
       if (picked.length === 0) return T.selectClip;
       return planCloseGaps(p.clips, picked[0]!.trackId).length === 0 ? T.noGaps : null;
@@ -457,7 +563,7 @@ export function reasonFor(id: string, s: ReasonInput): string | null {
     case 'lift':
     case 'extract': {
       const b = rangeEditBlock(p, id === 'extract');
-      return b === 'both' ? T.inOutBoth : b === 'locked' ? T.inOutLocked : b === 'nothing' ? T.inOutNothing : null;
+      return b === 'both' ? T.inOutBoth : b === 'locked' ? T.inOutLocked : b === 'sync-off' ? T.inOutSyncOff : b === 'nothing' ? T.inOutNothing : null;
     }
     case 'match-frame':
       return matchFrameAt(p, time, sel) ? null : T.noMediaUnder;
@@ -475,6 +581,8 @@ export function reasonFor(id: string, s: ReasonInput): string | null {
       return soloActive(p, s.solo ?? NO_SOLO) ? null : T.noSolo;
     case 'mixer-reset':
       return isMixFlat(p) ? T.mixFlat : null;
+    case 'measure-loudness':
+      return noClips ? T.addClip : !p.clips.some((c) => clipHasSound(p, c)) ? T.noMixSound : isExporting() ? T.measureExport : null;
     case 'grade-show':
     case 'grade-on-off':
     case 'grade-reset':
@@ -503,9 +611,95 @@ export function reasonFor(id: string, s: ReasonInput): string | null {
     }
     case 'edit-targets-selected':
       return selectedTargets(p, sel) ? null : EDIT_TEXT.targetsNone;
+    case 'keys-delete':
+    case 'keys-copy':
+    case 'keys-nudge-left':
+    case 'keys-nudge-right':
+    case 'key-easy-ease':
+    case 'key-ease-into':
+    case 'key-ease-out-of':
+    case 'key-value-up':
+    case 'key-value-down':
+    case 'keys-join-handles':
+      return keySelReason(s);
+    case 'keys-paste':
+      if (!s.keyCopied) return T.copyKeysFirst;
+      return noSel ? T.selectClip : null;
+    case 'keys-select-all':
+      if (noSel) return T.selectClip;
+      return picked.some((c) => hasKeyframes(c)) ? null : T.noKeys;
+    case 'crossfade':
+    case 'crossfade-track':
+    case 'crossfade-track-off':
+    case 'fade-shape-power':
+    case 'fade-shape-linear':
+    case 'fade-shape-smooth':
+      return crossfadeReason(id, s);
+    case 'tracks-taller':
+    case 'tracks-shorter': {
+      const up = id === 'tracks-taller';
+      return Object.keys(stepHeights(p.tracks, up ? 1 : -1)).length > 0 ? null : up ? T.tracksTallest : T.tracksShortest;
+    }
+    case 'tracks-normal':
+      return Object.keys(normalHeights(p.tracks)).length > 0 ? null : T.tracksNormal;
+    case 'track-up':
+    case 'track-down': {
+      const t = p.tracks.find((x) => x.id === tracksOf(p, sel)[0]);
+      if (!t) return T.selectClip;
+      if (t.locked) return T.trackLocked;
+      return stepIndex(p.tracks, t.id, id === 'track-up' ? -1 : 1) === null ? (id === 'track-up' ? T.trackTop : T.trackBottom) : null;
+    }
+    case 'sync-lock-toggle':
+      return noSel ? T.selectClip : null;
+    case 'lut-on':
+    case 'lut-off':
+    case 'lut-save': {
+      const can = picked.filter(canGrade);
+      if (can.length === 0) return T.gradeFirst;
+      const gradeOf = (c: Clip) => (c as { grade?: ClipGrade | null }).grade;
+      if (id === 'lut-on') return can.every((c) => locked.has(c.trackId)) ? T.trackLocked : null;
+      if (id === 'lut-off') {
+        const has = can.filter((c) => lutOf(gradeOf(c)));
+        if (has.length === 0) return T.noLut;
+        return has.every((c) => locked.has(c.trackId)) ? T.trackLocked : null;
+      }
+      const first = can[0]!;
+      return (isVisualClip(first) && isAdjustActive(first.adjust)) || hasGrade(first) ? null : T.nothingToSave;
+    }
+    case 'matte-show':
+      return picked.filter(isVisualClip).length === 1 ? null : T.oneVisual;
+    case 'matte-above': {
+      const plan = planMatteAbove(p, sel);
+      return 'stop' in plan ? plan.stop : null;
+    }
+    case 'matte-remove': {
+      const has = picked.filter((c) => matteField(c));
+      if (has.length === 0) return T.noMatte;
+      return has.every((c) => locked.has(c.trackId)) ? T.trackLocked : null;
+    }
+    case 'matte-select': {
+      if (noSel) return T.selectClip;
+      const other = matteSelectIds(p, sel);
+      if (other.length === 0) return T.noMatteHere;
+      // the store drops clips on locked tracks, like selectMatteOther
+      return selectableIds(p, other).length > 0 ? null : T.trackLocked;
+    }
+    case 'export-advanced':
+    case 'export-transparent':
+    case 'export-codec':
+    case 'export-bitrate':
+    case 'export-interval':
+    case 'export-size':
+    case 'export-audio':
+    case 'export-youtube':
+    case 'export-youtube-4k':
+    case 'export-vimeo':
+    case 'export-reels':
+    case 'export-master':
+    case 'export-loudness':
     case 'export':
       return noClips ? T.addClip : null;
     default:
-      return null;
+      return KEY_EASE_IDS.has(id) ? keySelReason(s) : null;
   }
 }

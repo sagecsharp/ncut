@@ -8,7 +8,7 @@ import { runTrimOps } from '../../store/editorStore';
 import { edgePlan, editsAt, planMoveEdit, planRipple, planRippleToPlayhead, planSlide, planSlip, planStretch, simulateOps } from './trimModes';
 import type { TrimPlan, TrimStopWhy } from './trimModes';
 
-const track = (id: string, locked = false): Track => ({ id, kind: id.startsWith('a') ? 'audio' : 'video', name: id, muted: false, hidden: false, locked });
+const track = (id: string, locked = false, off = false): Track => ({ id, kind: id.startsWith('a') ? 'audio' : 'video', name: id, muted: false, hidden: false, locked, ...(off ? { syncLock: false } : {}) });
 const asset = (id: string, duration: number, kind: 'video' | 'audio' = 'video'): MediaAsset => ({
   id, name: id, kind, mime: kind + '/x', size: 1, duration, width: 100, height: 100, hasAudio: true, createdAt: 0,
 });
@@ -26,10 +26,10 @@ const fx = (trackId: string, id: string, target: string | null, start: number, d
 });
 
 const TRACKS = ['v1', 'v2', 'v3', 'a1', 'a2'];
-function proj(clips: Clip[], o: { locked?: string[]; assets?: MediaAsset[] } = {}): Project {
+function proj(clips: Clip[], o: { locked?: string[]; off?: string[]; assets?: MediaAsset[] } = {}): Project {
   return {
     ...createProject('trim'),
-    tracks: TRACKS.map((t) => track(t, o.locked?.includes(t))),
+    tracks: TRACKS.map((t) => track(t, o.locked?.includes(t), o.off?.includes(t))),
     assets: o.assets ?? [asset('long', 100), asset('short', 6), { ...asset('pic', 0), kind: 'image' }],
     clips,
   };
@@ -703,5 +703,57 @@ describe('editsAt', () => {
   it('the nearer edge comes first on one track', () => {
     const q = proj([video('v1', 'a', 0, 1.99), video('v1', 'b', 2.05, 2)]);
     expect(editsAt(q, 2, 10).map((x) => x.clipId + ':' + x.edge)).toEqual(['a:end', 'b:start']);
+  });
+});
+
+describe('sync lock off', () => {
+  it('ripple keeps a sync lock off track where it is', () => {
+    const p = proj([video('v1', 'a', 0, 4), video('v1', 'b', 4, 4), video('v2', 'y', 0, 3), video('v2', 'x', 6, 3)], { off: ['v2'] });
+    const plan = planRipple(p, 'a', 'end', -1);
+    expect(plan.moved).toEqual(['b']);
+    expect(plan.freeBehind).toEqual(['v2']);
+    expect(plan.drift).toBeUndefined();
+    const out = apply(p, plan);
+    expect(span(out, 'b')).toEqual([3, 7]);
+    expect(span(out, 'x')).toEqual([6, 9]);
+  });
+
+  it('a held separated sound is drift', () => {
+    const p = proj([
+      video('v1', 'a', 0, 4, { group: 'g1' }), video('v1', 'b', 4, 4, { group: 'g2' }),
+      audio('a1', 'sa', 0, 4, { group: 'g1' }), audio('a1', 'sb', 4, 4, { group: 'g2' }),
+    ], { off: ['a1'] });
+    const plan = planRipple(p, 'a', 'end', -1);
+    expect(plan.moved).toEqual(['b']);
+    expect(plan.drift).toEqual(['sb']);
+    expect(plan.freeBehind).toEqual(['a1']);
+  });
+
+  it('q, w and edgePlan carry freeBehind and drift', () => {
+    const p = proj([
+      video('v1', 'a', 0, 4, { group: 'g1' }), video('v1', 'b', 4, 4, { group: 'g2' }),
+      audio('a1', 'sa', 0, 4, { group: 'g1' }), audio('a1', 'sb', 4, 4, { group: 'g2' }),
+    ], { off: ['a1'] });
+    const w = planRippleToPlayhead(p, ['a'], 3, 'end');
+    expect(w.plan?.freeBehind).toEqual(['a1']);
+    expect(w.plan?.drift).toEqual(['sb']);
+    const q = planRippleToPlayhead(p, ['b'], 5, 'start');
+    expect(q.plan?.drift).toBeUndefined();
+    const e = edgePlan(p, { clipId: 'a', edge: 'end', both: false, alone: true }, -1, ['a']);
+    expect(e?.freeBehind).toEqual(['a1']);
+    expect(e?.drift).toEqual(['sb']);
+  });
+
+  it('a trimmed pair stays in sync', () => {
+    const p = proj([
+      video('v1', 'a', 0, 4, { group: 'g1' }), video('v1', 'b', 4, 4, { group: 'g2' }),
+      audio('a1', 'sa', 0, 4, { group: 'g1' }), audio('a1', 'sb', 4, 4, { group: 'g2' }),
+    ], { off: ['a1'] });
+    const plan = planRipple(p, 'a', 'end', -1, ['a', 'sa']);
+    expect(plan.moved.sort()).toEqual(['b', 'sb']);
+    expect(plan.drift).toBeUndefined();
+    expect(plan.freeBehind).toBeUndefined();
+    const out = apply(p, plan);
+    expect(span(out, 'sb')).toEqual([3, 7]);
   });
 });

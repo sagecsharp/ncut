@@ -4,7 +4,7 @@
 import type { Project } from '../../types';
 import { formatSeconds, formatTimecode } from '../../lib/time';
 import type { EditResult, EditStop } from './editPlan';
-import { TRIM_TEXT, clipLabel, lockedTracksText } from './trimText';
+import { TRIM_TEXT, clipLabel, lockedTracksText, outOfSyncText } from './trimText';
 
 export const EDIT_TEXT = {
   mediaGone: 'this media is not in the project any more',
@@ -124,6 +124,7 @@ export function editDoneText(r: EditResult, p: Pick<Project, 'clips' | 'tracks' 
     clip: clipLabel(q, r.clips[0] ?? ''),
   });
   if (r.lockedTracks.length > 0) text += `. ${TRIM_TEXT.lockedStay.replace('{tracks}', lockedTracksText(q, r.lockedTracks))}`;
+  if (r.outOfSync?.length) text += '. ' + outOfSyncText(q, r.outOfSync);
   if (r.kept > 0) text += `. ${fillEditText(EDIT_TEXT.kept, { n: String(r.kept), clips: r.kept === 1 ? 'clip' : 'clips' })}`;
   if (r.soundsKept > 0) text += `. ${fillEditText(EDIT_TEXT.soundsKept, { n: String(r.soundsKept), clips: r.soundsKept === 1 ? 'clip' : 'clips' })}`;
   if (r.slivers > 0) text += `. ${r.slivers} piece${r.slivers > 1 ? 's' : ''} shorter than 0.05 s went too`;

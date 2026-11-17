@@ -328,6 +328,21 @@ describe('rangeEditBlock', () => {
     const p = proj(tracks, [vid('a', 'v2', 5, 2)], { in: 2, out: 4 });
     expect(rangeEditBlock(p, true)).toBe('nothing');
   });
+  it('sync-off for extract, never for lift', () => {
+    const off = { ...trk('v3'), syncLock: false as const };
+    const t = [trk('v1'), trk('v2', true), off];
+    const inside = proj(t, [vid('a', 'v3', 0, 10)], { in: 2, out: 4 });
+    expect(rangeEditBlock(inside, true)).toBe('sync-off');
+    expect(rangeEditBlock(inside, false)).toBeNull();
+    // a sync lock off clip after the span alone is nothing
+    expect(rangeEditBlock(proj(t, [vid('a', 'v3', 5, 1)], { in: 2, out: 4 }), true)).toBe('nothing');
+    // sync-off wins over locked, and a moving clip in reach wins over both
+    const both = proj(t, [vid('a', 'v3', 0, 10), vid('b', 'v2', 0, 10)], { in: 2, out: 4 });
+    expect(rangeEditBlock(both, true)).toBe('sync-off');
+    expect(rangeEditBlock(proj(t, [vid('a', 'v3', 0, 10), vid('b', 'v1', 5, 1)], { in: 2, out: 4 }), true)).toBeNull();
+    // lift on the locked track only
+    expect(rangeEditBlock(proj(t, [vid('b', 'v2', 0, 10)], { in: 2, out: 4 }), false)).toBe('locked');
+  });
   it('an unlocked clip anywhere in reach wins over a locked one', () => {
     const p = proj(tracks, [vid('a', 'v2', 0, 10), vid('b', 'v1', 3, 1)], { in: 2, out: 4 });
     expect(rangeEditBlock(p, false)).toBeNull();

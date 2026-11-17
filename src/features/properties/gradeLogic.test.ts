@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ClipGrade, GradePoint, Keyframes } from '../../types';
+import type { ClipGrade, GradeCurves, GradePoint, Keyframes } from '../../types';
 import { GRADE_KEYS, MAX_CURVE_POINTS, MIN_POINT_GAP } from '../../lib/gradeData';
 import type { CurveKind, GradeKey } from '../../lib/gradeData';
 import { curveSampler, lumaOf, puckOf, rgbFromPuck } from '../../lib/gradeMath';
@@ -112,6 +112,21 @@ describe('wheel texts', () => {
     // a neutral list counts as no change
     expect(gradeSummary(neutral(), { y: [[0, 0], [0.5, 0.5], [1, 1]], hueSat: [[0.1, 0.5]] })).toBe('nothing set yet');
     expect(gradeSummary(neutral(), { lumaSat: [[0.5, 0.2]] })).toBe('luma vs sat curves');
+  });
+
+  it('the summary names the lut first or last', () => {
+    const v = neutral();
+    expect(gradeSummary(v, undefined, { name: 'film', last: false })).toBe('lut film');
+    expect(gradeSummary(v, undefined, { name: 'film', last: true })).toBe('lut film');
+    v.liftR = 0.1;
+    v.gammaY = 0.1;
+    const y: GradeCurves = { y: [[0, 0], [0.5, 0.6], [1, 1]], hueSat: [[0.1, 0.8]] };
+    expect(gradeSummary(v, y, { name: 'film', last: false })).toBe('lut film, lift, gamma, 2 curves');
+    expect(gradeSummary(v, y, { name: 'film', last: true })).toBe('lift, gamma, 2 curves, lut film');
+    expect(gradeSummary(v, null, { name: null, last: false })).toBe('missing lut, lift, gamma');
+    // two arguments: today's text
+    expect(gradeSummary(v, y)).toBe('lift, gamma, 2 curves');
+    expect(gradeSummary(v, y, null)).toBe('lift, gamma, 2 curves');
   });
 
   it('wheelKeyPlan removes three keys here, else adds the missing', () => {

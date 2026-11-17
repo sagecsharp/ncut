@@ -16,7 +16,9 @@ import { applyFollowerSpans } from './followApply';
 import { EDIT_TEXT, editDoneText, editModeWord, editStopText, fillEditText } from './editText';
 import { isEditStop, planEdit, planInsertMoves, selectedTargets } from './editPlan';
 import type { EditInput, EditMode, EditPlan, EditResult } from './editPlan';
+import { crossfadesToDrop } from './crossfadePlan';
 import { currentTargets, resetEditTargets, setEditTarget } from './editTargets';
+import { movingTracks } from './syncShift';
 import { cuttableAt, planRangeRemoval, splitOrigins, transitionsToDrop } from './rangeEdit';
 import { clipLabel } from './trimText';
 import { useSoundApart } from './soundSetting';
@@ -86,6 +88,8 @@ export function runEdit(input: EditInput): EditResult {
     let slivers = 0;
     let moved = 0;
     let lockedBehind: string[] = [];
+    let freeBehind: string[] = [];
+    let drift: string[] = [];
     let afterSplits: Project | null = null;
     const trimAll = (trims: readonly { id: string; edge: 'start' | 'end'; time: number }[]): void => {
       for (const t of trims) {
@@ -103,7 +107,7 @@ export function runEdit(input: EditInput): EditResult {
       slivers = prep.slivers;
       const cut = prep.split.filter((id) => cur().clips.some((c) => c.id === id));
       if (cut.length > 0) {
-        ed.splitClips(prep.at, cut, skip);
+        ed.splitClips(prep.at, cut, { ...skip, open: movingTracks(cur().tracks, landingSet) });
         for (const id of cut) {
           const c = cur().clips.find((x) => x.id === id);
           if (!c || Math.abs(clipEnd(c) - prep.at) > EPS) return stop(fillEditText(EDIT_TEXT.splitStop, { mode: word, clip: clipLabel(cur(), id) }));
@@ -112,6 +116,8 @@ export function runEdit(input: EditInput): EditResult {
       afterSplits = cur();
       const plannedMoves = planInsertMoves(afterSplits, prep.at, prep.by, landingSet, prep.atOf);
       lockedBehind = plannedMoves.lockedBehind;
+      freeBehind = plannedMoves.freeBehind;
+      drift = plannedMoves.drift;
       if (plannedMoves.moves.length > 0) {
         if (!ed.moveClips(plannedMoves.moves, skip)) {
           const first = afterSplits.clips.find((c) => c.id === plannedMoves.moves[0]!.id);
@@ -152,6 +158,7 @@ export function runEdit(input: EditInput): EditResult {
     if (plan.mode !== 'replace') {
       // 8. a transition whose clip before is another clip now goes
       for (const id of transitionsToDrop(p0, cur(), splitOrigins(p0, afterSplits ?? p0))) ed.updateClip(id, { transition: null }, skip);
+      for (const id of crossfadesToDrop(p0, cur(), splitOrigins(p0, afterSplits ?? p0))) ed.updateClip(id, { crossfade: null }, skip);
     }
     // 9. nothing may overlap that did not before, the new clips sit where they were planned
     const done = cur();
@@ -185,6 +192,7 @@ export function runEdit(input: EditInput): EditResult {
     const known = new Set(p0.clips.map((c) => c.id));
     const planned = new Set(plan.clips.map((e) => e.clip.id));
     const lockedTracks = done.tracks.filter((t) => lockedBehind.includes(t.id) || prep?.lockedSpan.includes(t.id)).map((t) => t.id);
+    const syncOffTracks = done.tracks.filter((t) => freeBehind.includes(t.id) || prep?.freeSpan.includes(t.id)).map((t) => t.id);
     return {
       ...blank(input.mode), ok: true, failed: null, clips: ids,
       start: plan.points.start, length: plan.points.length, from: plan.points.from, speed: plan.points.speed,
@@ -198,6 +206,8 @@ export function runEdit(input: EditInput): EditResult {
       lockedTracks,
       newTracks: [...keyMap.values()],
       rangeCleared,
+      ...(syncOffTracks.length > 0 ? { syncOffTracks } : {}),
+      ...(drift.length > 0 ? { outOfSync: drift } : {}),
     };
   }
 }

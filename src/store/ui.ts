@@ -28,6 +28,18 @@ export type MediaTabId = 'media' | 'layers' | 'text' | 'shapes' | 'effects' | 't
 /** both: the edit between clipId's end and the clip touching it (clipId = left clip, edge 'end'). alone: picked with alt */
 export interface TrimEdge { clipId: string; edge: 'start' | 'end'; both: boolean; alone: boolean }
 
+/** one keyframe in the keyframe panel: a clip, a property and the key's time in clip-local seconds */
+export interface KeyRef { clipId: string; prop: string; t: number }
+
+/** a crossfade the user picked: the clip it ends at and the selection it was picked with */
+export interface CrossfadePick { clipId: string; selection: readonly string[] }
+
+/** a part of the export dialog a search row asks for */
+export type ExportFocus = 'codec' | 'bitrate' | 'interval' | 'size' | 'transparent' | 'audio' | 'loudness';
+/** what the export dialog shows when it opens next. n counts up so the same ask works twice */
+export interface ExportAsk { advanced: boolean; preset: string | null; focus: ExportFocus | null; n: number }
+export interface ExportAskInput { advanced?: boolean; preset?: string; focus?: ExportFocus }
+
 export interface UiState {
   dialog: DialogName | null;
   toasts: Toast[];
@@ -37,6 +49,14 @@ export interface UiState {
   trimMode: boolean;
   /** the picked edge in trim mode. a gone clip counts as none */
   trimEdge: TrimEdge | null;
+  /** the picked crossfade. never saved. a picked edge clears it */
+  crossfadePick: CrossfadePick | null;
+  /** the selected keyframes of the keyframe panel. never saved */
+  keySel: KeyRef[];
+  /** the focus is in the keyframe panel: delete, copy, paste, select all, esc and alt+arrows work on keyframes */
+  keyFocus: boolean;
+  /** what the export dialog shows when it opens next */
+  exportAsk: ExportAsk | null;
   /** the tab of the media panel */
   mediaTab: MediaTabId;
   /** the mixer strip to show: a track id, or null for the output. n counts up so the same ask works twice */
@@ -55,8 +75,16 @@ export interface UiState {
   activateProgram(): void;
   /** no write when equal. false also clears trimEdge */
   setTrimMode(on: boolean): void;
-  /** no write when equal. a non null edge also turns trim mode on */
+  /** no write when equal. a non null edge also turns trim mode on and clears the crossfade pick */
   setTrimEdge(e: TrimEdge | null): void;
+  /** no write when both are null or the same clip and the same selection array. a pick clears trimEdge */
+  setCrossfadePick(p: CrossfadePick | null): void;
+  /** no write when sameKeyRefs */
+  setKeySel(sel: readonly KeyRef[]): void;
+  /** no write when equal */
+  setKeyFocus(on: boolean): void;
+  /** open the export dialog with the advanced part open, a preset applied or a row focused */
+  askExport(ask: ExportAskInput): void;
   setMediaTab(tab: MediaTabId): void;
   /** open the mixer tab, at a track's strip or at the output */
   showMixer(trackId?: string): void;
@@ -69,11 +97,42 @@ export interface UiState {
   dismissToast(id: string): void;
 }
 
+/** the key refs' time tolerance (keySelection.ts has the public KEY_REF_EPS, it imports this file) */
+const REF_EPS = 1e-4;
+
 /** the same ids, in any order */
 export function sameIds(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const set = new Set(a);
   return b.every((id) => set.has(id)) && new Set(b).size === set.size;
+}
+
+/** the same refs in any order, t within 1e-4 s (equal lengths, both sorted by clipId, prop, t, then pairwise) */
+export function sameKeyRefs(a: readonly KeyRef[], b: readonly KeyRef[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  // cheap checks first: the same order within eps, then a rejection by the sum of t (a drag or nudge of the whole selection always trips it)
+  let inPlace = true;
+  let ta = 0;
+  let tb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (inPlace && (x.clipId !== y.clipId || x.prop !== y.prop || Math.abs(x.t - y.t) > REF_EPS)) inPlace = false;
+    ta += x.t;
+    tb += y.t;
+  }
+  if (inPlace) return true;
+  if (Math.abs(ta - tb) > a.length * REF_EPS) return false;
+  const order = (x: KeyRef, y: KeyRef) => (x.clipId < y.clipId ? -1 : x.clipId > y.clipId ? 1 : x.prop < y.prop ? -1 : x.prop > y.prop ? 1 : x.t - y.t);
+  const sa = [...a].sort(order);
+  const sb = [...b].sort(order);
+  for (let i = 0; i < sa.length; i++) {
+    const x = sa[i]!;
+    const y = sb[i]!;
+    if (x.clipId !== y.clipId || x.prop !== y.prop || Math.abs(x.t - y.t) > REF_EPS) return false;
+  }
+  return true;
 }
 
 export const useUi = create<UiState>()((set, get) => ({
@@ -83,6 +142,10 @@ export const useUi = create<UiState>()((set, get) => ({
   programMode: 'output',
   trimMode: false,
   trimEdge: null,
+  crossfadePick: null,
+  keySel: [],
+  keyFocus: false,
+  exportAsk: null,
   mediaTab: 'media',
   mixerFocus: null,
   projectsVersion: 0,
@@ -109,8 +172,23 @@ export const useUi = create<UiState>()((set, get) => ({
     const s = get();
     const c = s.trimEdge;
     const same = e === null ? c === null : c !== null && c.clipId === e.clipId && c.edge === e.edge && c.both === e.both && c.alone === e.alone;
-    if (same && (e === null || s.trimMode)) return;
-    set(e ? { trimEdge: e, trimMode: true } : { trimEdge: null });
+    if (same && (e === null || (s.trimMode && s.crossfadePick === null))) return;
+    set(e ? { trimEdge: e, trimMode: true, crossfadePick: null } : { trimEdge: null });
+  },
+  setCrossfadePick(pick) {
+    const c = get().crossfadePick;
+    if (c === null && pick === null) return;
+    if (c !== null && pick !== null && c.clipId === pick.clipId && c.selection === pick.selection) return;
+    set(pick ? { crossfadePick: pick, trimEdge: null } : { crossfadePick: null });
+  },
+  setKeySel(sel) {
+    if (!sameKeyRefs(get().keySel, sel)) set({ keySel: [...sel] });
+  },
+  setKeyFocus(on) {
+    if (get().keyFocus !== on) set({ keyFocus: on });
+  },
+  askExport(ask) {
+    set({ dialog: 'export', exportAsk: { advanced: ask.advanced === true || (ask.focus !== undefined && ask.focus !== 'loudness'), preset: ask.preset ?? null, focus: ask.focus ?? null, n: (get().exportAsk?.n ?? 0) + 1 } });
   },
   setMediaTab(tab) {
     if (get().mediaTab !== tab) set({ mediaTab: tab });

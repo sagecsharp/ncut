@@ -25,6 +25,7 @@ import { applyClipMotion, hasClipMotion } from '../clipAnim';
 import { worldTransformOf } from '../parent';
 import { pivotFraction } from '../pivot';
 import { faceSourceSet } from './faces';
+import { matteSourceSet } from '../matte';
 import { fogOn, parseFogColor, type Rgb } from './fog';
 import { skyBrightness, skyTurn, skyUsable, wrapDeg } from './sky';
 
@@ -264,15 +265,16 @@ function clipsOnTrack(project: Project, trackId: string): readonly Clip[] {
   return hit.map.get(trackId) ?? EMPTY_CLIPS;
 }
 
-/** the 2d shape clips painted under the lowest 3d clip at a time, bottom first */
+/** the 2d shape clips painted under the lowest 3d clip at a time, bottom first. a matte clip is not painted on its own, so it is no shape here; a matted shape counts with its full outline */
 export function backdropShapes(project: Project, time: number): BackdropShape[] {
   const out: BackdropShape[] = [];
   const onSides = faceSourceSet(project);
+  const mattes = matteSourceSet(project);
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
     for (const raw of clipsOnTrack(project, track.id)) {
-      if (!isVisualClip(raw) || onSides.has(raw.id)) continue;
+      if (!isVisualClip(raw) || onSides.has(raw.id) || mattes.has(raw.id)) continue;
       if (time < raw.start - 1e-6 || time >= clipEnd(raw) - 1e-6) continue;
       if (raw.threeD) return out;
       if (raw.type !== 'shape' || raw.filled === false) continue;

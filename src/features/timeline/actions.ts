@@ -3,6 +3,7 @@ import { freezeFrame } from '../preview/freezeFrame';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { REASON_TEXT } from '../shell/reasons';
 import { planCloseGaps } from './gaps';
 import { withFollowerMoves } from './followMoves';
 import { GAP_SECONDS, planInsertGap } from './gapInsert';
@@ -13,9 +14,12 @@ import { notifyView, view } from './view';
 import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
 import { expandGroups } from '../../lib/links';
 import { applyFollowerSpans } from './followApply';
+import { pairDrift } from './syncShift';
+import { outOfSyncText } from './trimText';
 import { planTrimToPlayhead } from './trimPlan';
 import { hasKeyframes } from '../../lib/anim';
 import { clipEnd } from '../../lib/timelineOps';
+import { syncOffAfter } from '../../lib/trackTools';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
 export function groupIdsNow(ids: string[]): boolean {
@@ -105,18 +109,25 @@ export function insertGapAt(time?: number, trackId?: string): void {
   const st = useEditor.getState();
   if (!st.project) return;
   const at = time ?? usePlayback.getState().time;
-  const planned = planInsertGap(st.project.clips, st.project.tracks, at, GAP_SECONDS, trackId);
+  const before = st.project;
+  const none = (): string => (trackId === undefined && syncOffAfter(before, at) ? REASON_TEXT.gapSyncOff : 'no clips after this point');
+  const planned = planInsertGap(before.clips, before.tracks, at, GAP_SECONDS, trackId);
   if (planned.length === 0) {
-    useUi.getState().toast('no clips after this point');
+    useUi.getState().toast(none());
     return;
   }
   // an effect follows its clip: it goes with a clip that moves and stays with one that does not
-  const moves = withFollowerMoves(st.project.clips, st.project.tracks, planned, true);
+  const moves = withFollowerMoves(before.clips, before.tracks, planned, true);
   if (moves.length === 0) {
-    useUi.getState().toast('no clips after this point');
+    useUi.getState().toast(none());
     return;
   }
-  if (!st.moveClips(moves)) useUi.getState().toast('could not insert the gap');
+  if (!st.moveClips(moves)) {
+    useUi.getState().toast('could not insert the gap');
+    return;
+  }
+  const drift = pairDrift(before.clips, new Set(moves.map((m) => m.id)), new Set());
+  if (drift.length > 0) useUi.getState().toast(outOfSyncText(before, drift));
 }
 
 /** scroll the timeline so a clip is in view (sideways by the view state, up / down by the element) */
@@ -146,7 +157,7 @@ export function revealClip(id: string): void {
     const sr = scroller.getBoundingClientRect();
     const lr = lane.getBoundingClientRect();
     const top = lr.top + CLIP_INSET;
-    const dy = nearestScrollDelta(top, top + laneHeight(track.kind) - CLIP_INSET * 2, sr.top + scroller.clientTop, sr.top + scroller.clientTop + scroller.clientHeight);
+    const dy = nearestScrollDelta(top, top + laneHeight(track) - CLIP_INSET * 2, sr.top + scroller.clientTop, sr.top + scroller.clientTop + scroller.clientHeight);
     if (dy !== 0) scroller.scrollTop += dy;
     return;
   }

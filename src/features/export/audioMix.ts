@@ -11,6 +11,7 @@ import { fadeFactor } from '../../lib/timelineOps';
 import { isAnimated, keyTimes, valueAt } from '../../lib/anim';
 import { clipPanAt, needsPan, outputGain, panGains, trackPan, trackVolume } from '../../lib/mix';
 import { getAssetBlob } from '../../media/registry';
+import { type ClipSound, soundGainPoints, soundIndex } from '../../lib/audioCross';
 
 export const MIX_SAMPLE_RATE = 48000;
 export const MIX_CHANNELS = 2;
@@ -145,9 +146,17 @@ export interface ClipSchedule {
   gain: Array<[number, number]>;
   /** the mixer's pan block trims its points with win.localFrom / localTo */
   win: ClipWindow;
+  /** timeline seconds the clip sounds before its own start. 0 without a crossfade in */
+  head: number;
 }
 
-export function clipSchedule(clip: TimedAudible, offset: number, length: number): ClipSchedule | null {
+/** clipWindow over what a clip sounds: its own range, or with a ClipSound its head and tail too */
+export function soundWindow(c: TimedAudible, s: ClipSound | null, offset: number, length: number): ClipWindow | null {
+  return s ? clipWindow(c.start - s.head, c.duration + s.head + s.tail, c.speed, offset, length) : clipWindow(c.start, c.duration, c.speed, offset, length);
+}
+
+export function clipSchedule(clip: TimedAudible, offset: number, length: number, sound: ClipSound | null = null): ClipSchedule | null {
+  if (sound) return soundSchedule(clip, offset, length, sound);
   const win = clipWindow(clip.start, clip.duration, clip.speed, offset, length);
   if (!win) return null;
   const pts = trimGainPoints(gainPoints(clip), win.localFrom, win.localTo);
@@ -159,6 +168,23 @@ export function clipSchedule(clip: TimedAudible, offset: number, length: number)
     rate: clip.speed,
     gain: pts.map(([t, g]) => [win.when + t, g] as [number, number]),
     win,
+    head: 0,
+  };
+}
+
+function soundSchedule(clip: TimedAudible, offset: number, length: number, s: ClipSound): ClipSchedule | null {
+  const win = soundWindow(clip, s, offset, length);
+  if (!win) return null;
+  const pts = trimGainPoints(soundGainPoints(clip, s), win.localFrom, win.localTo);
+  return {
+    assetId: clip.assetId,
+    from: Math.max(0, Math.max(0, clip.trimStart) - s.head * clip.speed) + win.skip,
+    span: win.span,
+    when: win.when,
+    rate: clip.speed,
+    gain: pts.map(([t, g]) => [win.when + t, g] as [number, number]),
+    win,
+    head: s.head,
   };
 }
 
@@ -245,7 +271,9 @@ export function planMixChunks(totalFrames: number, chunkFrames: number): MixChun
 }
 
 export interface AudioMixer {
-  /** frames of the whole mix (MIX_SAMPLE_RATE) */
+  /** the rate the mix is made at: MIX_SAMPLE_RATE unless an export asked for another */
+  sampleRate: number;
+  /** frames of the whole mix (at sampleRate) */
   totalFrames: number;
   chunks: MixChunk[];
   /** false = no audible clip touches the range, there is nothing to mix */
@@ -259,8 +287,8 @@ export interface AudioMixer {
   dispose(): void;
 }
 
-function silence(frames: number): AudioBuffer {
-  return new AudioBuffer({ length: Math.max(1, frames), numberOfChannels: MIX_CHANNELS, sampleRate: MIX_SAMPLE_RATE });
+function silence(frames: number, rate: number): AudioBuffer {
+  return new AudioBuffer({ length: Math.max(1, frames), numberOfChannels: MIX_CHANNELS, sampleRate: rate });
 }
 
 /**
@@ -274,14 +302,16 @@ export function createAudioMixer(
   signal?: AbortSignal,
   onWarning?: (message: string) => void,
   offset = 0,
+  mixRate: number = MIX_SAMPLE_RATE,
 ): AudioMixer {
   const clips = duration > 0 ? getAudibleClips(project) : [];
-  const totalFrames = Math.max(1, Math.ceil(duration * MIX_SAMPLE_RATE));
-  const chunks = planMixChunks(totalFrames, MIX_CHUNK_SECONDS * MIX_SAMPLE_RATE);
+  const totalFrames = Math.max(1, Math.ceil(duration * mixRate));
+  const chunks = planMixChunks(totalFrames, MIX_CHUNK_SECONDS * mixRate);
   const mixOut = outputGain(project);
   const trackOf = new Map(project.tracks.map((t) => [t.id, t]));
   const pans = new Map<string, PanPoints | null>();
-  const hasAudio = clips.some((c) => clipWindow(c.start, c.duration, c.speed, offset, duration) !== null);
+  const sounds = soundIndex(project);
+  const hasAudio = clips.some((c) => soundWindow(c, sounds.get(c.id) ?? null, offset, duration) !== null);
 
   const inputs = new Map<string, Input>();
   const tracks = new Map<string, InputAudioTrack | null>();
@@ -296,11 +326,11 @@ export function createAudioMixer(
   };
 
   const mixChunk = async (chunk: MixChunk): Promise<AudioBuffer | null> => {
-    const chunkOffset = offset + chunk.startFrame / MIX_SAMPLE_RATE;
-    const chunkLength = chunk.frames / MIX_SAMPLE_RATE;
-    const here = clips.filter((c) => clipWindow(c.start, c.duration, c.speed, chunkOffset, chunkLength) !== null);
+    const chunkOffset = offset + chunk.startFrame / mixRate;
+    const chunkLength = chunk.frames / mixRate;
+    const here = clips.filter((c) => soundWindow(c, sounds.get(c.id) ?? null, chunkOffset, chunkLength) !== null);
     if (here.length === 0) return null;
-    const ctx = new OfflineAudioContext(MIX_CHANNELS, chunk.frames, MIX_SAMPLE_RATE);
+    const ctx = new OfflineAudioContext(MIX_CHANNELS, chunk.frames, mixRate);
     let scheduled = 0;
     for (const clip of here) {
       if (signal?.aborted) throw abortError();
@@ -309,7 +339,7 @@ export function createAudioMixer(
         warn(clip.assetId, clip.name);
         continue;
       }
-      const sch = clipSchedule(clip, chunkOffset, chunkLength)!;
+      const sch = clipSchedule(clip, chunkOffset, chunkLength, sounds.get(clip.id) ?? null)!;
       const trackOfClip = trackOf.get(clip.trackId)!;
       // the fader and the output level multiply the envelope (the same array at 1)
       const pts = scaleGain(sch.gain, trackVolume(trackOfClip) * mixOut);
@@ -383,7 +413,7 @@ export function createAudioMixer(
         const merge = ctx.createChannelMerger(2);
         [pan.l, pan.r].forEach((side, ch) => {
           const g = ctx.createGain();
-          const p = trimGainPoints(side, win.localFrom, win.localTo);
+          const p = trimGainPoints(side, win.localFrom - sch.head, win.localTo - sch.head);
           g.gain.setValueAtTime(p[0]![1], sch.when + p[0]![0]);
           for (let i = 1; i < p.length; i++) g.gain.linearRampToValueAtTime(p[i]![1], sch.when + p[i]![0]);
           split.connect(g, ch);
@@ -401,6 +431,7 @@ export function createAudioMixer(
   };
 
   return {
+    sampleRate: mixRate,
     totalFrames,
     chunks,
     hasAudio,
@@ -409,7 +440,7 @@ export function createAudioMixer(
       if (signal?.aborted) throw abortError();
       if (!mixFailed) {
         try {
-          return (await mixChunk(chunk)) ?? silence(chunk.frames);
+          return (await mixChunk(chunk)) ?? silence(chunk.frames, mixRate);
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') throw e;
           if (signal?.aborted) throw abortError();
@@ -418,7 +449,7 @@ export function createAudioMixer(
           onWarning?.('the sound could not be mixed, exporting without sound');
         }
       }
-      return silence(chunk.frames);
+      return silence(chunk.frames, mixRate);
     },
     dispose() {
       for (const input of inputs.values()) {

@@ -1,8 +1,8 @@
 import './grade.css';
 import { memo, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { ClipboardPaste, Copy, RotateCcw } from 'lucide-react';
-import { GRADE_EPS, GRADE_KEYS, GRADE_PROPS, GRADE_WHEELS, MAX_CURVE_POINTS, gradeNum, hasGrade, isCurveNeutral, isToneKind } from '../../lib/gradeData';
+import { ClipboardPaste, Copy, Download, RotateCcw } from 'lucide-react';
+import { GRADE_EPS, GRADE_KEYS, GRADE_PROPS, GRADE_WHEELS, MAX_CURVE_POINTS, gradeNum, hasGrade, isCurveNeutral, isToneKind, lutOf } from '../../lib/gradeData';
 import type { CurveKind } from '../../lib/gradeData';
 import { HUE_SWATCHES, hueColor } from '../../lib/gradeMath';
 import { focusedByKeyboard } from '../../lib/pressKey';
@@ -19,6 +19,8 @@ import { GradeCurves } from './GradeCurves';
 import { copyGradeOf, pasteGradeOn, resetGrades } from './gradeActions';
 import { useGradeCopy } from './gradeClipboard';
 import { CURVE_TABS, addPoint, curvesPatch, gradeSummary, movePoint, pointFields, pointsOf } from './gradeLogic';
+import { GradeLut } from './GradeLut';
+import { saveGradeCube } from './lutActions';
 import { GradeWheel } from './GradeWheel';
 import { useGradeValues } from './useGradeValues';
 
@@ -59,6 +61,9 @@ export const GradeSection = memo(function GradeSection({ clip }: { clip: VisualC
     const c = s.project?.clips.find((k) => k.id === id);
     return !!c && !!s.project?.tracks.find((t) => t.id === c.trackId)?.locked;
   });
+  const lut = lutOf(grade);
+  // the name of the lut media, null when it is gone: a string, so the selector compares equal
+  const lutName = useEditor((s) => (lut ? (s.project?.assets.find((a) => a.id === lut.media && a.kind === 'lut')?.name ?? null) : null));
   const copied = useGradeCopy();
   const values = useGradeValues(clip);
   const [numbers, setNumbers] = useState(numbersOpen);
@@ -97,6 +102,7 @@ export const GradeSection = memo(function GradeSection({ clip }: { clip: VisualC
     const g = gradeNow(id);
     const keep: ClipGrade = {};
     if (g?.curves) keep.curves = g.curves;
+    if (g?.lut) keep.lut = g.lut;
     if (g?.off) keep.off = true;
     resetWithKeys(id, GRADE_PROPS, { grade: Object.keys(keep).length > 0 ? keep : null });
   };
@@ -166,8 +172,9 @@ export const GradeSection = memo(function GradeSection({ clip }: { clip: VisualC
           <Switch checked={!off} title="grade on or off" onChange={setOn} />
         </Row>
       ) : null}
-      <div className="props-hint">{gradeSummary(values, grade?.curves)}</div>
+      <div className="props-hint grade-summary">{gradeSummary(values, grade?.curves, lut ? { name: lutName === null ? null : lutName.replace(/\.cube$/i, ''), last: lut.last === true } : null)}</div>
       <div className={`grade-body${locked ? ' is-locked' : ''}`}>
+        <GradeLut clip={clip} locked={locked} />
         <div className="grade-wheels">
           {GRADE_WHEELS.map((w) => (
             <GradeWheel key={w} clip={clip} wheel={w} values={values} disabled={locked} />
@@ -295,7 +302,7 @@ export const GradeSection = memo(function GradeSection({ clip }: { clip: VisualC
           type="button"
           className="btn btn-sm"
           disabled={!graded}
-          {...tip('copy grade', { does: 'the wheels and curves as they are at the playhead', why: 'grade-copy' })}
+          {...tip('copy grade', { does: 'the wheels, curves and lut as they are at the playhead', why: 'grade-copy' })}
           onClick={() => toast(copyGradeOf([id]))}
         >
           <Copy size={14} />
@@ -315,11 +322,23 @@ export const GradeSection = memo(function GradeSection({ clip }: { clip: VisualC
           type="button"
           className="btn btn-sm"
           disabled={!graded}
-          {...tip('reset grade', { does: 'wheels, curves and keys back to no grade', why: 'grade-reset' })}
+          {...tip('reset grade', { does: 'wheels, curves, lut and keys back to no grade', why: 'grade-reset' })}
           onClick={() => toast(resetGrades([id]))}
         >
           <RotateCcw size={14} />
           reset grade
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          {...tip('save grade as .cube', {
+            does: 'the color and grade of this clip at the playhead as a 33 point .cube file, for other apps. the key, masks and effects are not in it',
+            why: 'lut-save',
+          })}
+          onClick={() => void saveGradeCube([id]).then((t) => t && toast(t))}
+        >
+          <Download size={14} />
+          save as .cube
         </button>
       </div>
     </Section>

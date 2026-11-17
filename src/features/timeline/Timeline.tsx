@@ -23,6 +23,8 @@ import type { MenuRequest } from './gestures';
 import { HEADER_W, RULER_H, TAIL_MIN_PX, ZONE_H, laneHeight } from './layout';
 import { timelineCommands } from './commands';
 import type { ClipMenuOpen, TrackMenuOpen } from './commands';
+import { KeyPanel } from './KeyPanel';
+import { useKeyPanel } from './keyPanelState';
 import { LinkMarks } from './LinkMarks';
 import { Overlays } from './overlays';
 import { RangeCorner } from './RangeUi';
@@ -55,7 +57,7 @@ function TrackRow({ track, zoom }: RowProps) {
   return (
     <div
       className={`timeline-row${track.locked ? ' is-locked' : ''}`}
-      style={{ height: laneHeight(track.kind) }}
+      style={{ height: laneHeight(track) }}
     >
       <TrackHeader track={track} />
       <TrackLane track={track} zoom={zoom} />
@@ -74,6 +76,7 @@ function TimelineInner() {
   const zoom = useEditor((s) => s.zoom);
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
+  const keyPanelOpen = useKeyPanel((s) => s.open);
   const [viewW, setViewW] = useState(view.width);
   const [menu, setMenu] = useState<MenuRequest | null>(null);
   const [trackMenu, setTrackMenu] = useState<TrackMenuRequest | null>(null);
@@ -81,6 +84,7 @@ function TimelineInner() {
   const [renaming, setRenaming] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const getScroller = useCallback(() => scrollerRef.current, []);
   const anchorRef = useRef<{ time: number; x: number } | null>(null);
   const prevZoomRef = useRef(zoom);
 
@@ -174,22 +178,40 @@ function TimelineInner() {
     if (el) el.scrollLeft = 0;
   }, [applyZoom]);
 
+  /** zoom and scroll so start..end fills the view; one time (end - start under 1e-6): the zoom stays, it goes to the middle */
+  const fitTimes = useCallback(
+    (start: number, end: number) => {
+      const st = useEditor.getState();
+      if (end - start < 1e-6) {
+        // one time: the zoom stays, the time goes to the middle
+        const el = scrollerRef.current;
+        if (!el) return;
+        el.scrollLeft = Math.max(0, start * st.zoom - view.width / 2);
+        view.scrollLeft = el.scrollLeft;
+        notifyView();
+        return;
+      }
+      const z = clamp(zoomForRange(start, end, view.width), MIN_ZOOM, MAX_ZOOM);
+      if (z === st.zoom) {
+        const el = scrollerRef.current;
+        if (!el) return;
+        el.scrollLeft = Math.max(0, start * z - FIT_PAD);
+        view.scrollLeft = el.scrollLeft;
+        notifyView();
+        return;
+      }
+      applyZoom(z, start, FIT_PAD);
+    },
+    [applyZoom],
+  );
+
   /** zoom so the selected clips fill the view */
   const fitSelection = useCallback(() => {
     const st = useEditor.getState();
     const r = rangeOf(st.project?.clips.filter((c) => st.selection.includes(c.id)) ?? []);
     if (!r) return;
-    const z = clamp(zoomForRange(r.start, r.end, view.width), MIN_ZOOM, MAX_ZOOM);
-    if (z === st.zoom) {
-      const el = scrollerRef.current;
-      if (!el) return;
-      el.scrollLeft = Math.max(0, r.start * z - FIT_PAD);
-      view.scrollLeft = el.scrollLeft;
-      notifyView();
-      return;
-    }
-    applyZoom(z, r.start, FIT_PAD);
-  }, [applyZoom]);
+    fitTimes(r.start, r.end);
+  }, [fitTimes]);
 
   // after the content width changed with the zoom, restore the anchor (default: viewport center)
   useLayoutEffect(() => {
@@ -268,6 +290,7 @@ function TimelineInner() {
   useEffect(() => {
     timelineCommands.fit = fit;
     timelineCommands.fitSelection = fitSelection;
+    timelineCommands.fitTimes = fitTimes;
     timelineCommands.openClipMenu = (r?: ClipMenuOpen) => {
       const clipId = r?.clipId ?? useEditor.getState().selection[0];
       if (!clipId) return;
@@ -299,10 +322,11 @@ function TimelineInner() {
     return () => {
       timelineCommands.fit = undefined;
       timelineCommands.fitSelection = undefined;
+      timelineCommands.fitTimes = undefined;
       timelineCommands.openClipMenu = undefined;
       timelineCommands.openTrackMenu = undefined;
     };
-  }, [fit, fitSelection]);
+  }, [fit, fitSelection, fitTimes]);
 
   const contentW = Math.max(viewW, Math.ceil(duration * zoom + Math.max(TAIL_MIN_PX, viewW * 0.25)));
   const rootVars = {
@@ -388,6 +412,7 @@ function TimelineInner() {
         <LinkMarks scrollerRef={scrollerRef} />
         {!hasClips ? <div className="timeline-hint">drag media here to start</div> : null}
       </div>
+      {keyPanelOpen ? <KeyPanel getScroller={getScroller} /> : null}
       {markerMenu ? <MarkerMenu {...markerMenu} onClose={closeMarkerMenu} onRename={startRename} /> : null}
       {renaming ? <MarkerRename {...renaming} onDone={closeRename} /> : null}
       {trackMenu ? <TrackMenu {...trackMenu} onClose={closeTrackMenu} /> : null}

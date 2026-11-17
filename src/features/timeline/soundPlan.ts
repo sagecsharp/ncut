@@ -7,6 +7,7 @@ import { MIN_CLIP_DURATION, isTimedClip } from '../../types';
 import type { ClipMove, ClipPatch } from '../../store/editorStore';
 import { SYNC_EPS, isPair, mateOf, pairIndex, sameTrackSound, soundFromPicture, soundKeys, soundsOf, syncLabel, syncOffset, syncPoint, withSoundKeys } from '../../lib/soundPair';
 import { clipEnd, isRangeFree } from '../../lib/timelineOps';
+import { sameCrossfade } from '../../lib/audioCross';
 import { parseBpm } from '../../lib/tempo';
 import { withFollowerMoves } from './followMoves';
 import { SOUND_TEXT as T } from './soundText';
@@ -19,7 +20,7 @@ export interface SeparatePlan {
   sounds: { clip: AudioClip; after: string }[];
   mute: string[];
   groups: { id: string; group: string }[]; // pictures without a group
-  tempo: { id: string; patch: ClipPatch }[]; // bpm / beatOffset null on the picture
+  tempo: { id: string; patch: ClipPatch }[]; // sound fields the picture gives away (tempo, crossfade, fade shapes)
   beats: { id: string; beat: Beat }[]; // beat sources moved to the sound clip
   pairs: { picture: string; sound: string }[];
   skipped: Skipped[];
@@ -119,6 +120,11 @@ export function planSeparate(p: Project, ids: readonly string[], make: IdMaker, 
         for (const e of fx.open) plan.beats.push({ id: e.id, beat: { ...e.beat!, source: s.id } });
       }
     }
+    const gives: Record<string, unknown> = {};
+    if (c.crossfade) gives.crossfade = null;
+    if (c.fadeInShape) gives.fadeInShape = null;
+    if (c.fadeOutShape) gives.fadeOutShape = null;
+    if (Object.keys(gives).length > 0) plan.tempo.push({ id: c.id, patch: gives as ClipPatch });
   }
   if (plan.sounds.length === 0) return seenVideo ? (plan.skipped[0]?.why ?? T.soundVideoFirst) : T.soundVideoFirst;
   return plan;
@@ -179,7 +185,8 @@ export function planJoin(p: Project, ids: readonly string[]): JoinPlan | string 
     const to = s as unknown as Record<string, unknown>;
     if (v.muted !== s.muted) patch.muted = s.muted;
     if (v.volume !== s.volume) patch.volume = s.volume;
-    for (const k of ['pan', 'bpm', 'beatOffset'] as const) if ((from[k] ?? null) !== (to[k] ?? null)) patch[k] = to[k] ?? null;
+    for (const k of ['pan', 'bpm', 'beatOffset', 'fadeInShape', 'fadeOutShape'] as const) if ((from[k] ?? null) !== (to[k] ?? null)) patch[k] = to[k] ?? null;
+    if (!sameCrossfade(v.crossfade, s.crossfade)) patch.crossfade = s.crossfade ?? null;
     const entry: JoinPlan['pictures'][number] = {
       id: v.id,
       patch: patch as ClipPatch,

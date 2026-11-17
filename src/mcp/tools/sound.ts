@@ -1,9 +1,12 @@
 /** the picture and sound tools (docs/MCP.md, "sound"): separate a video's sound into a clip of its own, join it back, line the two up */
+import { setCrossfades, type CrossRequest } from '../../features/timeline/crossfadeActions';
+import type { CrossChange } from '../../features/timeline/crossfadePlan';
 import { joinSound, separateSound, syncSound } from '../../features/timeline/soundActions';
 import type { SyncHow } from '../../features/timeline/soundPlan';
 import { useEditor } from '../../store/editorStore';
-import type { Clip } from '../../types';
-import { idList, needClip, needTrack, ok, oneStep, ToolError } from '../helpers';
+import type { Clip, FadeShape } from '../../types';
+import { FADE_SHAPES } from '../../types';
+import { idList, needClip, needTrack, ok, oneStep, optNumber, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 
 const ids = (what: string): { type: 'array'; items: { type: 'string' }; minItems: number; maxItems: number; description: string } => ({
@@ -103,4 +106,52 @@ const syncSoundTool: ToolDef = {
   },
 };
 
-export const soundTools: ToolDef[] = [separateSoundTool, joinSoundTool, syncSoundTool];
+const crossfadeEditsTool: ToolDef = {
+  name: 'crossfade_edits',
+  title: 'crossfade edits',
+  description:
+    'adds, changes or removes the sound crossfade at edits: ids (clips with sound, at "start", "end" or "both") or a track (every edit there but inside one take). new: 0.25 s, equal power, centered. ' +
+    'length: the whole crossfade in seconds. place: center (default), start (the crossfade starts at the edit) or end (it ends there). before / after: seconds each side of the edit, instead of length. ' +
+    'shape: power (equal power, default), linear or smooth. withTransition: true takes the length from the picture transition at the edit. remove: true takes crossfades away. ' +
+    'the answer says what fits: { set: [{ clip, edit, before, after, shape, short? }], removed, skipped: [{ id, why }] }. one undo step. an error says why nothing was changed.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: ids('clips with sound: the edit at their start and / or end (get_project lists the clips)'),
+      at: { type: 'string', enum: ['start', 'end', 'both'], description: 'with ids: which edit of each clip. default both' },
+      track: { type: 'string', description: 'instead of ids: every edit between two clips with sound on this track' },
+      length: { type: 'number', minimum: 0.001, maximum: 20, description: 'the whole crossfade in seconds, 0.001 to 20 (each side up to 10). default 0.25' },
+      before: { type: 'number', minimum: 0, maximum: 10, description: 'seconds before the edit, 0 to 10, from the media past the edit of the clip' },
+      after: { type: 'number', minimum: 0, maximum: 10, description: 'seconds after the edit, 0 to 10, from the media past the edit of the clip before' },
+      place: { type: 'string', enum: ['center', 'start', 'end'], description: 'where the crossfade sits at the edit: center, start (it starts at the edit) or end (it ends there). default center' },
+      shape: { type: 'string', enum: [...FADE_SHAPES], description: 'power (equal power, default), linear or smooth' },
+      withTransition: { type: 'boolean', description: 'true: the crossfade follows the picture transition at the edit. false: it stops following it' },
+      remove: { type: 'boolean', description: 'true: takes the crossfades away' },
+    },
+  },
+  run(args) {
+    const list = args.ids === undefined ? undefined : idList(args.ids);
+    const track = typeof args.track === 'string' ? args.track : undefined;
+    if (list === undefined && track === undefined) throw new ToolError('give ids or a track');
+    if (list !== undefined && track !== undefined) throw new ToolError('give ids or a track, not both');
+    const length = optNumber(args.length);
+    const before = optNumber(args.before);
+    const after = optNumber(args.after);
+    if (length !== undefined && (before !== undefined || after !== undefined)) throw new ToolError('give length, or before and after, not both');
+    if (list) needClips(list);
+    if (track !== undefined) needTrack(track);
+    const change: CrossChange = {};
+    if (length !== undefined) change.length = length;
+    if (before !== undefined) change.before = before;
+    if (after !== undefined) change.after = after;
+    if (args.place !== undefined) change.place = args.place as Exclude<NonNullable<CrossChange['place']>, 'custom'>;
+    if (args.shape !== undefined) change.shape = args.shape as FadeShape;
+    if (typeof args.withTransition === 'boolean') change.withTransition = args.withTransition;
+    if (args.remove === true) change.remove = true;
+    const req: CrossRequest = { ...(list ? { ids: list } : {}), ...(args.at !== undefined ? { at: args.at as 'start' | 'end' | 'both' } : {}), ...(track !== undefined ? { track } : {}), change };
+    const r = done(oneStep((opts) => setCrossfades(req, opts)));
+    return ok(r);
+  },
+};
+
+export const soundTools: ToolDef[] = [separateSoundTool, joinSoundTool, syncSoundTool, crossfadeEditsTool];

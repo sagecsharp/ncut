@@ -3,7 +3,17 @@
  * all times are in SECONDS unless a name says otherwise.
  */
 
-export type MediaKind = 'video' | 'audio' | 'image';
+export type MediaKind = 'video' | 'audio' | 'image' | 'lut';
+
+/** what a lut media holds, read at import (lib/cube.ts) */
+export interface LutInfo {
+  /** points per side of the 3d table, 0 = none (2..65) */
+  size3: number;
+  /** points of the 1d table, 0 = none (2..65536) */
+  size1: number;
+  /** the TITLE line of the file */
+  title?: string;
+}
 
 /** metadata for an imported file. the blob itself lives in indexeddb + the runtime registry. */
 export interface MediaAsset {
@@ -24,6 +34,8 @@ export interface MediaAsset {
   /** the marked part of a video or audio file, seconds into the file, [in, out); either may be missing.
    *  set with setMediaMarks, read with marksOf. not undo history. never on pictures */
   marks?: InOutRange;
+  /** kind 'lut' only. duration, width and height are 0, hasAudio false */
+  lut?: LutInfo;
 }
 
 /** what of a media a new clip takes: both (default), the picture alone (sound muted) or the sound alone (an audio clip) */
@@ -57,6 +69,10 @@ export interface Track {
   volume?: number;
   /** where the track sits: -1 left .. 1 right. missing = 0 (the middle), never stored as 0 */
   pan?: number;
+  /** the row height on the timeline in css px, 28..240 whole. missing = the kind default (video 56, audio 48), never stored equal to it. a view setting: not an undo step */
+  height?: number;
+  /** false: ripple, insert and extract on other tracks leave this track where it is. missing = on, never stored as true */
+  syncLock?: boolean;
 }
 
 /** the output strip: the level of the whole mix, what gets exported */
@@ -103,7 +119,11 @@ export interface Transform {
  */
 export type LookAt = 'none' | 'camera' | 'cameraY' | 'clip';
 
-export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'hold' | 'back' | 'bounce' | 'elastic';
+export type Easing = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'hold' | 'back' | 'bounce' | 'elastic' | 'bezier';
+
+/** one side of a keyframe's handle in the graph. speed: stored units per second of timeline time right at the key, signed.
+ *  influence: how far the handle reaches toward the neighbour key, as a share of the time between them (0.001 .. 1) */
+export interface KeyHandle { speed: number; influence: number }
 
 export interface Keyframe {
   /** clip-local seconds (0 = the clip's start) */
@@ -111,6 +131,10 @@ export interface Keyframe {
   v: number;
   /** how the value travels from this key to the next one */
   ease: Easing;
+  /** the handle arriving at this key. only when the key before has ease 'bezier' */
+  in?: KeyHandle;
+  /** the handle leaving this key. only when ease is 'bezier' and a next key exists */
+  out?: KeyHandle;
 }
 
 /** animated properties of a clip: property name -> keys sorted by time. see lib/anim.ts. */
@@ -155,6 +179,24 @@ export interface Transition {
   /** seconds, whole length */
   duration: number;
 }
+
+/** how a sound fade or a crossfade runs: power = equal power (sin / cos), linear = straight, smooth = slow at both ends */
+export type FadeShape = 'power' | 'linear' | 'smooth';
+export const FADE_SHAPES: readonly FadeShape[] = ['power', 'linear', 'smooth'];
+export const isFadeShape = (v: unknown): v is FadeShape => v === 'power' || v === 'linear' || v === 'smooth';
+/** the sound of the clip before fades into this clip's sound across the edit where this clip starts */
+export interface Crossfade {
+  /** timeline seconds before the edit (this clip's media before its first frame). 0..MAX_CROSSFADE_SIDE */
+  before: number;
+  /** timeline seconds after the edit (the clip before's media after its last frame) */
+  after: number;
+  /** missing = 'power' */
+  shape?: FadeShape;
+  /** a video clip: both sides follow its transition while it has one */
+  withTransition?: true;
+}
+export const MAX_CROSSFADE_SIDE = 10;
+export const DEFAULT_CROSSFADE = 0.25;
 
 /**
  * how a clip's picture mixes with what is already under it. 'normal' = plain alpha.
@@ -271,6 +313,18 @@ export interface GradeCurves {
   lumaSat?: GradePoint[];
 }
 
+/** a lut in a grade: a .cube from the media, before the wheels (first) or after the curves (last) */
+export interface GradeLut {
+  /** the id of a media of kind 'lut' */
+  media: string;
+  /** 0..1, missing = 1, stored only under 1, 4 decimals */
+  mix?: number;
+  /** after the curves. missing = first */
+  last?: true;
+  /** made for 16 to 235. missing = 0 to 255 */
+  tv?: true;
+}
+
 /** the color grade of a clip. wheel numbers -1..1, missing = 0. R G B push one channel, Y is the level */
 export interface ClipGrade {
   liftR?: number; liftG?: number; liftB?: number; liftY?: number;
@@ -278,6 +332,8 @@ export interface ClipGrade {
   gainR?: number; gainG?: number; gainB?: number; gainY?: number;
   offsetR?: number; offsetG?: number; offsetB?: number; offsetY?: number;
   curves?: GradeCurves;
+  /** see GradeLut. a missing media or an unreadable table is left out */
+  lut?: GradeLut;
   /** true: kept but not shown, in preview and export. only true is stored */
   off?: boolean;
 }
@@ -285,6 +341,16 @@ export interface ClipGrade {
 export type MaskShape = 'rect' | 'ellipse' | 'split' | 'band' | 'star' | 'heart';
 
 export const MASK_SHAPES: MaskShape[] = ['rect', 'ellipse', 'split', 'band', 'star', 'heart'];
+
+/** how a matte clip cuts the clip that names it (Spatial.matte). see engine/matte.ts */
+export type MatteMode = 'alpha' | 'alpha-inv' | 'luma' | 'luma-inv';
+
+/** another picture clip that decides where this one shows. it is not drawn on its own */
+export interface ClipMatte {
+  /** id of a video, image, text or shape clip */
+  clip: string;
+  mode: MatteMode;
+}
 
 /**
  * show only part of a clip's picture, with an optional soft edge. everything is relative to the
@@ -393,6 +459,8 @@ interface Spatial {
   mask?: Mask | null;
   /** the color grade, after the color correction */
   grade?: ClipGrade | null;
+  /** cut by another picture clip, the matte clip (engine/matte.ts). missing or null = no matte */
+  matte?: ClipMatte | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -410,6 +478,11 @@ export interface VideoClip extends ClipBase, Spatial {
   /** tempo of its sound, like an audio clip (see AudioClip) */
   bpm?: number | null;
   beatOffset?: number | null;
+  /** a crossfade from the clip with sound that ends where this one starts on its track. missing or null = a hard edit */
+  crossfade?: Crossfade | null;
+  /** the shape of the sound of fadeIn / fadeOut. missing or null = linear. the picture always fades straight */
+  fadeInShape?: FadeShape | null;
+  fadeOutShape?: FadeShape | null;
 }
 
 export interface ImageClip extends ClipBase, Spatial {
@@ -430,6 +503,11 @@ export interface AudioClip extends ClipBase {
   bpm?: number | null;
   /** source seconds where a beat falls: the beat grid runs both ways from there. missing = 0 */
   beatOffset?: number | null;
+  /** a crossfade from the clip with sound that ends where this one starts on its track. missing or null = a hard edit */
+  crossfade?: Crossfade | null;
+  /** the shape of the sound of fadeIn / fadeOut. missing or null = linear. the picture always fades straight */
+  fadeInShape?: FadeShape | null;
+  fadeOutShape?: FadeShape | null;
 }
 
 export type TextAlign = 'left' | 'center' | 'right';

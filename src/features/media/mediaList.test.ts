@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, MediaAsset, SceneSky } from '../../types';
-import { canSwapInto, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
+import { canSwapInto, filterAssets, lutSizeText, lutUses, removeLutText, sortAssets, swapKind, usedAssetIds } from './mediaList';
 
 const A = (id: string, name: string, kind: MediaAsset['kind'], duration: number, createdAt: number) =>
   ({ id, name, kind, duration, createdAt, mime: '', size: 1, width: 0, height: 0, hasAudio: false }) as MediaAsset;
@@ -65,5 +65,46 @@ describe('swap', () => {
     expect(canSwapInto(v, assets[0]!)).toBe(false);
     expect(canSwapInto(v, assets[2]!)).toBe(false);
     expect(canSwapInto(clip('shape'), assets[1]!)).toBe(false);
+  });
+});
+
+const withLut = (type: string, media: string, extra: Record<string, unknown> = {}, grade: Record<string, unknown> = {}) =>
+  clip(type, { grade: { lut: { media, ...extra }, ...grade } });
+
+describe('luts', () => {
+  it('usedAssetIds counts luts in grades', () => {
+    const used = usedAssetIds([withLut('video', 'l1'), withLut('image', 'l2', { mix: 0 }), withLut('video', 'l3', {}, { off: true }), clip('video', { assetId: 'a' })]);
+    expect([...used].sort()).toEqual(['a', 'l1', 'l2', 'l3']);
+    expect([...usedAssetIds([withLut('audio', 'l9')])]).toEqual([]);
+  });
+
+  it('the lut filter', () => {
+    const l = A('l', 'warm', 'lut', 0, 500);
+    const all = [...assets, l];
+    const base = { kind: 'all' as const, query: '', unusedOnly: false, used: new Set<string>() };
+    expect(filterAssets(all, { ...base, kind: 'lut' }).map((a) => a.id)).toEqual(['l']);
+    expect(filterAssets(all, { ...base, kind: 'image' }).map((a) => a.id)).toEqual(['d']);
+    expect(filterAssets(all, { ...base, unusedOnly: true, used: usedAssetIds([withLut('video', 'l')]) }).map((a) => a.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('lutUses', () => {
+    const clips = [withLut('video', 'l1'), withLut('video', 'l1', { mix: 0 }), withLut('image', 'l1', {}, { off: true }), withLut('video', 'l2'), withLut('audio', 'l1'), clip('video', { assetId: 'a' })];
+    expect(lutUses(clips, 'l1')).toBe(3);
+    expect(lutUses(clips, 'l2')).toBe(1);
+    expect(lutUses(clips, 'none')).toBe(0);
+    expect(lutUses([], 'l1')).toBe(0);
+  });
+
+  it('removeLutText', () => {
+    expect(removeLutText('warm', 1)).toBe('"warm" is the lut of 1 clip. removing it takes it off their grade.');
+    expect(removeLutText('warm', 2)).toBe('"warm" is the lut of 2 clips. removing it takes it off their grade.');
+  });
+
+  it('lutSizeText', () => {
+    expect(lutSizeText({ size3: 33, size1: 4096 })).toBe('1d and 3d, 33 points');
+    expect(lutSizeText({ size3: 33, size1: 0 })).toBe('3d, 33 points');
+    expect(lutSizeText({ size3: 0, size1: 4096 })).toBe('1d, 4096 points');
+    expect(lutSizeText({ size3: 0, size1: 0 })).toBe('');
+    expect(lutSizeText(undefined)).toBe('');
   });
 });

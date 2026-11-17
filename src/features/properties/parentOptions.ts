@@ -1,3 +1,4 @@
+import { matteField, matteUserIds } from '../../engine/matte';
 import { hasKeyedPose } from '../../engine/parent';
 import { canBeParent, indexClips, wouldCycleAny } from '../../lib/links';
 import type { Clip } from '../../types';
@@ -57,6 +58,20 @@ export function faceClipOptions(project: { readonly clips: readonly Clip[] }, id
   if (from.length === 0) return [];
   return labelOptions(
     project.clips.filter((c) => isVisualClip(c) && c.id !== id),
+    from,
+  );
+}
+
+/**
+ * the clips a clip can get as its matte ("matte"): picture clips except itself and the ones with a matte field of their own.
+ * none when the clip is not a picture clip or is the matte of another clip. the current one stays in, so a closed select never says "missing clip".
+ * same labels and order as parentOptions.
+ */
+export function matteClipOptions(project: { readonly clips: readonly Clip[] }, id: string, current?: string): ParentOption[] {
+  const from = project.clips.filter((c) => c.id === id && isVisualClip(c));
+  if (from.length === 0 || matteUserIds(project.clips, id).length > 0) return [];
+  return labelOptions(
+    project.clips.filter((c) => isVisualClip(c) && c.id !== id && (!matteField(c) || c.id === current)),
     from,
   );
 }

@@ -6,10 +6,12 @@ import {
   TRANSITION_CATEGORIES,
   getTransition,
 } from '../../engine/transitions/registry';
+import { hasSound } from '../../lib/audioCross';
 import { previousClipOnTrack } from '../../lib/transitions';
 import { useEditor } from '../../store/editorStore';
 import { useUi } from '../../store/ui';
 import { rememberTransition } from '../media/transitionApply';
+import { crossfadeWithTransitionNow } from '../timeline/crossfadeActions';
 import { planSameLength } from '../media/transitionBatch';
 import { isVisualClip } from '../../types';
 import type { Clip, Transition } from '../../types';
@@ -31,6 +33,9 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
     const prev = previousClipOnTrack(s.project, clip);
     return prev ? prev.name || prev.type : null;
   });
+  // a video with sound can crossfade its sound over the length of the transition
+  const sound = useEditor((s) => !!transition && clip.type === 'video' && !!s.project && hasSound(s.project, clip));
+  const locked = useEditor((s) => !!s.project?.tracks.find((t) => t.id === clip.trackId)?.locked);
   const known = transition ? getTransition(transition.id) : undefined;
 
   const pick = (value: string) => {
@@ -104,6 +109,19 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
               actions().updateClip(id, { transition: { id: transition.id, duration: v } }, liveOpts());
               rememberTransition(transition.id, v);
             }}
+          />
+        </Row>
+      ) : null}
+      {transition && sound ? (
+        <Row label="sound" title="the sound of the clip before fades into this clip over the length of the transition">
+          <input
+            type="checkbox"
+            className="checkbox"
+            title="crossfade the sound too"
+            aria-label="crossfade the sound too"
+            checked={clip.type === 'video' && !!clip.crossfade?.withTransition}
+            disabled={locked}
+            onChange={(e) => crossfadeWithTransitionNow(id, e.target.checked)}
           />
         </Row>
       ) : null}

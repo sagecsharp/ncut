@@ -1,6 +1,7 @@
 /** the one mix rule: track faders, pan, solo and the output level, for the preview and the export alike. pure */
 import type { AudioClip, MixOutput, Project, Track, VideoClip } from '../types';
 import { isAnimated, valueAt } from './anim';
+import { soundGainAt, type ClipSound } from './audioCross';
 import { hasSoundApart, soundsOf } from './soundPair';
 import { fadeFactor } from './timelineOps';
 
@@ -42,19 +43,22 @@ export const trackHeard = (t: Track, solo: ReadonlySet<string> | null): boolean 
 
 export interface ClipMix { gain: number; l: number; r: number; pan: boolean }
 /** what one clip plays at a time in the preview. gain = keyed volume x fade x track fader, 0 when not heard */
-export function clipMix(p: Project, c: SoundClip, time: number, solo: ReadonlySet<string> | null): ClipMix {
+export function clipMix(p: Project, c: SoundClip, time: number, solo: ReadonlySet<string> | null, sound: ClipSound | null = null): ClipMix {
   const t = p.tracks.find((x) => x.id === c.trackId);
   const tp = t ? trackPan(t) : 0;
   const pan = needsPan(tp, c);
+  // in a crossfade's handles keyed pan and volume hold their edge values
+  const vt = sound ? Math.min(c.start + c.duration, Math.max(c.start, time)) : time;
   let l = 1;
   let r = 1;
   if (pan) {
-    const [cl, cr] = panGains(clipPanAt(c, time));
+    const [cl, cr] = panGains(clipPanAt(c, vt));
     const [tl, tr] = panGains(tp);
     l = cl * tl;
     r = cr * tr;
   }
   if (!t || c.muted || !trackHeard(t, solo)) return { gain: 0, l, r, pan };
+  if (sound) return { gain: soundGainAt(c, sound, time) * trackVolume(t), l, r, pan };
   const vol = Math.max(0, valueAt(c, 'volume', time) ?? c.volume);
   return { gain: vol * fadeFactor(c, time) * trackVolume(t), l, r, pan };
 }
@@ -134,7 +138,7 @@ export function trackSoundLine(t: Track): string {
   return '';
 }
 
-export interface TrackFields { name?: string; muted?: boolean; hidden?: boolean; locked?: boolean; volume?: number | null; pan?: number | null }
+export interface TrackFields { name?: string; muted?: boolean; hidden?: boolean; locked?: boolean; syncLock?: boolean; volume?: number | null; pan?: number | null }
 /** the track with the patch laid over it, cleaned, or null when nothing changes */
 export function patchTrack(t: Track, patch: TrackFields): Track | null {
   const next: Track = { ...t };
@@ -149,6 +153,13 @@ export function patchTrack(t: Track, patch: TrackFields): Track | null {
       next[k] = v;
       changed = true;
     }
+  }
+  if (patch.syncLock === true && 'syncLock' in next) {
+    delete next.syncLock;
+    changed = true;
+  } else if (patch.syncLock === false && t.syncLock !== false) {
+    next.syncLock = false;
+    changed = true;
   }
   const v = patch.volume;
   if (v === null || (typeof v === 'number' && Math.abs(v - 1) < NEAR)) {

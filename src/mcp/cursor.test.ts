@@ -380,3 +380,33 @@ describe('source, timecode and three point tools', () => {
     expect(targetAfter('edit_media', {}, fail('no project is open'))).toBeNull();
   });
 });
+
+describe('the round 2 tools', () => {
+  const look: CursorLookup = { markerTime: () => undefined, clipPos: () => undefined };
+  const before = (tool: string, args: Record<string, unknown>) => targetBefore(tool, args, look);
+
+  it('the new tools point at their clips', () => {
+    expect(before('crossfade_edits', { ids: ['a', 'b'] })).toEqual({ kind: 'clips', ids: ['a', 'b'] });
+    expect(before('crossfade_edits', { track: 't1' })).toEqual({ kind: 'nowhere' });
+    expect(before('save_grade_lut', { clip: 'c1' })).toEqual({ kind: 'clip', id: 'c1' });
+    expect(before('save_grade_lut', {})).toEqual({ kind: 'nowhere' });
+    expect(before('retime_keyframes', { keys: [{ id: 'c1' }, { id: 'c2', prop: 'x' }], by: 1 })).toEqual({ kind: 'clips', ids: ['c1', 'c2'] });
+    expect(before('ease_keyframes', { keys: [{ id: 'c1' }], ease: 'linear' })).toEqual({ kind: 'clips', ids: ['c1'] });
+    expect(before('copy_keyframes', { from: 'c1', to: ['c2', 'c3'] })).toEqual({ kind: 'clips', ids: ['c2', 'c3'] });
+    // junk never throws
+    expect(before('retime_keyframes', { keys: 5 })).toEqual({ kind: 'nowhere' });
+    expect(before('retime_keyframes', { keys: [null, 4, {}] })).toEqual({ kind: 'nowhere' });
+    expect(cursorLabel('crossfade_edits')).toBe('crossfades the sound');
+    expect(cursorLabel('save_grade_lut')).toBe('saves the grade as a .cube lut');
+    expect(cursorLabel('retime_keyframes')).toBe('retimes keyframes');
+    expect(cursorLabel('ease_keyframes')).toBe('sets the ease of keyframes');
+    expect(cursorLabel('copy_keyframes')).toBe('copies keyframes');
+  });
+
+  it('sample_keyframes points at the inspector, measure_loudness at export', () => {
+    expect(before('sample_keyframes', { id: 'c1', prop: 'x' })).toEqual({ kind: 'inspector' });
+    expect(before('measure_loudness', {})).toEqual({ kind: 'button', which: 'export' });
+    expect(cursorLabel('sample_keyframes')).toBe('samples keyframes');
+    expect(cursorLabel('measure_loudness')).toBe('measures the loudness');
+  });
+});

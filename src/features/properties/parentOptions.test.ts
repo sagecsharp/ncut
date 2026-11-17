@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '../../types';
-import { hasAnimatedPose, lookTargetOptions, parentOptions } from './parentOptions';
+import { hasAnimatedPose, lookTargetOptions, matteClipOptions, parentOptions } from './parentOptions';
 
 const tf = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
 const b = (id: string, start: number, name = id) => ({ id, trackId: 't', start, duration: 2, name, fadeIn: 0, fadeOut: 0 });
@@ -67,5 +67,22 @@ describe('lookTargetOptions', () => {
   it('is empty for an unknown or non visual clip', () => {
     expect(lookTargetOptions({ clips: [img('a', 0)] }, 'nope')).toEqual([]);
     expect(lookTargetOptions({ clips: [cam('c', 0), img('a', 0)] }, 'c')).toEqual([]);
+  });
+});
+
+describe('matteClipOptions', () => {
+  const shape = (id: string, start: number): Clip => ({ ...b(id, start), type: 'shape', kind: 'rect', color: '#fff', transform: tf }) as unknown as Clip;
+  const matted = (id: string, start: number, src: string): Clip => ({ ...img(id, start), matte: { clip: src, mode: 'alpha' } }) as Clip;
+  it('picture clips only, not itself, not one with a matte, none for a matte clip, keeps the current one', () => {
+    const clips = [img('a', 0), img('i2', 0), text('t', 0, 'title'), shape('s', 0), cam('c', 0), audio('au'), matted('m', 0, 'i2')];
+    const ids = (id: string, cur?: string) => matteClipOptions({ clips }, id, cur).map((o) => o.id).sort();
+    expect(ids('a')).toEqual(['i2', 's', 't']);
+    // a clip a stored matte names cannot get a matte
+    expect(ids('i2')).toEqual([]);
+    // the current one stays in when it has a matte, and is out when it is not a picture clip
+    expect(ids('a', 'm')).toEqual(['i2', 'm', 's', 't']);
+    expect(ids('a', 'c')).toEqual(['i2', 's', 't']);
+    // not a picture clip itself
+    expect(ids('c')).toEqual([]);
   });
 });

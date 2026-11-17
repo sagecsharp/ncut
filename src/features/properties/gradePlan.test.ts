@@ -83,6 +83,25 @@ describe('grade plans', () => {
     expect(captureGrade(c, -5).liftR).toBeUndefined();
   });
 
+  it('reset takes the lut, copy carries it', () => {
+    const onlyLut = graded('a', { lut: { media: 'm1', mix: 0.5, last: true } });
+    const withLut = graded('b', { liftY: 0.2, lut: { media: 'm1' } });
+    // a lut only grade counts as a grade: reset takes it (null)
+    expect(planResetGrade([onlyLut, withLut], tracks, ['a', 'b'])).toEqual([
+      { id: 'a', grade: null, clearKeys: [] },
+      { id: 'b', grade: null, clearKeys: [] },
+    ]);
+    // copy carries it
+    expect(captureGrade(onlyLut, 0)).toEqual({ lut: { media: 'm1', mix: 0.5, last: true } });
+    expect(captureGrade(withLut, 0)).toEqual({ liftY: 0.2, lut: { media: 'm1' } });
+    // a lut at mix 0 is still a grade for the switch
+    const zero = graded('c', { lut: { media: 'm1', mix: 0 } });
+    expect(planGradeOnOff([zero], tracks, ['c']).edits).toHaveLength(1);
+    // paste puts the copied lut on
+    const [e] = planPasteGrade([graded('d', {})], tracks, ['d'], captureGrade(withLut, 0));
+    expect(e!.grade).toEqual({ liftY: 0.2, lut: { media: 'm1' } });
+  });
+
   it('captureGrade drops off and deep copies', () => {
     const grade: ClipGrade = { liftY: 0.3, off: true, curves: { y: [[0, 0], [0.5, 0.7], [1, 1]] } };
     const c = graded('a', grade);

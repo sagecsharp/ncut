@@ -8,7 +8,7 @@ import type { TextBox, TextGlyph } from '../../engine/text';
 import { BEND_CENTER_MAX } from '../../engine/scene3d/bend';
 import { evalKeys } from '../../lib/anim';
 import { stretchX, stretchY } from '../../types';
-import type { ClipBend, Keyframes, TextClip, Transform } from '../../types';
+import type { Clip, ClipBend, Keyframes, TextClip, Transform } from '../../types';
 
 export type SplitMode = 'letters' | 'words' | 'lines';
 
@@ -189,7 +189,7 @@ const RAD = Math.PI / 180;
 /** a number that may be animated, read at a timeline time */
 function at(base: PieceBase, prop: string, fallback: number, time: number): number {
   const keys = base.keyframes?.[prop];
-  if (keys && keys.length > 0) return evalKeys(keys, time - base.start);
+  if (keys && keys.length > 0) return 'type' in base ? evalKeys(keys, time - base.start, base as unknown as Clip, prop) : evalKeys(keys, time - base.start);
   return ((base.transform as unknown as Record<string, number | undefined>)[prop] ?? fallback) as number;
 }
 

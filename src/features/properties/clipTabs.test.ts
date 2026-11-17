@@ -30,11 +30,11 @@ describe('inspector tabs', () => {
   it('"all" keeps the old order', () => {
     expect(sectionsOf('text', false)).toEqual([
       'clip', 'animation', 'beat-sync', 'text', 'text-style', 'text-anim', 'transform', 'threed', 'bend', 'path', 'repeat',
-      'attach', 'look', 'color', 'grade', 'mask', 'clip-effects', 'motion', 'transition', 'fades',
+      'attach', 'look', 'color', 'grade', 'mask', 'matte', 'clip-effects', 'motion', 'transition', 'fades',
     ]);
     expect(sectionsOf('video', true)).toEqual([
-      'clip', 'animation', 'beat-sync', 'transform', 'threed', 'bend', 'path', 'repeat', 'attach', 'look', 'color', 'grade', 'mask',
-      'clip-effects', 'motion', 'transition', 'audio', 'tempo', 'speed', 'fades',
+      'clip', 'animation', 'beat-sync', 'transform', 'threed', 'bend', 'path', 'repeat', 'attach', 'look', 'color', 'grade', 'mask', 'matte',
+      'clip-effects', 'motion', 'transition', 'audio', 'crossfade', 'tempo', 'speed', 'fades',
     ]);
   });
 
@@ -69,9 +69,9 @@ describe('inspector tabs', () => {
     expect(sectionsOf('effect', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'effect', 'effect-beat', 'attach', 'fades']);
     expect(sectionsOf('camera', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'camera', 'focus', 'attach', 'fades']);
     expect(sectionsOf('text', false).filter((s) => TAB_OF[s] === 'look')).toEqual([
-      'text-style', 'threed', 'bend', 'look', 'color', 'grade', 'mask', 'clip-effects',
+      'text-style', 'threed', 'bend', 'look', 'color', 'grade', 'mask', 'matte', 'clip-effects',
     ]);
-    expect(sectionsOf('video', true).filter((s) => TAB_OF[s] === 'sound')).toEqual(['audio', 'tempo']);
+    expect(sectionsOf('video', true).filter((s) => TAB_OF[s] === 'sound')).toEqual(['audio', 'crossfade', 'tempo']);
   });
 
   it('attach sits on basic right after transform', () => {
@@ -88,11 +88,29 @@ describe('inspector tabs', () => {
     expect(title('look')).not.toContain('attach');
     expect(title('look')).toContain('bend');
     expect(title('look')).toContain('grade');
+    expect(title('look')).toContain('matte');
+    expect(title('sound')).toBe('volume, crossfades and tempo');
   });
 
   it('bend comes right after threed, on the look tab', () => {
     expect(SECTION_ORDER[SECTION_ORDER.indexOf('threed') + 1]).toBe('bend');
     expect(TAB_OF.bend).toBe('look');
+  });
+
+  it('matte comes right after mask, on the look tab of every picture clip', () => {
+    expect(SECTION_ORDER[SECTION_ORDER.indexOf('mask') + 1]).toBe('matte');
+    expect(TAB_OF.matte).toBe('look');
+    for (const type of ['video', 'image', 'text', 'shape'] as const) expect(sectionsOf(type, false), type).toContain('matte');
+    for (const type of ['audio', 'effect', 'camera'] as const) expect(sectionsOf(type, true), type).not.toContain('matte');
+    expect(sectionsOf('effect', false, true, true)).not.toContain('matte');
+  });
+
+  it('crossfade comes right after audio, on the sound tab of clips with sound', () => {
+    expect(SECTION_ORDER[SECTION_ORDER.indexOf('audio') + 1]).toBe('crossfade');
+    expect(TAB_OF.crossfade).toBe('sound');
+    expect(sectionsOf('video', true)).toContain('crossfade');
+    expect(sectionsOf('audio', true)).toContain('crossfade');
+    expect(sectionsOf('video', false)).not.toContain('crossfade');
   });
 
   it('bend is on the look tab of every picture clip', () => {
@@ -145,6 +163,8 @@ describe('inspector tabs', () => {
     expect(revealTab('basic', 'grade')).toBe('look');
     expect(revealTab('look', 'grade')).toBeNull();
     expect(revealTab('all', 'grade')).toBeNull();
+    expect(revealTab('basic', 'matte')).toBe('look');
+    expect(revealTab('basic', 'crossfade')).toBe('sound');
     expect(revealTab('basic', 'm-grade')).toBeNull();
     expect(revealTab('basic', 'sky')).toBeNull();
     expect(revealTab('basic', 'constructor')).toBeNull();

@@ -15,6 +15,8 @@ export type DragPayload =
   | { kind: 'effect'; effect: string }
   /** dropped on a visual clip: becomes that clip's transition (types.ts Transition) */
   | { kind: 'transition'; transition: string }
+  /** dropped on a picture clip or a grade effect: goes in its grade */
+  | { kind: 'lut'; assetId: string }
   /** dropped on the timeline: adds a camera clip */
   | { kind: 'camera' };
 

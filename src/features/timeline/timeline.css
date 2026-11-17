@@ -209,7 +209,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--font-size-sm);
-  cursor: default;
+  cursor: inherit;
 }
 .timeline-head-input {
   flex: 1;
@@ -219,12 +219,113 @@
   display: flex;
   gap: 2px;
 }
-.timeline-head-remove.is-confirm {
+.timeline-head-remove.is-confirm,
+.timeline-menu .menu-item.is-confirm {
   background: var(--danger-muted);
   color: var(--danger);
 }
 .timeline-head.is-locked .timeline-head-top {
   opacity: 0.55;
+}
+/* a header is grabbed to move its track (the fill heads are not). the buttons keep the pointer, a locked track does not move */
+.timeline-head[data-track-id] {
+  cursor: grab;
+}
+.timeline-head[data-track-id].is-locked {
+  cursor: default;
+}
+/* a short header: one row at the top. the toggles sit in it */
+.timeline-head.is-compact {
+  justify-content: flex-start;
+  padding-top: 2px;
+}
+.timeline-head.is-compact .timeline-head-toggles {
+  flex: none;
+}
+/* the rows sit over the height edge as flex items. no position here: the mix badge and the target bar are absolute against the sticky head */
+.timeline-head-top,
+.timeline-head-toggles {
+  z-index: 1;
+}
+/* the toggles do not stretch over the free right part, so the height edge stays grabbable there */
+.timeline-head > .timeline-head-toggles {
+  align-self: flex-start;
+}
+.timeline-head-toggles.is-six .icon-btn-sm {
+  width: 20px;
+}
+/* the height edge: the bottom 4 px of a header and the border line under it */
+.timeline-head-size {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 5px;
+  z-index: 0;
+  cursor: ns-resize;
+  outline: none;
+}
+.timeline-head-size:hover,
+.timeline-head-size:focus-visible,
+.timeline-head-size.is-active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.timeline-head-size-readout {
+  display: none;
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+.timeline-head-size.is-active .timeline-head-size-readout {
+  display: block;
+}
+/* the reorder drag: the dragged row is half there, the anchor row has the line and the tag */
+.timeline-head.is-drag-source,
+.timeline-lane.is-drag-source {
+  opacity: 0.5;
+}
+.timeline-head.is-drop-above,
+.timeline-lane.is-drop-above {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.timeline-head.is-drop-below,
+.timeline-lane.is-drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.timeline-head-drop {
+  position: absolute;
+  right: 4px;
+  z-index: 2;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.is-drop-above > .timeline-head-drop {
+  top: 2px;
+}
+.is-drop-below > .timeline-head-drop {
+  bottom: 2px;
+}
+body.is-track-moving,
+body.is-track-sizing {
+  user-select: none;
+}
+body.is-track-moving,
+body.is-track-moving * {
+  cursor: grabbing !important;
+}
+body.is-track-sizing,
+body.is-track-sizing * {
+  cursor: ns-resize !important;
 }
 
 /* ---------- lanes ---------- */

@@ -9,6 +9,7 @@ import { muteTargets } from '../../lib/soundPair';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import type { ExportAskInput } from '../../store/ui';
 import { getLastEffect, setLastEffect } from './lastEffect';
 import { SHAPE_PRESETS } from '../media/shapePresets';
 import { openPalette } from './paletteStore';
@@ -25,6 +26,11 @@ import { keysOnTimeline, nudgeBy, nudgeKey, stepEdit } from '../timeline/nudgeAc
 import { goToTime, goToTimeKey } from '../preview/timeEntry';
 import { useScopes } from '../preview/scopesState';
 import { editNow } from '../timeline/editActions';
+import { keyPanelHasKeys } from '../timeline/keyPanelState';
+import { clearKeySel, copyKeysNow, cutKeysNow, deleteKeysNow, keyPanelCommands, pasteKeysNow, selectAllKeysNow, toggleKeyPanel } from '../timeline/keyLaneActions';
+import { easeKeysNow, stepKeyValuesBy, toggleGraphView } from '../timeline/graphActions';
+import { clearCrossfadePick, crossfadeMenuNow, crossfadeNow, nudgeCrossfade, removePickedCrossfade } from '../timeline/crossfadeActions';
+import { stepTrackHeights } from '../timeline/trackActions';
 
 export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'inout' | 'timeline' | 'preview' | 'mouse' | 'fields' | 'app';
 
@@ -272,10 +278,12 @@ function zoomBy(factor: number): void {
   if (next !== zoom) setZoom(next);
 }
 
-function openExport(): void {
+export function openExport(ask?: ExportAskInput): void {
   const project = useEditor.getState().project;
-  if (project && project.clips.length > 0) useUi.getState().openDialog('export');
-  else toast('add a clip before exporting');
+  if (project && project.clips.length > 0) {
+    if (ask) useUi.getState().askExport(ask);
+    else useUi.getState().openDialog('export');
+  } else toast('add a clip before exporting');
 }
 
 /** rows that only document a mouse move or a number box: shown in the ? dialog, never run */
@@ -397,7 +405,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'previous clip edge (with an edge selected: trim it 1 frame left)',
     repeat: true,
     match: byCode('Comma'),
-    run: () => (hasTrimEdge() ? nudgeTrimEdge(-1) : seekEdge(-1)),
+    run: () => {
+      if (nudgeCrossfade(-1)) return;
+      if (hasTrimEdge()) nudgeTrimEdge(-1);
+      else seekEdge(-1);
+    },
   },
   {
     id: 'edge-next',
@@ -406,7 +418,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'next clip edge (with an edge selected: trim it 1 frame right)',
     repeat: true,
     match: byCode('Period'),
-    run: () => (hasTrimEdge() ? nudgeTrimEdge(1) : seekEdge(1)),
+    run: () => {
+      if (nudgeCrossfade(1)) return;
+      if (hasTrimEdge()) nudgeTrimEdge(1);
+      else seekEdge(1);
+    },
   },
   {
     id: 'edit-prev',
@@ -453,7 +469,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'delete selection',
     match: anyOf(byKey('Delete'), byKey('Backspace')),
-    run: () => deleteSelection(false),
+    run: () => {
+      if (keyPanelHasKeys()) {
+        deleteKeysNow();
+        return;
+      }
+      if (removePickedCrossfade()) return;
+      deleteSelection(false);
+    },
   },
   {
     id: 'ripple-delete',
@@ -462,7 +485,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'ripple delete (close the gap)',
     match: anyOf(byKey('Delete', { shift: true }), byKey('Backspace', { shift: true })),
-    run: () => deleteSelection(true),
+    run: () => {
+      if (keyPanelHasKeys()) {
+        deleteKeysNow();
+        return;
+      }
+      if (removePickedCrossfade()) return;
+      deleteSelection(true);
+    },
   },
   {
     id: 'lift',
@@ -492,7 +522,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'insert: the marked part of the source view at the in point or the playhead, the clips after it move later',
     also: ['insert edit', 'insert', 'splice in', 'three point edit', 'source insert', 'insert from source'],
     match: byKey('F9'),
-    run: () => editNow('insert'),
+    run: () => (keyPanelHasKeys() ? easeKeysNow('easy') : editNow('insert')),
   },
   {
     id: 'overwrite-edit',
@@ -530,7 +560,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'copy',
     match: byKey('c', { mod: true }),
-    run: () => useEditor.getState().copySelection(),
+    run: () => (keyPanelHasKeys() ? copyKeysNow() : useEditor.getState().copySelection()),
   },
   {
     id: 'cut',
@@ -539,7 +569,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'cut (copy, then delete)',
     match: byKey('x', { mod: true }),
-    run: () => useEditor.getState().cutSelection(),
+    run: () => (keyPanelHasKeys() ? cutKeysNow() : useEditor.getState().cutSelection()),
   },
   {
     id: 'paste',
@@ -548,7 +578,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'paste at playhead',
     match: byKey('v', { mod: true }),
-    run: () => useEditor.getState().paste(usePlayback.getState().time),
+    run: () => (keyPanelHasKeys() ? pasteKeysNow() : useEditor.getState().paste(usePlayback.getState().time)),
   },
   {
     id: 'duplicate',
@@ -568,7 +598,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'select all',
     match: byKey('a', { mod: true }),
-    run: () => useEditor.getState().selectAll(),
+    run: () => (keyPanelHasKeys() ? selectAllKeysNow() : useEditor.getState().selectAll()),
   },
   {
     id: 'select-after',
@@ -611,6 +641,20 @@ export const SHORTCUTS: readonly Shortcut[] = [
     },
   },
   {
+    id: 'crossfade',
+    mutates: true,
+    keys: [['shift', 't'], ['ctrl', 'shift', 'd']],
+    group: 'editing',
+    description: 'crossfade the sound at the selected edit (again: remove it)',
+    also: ['audio crossfade', 'audio transition', 'apply audio transition', 'equal power', 'constant power', 'constant gain', 's curve', 'audio dissolve', 'xfade'],
+    match: anyOf(byKey('t', { shift: true }), byKey('d', { mod: true, shift: true })),
+    run: () => {
+      const r = reasonFor('crossfade', reasonSnapshot());
+      if (r) toast(r);
+      else crossfadeNow();
+    },
+  },
+  {
     id: 'freeze-frame',
     mutates: true,
     keys: [['shift', 'f']],
@@ -626,6 +670,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'clear the selected edge, then the selection',
     match: byKey('Escape'),
     run: () => {
+      if (keyPanelHasKeys()) {
+        clearKeySel();
+        return;
+      }
+      if (clearCrossfadePick()) return;
       if (!clearTrimEdge()) useEditor.getState().clearSelection();
     },
   },
@@ -785,6 +834,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'open the clip menu of the selection (like a right click)',
     match: anyOf(byKey('F10', { shift: true }), byKey('ContextMenu')),
     run: () => {
+      if (keyPanelHasKeys() && keyPanelCommands.openMenu) {
+        keyPanelCommands.openMenu();
+        return;
+      }
+      if (crossfadeMenuNow()) return;
       const r = reasonFor('clip-menu', reasonSnapshot());
       if (r) toast(r);
       else timelineCommands.openClipMenu?.({ focusFirst: true });
@@ -799,7 +853,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'previous keyframe of the selection (with an edge selected: trim it 10 frames left)',
     repeat: true,
     match: byCode('Comma', { shift: true }),
-    run: () => (hasTrimEdge() ? nudgeTrimEdge(-10) : seekKeyframe(-1)),
+    run: () => {
+      if (nudgeCrossfade(-10)) return;
+      if (hasTrimEdge()) nudgeTrimEdge(-10);
+      else seekKeyframe(-1);
+    },
   },
   {
     id: 'key-next',
@@ -808,7 +866,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'next keyframe of the selection (with an edge selected: trim it 10 frames right)',
     repeat: true,
     match: byCode('Period', { shift: true }),
-    run: () => (hasTrimEdge() ? nudgeTrimEdge(10) : seekKeyframe(1)),
+    run: () => {
+      if (nudgeCrossfade(10)) return;
+      if (hasTrimEdge()) nudgeTrimEdge(10);
+      else seekKeyframe(1);
+    },
   },
   {
     id: 'key-add',
@@ -819,6 +881,94 @@ export const SHORTCUTS: readonly Shortcut[] = [
     also: ['add keyframes', 'key everything', 'was i'],
     match: byKey('k', { shift: true }),
     run: addKeyframes,
+  },
+  {
+    id: 'key-panel',
+    keys: [['shift', 'u']],
+    group: 'animation',
+    description: 'keyframe panel on / off: one row per animated value of the selected clips, under the tracks',
+    also: ['dope sheet', 'keyframe lanes', 'timeline keyframes', 'reveal animated properties', 'show keyframes', 'property rows', 'key editor'],
+    match: byKey('u', { shift: true }),
+    run: toggleKeyPanel,
+  },
+  {
+    id: 'key-panel-keys',
+    keys: [['delete'], ['ctrl', 'c'], ['ctrl', 'x'], ['ctrl', 'v'], ['ctrl', 'a'], ['alt', '←'], ['alt', '→'], ['enter'], ['esc']],
+    group: 'animation',
+    description: 'in the keyframe panel these keys work on the selected keyframes, never on clips: delete, copy, copy and delete, paste at the playhead, select every keyframe, nudge one frame (shift: ten), enter selects the keyframes at the playhead, esc clears',
+    info: true,
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'key-graph',
+    keys: [['shift', 'g']],
+    group: 'animation',
+    description: 'graph view of the keyframe panel on / off: one line per animated value, with its handles and speed',
+    also: ['graph editor', 'curve editor', 'f-curve', 'function curves', 'value graph', 'speed graph'],
+    match: byKey('g', { shift: true }),
+    run: toggleGraphView,
+  },
+  {
+    id: 'key-easy-ease',
+    mutates: true,
+    keys: [['shift', 'e']],
+    group: 'animation',
+    description: 'easy ease the selected keyframes: the value slows down into and out of them. in the keyframe panel f9 does it too',
+    also: ['easy ease', 'f9', 'ease in and out', 'auto bezier'],
+    match: byKey('e', { shift: true }),
+    run: () => easeKeysNow('easy'),
+  },
+  {
+    id: 'key-ease-into',
+    mutates: true,
+    keys: [['shift', 'f9']],
+    group: 'animation',
+    description: 'ease into the selected keyframes: the value slows down as it arrives',
+    also: ['easy ease in', 'slow in'],
+    match: byKey('F9', { shift: true }),
+    run: () => easeKeysNow('into'),
+  },
+  {
+    id: 'key-ease-out-of',
+    mutates: true,
+    keys: [['ctrl', 'shift', 'f9']],
+    group: 'animation',
+    description: 'ease out of the selected keyframes: the value starts slowly as it leaves',
+    also: ['easy ease out', 'slow out'],
+    match: byKey('F9', { mod: true, shift: true }),
+    run: () => easeKeysNow('outOf'),
+  },
+  {
+    id: 'key-value-up',
+    mutates: true,
+    repeat: true,
+    keys: [['alt', '↑'], ['alt', 'shift', '↑']],
+    group: 'animation',
+    description: 'raise the selected keyframes one step (shift: ten), in the keyframe panel',
+    match: (e) => e.altKey && !isMod(e) && e.key === 'ArrowUp' && keyPanelHasKeys(),
+    runKey: (e) => stepKeyValuesBy(e.shiftKey ? 10 : 1, e.repeat),
+    run: () => stepKeyValuesBy(1),
+  },
+  {
+    id: 'key-value-down',
+    mutates: true,
+    repeat: true,
+    keys: [['alt', '↓'], ['alt', 'shift', '↓']],
+    group: 'animation',
+    description: 'lower the selected keyframes one step (shift: ten), in the keyframe panel',
+    match: (e) => e.altKey && !isMod(e) && e.key === 'ArrowDown' && keyPanelHasKeys(),
+    runKey: (e) => stepKeyValuesBy(e.shiftKey ? -10 : -1, e.repeat),
+    run: () => stepKeyValuesBy(-1),
+  },
+  {
+    id: 'key-graph-keys',
+    keys: [['f'], ['f9']],
+    group: 'animation',
+    description: 'in the keyframe panel f9 is easy ease on the selected keyframes (elsewhere it inserts from the source view). in the graph f frames the selected keyframes, none selected: every line',
+    info: true,
+    match: () => false,
+    run: () => undefined,
   },
   {
     id: 'toggle-3d',
@@ -968,6 +1118,28 @@ export const SHORTCUTS: readonly Shortcut[] = [
       setSnapping(!snapping);
       toast(snapping ? 'snapping off' : 'snapping on');
     },
+  },
+  {
+    id: 'tracks-taller',
+    mutates: true,
+    repeat: true,
+    keys: [['alt', '=']],
+    group: 'timeline',
+    description: 'taller tracks: every track one step taller',
+    also: ['increase track height', 'expand tracks', 'expand all tracks', 'bigger tracks', 'track size', 'track height'],
+    match: anyOf(byAltCode('Equal'), byAltCode('NumpadAdd')),
+    run: () => stepTrackHeights(1),
+  },
+  {
+    id: 'tracks-shorter',
+    mutates: true,
+    repeat: true,
+    keys: [['alt', '-']],
+    group: 'timeline',
+    description: 'shorter tracks: every track one step shorter',
+    also: ['decrease track height', 'minimize tracks', 'minimize all tracks', 'collapse tracks', 'smaller tracks'],
+    match: anyOf(byAltCode('Minus'), byAltCode('NumpadSubtract')),
+    run: () => stepTrackHeights(-1),
   },
   {
     id: 'zoom-fit',
@@ -1172,12 +1344,22 @@ export const SHORTCUTS: readonly Shortcut[] = [
     ['mouse-toggle', [['ctrl', 'click']], 'a clip: add it to the selection or take it out'],
     ['mouse-one', [['alt', 'click']], 'a clip in a group: select only that clip (one side of a separated sound: trim it alone for a j or l cut)'],
     ['mouse-key', [['drag']], 'a keyframe diamond on a clip: move the keyframe'],
+    ['mouse-key-panel', [['click'], ['shift', 'click'], ['ctrl', 'click'], ['drag']], 'the keyframe panel: click a diamond to select it (shift adds, ctrl adds or drops), drag on empty space for a box, drag selected diamonds to move them'],
+    ['mouse-key-stretch', [['alt', 'drag']], 'the keyframe panel: stretch the selected keyframes in time around the playhead'],
+    ['mouse-graph-key', [['drag'], ['shift', 'drag'], ['double click']], 'the graph: drag keyframes in time and value (shift: only the way it moved more), double click a line to add a keyframe'],
+    ['mouse-graph-handle', [['drag'], ['alt', 'drag']], 'the graph: drag a handle to shape the ease (alt: only this side, the handles break)'],
+    ['mouse-graph-wheel', [['wheel'], ['alt', 'wheel']], 'the graph: wheel moves the values up and down, alt+wheel zooms them, ctrl+wheel and shift+wheel zoom and scroll time'],
     ['mouse-transition', [['drag']], 'the edge of a transition on a clip: change its length'],
+    ['mouse-crossfade', [['drag']], 'the end of a crossfade: change its length (both ends while centered, alt: this end only)'],
+    ['mouse-crossfade-move', [['drag']], 'the middle of a crossfade: move it across the edit (centered, starts at and ends at the edit catch it)'],
+    ['mouse-crossfade-pick', [['click'], ['double click'], ['right click']], 'a crossfade: pick it (delete removes it, , and . change its length), double click: its part of the sound tab, right click: its menu'],
     ['mouse-menus', [['right click']], 'a clip, a track or the ruler: its menu (the clip menu button in the properties and the track icon open them too)'],
     ['mouse-ruler', [['click'], ['drag']], 'the ruler: move the playhead'],
     ['mouse-range', [['drag']], 'an in or out bracket on the ruler: move it (it snaps like a marker)'],
     ['mouse-marker-rename', [['double click']], 'a marker on the ruler: rename it'],
     ['mouse-track-rename', [['double click']], 'a track name: rename it'],
+    ['mouse-track-move', [['drag']], 'a track header: move the track up or down among its kind (a video track higher up draws on top)'],
+    ['mouse-track-height', [['drag'], ['shift', 'drag']], 'the bottom edge of a track header: the track gets taller or shorter (shift: every track of its kind). double click: normal height'],
     ['mouse-media', [['double click'], ['enter']], 'a media card: add it at the playhead, the marked part when it has an in or out point (f2 renames it)'],
     ['mouse-media-open', [['click'], ['shift', 'enter']], 'a media card: show it in the source view'],
     ['mouse-media-skim', [['hover']], 'a video card: skim through its frames (search actions turns it off)'],
@@ -1185,6 +1367,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
     ['mouse-source-scrub', [['drag']], 'the bar under the source view: move its playhead. an in or out grip: move it (double click clears it)'],
     ['mouse-edit-target', [['click']], 'the target button of a track header: where insert and overwrite put the picture or the sound (shown while the source view has media)'],
     ['mouse-effect-on', [['alt', 'drop']], 'drop an effect on a clip: put it on that clip only'],
+    ['mouse-lut-card', [['double click'], ['enter']], 'a lut card: put the lut on the selected clips'],
+    ['mouse-lut-drop', [['drag']], 'a lut card onto a clip in the timeline: put the lut in its grade'],
     ['mouse-tl-zoom', [['ctrl', 'wheel']], 'over the timeline: zoom in or out'],
     ['mouse-tl-scroll', [['shift', 'wheel']], 'over the timeline: scroll sideways'],
     ['mouse-pv-zoom', [['ctrl', 'wheel']], 'over the preview: zoom the picture'],
@@ -1238,7 +1422,16 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'app',
     description: 'export',
     match: byKey('e', { mod: true }),
-    run: openExport,
+    run: () => openExport(),
+  },
+  {
+    id: 'export-advanced',
+    keys: [['ctrl', 'shift', 'e']],
+    group: 'app',
+    description: 'export, with the advanced part open',
+    also: ['delivery settings', 'encoding settings', 'render settings', 'codec', 'bitrate'],
+    match: byKey('e', { mod: true, shift: true }),
+    run: () => openExport({ advanced: true }),
   },
   {
     id: 'shortcuts',

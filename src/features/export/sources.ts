@@ -12,6 +12,8 @@ import type { ImageClip, Project, VideoClip } from '../../types';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { type SkyPicture, skyAssetIds, skyFaceSize, skyUsable, sourceFaceOf } from '../../engine/scene3d/sky';
 import { loadSkyFaces } from '../../media/skyFaces';
+import { loadLutTables, usedLutIds } from '../../media/lutTables';
+import type { LutTable } from '../../lib/cube';
 import { neededForFrame } from './reach';
 import { frameTime } from './range';
 
@@ -117,6 +119,8 @@ export interface FrameSourcesInit extends FrameGrid {
   strictVideo?: boolean;
   /** asset ids strictVideo does not apply to (the main thread cannot decode them either) */
   lenient?: readonly string[];
+  /** true = video is decoded with its alpha (a see-through webm stays see-through). only a transparent export sets it */
+  alpha?: boolean;
   onWarning?: (message: string) => void;
   /**
    * the sky pictures loaded by the caller (loadExportSky), once for many parts. a picture here is not loaded again and
@@ -173,6 +177,20 @@ export async function loadExportSky(init: {
   return picture;
 }
 
+/**
+ * the lut tables the grades of a project use, read once per thread (a lut has no clip, only a media the grades name).
+ * a lut that cannot be read warns on every thread and is left out: its clips draw without it, never strict.
+ */
+export async function loadExportLuts(init: {
+  project: Project;
+  blobOf: (assetId: string) => Blob | undefined;
+  onWarning?: (message: string) => void;
+}): Promise<Map<string, LutTable>> {
+  const { project, blobOf, onWarning } = init;
+  const name = (id: string): string => project.assets.find((a) => a.id === id)?.name ?? id;
+  return loadLutTables(usedLutIds(project), blobOf, onWarning, name);
+}
+
 export function createFrameSources(init: FrameSourcesInit): FrameSources {
   const { project, fps, rangeStart, totalFrames, blobOf, onWarning, signal } = init;
   const from = Math.max(0, init.from ?? 0);
@@ -189,13 +207,14 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
   // a sky handed in is the caller's: not loaded and not closed here
   const shared = init.sky !== undefined;
   let sky: SkyPicture | null = init.sky ?? null;
+  let luts = new Map<string, LutTable>();
   const resolver: SourceResolver = Object.assign(
     (clip: VideoClip | ImageClip) => {
       if (clip.type === 'video') return feeds.get(clip.id)?.current ?? null;
       return images.get(clip.assetId) ?? null;
     },
     // the project of an export does not change: its one sky
-    { sky: () => sky },
+    { sky: () => sky, lut: (id: string) => luts.get(id) ?? null },
   );
 
   const dispose = async () => {
@@ -223,6 +242,7 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
     images.clear();
     if (!shared) sky?.close();
     sky = shared ? init.sky ?? null : null;
+    luts = new Map();
   };
 
   /**
@@ -303,7 +323,7 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
         if (!(await track.canDecode())) throw new Error('cannot decode');
         const first = await track.getFirstTimestamp();
         // one pooled canvas is enough: each frame is drawn right after it is pulled
-        const sink = new CanvasSink(track, { poolSize: 1 });
+        const sink = new CanvasSink(track, { poolSize: 1, ...(init.alpha ? { alpha: true } : {}) });
         stamps = clipTimestamps(clip, fps, totalFrames, asset.duration, first, rangeStart, onlyFrames, from, to);
         const edgeOnly = stamps.length === 0;
         if (edgeOnly) {
@@ -342,6 +362,7 @@ export function createFrameSources(init: FrameSourcesInit): FrameSources {
     }
     // the sky: read once at the face size the preview uses, so both look the same (a shared one is already here)
     if (!shared && !sky) sky = await loadExportSky({ project, blobOf, strictImages: init.strictImages, onWarning });
+    luts = await loadExportLuts({ project, blobOf, onWarning });
   };
 
   /** an image clip that is on screen somewhere in [from, to) */

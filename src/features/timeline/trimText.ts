@@ -1,4 +1,5 @@
 /** the words of trim mode: why a trim stopped, the toasts. pure */
+import { syncLockOf } from '../../lib/trackTools';
 import { clipDisplayName } from './effectTarget';
 import type { P, TrimStop, TrimStopWhy } from './trimModes';
 
@@ -19,6 +20,8 @@ export const TRIM_TEXT = {
   modeOn: 'trim mode on',
   modeOff: 'trim mode off',
   lockedStay: 'locked tracks did not move: {tracks}',
+  outOfSync: 'out of sync now: {clips}',
+  outOfSyncOff: 'out of sync now: {clips} (sync lock is off on {tracks})',
   dragStopped: 'the timeline changed, the drag stopped',
   selectedEdit: 'selected the end of {a} and the start of {b}',
   selectedEnd: 'selected the end of {a}',
@@ -47,4 +50,26 @@ export function lockedTracksText(p: P, trackIds: readonly string[]): string {
     if (t) names.push(t.name);
   }
   return names.join(', ');
+}
+
+/** the clips that went out of sync, by name. when some sit on sync lock off tracks, those tracks are named too */
+export function outOfSyncText(p: P, clipIds: readonly string[]): string {
+  const clips = clipIds.map((id) => clipLabel(p, id)).join(', ');
+  const on = new Set<string>();
+  for (const id of clipIds) {
+    const c = p.clips.find((x) => x.id === id);
+    if (c) on.add(c.trackId);
+  }
+  const off = p.tracks.filter((t) => on.has(t.id) && !t.locked && !syncLockOf(t)).map((t) => t.id);
+  if (off.length === 0) return TRIM_TEXT.outOfSync.replace('{clips}', () => clips);
+  return TRIM_TEXT.outOfSyncOff.replace(/{(clips|tracks)}/g, (_, k: string) => (k === 'clips' ? clips : lockedTracksText(p, off)));
+}
+
+/** the readout tail of a plan: sync lock off tracks that stay, clips that went out of sync */
+export function syncSuffix(plan: { freeBehind?: readonly string[]; drift?: readonly string[] }): string {
+  let text = '';
+  if (plan.freeBehind && plan.freeBehind.length > 0) text += ', sync lock off tracks stay';
+  const n = plan.drift?.length ?? 0;
+  if (n > 0) text += `, ${n} clip${n > 1 ? 's' : ''} out of sync`;
+  return text;
 }

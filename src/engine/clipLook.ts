@@ -12,9 +12,10 @@
  */
 import type { ChromaKey, ClipAdjust, VisualClip } from '../types';
 import { createCanvas } from '../lib/canvas';
-import { isGradeActive } from '../lib/gradeData';
-import { GRADE_GLSL, gradeData, gradeSignature } from './grade';
+import { GRADE_GLSL, gradeData, gradeShows, gradeSignature } from './grade';
 import type { GradeData } from './grade';
+import { GRADE_LUT_GLSL, withoutLut } from './gradeLut';
+import { LutGpu, bindLutUniforms, setLutUnits } from './lutGl';
 
 export const DEFAULT_ADJUST: ClipAdjust = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 };
 export const DEFAULT_CHROMA_KEY: ChromaKey = { color: '#00d000', tolerance: 0.3, softness: 0.1, spill: 0.5 };
@@ -78,7 +79,7 @@ export function isKeyActive(key: ChromaKey | null | undefined): boolean {
 
 /** true when the clip's picture has to go through clipLookTexture */
 export function hasClipLook(clip: VisualClip): boolean {
-  return isAdjustActive(clip.adjust) || isKeyActive(clip.chromaKey) || isGradeActive(clip.grade);
+  return isAdjustActive(clip.adjust) || isKeyActive(clip.chromaKey) || gradeShows(clip.grade);
 }
 
 /** a string that changes whenever the result of clipLookTexture would (for texture caches) */
@@ -175,9 +176,15 @@ const GRADE_FRAGMENT_SRC = FRAGMENT_SRC.replace(OUT_ANCHOR, () => `${OUT_ANCHOR}
   () => `  c = gDither(gradeApply(c), floor(v_uv * u_gRes));\n${END_ANCHOR}`,
 );
 
-/** the look fragment shader: the plain one, or with the grade built in */
-export function lookShaderSource(grade: boolean): string {
-  return grade ? GRADE_FRAGMENT_SRC : FRAGMENT_SRC;
+/** the grade look shader with the lut chunk after the grade chunk: gradeLutApply (l1, the grade, l2) instead of gradeApply */
+const LUT_FRAGMENT_SRC = FRAGMENT_SRC.replace(OUT_ANCHOR, () => `${OUT_ANCHOR}${GRADE_GLSL}${GRADE_LUT_GLSL}uniform vec2 u_gRes;\n`).replace(
+  END_ANCHOR,
+  () => `  c = gDither(gradeLutApply(c), floor(v_uv * u_gRes));\n${END_ANCHOR}`,
+);
+
+/** the look fragment shader: the plain one, or with the grade built in, or with the grade and a lut (the lut wins) */
+export function lookShaderSource(grade: boolean, lut = false): string {
+  return lut ? LUT_FRAGMENT_SRC : grade ? GRADE_FRAGMENT_SRC : FRAGMENT_SRC;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -300,6 +307,8 @@ interface LookLoc {
   gTone: Loc;
   gCurves: Loc;
   gRes: Loc;
+  /** the six lut uniforms by name, on the lut program only */
+  lut: Map<string, Loc> | null;
 }
 
 interface Looker {
@@ -310,13 +319,19 @@ interface Looker {
   loc: LookLoc;
   /** the program with the grade, built on the first graded clip. undefined = not built, null = failed */
   grade?: { program: WebGLProgram; loc: LookLoc } | null;
+  /** the program with the grade and the lut, built on the first live lut. undefined = not built, null = failed */
+  gradeLut?: { program: WebGLProgram; loc: LookLoc } | null;
+  /** the lut tables on this context, made on the first lut draw */
+  luts: LutGpu | null;
   /** the grade curve table (unit 1) and the key of what it holds */
   curveTex: WebGLTexture | null;
   curveKey: string;
   dead: boolean;
 }
 
-function locsOf(gl: WebGL2RenderingContext, program: WebGLProgram, grade: boolean): LookLoc {
+const LUT_UNIFORMS = ['u_gLut', 'u_gLutN', 'u_gLut3Min', 'u_gLut3Span', 'u_gLut1Min', 'u_gLut1Span'];
+
+function locsOf(gl: WebGL2RenderingContext, program: WebGLProgram, grade: boolean, lut = false): LookLoc {
   const at = (name: string): Loc => (grade ? gl.getUniformLocation(program, name) : null);
   return {
     tex: gl.getUniformLocation(program, 'u_tex'),
@@ -334,10 +349,12 @@ function locsOf(gl: WebGL2RenderingContext, program: WebGLProgram, grade: boolea
     gTone: at('u_gTone'),
     gCurves: at('u_gCurves'),
     gRes: at('u_gRes'),
+    lut: lut ? new Map(LUT_UNIFORMS.map((n): [string, Loc] => [n, gl.getUniformLocation(program, n)])) : null,
   };
 }
 
 let warnedGrade = false;
+let warnedLut = false;
 
 const lookers = new Map<string, Looker>();
 
@@ -412,6 +429,7 @@ function createLooker(): Looker | null {
     loc: locsOf(gl, program, false),
     curveTex: null,
     curveKey: '',
+    luts: null,
     dead: false,
   };
   canvas.addEventListener('webglcontextlost', (e) => {
@@ -451,6 +469,8 @@ export function releaseClipLook(channel: 'preview' | 'export'): void {
     gl.deleteTexture(l.tex);
     gl.deleteProgram(l.program);
     if (l.grade) gl.deleteProgram(l.grade.program);
+    if (l.gradeLut) gl.deleteProgram(l.gradeLut.program);
+    l.luts?.dispose();
     if (l.curveTex) gl.deleteTexture(l.curveTex);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
     // give the drawing buffer back too
@@ -461,10 +481,10 @@ export function releaseClipLook(channel: 'preview' | 'export'): void {
   }
 }
 
-/** the look program with the grade in it. null when it does not build: clips then draw without their grade (warned once) */
-function buildGrade(gl: WebGL2RenderingContext): Looker['grade'] {
+/** the look program with the grade in it (and the lut chunk when `lut`). null when it does not build: clips then draw without it (warned once) */
+function buildGrade(gl: WebGL2RenderingContext, lut = false): Looker['grade'] {
   const vs = compile(gl, gl.VERTEX_SHADER, VERTEX_SRC);
-  const fs = compile(gl, gl.FRAGMENT_SHADER, lookShaderSource(true));
+  const fs = compile(gl, gl.FRAGMENT_SHADER, lookShaderSource(true, lut));
   const program = gl.createProgram();
   let ok = !!vs && !!fs && !!program;
   if (ok) {
@@ -477,17 +497,23 @@ function buildGrade(gl: WebGL2RenderingContext): Looker['grade'] {
   if (fs) gl.deleteShader(fs);
   if (!ok) {
     if (program) gl.deleteProgram(program);
-    if (!warnedGrade) {
+    if (lut) {
+      if (!warnedLut) {
+        warnedLut = true;
+        console.warn('the lut shader did not compile, clips draw without their lut');
+      }
+    } else if (!warnedGrade) {
       warnedGrade = true;
       console.warn('the grade shader did not compile, clips draw without their grade');
     }
     return null;
   }
-  return { program, loc: locsOf(gl, program, true) };
+  if (lut) setLutUnits(gl, program);
+  return { program, loc: locsOf(gl, program, true, lut) };
 }
 
 /** the grade uniforms and its curve table (unit 1, nearest: R32F is not filterable) */
-function bindGrade(l: Looker, loc: LookLoc, g: GradeData, w: number, h: number): void {
+function bindGrade(l: Looker, loc: LookLoc, g: GradeData, w: number, h: number, lut: boolean): void {
   const gl = l.gl;
   gl.uniform3f(loc.gLift, g.lift[0], g.lift[1], g.lift[2]);
   gl.uniform3f(loc.gGain, g.gain[0], g.gain[1], g.gain[2]);
@@ -496,7 +522,8 @@ function bindGrade(l: Looker, loc: LookLoc, g: GradeData, w: number, h: number):
   gl.uniform4f(loc.gOn, g.on[0], g.on[1], g.on[2], g.on[3]);
   gl.uniform4f(loc.gTone, g.tone[0], g.tone[1], g.tone[2], g.tone[3]);
   gl.uniform2f(loc.gRes, w, h);
-  if (!g.table) return;
+  // a lut program samples unit 1 even with no curves: it gets the curve texture, or a 1 x 1 zero one
+  if (!g.table && !lut) return;
   gl.activeTexture(gl.TEXTURE1);
   if (!l.curveTex) {
     l.curveTex = gl.createTexture();
@@ -505,10 +532,14 @@ function bindGrade(l: Looker, loc: LookLoc, g: GradeData, w: number, h: number):
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (!g.table) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 1, 1, 0, gl.RED, gl.FLOAT, new Float32Array(1));
+      l.curveKey = '';
+    }
   } else {
     gl.bindTexture(gl.TEXTURE_2D, l.curveTex);
   }
-  if (g.key !== l.curveKey) {
+  if (g.table && g.key !== l.curveKey) {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 7, 0, gl.RED, gl.FLOAT, g.table);
     l.curveKey = g.key;
   }
@@ -550,9 +581,18 @@ export function clipLookTexture(
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
     if (gl.isContextLost()) return source;
     gl.viewport(0, 0, size.w, size.h);
-    const g = gradeData(clip.grade);
-    if (g && l.grade === undefined) l.grade = buildGrade(gl);
-    const gp = g ? l.grade : null;
+    let g = gradeData(clip.grade);
+    let gp: Looker['grade'] = null;
+    if (g?.lut) {
+      if (l.gradeLut === undefined) l.gradeLut = buildGrade(gl, true);
+      if (l.gradeLut) gp = l.gradeLut;
+      else g = withoutLut(g);
+    }
+    if (g && !gp) {
+      if (l.grade === undefined) l.grade = buildGrade(gl);
+      gp = l.grade;
+    }
+    const onLut = !!g?.lut && gp !== null && gp === l.gradeLut;
     const loc = gp ? gp.loc : l.loc;
     gl.useProgram(gp ? gp.program : l.program);
     gl.uniform1i(loc.tex, 0);
@@ -581,7 +621,13 @@ export function clipLookTexture(
     } else {
       gl.uniform1f(loc.keyOn, 0);
     }
-    if (g && gp) bindGrade(l, loc, g, size.w, size.h);
+    if (g && gp) {
+      bindGrade(l, loc, g, size.w, size.h, onLut);
+      if (onLut && g.lut) {
+        const uni = loc.lut!;
+        bindLutUniforms(gl, (n) => uni.get(n) ?? null, g.lut, (l.luts ??= new LutGpu(gl)).bind(g.lut.table));
+      }
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return canvas;
   } catch {

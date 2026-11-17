@@ -10,6 +10,7 @@ import { clipLabel } from '../timeline/trimText';
 import { getGradeCopy, setGradeCopy } from './gradeClipboard';
 import { captureGrade, planGradeOnOff, planPasteGrade, planResetGrade } from './gradePlan';
 import type { GradeEdit } from './gradePlan';
+import { keepKnownLut } from './lutPlan';
 
 export const GRADE_TEXT = {
   gradeFirst: 'select a video, image, text or shape clip, or a grade effect, first',
@@ -80,7 +81,7 @@ export function pasteGradeOn(ids: readonly string[]): string {
   if (!p || !p.clips.some((c) => ids.includes(c.id) && canGrade(c))) return GRADE_TEXT.gradeFirst;
   const copy = getGradeCopy();
   if (!copy) return GRADE_TEXT.copyGradeFirst;
-  const edits = planPasteGrade(p.clips, p.tracks, ids, copy.grade);
+  const edits = planPasteGrade(p.clips, p.tracks, ids, keepKnownLut(copy.grade, p.assets));
   if (edits.length === 0) return GRADE_TEXT.trackLocked;
   applyGradeEdits(edits);
   return `pasted the grade on ${clips(edits.length)}`;

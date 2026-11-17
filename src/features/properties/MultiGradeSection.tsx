@@ -8,6 +8,7 @@ import { tip } from '../shell/tip';
 import { Row, Section, Switch } from './controls';
 import { pasteGradeOn, resetGrades, toggleGradeOn } from './gradeActions';
 import { useGradeCopy } from './gradeClipboard';
+import { MultiGradeLut } from './GradeLut';
 import { MultiField } from './MultiField';
 
 const LEVELS = [
@@ -44,6 +45,7 @@ export const MultiGradeSection = memo(function MultiGradeSection({ ids, want }: 
       {LEVELS.map((l) => (
         <MultiField key={l.prop} want={want} label={l.label} title={l.title} feel={l.feel} prop={l.prop} pick={canGrade} />
       ))}
+      <MultiGradeLut ids={ids} want={want} />
       <div className="props-buttons">
         <button
           type="button"
@@ -59,7 +61,7 @@ export const MultiGradeSection = memo(function MultiGradeSection({ ids, want }: 
           type="button"
           className="btn btn-sm"
           disabled={!anyGraded}
-          {...tip('reset grade', { does: 'wheels, curves and keys of every selected clip back to no grade', why: 'grade-reset' })}
+          {...tip('reset grade', { does: 'wheels, curves, lut and keys of every selected clip back to no grade', why: 'grade-reset' })}
           onClick={() => toast(resetGrades(ids))}
         >
           <RotateCcw size={14} />

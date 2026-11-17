@@ -6,7 +6,7 @@ import { projectDuration } from '../../lib/timelineOps';
 import type { TrimEdge } from '../../store/ui';
 import { liveEdge } from '../timeline/timeNudge';
 import type { NudgePlan, planNudge } from '../timeline/timeNudge';
-import { clipLabel, trimStopText } from '../timeline/trimText';
+import { clipLabel, syncSuffix, trimStopText } from '../timeline/trimText';
 import { REASON_TEXT } from '../shell/reasons';
 import { fillEditText } from '../timeline/editText';
 import type { edgePlan } from '../timeline/trimModes';
@@ -87,7 +87,7 @@ export function planTimeEntry(text: string, s: EntryState, deps: EntryDeps): Ent
       }
       const msg = e.both ? ENTRY_TEXT.trimEdit : e.edge === 'end' ? ENTRY_TEXT.trimEnd : ENTRY_TEXT.trimStart;
       const said = fill(msg, { amt, clip });
-      return { kind: 'trim', frames, edge: e, text: tp.lockedBehind.length > 0 ? said + ENTRY_TEXT.lockedSuffix : said, blocked: false };
+      return { kind: 'trim', frames, edge: e, text: (tp.lockedBehind.length > 0 ? said + ENTRY_TEXT.lockedSuffix : said) + syncSuffix(tp), blocked: false };
     }
     if (s.selection.length > 0) {
       const plan = deps.planNudge(p, s.selection, frames);

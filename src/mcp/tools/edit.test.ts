@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { useEditor } from '../../store/editorStore';
+import type { Clip } from '../../types';
 import { addVideoClip, call, clipOf, ed, fresh, oneStepOf, proj, refused } from './editKit';
 
 let video = '';
@@ -768,5 +770,103 @@ describe('nudge_clips', () => {
     // the same ids twice count once
     const twice = await call('nudge_clips', { ids: [a, a], frames: 1 });
     expect(twice.data.moved).toEqual([a]);
+  });
+});
+
+describe('update_clip matte', () => {
+  async function pair(): Promise<{ r: string; m: string; top: string }> {
+    const r = await text('under');
+    const top = ed().addTrack('video');
+    const m = (await call('add_text', { text: 'matte', start: 0, duration: 2, track: top })).data.id as string;
+    return { r, m, top };
+  }
+  const matteOf = (id: string) => (clipOf(id) as any).matte;
+
+  it('update_clip matte: set, partial mode, null, each refusal, a partial mode over a chain', async () => {
+    const { r, m, top } = await pair();
+    // a clip alone: mode alpha is the default
+    await oneStepOf(() => call('update_clip', { id: r, patch: { matte: { clip: m } } }));
+    expect(matteOf(r)).toEqual({ clip: m, mode: 'alpha' });
+    // a partial one lies over the current one
+    await oneStepOf(() => call('update_clip', { id: r, patch: { matte: { mode: 'luma-inv' } } }));
+    expect(matteOf(r)).toEqual({ clip: m, mode: 'luma-inv' });
+    // null takes it away and stores no key
+    await oneStepOf(() => call('update_clip', { id: r, patch: { matte: null } }));
+    expect('matte' in clipOf(r)).toBe(false);
+    // each refusal
+    await refused('update_clip', { id: r, patch: { matte: { mode: 'luma' } } }, /matte also needs clip/);
+    await refused('update_clip', { id: r, patch: { matte: { clip: r } } }, /matte\.clip cannot be the clip itself/);
+    await refused('update_clip', { id: r, patch: { matte: { clip: 'clp_ghost' } } }, /matte\.clip: no clip with the id clp_ghost/);
+    await refused('update_clip', { id: r, patch: { matte: { clip: 5 } } }, /matte\.clip must be a clip id or null/);
+    await refused('update_clip', { id: r, patch: { matte: { clip: m, mode: 'dark' } } }, /matte\.mode must be one of: alpha, alpha-inv, luma, luma-inv/);
+    ed().addAsset({ id: 'au1', name: 'au1', kind: 'audio', mime: 'audio/mp3', size: 1, duration: 10, width: 0, height: 0, hasAudio: true, createdAt: 0 });
+    const music = ed().insertAsset('au1', { trackId: audio, start: 0 })!;
+    await refused('update_clip', { id: r, patch: { matte: { clip: music } } }, /matte\.clip must be a video, image, text or shape clip, .* is a audio clip/);
+    // a clip that is a matte cannot have one, a matte clip with a matte cannot be one
+    const third = await text('third', 5);
+    await call('update_clip', { id: r, patch: { matte: { clip: m } } });
+    await refused('update_clip', { id: m, patch: { matte: { clip: third } } }, /matte: this clip is the matte of another clip/);
+    await refused('update_clip', { id: third, patch: { matte: { clip: r } } }, /matte: that clip has a matte of its own/);
+    // a locked track
+    ed().updateTrack(top, { locked: true });
+    await refused('update_clip', { id: m, patch: { matte: null } }, /locked track/);
+    ed().updateTrack(top, { locked: false });
+    // a chain built by hand: r is matted by m, m by third. a partial mode over it is refused too
+    const p = proj();
+    useEditor.setState({ project: { ...p, clips: p.clips.map((c) => (c.id === m ? ({ ...c, matte: { clip: third, mode: 'alpha' } } as Clip) : c)) } });
+    await refused('update_clip', { id: r, patch: { matte: { mode: 'luma' } } }, /matte: that clip has a matte of its own/);
+  });
+});
+
+describe('trim_clip ripple and extract_range with sync lock off', () => {
+  async function pairOnTracks(): Promise<{ a: string; b: string; sound: string; soundTrack: string }> {
+    const a = addVideoClip(video, 0);
+    await call('trim_clip', { id: a, edge: 'end', time: 4 });
+    const b = addVideoClip(video, 4);
+    await call('trim_clip', { id: b, edge: 'end', time: 9 });
+    const sep = await call('separate_sound', { ids: [b] });
+    const sound = sep.data.pairs[0].sound as string;
+    return { a, b, sound, soundTrack: clipOf(sound).trackId };
+  }
+
+  it('trim_clip ripple names sync lock off tracks and out of sync clips', async () => {
+    const { a, b, sound, soundTrack } = await pairOnTracks();
+    const name = proj().tracks.find((t) => t.id === soundTrack)!.name;
+    const soundName = clipOf(sound).name;
+    // sync lock on: the sound goes along, nothing to report
+    const plain = await oneStepOf(() => call('trim_clip', { id: a, edge: 'end', time: 3, mode: 'ripple' }));
+    expect(plain.data.sync_off_tracks).toBeUndefined();
+    expect(plain.data.out_of_sync).toBeUndefined();
+    expect(clipOf(sound).start).toBe(3);
+    // sync lock off on its track: it stays, and its picture goes out of sync
+    await call('update_track', { id: soundTrack, syncLock: false });
+    const r = await oneStepOf(() => call('trim_clip', { id: a, edge: 'end', time: 2, mode: 'ripple' }));
+    expect(r.data.sync_off_tracks).toEqual([name]);
+    expect(r.data.out_of_sync).toEqual([soundName]);
+    expect(clipOf(sound).start).toBe(3);
+    expect(clipOf(b).start).toBe(2);
+  });
+
+  it('extract_range counts sync lock off tracks and names out of sync clips', async () => {
+    const { b, sound, soundTrack } = await pairOnTracks();
+    const soundName = clipOf(sound).name;
+    await call('update_track', { id: soundTrack, syncLock: false });
+    await call('set_range', { in: 1, out: 2 });
+    const r = await oneStepOf(() => call('extract_range'));
+    expect(r.data.syncOffTracks).toBe(1);
+    expect(r.data.outOfSync).toEqual([soundName]);
+    expect(clipOf(b).start).toBe(3);
+    expect(clipOf(sound).start).toBe(4);
+  });
+
+  it('extract_range with only sync lock off clips inside is refused', async () => {
+    ed().addAsset({ id: 'au1', name: 'au1', kind: 'audio', mime: 'audio/mp3', size: 1, duration: 30, width: 0, height: 0, hasAudio: true, createdAt: 0 });
+    ed().insertAsset('au1', { trackId: audio, start: 5 });
+    await call('update_track', { id: audio, syncLock: false });
+    await call('set_range', { in: 6, out: 8 });
+    await refused('extract_range', {}, /sync lock/);
+    const lift = await call('lift_range');
+    expect(lift.ok, lift.text).toBe(true);
+    expect(lift.data.syncOffTracks).toBeUndefined();
   });
 });

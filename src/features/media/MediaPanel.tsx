@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Palette, Plus, Replace, Search, Shapes, SlidersVertical, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Palette, Plus, Replace, Search, Shapes, SlidersVertical, Sparkles, SwatchBook, Trash2, Type, Upload } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import type { MediaTabId } from '../../store/ui';
 import { addMedia, openInSource } from '../preview/sourceKeys';
+import { putLutOn } from '../properties/lutActions';
+import { REASON_TEXT } from '../shell/reasons';
 import { useSource } from '../../store/source';
 import { useSourcePrefs } from '../preview/sourcePrefs';
 import { frameAt } from '../../lib/inOut';
@@ -25,7 +27,7 @@ import { MixerPanel } from './MixerPanel';
 import { ShapesTab } from './ShapesTab';
 import { LayersTab } from './LayersTab';
 import { CaptionTools } from './captions/CaptionTools';
-import { MEDIA_SORTS, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
+import { MEDIA_SORTS, filterAssets, lutSizeText, lutUses, removeLutText, sortAssets, swapKind, usedAssetIds } from './mediaList';
 import type { MediaFilter, MediaSort } from './mediaList';
 import { PLAIN_COLOR_NAME, plainColorPreset, showsPlainColor, usePlainColor } from './plainColor';
 import { tip } from '../shell/tip';
@@ -43,11 +45,13 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'video', label: 'video' },
   { id: 'audio', label: 'audio' },
   { id: 'image', label: 'image' },
+  { id: 'lut', label: 'luts' },
 ];
 
 function KindIcon({ kind, size = 12 }: { kind: MediaKind; size?: number }) {
   if (kind === 'video') return <Film size={size} />;
   if (kind === 'audio') return <Music size={size} />;
+  if (kind === 'lut') return <SwatchBook size={size} />;
   return <ImageIcon size={size} />;
 }
 
@@ -136,8 +140,10 @@ const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert
       startEdit();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (e.shiftKey) openInSource(id);
-      else onInsert(id);
+      if (e.shiftKey) {
+        if (kind === 'lut') useUi.getState().toast(REASON_TEXT.lutNotClip);
+        else openInSource(id);
+      } else onInsert(id);
     }
   };
 
@@ -147,6 +153,11 @@ const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert
     if (e.target instanceof Element && e.target.closest('.media-actions, .media-name, .media-rename')) return;
     const time = pressTime.current === null ? undefined : frameAt(pressTime.current, fps);
     cancelFlip();
+    // a lut is no source: the click only focuses
+    if (kind === 'lut') {
+      cardPress = null;
+      return;
+    }
     if (useSource.getState().split) {
       cardPress = null;
       openInSource(id, time);
@@ -172,11 +183,12 @@ const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert
 
   const marks = marksOf(asset);
   const onDragStart = (e: DragEvent<HTMLDivElement>) => {
-    beginDrag(e, { kind: 'asset', assetId: id, ...(marks ? { range: marks } : {}) });
+    if (kind === 'lut') beginDrag(e, { kind: 'lut', assetId: id });
+    else beginDrag(e, { kind: 'asset', assetId: id, ...(marks ? { range: marks } : {}) });
   };
 
   const dims = asset.width && asset.height ? ` - ${asset.width}x${asset.height}` : '';
-  const info = `${asset.name} - ${formatBytes(asset.size)}${dims}`;
+  const info = kind === 'lut' ? `${asset.name}: a lut. drag it onto a clip, or double click to put it on the selected clips` : `${asset.name} - ${formatBytes(asset.size)}${dims}`;
   const bar = marksBar(marks, asset.duration);
 
   return (
@@ -202,13 +214,19 @@ const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert
         <span className="media-badge media-badge-kind">
           <KindIcon kind={kind} />
         </span>
-        {kind !== 'image' ? <span className="media-badge media-badge-dur mono">{formatDuration(asset.duration)}</span> : null}
+        {kind === 'lut' ? (
+          <span className="media-badge media-badge-dur">{lutSizeText(asset.lut)}</span>
+        ) : kind !== 'image' ? (
+          <span className="media-badge media-badge-dur mono">{formatDuration(asset.duration)}</span>
+        ) : null}
         {bar ? <span className="media-marks" aria-hidden="true" style={{ left: `${bar.left}%`, width: `${bar.width}%` }} /> : null}
         <div className="media-actions">
           <button
             className="icon-btn icon-btn-sm"
-            {...tip('add to timeline', { does: 'at the playhead. the marked part when the media has an in or out point' })}
-            aria-label="add to timeline"
+            {...(kind === 'lut'
+              ? tip('put on selected clips', { does: 'puts this lut in the grade of the selected clips', why: 'lut-on' })
+              : tip('add to timeline', { does: 'at the playhead. the marked part when the media has an in or out point' }))}
+            aria-label={kind === 'lut' ? 'put the lut on the selected clips' : 'add to timeline'}
             onClick={(e) => {
               e.stopPropagation();
               onInsert(id);
@@ -233,7 +251,9 @@ const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert
           ) : null}
           <button
             className="icon-btn icon-btn-sm"
-            {...tip('remove from project', { does: 'the media and every clip that uses it' })}
+            {...tip('remove from project', {
+              does: kind === 'lut' ? 'the lut, and takes it off the grade of every clip that uses it' : 'the media and every clip that uses it',
+            })}
             aria-label="remove from project"
             onClick={(e) => {
               e.stopPropagation();
@@ -351,6 +371,8 @@ interface PendingRemove {
   name: string;
   clips: number;
   inSky: boolean;
+  /** a lut some clips use: the dialog says this instead */
+  lutText?: string;
 }
 
 function MediaTab() {
@@ -372,6 +394,12 @@ function MediaTab() {
 
   // addMedia takes the marked part and calls insertMedia, so separate sound still works
   const onInsert = useCallback((id: string) => {
+    const st = useEditor.getState();
+    if (st.project?.assets.find((a) => a.id === id)?.kind === 'lut') {
+      const t = putLutOn(st.selection, id);
+      if (t) useUi.getState().toast(t);
+      return;
+    }
     addMedia(id, { start: usePlayback.getState().time });
   }, []);
 
@@ -399,6 +427,12 @@ function MediaTab() {
     if (!project) return;
     const asset = project.assets.find((a) => a.id === id);
     if (!asset) return;
+    if (asset.kind === 'lut') {
+      const n = lutUses(project.clips, id);
+      if (n > 0) setPending({ id, name: asset.name, clips: n, inSky: false, lutText: removeLutText(asset.name, n) });
+      else void deleteAsset(id);
+      return;
+    }
     const clips = project.clips.filter((c) => 'assetId' in c && c.assetId === id).length;
     const inSky = skyUses(project.sky, id);
     if (clips > 0 || inSky) setPending({ id, name: asset.name, clips, inSky });
@@ -461,7 +495,7 @@ function MediaTab() {
       onDrop={onDrop}
     >
       <div className="media-toolbar">
-        <button className="btn btn-primary" title="import video, audio or image files" onClick={onPick}>
+        <button className="btn btn-primary" title="import video, audio, image or .cube lut files" onClick={onPick}>
           <Upload size={14} />
           import
         </button>
@@ -555,9 +589,9 @@ function MediaTab() {
         {!hasAssets ? (
           <div className="empty media-empty-import">
             <Upload size={20} />
-            <span>drop video, audio or image files here</span>
+            <span>drop video, audio, image or .cube lut files here</span>
             <span className="media-empty-sub">or pick them from your computer. files stay in this browser.</span>
-            <button className="btn" title="import video, audio or image files" onClick={onPick}>
+            <button className="btn" title="import video, audio, image or .cube lut files" onClick={onPick}>
               <Upload size={14} />
               import files
             </button>
@@ -575,14 +609,14 @@ function MediaTab() {
             <button className="btn" title="keep the media" onClick={cancelRemove}>
               cancel
             </button>
-            <button className="btn btn-danger" title="remove the media and its clips" onClick={confirmRemove}>
+            <button className="btn btn-danger" title={pending?.lutText ? 'remove the lut' : 'remove the media and its clips'} onClick={confirmRemove}>
               remove
             </button>
           </>
         }
       >
         <p>
-          {pending ? removeAssetText(pending.name, pending.clips, pending.inSky) : ''}
+          {pending ? (pending.lutText ?? removeAssetText(pending.name, pending.clips, pending.inSky)) : ''}
         </p>
       </Dialog>
 

@@ -1,0 +1,105 @@
+/* the crossfade box of a lane: sits under the transition band, straddles the edit */
+.timeline-crossfade {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  box-sizing: border-box;
+  background: var(--surface-5);
+  border: 1px solid var(--clip-label);
+  border-radius: var(--radius-sm);
+  color: var(--clip-label);
+  cursor: pointer;
+  touch-action: none;
+}
+.timeline-crossfade.is-movable {
+  cursor: grab;
+}
+.timeline-crossfade.is-picked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.timeline-crossfade.is-locked {
+  cursor: default;
+  opacity: 0.6;
+}
+.timeline-crossfade-shape {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.timeline-crossfade-shape polyline {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+.timeline-crossfade-in {
+  opacity: 0.6;
+}
+.timeline-crossfade-edit {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: currentColor;
+  opacity: 0.7;
+  pointer-events: none;
+}
+/* what was asked and does not fit */
+.timeline-crossfade-ghost {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px dashed var(--clip-label);
+  border-radius: var(--radius-sm);
+  background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in oklch, var(--clip-label) 35%, transparent) 3px 4px);
+  opacity: 0.7;
+  pointer-events: none;
+}
+/* nothing plays: a thin hatched mark on the edit */
+.timeline-crossfade.is-notch {
+  background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in oklch, var(--clip-label) 45%, transparent) 3px 4px), var(--surface-5);
+  cursor: default;
+}
+.timeline-crossfade-grip {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.timeline-crossfade-grip.is-before {
+  left: 0;
+}
+.timeline-crossfade-grip.is-after {
+  right: 0;
+}
+.timeline-crossfade-grip:hover {
+  background: var(--clip-label);
+  opacity: 0.4;
+}
+.timeline-crossfade-readout {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  font-size: 11px;
+  background: var(--surface-5);
+  border: 1px solid var(--clip-label);
+  border-radius: var(--radius-sm);
+  color: var(--clip-label);
+  pointer-events: none;
+}
+/* over a wallpaper the box (it sits over clips) keeps its solid surfaces */
+:root[data-wallpaper='on'] .timeline-crossfade {
+  --surface-0: var(--solid-0);
+  --surface-1: var(--solid-1);
+  --surface-2: var(--solid-2);
+  --surface-3: var(--solid-3);
+  --surface-4: var(--solid-4);
+  --surface-5: var(--solid-5);
+}

@@ -9,12 +9,13 @@ import { cleanRange, frameAt } from '../../lib/inOut';
 import { DEFAULT_IMAGE_DURATION, createClipFromAsset } from '../../lib/factory';
 import { marksOf } from '../../lib/marks';
 import { ownSoundsOf, soundFromPicture } from '../../lib/soundPair';
+import { syncLockOf } from '../../lib/trackTools';
 import { formatSeconds } from '../../lib/time';
 import { clipEnd } from '../../lib/timelineOps';
 import type { ClipMove } from '../../store/editorStore';
 import type { IdMaker } from './soundPlan';
 import { EDIT_TEXT, editStopText } from './editText';
-import { movingTracks, planSyncShift, syncShiftMoves } from './syncShift';
+import { movingTracks, planSyncShift, staysWithTarget, syncShiftMoves } from './syncShift';
 
 export type EditMode = 'insert' | 'overwrite' | 'replace' | 'fit' | 'append';
 export type EditTarget = string | null | false; // null auto, false off, a string = that track
@@ -47,6 +48,7 @@ export interface InsertPrep {
   deletes: string[];                                             // landing track clips that are slivers both sides
   atOf: Map<string, number>;                                     // track -> edge, a clip moving whole
   lockedSpan: string[];                                          // locked tracks with a clip across `at`
+  freeSpan: string[];                                            // unlocked sync lock off tracks with a clip across `at`
   kept: number; slivers: number;
 }
 export interface ReplacePlan { clipId: string; swap: boolean; trimStart: number; sounds: { id: string; trimStart: number }[]; soundsKept: number }
@@ -68,6 +70,8 @@ export interface EditResult {
   start: number; length: number; from: number; speed: number;
   split: number; moved: number; removed: number; trimmed: number; slivers: number; kept: number; soundsKept: number;
   lockedTracks: string[]; newTracks: string[]; // track ids
+  syncOffTracks?: string[]; // insert: unlocked sync lock off tracks that stayed, track ids
+  outOfSync?: string[];     // insert: clips that went out of sync, clip ids
   rangeCleared: InOutRange | null;  // for the toast's undo
 }
 
@@ -349,14 +353,18 @@ export function planEdit(p: Project, input: EditInput, make: IdMaker): EditPlan 
 export function insertPrep(p: Planned, at: number, by: number, landing: readonly string[]): InsertPrep {
   const moving = movingTracks(p.tracks, new Set(landing));
   const lands = new Set(landing);
-  const prep: InsertPrep = { at, by, split: [], trims: [], deletes: [], atOf: new Map(), lockedSpan: [], kept: 0, slivers: 0 };
+  const prep: InsertPrep = { at, by, split: [], trims: [], deletes: [], atOf: new Map(), lockedSpan: [], freeSpan: [], kept: 0, slivers: 0 };
   const sliver = (len: number): number => (len > EPS ? 1 : 0);
   for (const c of p.clips) {
     if (!(c.start < at - EPS && clipEnd(c) > at + EPS)) continue;
     const keepL = at - c.start;
     const keepR = clipEnd(c) - at;
+    // an effect that follows a target held on a sync lock off or locked track stays whole with it
+    if (staysWithTarget(c, p.clips, moving)) continue;
     if (!moving.has(c.trackId)) {
-      if (!prep.lockedSpan.includes(c.trackId)) prep.lockedSpan.push(c.trackId);
+      const free = p.tracks.some((t) => t.id === c.trackId && !t.locked && !syncLockOf(t));
+      const list = free ? prep.freeSpan : prep.lockedSpan;
+      if (!list.includes(c.trackId)) list.push(c.trackId);
       continue;
     }
     const okL = at > c.start + MIN_CLIP_DURATION;
@@ -387,9 +395,9 @@ export function insertPrep(p: Planned, at: number, by: number, landing: readonly
 /** the moves of an insert on the project after the splits: the sync shift (followers and locked tracks included) by `by` */
 export function planInsertMoves(
   now: Planned, at: number, by: number, edited: ReadonlySet<string>, atOf: ReadonlyMap<string, number>,
-): { moves: ClipMove[]; lockedBehind: string[] } {
+): { moves: ClipMove[]; lockedBehind: string[]; freeBehind: string[]; drift: string[] } {
   const s = planSyncShift(now, at, new Set(), edited, atOf);
-  return { moves: syncShiftMoves(s, by), lockedBehind: s.lockedBehind };
+  return { moves: syncShiftMoves(s, by), lockedBehind: s.lockedBehind, freeBehind: s.freeBehind, drift: s.drift };
 }
 
 export interface EditSummary { text: string; blocked: boolean; fit: string | null }

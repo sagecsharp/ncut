@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { trimStopText } from './trimText';
+import { outOfSyncText, trimStopText } from './trimText';
 import type { P, TrimStop } from './trimModes';
 
 const proj = (a: string, b: string): P => ({ clips: [{ id: 'a', type: 'text', text: a }, { id: 'b', type: 'text', text: b }], tracks: [], assets: [] }) as unknown as P;
@@ -15,5 +15,12 @@ describe('trimStopText', () => {
   });
   it('does not fill a slot that a name put in', () => {
     expect(trimStopText(stop('overlap'), proj('{other}', 'b'))).toBe('"{other}" would run into "b"');
+  });
+});
+
+describe('outOfSyncText', () => {
+  it('does not fill the tracks slot from a clip name', () => {
+    const p = { clips: [{ id: 'a', type: 'text', text: '{tracks}', trackId: 't' }], tracks: [{ id: 't', kind: 'video', name: 'music', locked: false, syncLock: false }], assets: [] } as unknown as P;
+    expect(outOfSyncText(p, ['a'])).toContain('"{tracks}"');
   });
 });

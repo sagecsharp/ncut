@@ -62,3 +62,47 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.export-note.is-warn {
+  color: var(--warn);
+}
+.export-adv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+.export-adv .field-row {
+  flex-wrap: wrap;
+}
+.export-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.export-seg .btn.is-active {
+  border-color: var(--text);
+  color: var(--text);
+}
+.export-loud {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.export-loud-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.export-advanced-toggle {
+  align-self: flex-start;
+}
+/* a greyed choice stays focusable and hoverable: it says why */
+.export-adv [aria-disabled='true'],
+.export-loud[aria-disabled='true'],
+.export-advanced-toggle[aria-disabled='true'],
+.export-loud-status [aria-disabled='true'] {
+  opacity: 0.45;
+}

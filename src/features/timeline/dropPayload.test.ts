@@ -46,6 +46,17 @@ describe('dropPayload', () => {
     expect(ghostLabel(asset('talk'))).toBe('');
   });
 
+  it('a lut payload has no lane, length 1, no take', () => {
+    const list = [...assets, media('look', 'lut', 0, false)];
+    for (const id of ['look', 'gone']) {
+      const p: DragPayload = { kind: 'lut', assetId: id };
+      expect(kindOfPayload(p, list)).toBeNull();
+      expect(durationOfPayload(p, list)).toBe(1);
+      expect(takeOf(p)).toEqual({});
+    }
+    expect(kindOfPayload(asset('look'), list)).toBeNull();
+  });
+
   it('range length', () => {
     expect(durationOfPayload(asset('talk', { range: { in: 1, out: 3 } }), assets)).toBe(2);
     expect(durationOfPayload(asset('talk', { range: { in: 4 } }), assets)).toBe(6);

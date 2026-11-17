@@ -4,7 +4,7 @@ import { clipGrid, gridLines } from '../../lib/tempo';
 import { getFilmstrip, getWaveform } from '../../media/derived';
 import type { WaveformData } from '../../media/derived';
 import { clipNearView } from './clipWindow';
-import { CLIP_LABEL_H } from './layout';
+import { clipBands, filmstripHeight } from './clipStrip';
 import { cssVar, getAppearanceGen, subscribeView, view } from './view';
 
 interface Film {
@@ -56,7 +56,9 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
   const latest = useRef({ clip, asset, zoom, innerH, film, wave });
   latest.current = { clip, asset, zoom, innerH, film, wave };
 
-  const wantFilm = clip.type === 'video' && asset.kind === 'video';
+  const wantFilm = clip.type === 'video' && asset.kind === 'video' && clipBands(clip.type, innerH).film;
+  // decoded at 48 or 96 px: no request per px while a track is resized
+  const filmH = filmstripHeight(innerH);
   const wantWave = asset.hasAudio;
 
   // how many frames to ask for: enough tiles for the clip at this zoom, quantised to avoid refetch churn
@@ -73,7 +75,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
     const delay = mounted.current ? 150 : 0;
     mounted.current = true;
     const timer = window.setTimeout(() => {
-      getFilmstrip(asset.id, count, innerH)
+      getFilmstrip(asset.id, count, filmH)
         .then((res) => {
           if (!cancelled && res && res.frames.length > 0) setFilm(res);
         })
@@ -83,7 +85,7 @@ export const ClipCanvas = memo(function ClipCanvas({ clip, asset, zoom, innerH }
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [wantFilm, near, asset.id, count, innerH]);
+  }, [wantFilm, near, asset.id, count, filmH]);
 
   useEffect(() => {
     if (!wantWave || !near) return;
@@ -224,6 +226,7 @@ type DrawProps = { clip: VideoClip | AudioClip; asset: MediaAsset; zoom: number;
 function drawFilm(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: number, h: number): void {
   const film = p.film;
   if (!film || film.frames.length === 0 || p.clip.type !== 'video') return;
+  if (!clipBands(p.clip.type, h).film) return;
   const f0 = film.frames[0]!;
   const tileW = Math.max(8, h * (f0.width / Math.max(1, f0.height)));
   const first = Math.floor(a / tileW);
@@ -271,8 +274,7 @@ function drawWave(ctx: CanvasRenderingContext2D, p: DrawProps, a: number, b: num
   const wave = p.wave;
   if (!wave || wave.peaks.length === 0 || !p.asset.hasAudio) return;
   const isVideo = p.clip.type === 'video';
-  const y0 = isVideo ? Math.round(h * 0.6) : CLIP_LABEL_H;
-  const stripH = h - y0;
+  const { waveTop: y0, waveH: stripH } = clipBands(p.clip.type, h);
   if (stripH < 4) return;
   const mid = y0 + stripH / 2;
   const half = stripH / 2 - 1;

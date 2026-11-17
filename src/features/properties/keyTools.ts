@@ -4,6 +4,7 @@
  * sorted by time and no two keys of one property are closer than MIN_GAP.
  */
 import { evalKeys } from '../../lib/anim';
+import { handlesOf, mergeSameTime, mirrorHandles, scaleHandleTimes, splitBezierAt, tidyHandles } from '../../lib/keyBezier';
 import type { Easing, Keyframe, Keyframes } from '../../types';
 
 /** two keys of one property are never closer than this (seconds) */
@@ -22,16 +23,16 @@ export function mirrorEase(e: Easing): Easing {
   return e;
 }
 
-/** sort by time and merge keys closer than MIN_GAP (the later one wins) */
+/** sort by time and merge keys closer than MIN_GAP (the later one wins, the earlier one's in handle stays). the result is in stored form */
 export function normalizeKeys(keys: readonly Keyframe[]): Keyframe[] {
   const sorted = keys.map((k) => ({ ...k })).sort((a, b) => a.t - b.t);
   const out: Keyframe[] = [];
   for (const k of sorted) {
     const prev = out[out.length - 1];
-    if (prev && k.t - prev.t < MIN_GAP - GAP_TOL) out[out.length - 1] = k;
+    if (prev && k.t - prev.t < MIN_GAP - GAP_TOL) out[out.length - 1] = mergeSameTime(prev, k);
     else out.push(k);
   }
-  return out;
+  return tidyHandles(out);
 }
 
 function mapProps(kf: Keyframes, fn: (keys: Keyframe[], prop: string) => Keyframe[]): Keyframes {
@@ -79,7 +80,7 @@ export function reverseKeys(kf: Keyframes, duration?: number): Keyframes {
       const k = keys[i]!;
       // the reversed key i starts the segment that used to END at it: the one the key before it described
       const seg = i > 0 ? keys[i - 1]!.ease : k.ease;
-      out.push({ t: sum - k.t, v: k.v, ease: mirrorEase(seg) });
+      out.push({ t: sum - k.t, v: k.v, ease: mirrorEase(seg), ...handlesOf(mirrorHandles(k)) });
     }
     return out;
   });
@@ -92,7 +93,7 @@ export function fitKeys(kf: Keyframes, from: number, to: number): Keyframes {
   const len = span.hi - span.lo;
   const target = Math.max(to, from);
   const scale = len > 0 ? (target - from) / len : 0;
-  return mapProps(kf, (keys) => keys.map((k) => ({ ...k, t: from + (k.t - span.lo) * scale })));
+  return mapProps(kf, (keys) => keys.map((k) => ({ ...scaleHandleTimes(k, scale), t: from + (k.t - span.lo) * scale })));
 }
 
 /** move every key by dt, the block as a whole stops at min / max */
@@ -127,7 +128,7 @@ export function repeatKeys(kf: Keyframes, times: number, pingPong: boolean): Key
         const k = keys[i]!;
         const local = flip ? hi - k.t : k.t - lo;
         const ease = flip ? mirrorEase(i > 0 ? keys[i - 1]!.ease : k.ease) : k.ease;
-        cur.push({ t: lo + (pass * len + local) / n, v: k.v, ease });
+        cur.push({ t: lo + (pass * len + local) / n, v: k.v, ease, ...handlesOf(scaleHandleTimes(flip ? mirrorHandles(k) : k, 1 / n)) });
       }
       if (!pingPong && pass < n - 1) {
         // jump back at the seam: park the last value until 1 ms before the next pass starts
@@ -202,9 +203,24 @@ export function wiggleOnto(old: readonly Keyframe[], offsets: readonly Keyframe[
     // a piece of a straight or held segment is straight or held; a piece of a curve is close to a soft ease
     return e === 'linear' || e === 'hold' ? e : 'ease';
   };
-  const out: Keyframe[] = old.map((k) => (k.t >= -GAP_TOL && k.t <= duration + GAP_TOL ? { ...k, v: k.v + shake(k.t) } : { ...k }));
-  for (const k of extra) out.push({ t: k.t, v: evalKeys(old as Keyframe[], k.t) + k.v, ease: segEase(k.t) });
-  return out.sort((a, b) => a.t - b.t);
+  // an extra time inside a custom part splits the curve there: the split key keeps the curve, the other extras are plain keys
+  let curve: Keyframe[] = old.map((k) => ({ ...k }));
+  const plain: Keyframe[] = [];
+  for (const k of extra) {
+    const cut = splitBezierAt(curve, k.t);
+    if (cut) curve = cut;
+    else plain.push(k);
+  }
+  const out: Keyframe[] = curve.map((k) => (k.t >= -GAP_TOL && k.t <= duration + GAP_TOL ? { ...k, v: k.v + shake(k.t) } : { ...k }));
+  for (const k of plain) out.push({ t: k.t, v: evalKeys(old as Keyframe[], k.t) + k.v, ease: segEase(k.t) });
+  out.sort((a, b) => a.t - b.t);
+  // a last custom key that gets keys after it has nothing to shape: it turns smooth
+  const lastOld = old[old.length - 1]!;
+  if (lastOld.ease === 'bezier' && plain.some((k) => k.t > lastOld.t)) {
+    const at = out.findIndex((k) => k.t === lastOld.t);
+    if (at >= 0) out[at] = { ...out[at]!, ease: 'ease' };
+  }
+  return tidyHandles(out);
 }
 
 /** keys for ONE property: a seeded random walk around base that starts and ends at rest */

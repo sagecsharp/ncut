@@ -10,6 +10,7 @@ import type { Clip, Project, VideoClip, VisualClip } from '../../types';
 import { isVisualClip } from '../../types';
 import { neededClipsAt, paintListAt } from '../../engine/draw';
 import { transitionSpan } from '../../lib/transitions';
+import { matteTable } from '../../engine/matte';
 
 const EPS = 1e-3;
 const MAX_PARENT_DEPTH = 16;
@@ -17,8 +18,8 @@ const MAX_PARENT_DEPTH = 16;
 /** fields on every clip that do not depend on time (keyframes, fades and the like are checked separately) */
 const COMMON = ['type', 'id', 'trackId', 'start', 'duration', 'name', 'fadeIn', 'fadeOut', 'group'];
 /** fields of the visual clips (Spatial) that do not depend on time as plain values */
-const SPATIAL = ['transform', 'lookTarget', 'shape', 'shapeDepth', 'lit', 'transition', 'blend', 'crop', 'radius', 'bend', 'parent', 'pivot', 'adjust', 'chromaKey', 'mask', 'grade'];
-const VIDEO = ['assetId', 'trimStart', 'speed', 'volume', 'muted', 'bpm', 'beatOffset', 'pan'];
+const SPATIAL = ['transform', 'lookTarget', 'shape', 'shapeDepth', 'lit', 'transition', 'blend', 'crop', 'radius', 'bend', 'parent', 'pivot', 'adjust', 'chromaKey', 'mask', 'grade', 'matte'];
+const VIDEO = ['assetId', 'trimStart', 'speed', 'volume', 'muted', 'bpm', 'beatOffset', 'pan', 'crossfade', 'fadeInShape', 'fadeOutShape'];
 const IMAGE = ['assetId'];
 const TEXT = [
   'text', 'fontFamily', 'fontSize', 'fontWeight', 'italic', 'color', 'background', 'align', 'letterSpacing', 'lineHeight',
@@ -133,11 +134,15 @@ export interface FrameInfo {
 export function frameInfo(project: Project, time: number): FrameInfo {
   const paint = paintListAt(project, time);
   const needed = neededClipsAt(project, time);
+  const mattes = matteTable(project);
   let allStatic = true;
   let key = '';
   for (const c of paint) {
     key += `${c.id},`;
     if (allStatic && !isStaticAt(project, c, time)) allStatic = false;
+    // a clip cut by a matte is still only while its playing matte clip is (one that does not play is an empty matte)
+    const m = allStatic ? mattes?.byClip.get(c.id) : undefined;
+    if (m && time >= m.src.start - EPS && time < m.src.start + m.src.duration - EPS && !isStaticAt(project, m.src, time)) allStatic = false;
   }
   key += '|';
   const videos: VideoClip[] = [];

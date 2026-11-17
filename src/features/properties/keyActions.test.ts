@@ -282,3 +282,44 @@ describe('copy and paste', () => {
     expect(lastToast()).toBe('these keys are already here');
   });
 });
+
+describe('custom curves', () => {
+  const custom = (): Keyframe[] => [
+    { t: 0, v: 0, ease: 'bezier', out: { speed: 60, influence: 0.4 } },
+    { t: 1, v: 50, ease: 'bezier', in: { speed: 20, influence: 0.3 }, out: { speed: -10, influence: 0.45 } },
+    { t: 2, v: 20, ease: 'linear', in: { speed: 8, influence: 0.35 } },
+  ];
+  const sampleTimes = (from: number, to: number): number[] => Array.from({ length: 100 }, (_, i) => from + ((to - from) * (i + 0.5)) / 100);
+
+  it('a handle change is a change', () => {
+    // a curve that goes up and comes back with the same values: reversing it moves nothing but the handles
+    const there: Keyframe[] = [
+      { t: 0, v: 0, ease: 'bezier', out: { speed: 10, influence: 0.3 } },
+      { t: 2, v: 0, ease: 'bezier', in: { speed: 10, influence: 0.3 } },
+    ];
+    open((t) => [image(t[0]!, 'a', 0, 4, { keyframes: { x: there } })]);
+    oneStep(() => reverseKeysAction('a'));
+    expect(keysOf('a', 'x').map((k) => [k.t, k.v, k.ease])).toEqual([[0, 0, 'bezier'], [2, 0, 'bezier']]);
+    expect(keysOf('a', 'x')[0]!.out).toEqual({ speed: -10, influence: 0.3 });
+    expect(keysOf('a', 'x')[1]!.in).toEqual({ speed: -10, influence: 0.3 });
+    // the same handles are no change
+    open((t) => [image(t[0]!, 'a', 0, 4, { keyframes: { x: lin([0, 0], [1, 100], [2, 0]) } })]);
+    noStep(() => reverseKeysAction('a'));
+  });
+
+  it('reverse, fit and repeat keep a custom curve', () => {
+    open((t) => [image(t[0]!, 'a', 0, 4, { keyframes: { x: custom() } })]);
+    oneStep(() => reverseKeysAction('a'));
+    for (const t of sampleTimes(0, 2)) expect(evalKeys(keysOf('a', 'x'), t)).toBeCloseTo(evalKeys(custom(), 2 - t), 6);
+
+    open((t) => [image(t[0]!, 'a', 0, 4, { keyframes: { x: custom() } })]);
+    oneStep(() => fitKeysAction('a'));
+    expect(keysOf('a', 'x').map((k) => k.t)).toEqual([0, 2, 4]);
+    for (const t of sampleTimes(0, 4)) expect(evalKeys(keysOf('a', 'x'), t)).toBeCloseTo(evalKeys(custom(), t / 2), 6);
+
+    open((t) => [image(t[0]!, 'a', 0, 4, { keyframes: { x: custom() } })]);
+    oneStep(() => repeatKeysAction('a', true));
+    for (const t of sampleTimes(0, 0.99)) expect(evalKeys(keysOf('a', 'x'), t)).toBeCloseTo(evalKeys(custom(), t * 2), 6);
+    for (const t of sampleTimes(1.01, 1.99)) expect(evalKeys(keysOf('a', 'x'), t)).toBeCloseTo(evalKeys(custom(), 4 - t * 2), 6);
+  });
+});

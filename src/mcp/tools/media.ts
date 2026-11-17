@@ -1,19 +1,26 @@
 /** media tools (docs/MCP.md): bring files into the project, put media on the timeline, swap media */
+import { isAdjustActive } from '../../engine/clipLook';
 import { skyCandidates, skyUses } from '../../engine/scene3d/sky';
 import { usedAssetIds } from '../../features/media/mediaList';
 import { applyMatch } from '../../features/preview/sourceKeys';
+import { cubeOfClip, downloadText } from '../../features/properties/lutSave';
+import { REASON_TEXT } from '../../features/shell/reasons';
 import { runEdit } from '../../features/timeline/editActions';
 import { busyFor } from '../../lib/busy';
+import { canGrade, hasGrade, lutOf } from '../../lib/gradeData';
 import { editSpan, inOutSpan } from '../../lib/inOut';
 import { marksOf } from '../../lib/marks';
 import { matchFrameAt, planMatchFrame } from '../../lib/matchFrame';
+import { mcpDownloadName, shell } from '../../lib/shell';
 import { deleteAsset, importFiles, useImporting } from '../../media/importer';
+import { lutTableOf, requestLut } from '../../media/lutTables';
+import { getAssetBlob } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { importProjectFile } from '../../store/session';
 import { useUi } from '../../store/ui';
-import type { ClipParts, InOutRange, MediaAsset } from '../../types';
-import { isMediaClip, MIN_CLIP_DURATION } from '../../types';
+import type { ClipGrade, ClipParts, InOutRange, MediaAsset } from '../../types';
+import { isMediaClip, isVisualClip, MIN_CLIP_DURATION } from '../../types';
 import { clipBrief, needAsset, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 import { MAX_TIME } from './editPatch';
@@ -24,7 +31,14 @@ const DESKTOP_ONLY = 'this tool only works in the ncut desktop app: the app read
 const BAD_FILE = ['not an ncut project file', 'the project file is damaged', 'this project file was made by a newer version of ncut'];
 
 function assetBrief(a: MediaAsset): Record<string, unknown> {
-  return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio };
+  const brief: Record<string, unknown> = { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio };
+  if (a.kind === 'lut' && a.lut) brief.lut = { size3: a.lut.size3, size1: a.lut.size1, ...(a.lut.title ? { title: a.lut.title } : {}) };
+  return brief;
+}
+
+/** a lut is not a clip: it goes on a clip through update_clip grade.lut */
+function notALut(a: MediaAsset): void {
+  if (a.kind === 'lut') throw new ToolError(`the media ${a.id} is a lut: it is not a clip. put it on a clip with update_clip { grade: { lut: { media: '${a.id}' } } }`);
 }
 
 const PART_MIN = MIN_CLIP_DURATION - 1e-9;
@@ -78,7 +92,8 @@ export const mediaTools: ToolDef[] = [
       'adds video, audio and image files from disk to the open project\'s media (not to the timeline: add_media_clip does that). ' +
       'paths is required: 1 to 16 absolute paths with a drive letter, like C:/clips/a.mp4. ' +
       'video: mp4 m4v mov webm mkv ogv avi ts mts 3gp. audio: mp3 wav ogg oga m4a aac flac opus weba aiff aif. image: png jpg jpeg gif webp bmp avif svg. ' +
-      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio). files that cannot be read are left out and listed in "skipped" (name and why). when the new files look like a skybox, looksLikeSky holds their ids: update_project { sky: { media: looksLikeSky } } makes it the sky. desktop app only.',
+      'lut: cube (1d, 3d or both, up to 65 points per side): media of kind lut, for update_clip grade.lut. ' +
+      'answers the new media (id, name, kind, duration in seconds, size in pixels, hasAudio; a lut also has lut: { size3, size1, title? }). files that cannot be read are left out and listed in "skipped" (name and why). when the new files look like a skybox, looksLikeSky holds their ids: update_project { sky: { media: looksLikeSky } } makes it the sky. desktop app only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -155,6 +170,7 @@ export const mediaTools: ToolDef[] = [
     },
     run(args) {
       const asset = needAsset(args.asset);
+      notALut(asset);
       if (asset.kind === 'image') throw new ToolError(pictureText(asset));
       const given = givenPart(args);
       const clear = args.clear === true;
@@ -201,6 +217,7 @@ export const mediaTools: ToolDef[] = [
     },
     run(args) {
       const asset = needAsset(args.asset);
+      notALut(asset);
       const given = givenPart(args);
       const hasPart = given.in !== undefined || given.out !== undefined;
       if (hasPart) {
@@ -253,12 +270,14 @@ export const mediaTools: ToolDef[] = [
         const clip = needClip(args.clip);
         if (!isMediaClip(clip)) throw new ToolError(`the clip ${clip.id} is a ${clip.type} clip: only video, audio and image clips have media`);
         const asset = needAsset(clip.assetId);
+        notALut(asset);
         const end = clip.start + clip.duration;
         if (!(clip.start <= t + 1e-6 && t < end - 1e-6)) throw new ToolError(`time ${round(t)} s is outside the clip ${clip.id} (${round(clip.start)} s to ${round(end)} s)`);
         target = planMatchFrame(clip, asset, t);
       } else {
         target = matchFrameAt(p, t, useEditor.getState().selection);
         if (!target) throw new ToolError(`no video, audio or image clip at ${round(t)} s`);
+        notALut(target.asset);
       }
       const r = applyMatch(target);
       return ok({ clip: target.clip.id, asset: target.asset.id, sourceTime: round(target.time), marks: marksOut(target.marks), replaced: r.replaced });
@@ -268,12 +287,12 @@ export const mediaTools: ToolDef[] = [
     name: 'edit_media',
     title: 'three point edit',
     description:
-      'edits media into the timeline like f9 / f10, one undo step. insert: the clips after the edit point move later on every unlocked track (a clip over it is split). ' +
+      'edits media into the timeline like f9 / f10, one undo step. insert: the clips after the edit point move later on every unlocked track with sync lock on and on the tracks it lands on (a clip over it is split). ' +
       'overwrite: covers the target tracks, nothing moves. fit: overwrite at the speed that fills at to until. replace: the clip under at shows the media, frame matched (source_time lands at at), same length. ' +
       'append: after the last clip of the target tracks. place: at / until (timeline s), else the project in and out (cleared after use), else the playhead. ' +
       'part: in / out (media s), else its marks, else all. track / sound_track: default the lowest unlocked video and top unlocked audio track. parts picture / sound: one half. ' +
       'sound_apart: a video with sound arrives as a grouped pair, else its sound stays in the video clip. the playhead goes to the end of the new clip. ' +
-      'answers { mode, clips, start, length, sourceIn, speed, split, moved, removed, trimmed, playhead } and, when they apply, slivers, kept, soundsKept, lockedTracks, newTracks, rangeCleared.',
+      'answers { mode, clips, start, length, sourceIn, speed, split, moved, removed, trimmed, playhead } and, when they apply, slivers, kept, soundsKept, lockedTracks, newTracks, rangeCleared, syncOffTracks (tracks with sync lock off that stayed) and outOfSync (clips that went out of sync).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -295,6 +314,7 @@ export const mediaTools: ToolDef[] = [
     run(args) {
       const p = needProject();
       const asset = needAsset(args.asset);
+      notALut(asset);
       const mode = args.mode as 'insert' | 'overwrite' | 'replace' | 'fit' | 'append';
       const parts = args.parts as ClipParts | undefined;
       const checkTrack = (key: 'track' | 'sound_track'): void => {
@@ -373,6 +393,8 @@ export const mediaTools: ToolDef[] = [
         ...(r.lockedTracks.length > 0 ? { lockedTracks: r.lockedTracks } : {}),
         ...(r.newTracks.length > 0 ? { newTracks: r.newTracks } : {}),
         ...(r.rangeCleared ? { rangeCleared: marksOut(r.rangeCleared) } : {}),
+        ...(r.syncOffTracks && r.syncOffTracks.length > 0 ? { syncOffTracks: r.syncOffTracks } : {}),
+        ...(r.outOfSync && r.outOfSync.length > 0 ? { outOfSync: r.outOfSync } : {}),
       });
     },
   },
@@ -414,7 +436,7 @@ export const mediaTools: ToolDef[] = [
       'removes media from the open project and deletes its stored file from the app for good (the file on disk it was imported from is not touched). it cannot be undone: media is not part of the undo history. ' +
       'ids: media ids from get_project or import_media (1 to 200). unused: true removes every media item no clip uses, instead of ids. send one of the two. ' +
       'media that clips use is refused unless with_clips: true, which deletes those clips too and clears the whole undo history. it is refused when one of those clips is on a locked track. ' +
-      'pictures of the sky are refused (take the sky off first with update_project sky: null) and unused: true leaves them. unused: true is refused while files are being imported. removing unused media can also clear the undo history when an undo step still holds a clip of it: the answer says so in undoCleared. refused while an export runs. ' +
+      'pictures of the sky are refused (take the sky off first with update_project sky: null) and unused: true leaves them. unused: true is refused while files are being imported. removing unused media can also clear the undo history when an undo step still holds a clip of it: the answer says so in undoCleared. refused while an export runs. a lut is taken off every grade that uses it. ' +
       'answers what was removed (id, name), how many clips went with it, undoCleared and how many media are left.',
     inputSchema: {
       type: 'object',
@@ -478,6 +500,54 @@ export const mediaTools: ToolDef[] = [
       }
       const after = needProject();
       return ok({ removed, clips: cut, undoCleared: cleared, media: after.assets.length });
+    },
+  },
+  {
+    name: 'save_grade_lut',
+    title: 'save a grade as a .cube lut',
+    description:
+      'writes the color and grade of one clip (adjust, wheels, curves and its lut, at the playhead or at time) as a .cube 3d lut for other apps. ' +
+      'clip: a video, image, text or shape clip, or a grade effect. size 17, 33 or 65 (default 33). the key, masks and effects are not in it. ' +
+      'in the desktop app the file goes to the save folder and its path is added to the answer; elsewhere nothing is written and the answer gives size, rows and a hash. ' +
+      'answers { clip, file, size, rows, sha, saved: true | false, lutLeftOut? }: sha is the first 24 characters of the sha-256 of the file, lutLeftOut says the lut of the grade could not be read and is not in the file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        clip: { type: 'string', description: 'clip id' },
+        size: { type: 'integer', enum: [17, 33, 65], description: 'points per side of the table, default 33' },
+        time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline seconds the grade is read at (animated values), default the playhead' },
+      },
+      required: ['clip'],
+    },
+    async run(args, ctx) {
+      const clip = needClip(args.clip);
+      if (!canGrade(clip)) throw new ToolError(`the clip ${clip.id} is ${clip.type}: it has no picture to grade`);
+      if (!(isVisualClip(clip) && isAdjustActive(clip.adjust)) && !hasGrade(clip)) throw new ToolError(REASON_TEXT.nothingToSave);
+      const size = optNumber(args.size) ?? 33;
+      const time = optNumber(args.time) ?? usePlayback.getState().time;
+      const lut = lutOf((clip as { grade?: ClipGrade | null }).grade);
+      if (lut) await requestLut(lut.media, getAssetBlob);
+      const out = cubeOfClip(clip, time, lutTableOf, size);
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(out.text)));
+      const sha = [...bytes.subarray(0, 12)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      const answer: Record<string, unknown> = { clip: clip.id, file: out.name, size, rows: size * size * size, sha, saved: false };
+      if (out.lutLeftOut) answer.lutLeftOut = true;
+      // no ticket (a browser): nothing is written
+      if (ctx.ticket === null) return ok(answer);
+      // arm the shell first, then start the download it is waiting for
+      const armed = shell.mcp.save(ctx.ticket);
+      try {
+        downloadText(mcpDownloadName(ctx.ticket, out.name), out.text);
+      } catch (e) {
+        void armed.catch(() => {});
+        throw e;
+      }
+      const result = await armed;
+      if (!result.ok) return ok({ ...answer, note: 'the shell could not save the file by itself, nothing was written' });
+      const done = ok({ ...answer, saved: true });
+      // the shell adds the full path of the saved file to the answer
+      done.saved = ctx.ticket;
+      return done;
     },
   },
 ];

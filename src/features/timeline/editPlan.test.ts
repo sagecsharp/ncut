@@ -277,6 +277,46 @@ describe('insert', () => {
     expect(f).toMatchObject({ at: 3, by: 2 });
   });
 
+  it('insertPrep: a clip across the point on a sync lock off track is not split', () => {
+    const tracks = [...TRACKS.map((t) => (t.id === 'v2' ? { ...t, syncLock: false } : t)), track('lk', 'video', { locked: true, syncLock: false })];
+    const a = prepOf([video('a', 'v2', 0, 6), video('b', 'v1', 0, 6), video('c', 'lk', 0, 6)], 3, 2, T, tracks);
+    expect(a.split).toEqual(['b']);
+    expect(a.freeSpan).toEqual(['v2']);
+    expect(a.lockedSpan).toEqual(['lk']);
+    expect(a.kept).toBe(0);
+    expect(prepOf([video('a', 'v1', 0, 6)]).freeSpan).toEqual([]);
+  });
+
+  it('insertPrep: an effect on a target held on a sync lock off track is not split', () => {
+    const tracks = [...TRACKS.map((t) => (t.id === 'v2' ? { ...t, syncLock: false } : t)), track('v3', 'video')];
+    const e = { id: 'e', type: 'effect', trackId: 'v3', start: 0, duration: 6, name: 'e', fadeIn: 0, fadeOut: 0, effect: 'shake', params: {}, amount: 1, seed: 1, target: 'r' } as Clip;
+    const a = prepOf([video('r', 'v2', 0, 6), e, video('b', 'v1', 0, 6)], 3, 2, T, tracks);
+    expect(a.split).toEqual(['b']);
+  });
+
+  it('a landing track with sync lock off moves', () => {
+    const tracks = TRACKS.map((t) => (t.id === 'v1' ? { ...t, syncLock: false } : t));
+    const clips = [video('a', 'v1', 0, 6), video('b', 'v1', 8, 1)];
+    const prep = insertPrep({ clips, tracks }, 3, 2, ['v1']);
+    expect(prep.split).toEqual(['a']);
+    expect(prep.freeSpan).toEqual([]);
+    const r = planInsertMoves({ clips, tracks }, 3, 2, new Set(['v1']), new Map());
+    expect(r.moves.map((m) => m.id)).toEqual(['b']);
+    expect(r.freeBehind).toEqual([]);
+  });
+
+  it('planInsertMoves gives freeBehind and drift', () => {
+    const tracks = TRACKS.map((t) => (t.id === 'a1' ? { ...t, syncLock: false } : t));
+    const clips: Clip[] = [video('p', 'v1', 4, 2, { group: 'g', assetId: 'vid' }), audio('s', 'a1', 4, 2, { group: 'g', assetId: 'vid' }), audio('k', 'a1', 9, 1)];
+    const r = planInsertMoves({ clips, tracks }, 3, 2, new Set(['v1']), new Map());
+    expect(r.moves.map((m) => m.id)).toEqual(['p']);
+    expect(r.freeBehind).toEqual(['a1']);
+    expect(r.drift).toEqual(['s']);
+    const none = planInsertMoves({ clips: [video('q', 'v1', 4, 2)], tracks }, 3, 2, new Set(['v1']), new Map());
+    expect(none.freeBehind).toEqual([]);
+    expect(none.drift).toEqual([]);
+  });
+
   it('planInsertMoves: whole moves, followers, locked behind', () => {
     const fx = { id: 'fx', type: 'effect', trackId: 'v2', start: 6, duration: 2, name: 'fx', fadeIn: 0, fadeOut: 0, effect: 'blur', amount: 1, params: {}, target: 'y' } as unknown as Clip;
     const tracks = [...TRACKS, track('lk', 'video', { locked: true })];

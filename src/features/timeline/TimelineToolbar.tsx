@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import {
   Brackets,
   Camera,
+  Diamond,
   CopyPlus,
   Flag,
   ListEnd,
@@ -29,7 +30,10 @@ import { useUi } from '../../store/ui';
 import { REASON_TEXT } from '../shell/reasons';
 import { tip } from '../shell/tip';
 import { freezeAtPlayhead, trimToPlayhead } from './actions';
+import { toggleKeyPanel } from './keyLaneActions';
+import { useKeyPanel } from './keyPanelState';
 import { toggleTrimMode } from './trimActions';
+import { TrackSizeButtons } from './TrackSizeButtons';
 
 interface Props {
   /** zoom to an absolute px/second value, keeping the playhead steady in the viewport */
@@ -56,6 +60,7 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
   const snapping = useEditor((s) => s.snapping);
   const trimMode = useUi((s) => s.trimMode);
+  const keyPanelOpen = useKeyPanel((s) => s.open);
   const zoom = useEditor((s) => s.zoom);
   const fps = useEditor((s) => s.project?.fps ?? 30);
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
@@ -206,6 +211,19 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       >
         <Brackets size={16} />
       </button>
+      <button
+        className={'icon-btn' + (keyPanelOpen ? ' is-active' : '')}
+        onClick={() => toggleKeyPanel()}
+        aria-label="keyframe panel"
+        aria-pressed={keyPanelOpen}
+        {...tip('keyframe panel', {
+          does: 'one row per animated value of the selected clips, under the tracks. select keyframes there to move, stretch, copy or delete them',
+          keys: 'key-panel',
+          on: keyPanelOpen,
+        })}
+      >
+        <Diamond size={16} />
+      </button>
       <span className="timeline-toolbar-sep" />
       <button
         className="icon-btn"
@@ -301,6 +319,7 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       >
         <UnfoldHorizontal size={16} />
       </button>
+      <TrackSizeButtons />
     </div>
   );
 }

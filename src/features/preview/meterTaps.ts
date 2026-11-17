@@ -7,6 +7,8 @@ export interface MeterSource {
   closeTap(key: string): void;
   /** false when the tap is not built yet */
   readTap(key: string, out: TapLevels): boolean;
+  /** the node after the output level and its context, for the loudness strip. null until the sound starts */
+  audioOut?(): { ctx: BaseAudioContext; node: AudioNode } | null;
 }
 
 let current: MeterSource | null = null;
@@ -45,6 +47,8 @@ export function holdTap(key: string): () => void {
 export function readTap(key: string, out: TapLevels): boolean {
   return current ? current.readTap(key, out) : false;
 }
+
+export function audioOut(): { ctx: BaseAudioContext; node: AudioNode } | null { return current?.audioOut?.() ?? null; }
 
 export function heldTaps(): string[] {
   return [...held.keys()];

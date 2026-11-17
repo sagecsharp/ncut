@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { detectKind } from './importer';
+import { ACCEPTED_TYPES, detectKind } from './importer';
 
 describe('detectKind', () => {
   it('goes by the type the system gives', () => {
@@ -23,6 +23,28 @@ describe('detectKind', () => {
     expect(detectKind({ type: 'text/plain', name: 'notes.txt' })).toBeNull();
     expect(detectKind({ type: '', name: 'noextension' })).toBeNull();
     expect(detectKind({ type: 'application/zip', name: 'project.ncut' })).toBeNull();
+  });
+});
+
+describe('a .cube file', () => {
+  it('is a lut whatever its mime', () => {
+    expect(detectKind({ type: '', name: 'warm.cube' })).toBe('lut');
+    expect(detectKind({ type: 'video/mp4', name: 'odd.CUBE' })).toBe('lut');
+    expect(detectKind({ type: 'text/plain', name: 'warm.cube' })).toBe('lut');
+  });
+  it('is accepted by the picker', () => {
+    expect(ACCEPTED_TYPES).toBe('video/*,audio/*,image/*,.cube');
+  });
+  it('is skipped with its line when broken', async () => {
+    const { createProject } = await import('../lib/factory');
+    const { useEditor } = await import('../store/editorStore');
+    const { importFiles } = await import('./importer');
+    useEditor.getState().openProject(createProject('x'));
+    const skipped: [string, string][] = [];
+    const file = new File(['LUT_3D_SIZE 2\n0 0 0\n1 0 oops\n'], 'bad.cube');
+    expect(await importFiles([file], { quiet: true, onSkip: (n, w) => skipped.push([n, w]) })).toEqual([]);
+    expect(skipped).toEqual([['bad.cube', 'line 3: expected three numbers']]);
+    expect(useEditor.getState().project?.assets).toEqual([]);
   });
 });
 

@@ -827,3 +827,100 @@ describe('edit_media', () => {
     expect(JSON.stringify(clips())).toBe(snapshot);
   });
 });
+
+describe('luts in the media tools', () => {
+  const lutAsset = (id = 'l1'): MediaAsset => ({ ...asset(id, 'lut', 0, 'warm'), width: 0, height: 0, hasAudio: false, lut: { size3: 17, size1: 0, title: 'warm' } });
+  beforeEach(() => useEditor.getState().addAsset(lutAsset()));
+  const text = /the media l1 is a lut: it is not a clip\. put it on a clip with update_clip \{ grade: \{ lut: \{ media: 'l1' \} \} \}/;
+
+  it('import_media answers a lut with its size and title', async () => {
+    mocks.importFiles.mockResolvedValue([lutAsset('n9')]);
+    const r = await call('import_media', {}, { files: [{ name: 'warm.cube', bytes: new Uint8Array([1]).buffer }], ticket: null });
+    expect(r.json!.media).toEqual([{ id: 'n9', name: 'warm', kind: 'lut', duration: 0, width: 0, height: 0, hasAudio: false, lut: { size3: 17, size1: 0, title: 'warm' } }]);
+  });
+
+  it('add_media_clip, edit_media and set_media_marks refuse a lut and change nothing', async () => {
+    const before = past();
+    const a = await call('add_media_clip', { asset: 'l1' });
+    expect(a.error).toBe(true);
+    expect(a.text).toMatch(text);
+    const e = await call('edit_media', { asset: 'l1', mode: 'append' });
+    expect(e.error).toBe(true);
+    expect(e.text).toMatch(text);
+    const m = await call('set_media_marks', { asset: 'l1', in: 1 });
+    expect(m.error).toBe(true);
+    expect(m.text).toMatch(text);
+    expect(past()).toBe(before);
+    expect(project().clips).toHaveLength(0);
+  });
+
+  it('match_frame refuses a clip whose media is a lut', async () => {
+    const s = project();
+    useEditor.getState().openProject({
+      ...s,
+      clips: [{ id: 'k1', type: 'video', trackId: s.tracks[0]!.id, start: 0, duration: 4, name: 'k', assetId: 'l1', trimStart: 0, speed: 1, volume: 1, muted: false, fadeIn: 0, fadeOut: 0 } as never],
+    });
+    const r = await call('match_frame', { clip: 'k1', time: 1 });
+    expect(r.error).toBe(true);
+    expect(r.text).toMatch(text);
+  });
+
+  it('remove_media of a lut by id needs no with_clips', async () => {
+    const r = await call('remove_media', { ids: ['l1'] });
+    expect(r.error).toBe(false);
+    expect(r.json!.removed).toEqual([{ id: 'l1', name: 'warm' }]);
+    expect(project().assets.some((a) => a.id === 'l1')).toBe(false);
+  });
+
+  it('the descriptions say what a lut is', async () => {
+    const { TOOLS } = await import('../registry');
+    const d = (n: string) => TOOLS.find((t) => t.name === n)!.description;
+    expect(d('import_media')).toMatch(/cube/);
+    expect(d('remove_media')).toMatch(/a lut is taken off every grade that uses it/);
+    expect(d('edit_media')).toMatch(/syncOffTracks/);
+  });
+});
+
+describe('edit_media insert and sync lock', () => {
+  it('names the tracks with sync lock off that stayed', async () => {
+    const s = project();
+    const vt = s.tracks.find((t) => t.kind === 'video')!;
+    const free = { id: 'vfree', kind: 'video' as const, name: 'free', muted: false, hidden: false, locked: false, syncLock: false };
+    useEditor.getState().openProject({
+      ...s,
+      tracks: [...s.tracks, free],
+      clips: [{ id: 'f1', type: 'video', trackId: 'vfree', start: 5, duration: 2, name: 'f', assetId: 'v1', trimStart: 0, speed: 1, volume: 1, muted: false, fadeIn: 0, fadeOut: 0 } as never],
+    });
+    const r = await call('edit_media', { asset: 'v2', mode: 'insert', at: 1, track: vt.id });
+    expect(r.error, r.text).toBe(false);
+    expect(r.json!.syncOffTracks).toEqual(['vfree']);
+    expect(project().clips.find((c) => c.id === 'f1')!.start).toBe(5);
+  });
+
+  it('names the clips that went out of sync when a pair is split across a sync lock off track', async () => {
+    const s = project();
+    const vt = s.tracks.find((t) => t.kind === 'video')!;
+    const free = { id: 'afree', kind: 'audio' as const, name: 'free sound', muted: false, hidden: false, locked: false, syncLock: false };
+    const base = { fadeIn: 0, fadeOut: 0, assetId: 'v1', trimStart: 0, speed: 1, volume: 1, muted: false, group: 'g' };
+    useEditor.getState().openProject({
+      ...s,
+      tracks: [...s.tracks, free],
+      clips: [
+        { id: 'pp', type: 'video', trackId: vt.id, start: 4, duration: 2, name: 'p', ...base } as never,
+        { id: 'ss', type: 'audio', trackId: 'afree', start: 4, duration: 2, name: 's', ...base } as never,
+      ],
+    });
+    const r = await call('edit_media', { asset: 'v2', mode: 'insert', at: 3, track: vt.id });
+    expect(r.error, r.text).toBe(false);
+    expect(r.json!.outOfSync).toEqual(['ss']);
+    expect(r.json!.syncOffTracks).toEqual(['afree']);
+    expect(project().clips.find((c) => c.id === 'ss')!.start).toBe(4);
+  });
+
+  it('says nothing about sync when every track follows', async () => {
+    const r = await call('edit_media', { asset: 'v2', mode: 'insert', at: 0 });
+    expect(r.error, r.text).toBe(false);
+    expect(r.json!.syncOffTracks).toBeUndefined();
+    expect(r.json!.outOfSync).toBeUndefined();
+  });
+});

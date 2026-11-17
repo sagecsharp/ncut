@@ -536,3 +536,19 @@ describe('pivoted backdrop shape', () => {
     expect(backdropColorAt(p, shapes, cx + 300, cy)).toEqual([0, 0, 0]);
   });
 });
+
+describe('backdropShapes and mattes', () => {
+  it('a matte clip is no backdrop shape', () => {
+    const p = createProject('t');
+    const top = createTrack('video', 'top');
+    const mid = createTrack('video', 'mid');
+    const bottom = createTrack('video', 'bottom');
+    p.tracks = [top, mid, bottom];
+    p.background = '#000000';
+    const matteClip = fullRect(p, mid.id);
+    const matted = fullRect(p, bottom.id, { color: '#ff0000', color2: undefined });
+    matted.matte = { clip: matteClip.id, mode: 'alpha' };
+    p.clips = [matted, matteClip, threeD(top.id)];
+    expect(backdropShapes(p, 1).map((s) => s.clip.id)).toEqual([matted.id]);
+  });
+});

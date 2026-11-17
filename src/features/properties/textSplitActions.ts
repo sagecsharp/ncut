@@ -1,4 +1,5 @@
 import { getClipBox } from '../../engine/draw';
+import { MATTE_TEXT, matteUserIds } from '../../engine/matte';
 import { reparentTransform } from '../../engine/parent';
 import { pivotOf } from '../../engine/pivot';
 import { glyphLayout, measureText } from '../../engine/text';
@@ -49,6 +50,10 @@ export function splitText(id: string, mode: SplitMode): number {
   if (!p || !clip || clip.type !== 'text') return 0;
   if (p.tracks.find((t) => t.id === clip.trackId)?.locked) {
     ui.toast('this track is locked');
+    return 0;
+  }
+  if (matteUserIds(p.clips, id).length > 0) {
+    ui.toast(MATTE_TEXT.splitMatte);
     return 0;
   }
   const blocked = splitBlocker(clip) ?? modeBlocker(clip, mode);

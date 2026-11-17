@@ -189,6 +189,17 @@ describe('patchTrack', () => {
     expect('volume' in near).toBe(false);
     expect('pan' in near).toBe(false);
   });
+  it('syncLock false is stored, true removes it', () => {
+    const off = patchTrack(t, { syncLock: false })!;
+    expect(off.syncLock).toBe(false);
+    // false again and true on a track that has none are no change
+    expect(patchTrack(off, { syncLock: false })).toBeNull();
+    expect(patchTrack(t, { syncLock: true })).toBeNull();
+    const on = patchTrack(off, { syncLock: true })!;
+    expect('syncLock' in on).toBe(false);
+    // the source track is not touched
+    expect('syncLock' in t).toBe(false);
+  });
   it('clamps', () => {
     expect(patchTrack(t, { volume: 50 })!.volume).toBe(MAX_TRACK_GAIN);
     expect(patchTrack(t, { volume: -3 })!.volume).toBe(0);

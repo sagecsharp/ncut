@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
+import { matteHoverIds, matteLinkedIds, matteUsersMap } from '../../engine/matte';
 import { useEditor } from '../../store/editorStore';
 import { hoverLinkedIds, linkedIds } from './effectTarget';
 import { subscribeClipMount } from './view';
@@ -7,6 +8,7 @@ import { subscribeClipMount } from './view';
 /**
  * quiet marks between an effect clip and the clip it is put on: the selected effect's target gets a
  * dashed outline, a selected clip marks the effects on it, and hovering an effect marks its target.
+ * a matte pair works the same way (selecting or hovering one outlines the other), and a clip that is the matte of another gets 'is-matte-src'.
  * done with classes straight on the clip elements (the clips are memoized and must not re-render for
  * this). renders nothing. a clip that is not linked costs nothing.
  */
@@ -19,17 +21,22 @@ export function LinkMarks({ scrollerRef }: { scrollerRef: RefObject<HTMLElement 
 
   apply.current = () => {
     const root = scrollerRef.current;
-    for (const el of marked.current) el.classList.remove('is-linked', 'is-linked-hover');
+    for (const el of marked.current) el.classList.remove('is-linked', 'is-linked-hover', 'is-matte-src');
     marked.current = [];
     if (!root || !clips) return;
+    const srcs = matteUsersMap(clips);
     const picked = linkedIds(clips, selection);
+    if (srcs.size > 0) for (const id of matteLinkedIds(clips, selection)) picked.add(id);
     const hovered = hoverLinkedIds(clips, hover.current);
-    if (picked.size === 0 && hovered.size === 0) return;
+    if (srcs.size > 0) for (const id of matteHoverIds(clips, hover.current)) hovered.add(id);
+    if (picked.size === 0 && hovered.size === 0 && srcs.size === 0) return;
     for (const el of root.querySelectorAll<HTMLElement>('[data-clip-id]')) {
       const id = el.dataset.clipId!;
+      const src = srcs.has(id);
       if (picked.has(id)) el.classList.add('is-linked');
       if (hovered.has(id)) el.classList.add('is-linked-hover');
-      else if (!picked.has(id)) continue;
+      if (src) el.classList.add('is-matte-src');
+      if (!picked.has(id) && !hovered.has(id) && !src) continue;
       marked.current.push(el);
     }
   };
@@ -72,7 +79,7 @@ export function LinkMarks({ scrollerRef }: { scrollerRef: RefObject<HTMLElement 
     return () => {
       root.removeEventListener('pointerover', onOver);
       root.removeEventListener('pointerleave', onLeave);
-      for (const el of marked.current) el.classList.remove('is-linked', 'is-linked-hover');
+      for (const el of marked.current) el.classList.remove('is-linked', 'is-linked-hover', 'is-matte-src');
       marked.current = [];
     };
   }, [scrollerRef]);

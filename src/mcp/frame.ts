@@ -57,6 +57,8 @@ export interface FramePng {
 export interface FrameWants {
   levels?: boolean;
   scope?: ScopeKind;
+  /** true = no background: the png is see-through where nothing is drawn (StillOptions.transparent). levels and scopes count see-through pixels as black */
+  transparent?: boolean;
 }
 
 /** luma and rgb on 0..100 (0.1 steps), black and white as shares of the pixels 0..1 (0.0001 steps) */
@@ -136,7 +138,7 @@ export async function renderFramePng(project: Project, time: number, maxSize: nu
         bins = binScopes(sub.data, sub.w, sub.h, 1, { wave: kind === 'waveform', parade: kind === 'parade', vector: kind === 'vectorscope' });
       }
     };
-    const blob = await renderStill(project, { time: t, width, height, mime: 'image/png' }, { onWarning: (m) => warnings.push(m), ...(asked ? { onCanvas } : {}) });
+    const blob = await renderStill(project, { time: t, width, height, mime: 'image/png', ...(wants.transparent === true ? { transparent: true } : {}) }, { onWarning: (m) => warnings.push(m), ...(asked ? { onCanvas } : {}) });
     const data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
     const out: FramePng = { data, time: t, width, height, warnings };
     if (!asked) return out;

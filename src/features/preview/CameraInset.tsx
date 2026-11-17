@@ -23,6 +23,7 @@ import { usePreviewQuality } from './quality';
 import { LIVE_SAMPLE } from './scopes';
 import { onTapWanted, tapFrame } from './scopeTap';
 import { useScopes } from './scopesState';
+import { onLutChange } from '../../media/lutTables';
 
 function leaveSceneView(): void {
   useUi.getState().setPreviewMode('output');
@@ -110,12 +111,15 @@ function InsetBody({ getResolve, onSkyReady, hidden }: { getResolve: () => Sourc
     ];
     // the sky pictures finish loading after the first draw: draw again with them
     const offSky = onSkyReady?.(request);
+    // a lut table finishes reading after the first draw too
+    const offLut = onLutChange(request);
     request();
 
     return () => {
       disposed = true;
       for (const off of offs) off();
       offSky?.();
+      offLut();
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
       window.clearTimeout(settle);

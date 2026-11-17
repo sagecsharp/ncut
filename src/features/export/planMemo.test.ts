@@ -72,3 +72,18 @@ describe('probeDelay', () => {
     expect(probeDelay(0, -5)).toBe(0);
   });
 });
+
+describe('planKey with a delivery', () => {
+  it('the default key is unchanged', () => {
+    expect(planKey(req({ fps: 30 }))).toBe('mp4|1920x1080|30|high');
+  });
+  it('a set codec and bitrate join the key', () => {
+    expect(planKey(req({ fps: 30, codec: 'hevc' }))).toBe('mp4|1920x1080|30|high|hevc');
+    expect(planKey(req({ fps: 30, bitrate: 20_000_000 }))).toBe('mp4|1920x1080|30|high|b20000000');
+    expect(planKey(req({ fps: 30, codec: 'hevc', bitrate: 20_000_000 }))).toBe('mp4|1920x1080|30|high|hevc|b20000000');
+    const memo = createPlanMemo();
+    memo.put(req({ codec: 'hevc' }), { codec: 'hevc', bitrate: 1 });
+    expect(memo.get(req())).toBeUndefined();
+    expect(memo.get(req({ codec: 'hevc' }))!.codec).toBe('hevc');
+  });
+});

@@ -20,6 +20,9 @@ import { swapTarget } from './swap';
 import { planDropInsert } from './dropInsert';
 import type { DropPlan } from './dropInsert';
 import { effectDropTarget, pickEffectTrack } from './effectTarget';
+import { lutDropTarget, lutGhostLabel } from './lutDrop';
+import { putLutOn } from '../properties/lutActions';
+import { showGrade } from '../properties/gradeActions';
 import { createEffectClip } from '../../lib/factory';
 import { durationOfPayload, ghostLabel, kindOfPayload, takeOf } from './dropPayload';
 import { insertMedia } from './insertMedia';
@@ -216,6 +219,21 @@ export function createDnd(env: DndEnv) {
     return clip ? { clip, laneIndex: hit.index } : null;
   }
 
+  /** the clip a lut dropped at the pointer would go on, and its lane */
+  function resolveLutOn(cx: number, cy: number): { clip: Clip; laneIndex: number } | null {
+    if (!ensure() || !geo || !layout) return null;
+    const st = useEditor.getState();
+    const project = st.project;
+    if (!project) return null;
+    const hit = hitLane(layout, cy - geo.top - RULER_H + view.scrollTop);
+    if (hit.type !== 'lane') return null;
+    const track = project.tracks[hit.index];
+    if (!track) return null;
+    const time = (cx - geo.left - HEADER_W + view.scrollLeft) / st.zoom;
+    const clip = lutDropTarget(project, track.id, time);
+    return clip ? { clip, laneIndex: hit.index } : null;
+  }
+
   function updateGhost(): void {
     rafId = 0;
     if (!last) return;
@@ -250,6 +268,27 @@ export function createDnd(env: DndEnv) {
         },
         'swap',
         'swap media',
+      );
+      return;
+    }
+    if (last.payload?.kind === 'lut') {
+      const hit = resolveLutOn(last.cx, last.cy);
+      env.overlays.setHot(null);
+      env.overlays.setGap(null);
+      if (!hit || !layout) {
+        env.overlays.setGhost(null);
+        return;
+      }
+      const zoom = useEditor.getState().zoom;
+      env.overlays.setGhost(
+        {
+          x: Math.round(hit.clip.start * zoom),
+          y: layout.tops[hit.laneIndex]! + CLIP_INSET,
+          w: hit.clip.duration * zoom,
+          h: layout.heights[hit.laneIndex]! - CLIP_INSET * 2,
+        },
+        'target',
+        lutGhostLabel(hit.clip),
       );
       return;
     }
@@ -351,6 +390,7 @@ export function createDnd(env: DndEnv) {
     const files = isFileDrag(e) && !isNcutDrag(e) ? Array.from(e.dataTransfer?.files ?? []) : [];
     const payload = readPayload(e);
     const transitionTarget = payload?.kind === 'transition' ? resolveTransition(cx, cy) : null;
+    const lutTarget = payload?.kind === 'lut' ? resolveLutOn(cx, cy) : null;
     const swap = resolveSwap(cx, cy, payload, e.altKey);
     const effectOn = resolveEffectOn(cx, cy, payload, e.altKey);
     const target = resolve(cx, cy, payload, true);
@@ -358,6 +398,17 @@ export function createDnd(env: DndEnv) {
     reset();
     const st = useEditor.getState();
     if (!st.project) return;
+
+    if (payload?.kind === 'lut') {
+      // a lut goes on the clip under the pointer, anywhere else nothing happens
+      if (lutTarget) {
+        const t = putLutOn([lutTarget.clip.id], payload.assetId);
+        if (t) useUi.getState().toast(t);
+        st.select([lutTarget.clip.id], 'replace');
+        showGrade([lutTarget.clip.id]);
+      }
+      return;
+    }
 
     if (payload?.kind === 'transition') {
       // dropping on empty space, audio, effect or camera clips does nothing
@@ -450,6 +501,10 @@ export function createDnd(env: DndEnv) {
       useUi.getState().toast(err instanceof Error ? err.message : 'import failed', 'error');
       return;
     }
+    // a lut is imported and stays in the media: no clip, and with only luts no undo step
+    const luts = assets.filter((a) => a.kind === 'lut');
+    for (const a of luts) useUi.getState().toast(`imported "${a.name}" as a lut. drag it onto a clip, or pick it in the grade`);
+    assets = assets.filter((a) => a.kind !== 'lut');
     if (assets.length === 0) return;
     const st = useEditor.getState();
     if (!st.project) return;

@@ -16,24 +16,41 @@ lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, 
                          findTrackWithRoom, clipsAtTime, sourceTimeAt, fadeFactor, collectSnapPoints, snapTime
 lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
 lib/dnd.ts               drag payloads between media panel and timeline/preview
-lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
+lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings. evalKeys has one
+                         'bezier' branch (the custom ease) clamped by keyRange; every older ease gives the same doubles
+lib/keyBezier.ts         the custom ease ('bezier'): a handle is { speed, influence }, the cubic part with a newton then bisection solve in
+                         plain arithmetic (page, exporter and workers agree to the bit), the cubic twin of every named ease, split at a
+                         time, collapse back to a name, join, mirror. imports types only. pure
 lib/inOut.ts             the timeline in / out range, [in, out): the one reader of it (cleanRange, frameAt / markOutTime / lastFrameStart,
                          the spans, editableTrackIds). a bad value reads as no range. pure
+lib/trackTools.ts        track height (28 to 240 px, the ladder), sync lock and track order. the one sync rule: syncTrackIds = unlocked and
+                         (edited or sync lock on). keepHeights (undo keeps the rows of now), timelineOnlyChange. pure
 lib/marks.ts             the marks of one media file (MediaAsset.marks, the source view): markMediaIn / markMediaOut, frame steps and
                          labels. the frame rules come from lib/inOut.ts. pure
 lib/matchFrame.ts        match frame: matchFrameAt (the clip under the playhead and the moment of its media), planReverseMatch (back)
 lib/soundPair.ts         separate sound: a pair is a video clip and an audio clip of one file in one group (group + file + kind), found on
                          the fly (pairIndex, cached per clips array). nothing is saved. pure
 lib/mix.ts               the one folded mix rule: a track fader times each clip's gain, the output level times everything, pan is a left /
-                         right gain pair, no buses. the preview and the export both call it. neutral = no node, the same export calls. pure
+                         right gain pair, no buses. the preview and the export both call it. neutral = no node, the same export calls.
+                         clipMix takes a ClipSound (audioCross.ts); null keeps every old expression. pure
+lib/audioCross.ts        audio crossfades and fade shapes (power, linear, smooth). the crossfade is stored on the clip after the edit (what
+                         was asked); what plays is worked out per read (crossfadeSpan: held to the media there is, half the clip it reaches
+                         into and 10 s) and never written back. soundIndex gives entries only for clips in a playing crossfade or with a
+                         shaped fade, else the one shared EMPTY_SOUNDS, so every other clip keeps its exact numbers. soundGainAt is the
+                         one gain rule: clipMix (preview) and soundGainPoints (export) both call it. never imports lib/mix.ts. pure
 lib/gradeData.ts         the color grade's data: wheel and curve keys, normalizeGrade, isGradeActive, hasGrade. pure
+lib/cube.ts              .cube luts: parseCube (one parser on every thread, 1d and 3d tables, domains, a line number on every refusal) and
+                         writeCube. pure
+lib/loudness.ts          bs.1770 k weighting at any rate, gates, momentary / short term / integrated, range, true peak, the trace the
+                         gain plan counts blocks on. Float32Array buffers. pure
+lib/limiter.ts           the true peak lookahead limiter and the output stage (gain, a limiter only past the ceiling). pure
 lib/gradeMath.ts         the grade's maths: rec 709 luma and hue, wheel puck positions, the curve sampler. pure
 lib/tempo.ts             the tempo of a clip's sound (bpm + where a beat falls) as a beat grid on the timeline that
                          follows the clip's start, trim and speed. tap tempo. which sound an effect clip follows (EffectClip.beat),
                          cycle lines, the pulse envelope. pure
 lib/transitions.ts       where a clip's transition sits in time (transitionSpan, transitionsAt, transitionHolds)
 lib/links.ts             ids that point at other clips: parent (attach), look target, camera target, the clip an effect
-                         sits on, groups. cycle checks, relinking copies and split halves
+                         sits on, the matte clip of a matted clip, groups. cycle checks, relinking copies and split halves
 lib/subtitles.ts         .srt / .vtt parsing and writing, splitting a text into caption sized cues
 lib/templates.ts         starter timelines for the new project dialog
 lib/gif.ts               dependency-free gif encoder (palette, dithering, lzw)
@@ -57,13 +74,18 @@ store/timeDisplay.ts     useTimeDisplay: timecode | frames | seconds, per machin
 store/mcpCursors.ts      useMcpCursors: the cursors of mcp clients (one per name, at most 8), no dom
 store/ui.ts              useUi: open dialog, toasts, preview mode output | scene | source (previewMode = the active view, it takes the
                          keys; programMode = the timeline side, output | scene; the engine only checks 'scene', so it draws the output
-                         unchanged), trimMode / trimEdge (trim mode and the picked edge), mediaTab (the media panel's tab)
+                         unchanged), trimMode / trimEdge (trim mode and the picked edge), mediaTab (the media panel's tab), keySel /
+                         keyFocus (the selected keyframes of the keyframe panel and whether it has the focus), crossfadePick (the picked
+                         crossfade, valid only while the selection is the array it was made with), exportAsk (a request to open the
+                         export dialog with an advanced part or a preset). none of it is saved
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
 storage/projectFile.ts   one .ncut file = project + media + imported font files of its text clips
 storage/posters.ts       small pictures of the preview for the project cards (localStorage)
 media/registry.ts        runtime assetId -> blob + object url
 media/importer.ts        importFiles, deleteAsset, detectKind            (media feature)
+media/lutTables.ts       the .cube tables per thread: one parse, a shared promise, putLut / requestLut / loadLutTables. no registry import
+media/lutStrip.ts        the picture on a lut card (a hue sweep over a gray ramp through the lut). pure
 media/derived.ts         getThumbnail, getFilmstrip, getWaveform         (media feature)
 media/seekFrame.ts       seek a video element and wait for the picture (not only 'seeked') before drawing it
 media/stripPlan.ts       which frame stands for a slot of a filmstrip: the key frame inside it when there is one
@@ -80,8 +102,14 @@ engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), s
 engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
 engine/pivot.ts          a clip's pivot: the nine spots, the pivot offset of a box, pictureBox (pure)
 engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel). a second look program
-                         for the grade is built lazily on the first graded clip; the plain one stays byte identical
+                         for the grade is built lazily on the first graded clip, and a third one on the first live lut; the plain and
+                         the grade program stay byte identical
 engine/grade.ts          the color grade: the glsl chunk (GRADE_GLSL), gradeData (wheels to uniforms, the curve table) and its js mirror
+engine/gradeLut.ts       the lut in the grade: LutBind (lutBindOf: null unless the table is loaded, not identity and mix over 0),
+                         GRADE_LUT_GLSL (a lut at l1 or l2, tetrahedral), lutColor, its js mirror
+engine/lutGl.ts          the lut textures on one gl context: RGB32F tables on units 2 and 3 (setLutUnits after link), lru of 4
+engine/lutScope.ts       the render scope: withLuts(lookup, fn) gives the tables to a render, lutNow(media) reads them. no lut outside one
+engine/matte.ts          track mattes: matteTable (null when no matte counts, one cached lookup), matteSourceSet, the four modes. pure
 engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
 engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target), cached per clips array
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
@@ -97,7 +125,10 @@ features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShor
 features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), the mixer tab (MixerPanel.tsx + mixer/), captions tools,
                          favorites.ts (starred effects / transitions, kept in localStorage), transitionBatch.ts
                          (a transition on every cut of a track, shuffle, same length) + transitionApply.ts
-                         (a transition never longer than its cut allows, the last used one)
+                         (a transition never longer than its cut allows, the last used one). mixer/LoudnessStrip.tsx (the live loudness
+                         beside the output strip) with loudnessTap.ts (holdLoudness: a second output of the output level node, held only
+                         while the strip is open and on screen) and loudnessLoop.ts, mixer/MeasureBar.tsx (measure mix and the target).
+                         lut cards (a lut is media, not a clip)
 features/fonts/          FontPicker
 features/timeline/       Timeline. trimModes.ts (pure plans: ripple trim, move the edit, slip, slide, stretch), syncShift.ts (which
                          tracks a ripple moves), trimPress.ts (what a press means in trim mode), trimDrag.ts (drag delta, snap,
@@ -114,6 +145,18 @@ features/timeline/       Timeline. trimModes.ts (pure plans: ripple trim, move t
                          or from its tempo when one is set). tempoActions.ts (detect the bpm of a clip, which clips can
                          lend their beat to the keyframes of another). ClipCanvas draws the beat ticks.
                          sequence.ts + sequenceActions.ts (clips in a row, fitted to the markers, cut at the markers)
+                         track tools: TrackHeader.tsx (two rows from 48 px, one below) with headToggles.ts, headDrag.ts (drag the bottom
+                         edge for the height, press and drag to reorder), trackOrder.ts (pure: where a dragged track lands) and
+                         trackDrop.ts (the drop line), trackActions.ts (heights, order, sync lock), clipStrip.ts (pure: what a clip
+                         draws at a height). syncShift.ts has pairDrift: the clips that go out of sync with their mate in an edit.
+                         crossfades: crossfadePlan.ts (pure planners), crossfadeActions.ts (the pick, the menu, one undo step each),
+                         CrossfadeLayer.tsx in TrackLane.tsx (a box per crossfade in the lane, no change in ClipView.tsx).
+                         the keyframe panel: KeyPanel.tsx under `.timeline-body`, mounted only while open. keyPanelState.ts (its prefs,
+                         in localStorage), keySelection.ts (KeyRef { clipId, prop, t }, t in clip local seconds), keyPlan.ts (pure: move,
+                         stretch, nudge, delete, paste, ease as plans), keyLaneActions.ts (applyKeyPlan, followKeySel), KeyLanes.tsx
+                         (one canvas) with keyLanesModel.ts and keyDrag.ts, KeyMenu.tsx. the graph view of it: GraphEditor.tsx,
+                         GraphPlot.tsx, GraphBar.tsx, GraphList.tsx, graphDraw.ts, graphModel.ts and graphPlan.ts (pure), graphState.ts
+                         (prefs and the view), graphActions.ts
 features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizmo.ts (handles, axis lock),
                          sceneControls.ts (blender or unity controls: what a press, a key and a numpad key mean,
                          typed numbers, the selection box; the choice is kept in localStorage),
@@ -127,6 +170,10 @@ features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizm
                          or an amount to move by: the plan steps the playhead, moves clips or trims the selected edge).
                          scopes: scopeTap.ts, scopesState.ts, scopes.ts, scopeRead.ts, scopeRunner.ts, scopePlot.ts, scopesLayout.ts,
                          probe.ts, ScopesStrip.tsx, PixelProbe.tsx
+                         soundSync.ts (the sound twins of a crossfade: a video clip that sounds before its start or after its end gets an
+                         audio element on the same file, pool key twinKey `<id>~sound`, while its video element plays at gain 0. a twin that
+                         failed leaves the video sounding. mixDebug.twins counts them). meterTaps.ts also has audioOut(), the output level
+                         node the loudness strip taps. timelineOnlyChange skips a change of only heights or sync lock
 features/properties/     PropertiesPanel. fieldFeel.ts (the usual range, hard range, step, snap and rest of every number in the
                          panel; a test pins it to lib/anim.ts), multiEdit.ts + MultiField.tsx (one field for many clips),
                          pivotPlan.ts + attachPlan.ts (pivot and attach keep the clip in place), bendGroup.ts + bendActions.ts
@@ -140,11 +187,15 @@ features/properties/     PropertiesPanel. fieldFeel.ts (the usual range, hard ra
                          textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line),
                          cascade.ts + cascadeActions.ts (a selection staggered in time, fly in / out keys),
                          pathMoves.ts + pathActions.ts (motion paths written as position keys),
-                         GradeSection (color wheels and curves), gradePlan.ts + gradeActions.ts (the grade edits as plans, one undo step each)
+                         GradeSection (color wheels and curves), gradePlan.ts + gradeActions.ts (the grade edits as plans, one undo step each),
+                         GradeLut.tsx (the lut row of the grade), lutPlan.ts (pure plans), lutSave.ts (save the grade as a .cube),
+                         lutActions.ts. MatteSection.tsx + matteActions.ts (the matte of a clip). CrossfadeSection.tsx + FadeShapeRow.tsx
 features/export/         ExportDialog + the offline renderer (exporter.ts) and what makes it fast: parallel.ts,
                          segment.ts, exportWorker.ts, sources.ts, mediaCheck.ts (parts in workers), encoderSetup.ts
                          (the gpu encoder above full hd), sink.ts (big files on disk), gifPlan.ts / gifPool.ts /
-                         gifWorker.ts (gif on workers). see "export" below
+                         gifWorker.ts (gif on workers). the delivery controls: delivery.ts (the choices and their defaults),
+                         deliveryProbe.ts, deliveryArgs.ts, alphaNotes.ts, frameFit.ts, AdvancedExport.tsx, useDeliveryStatus.ts.
+                         loudness: audioPump.ts, outputPlan.ts, measureMix.ts, soundSignature.ts, loudnessPrefs.ts. see "export" below
 styles/theme.css         design tokens
 styles/base.css          shared classes (.btn, .icon-btn, .input, .select, .range, .panel, .tabs, .menu, .dialog ...)
 ```
@@ -160,6 +211,17 @@ natural size for text. `fadeIn/fadeOut` scale opacity (visual) and gain (audio).
 
 more clip types live on video tracks: `shape` (a drawn figure, visual like an image), `effect` (an adjustment
 layer: changes the picture made by everything below its track) and `camera` (the 3d camera for its time range).
+
+the professional editing fields are all optional and a missing one is today's behavior, so old projects open, draw,
+sound and export as before:
+- `Clip.crossfade` (video and audio clips): the sound of the clip before fades into this one across the edit where it starts, `before`
+  and `after` seconds, a `shape`. what is stored is what was asked, what plays is worked out per read.
+- `fadeInShape` / `fadeOutShape` (video and audio clips): the shape of the sound fades, power or smooth. missing = linear.
+- `Keyframe.in` / `Keyframe.out`: a handle `{ speed, influence }` on a key whose part has the ease 'bezier' (shown as "custom").
+- `Track.height` (css px, 28 to 240) and `Track.syncLock` (only `false` is stored): missing = the 56 / 48 px rows and sync lock on.
+- `MediaKind` 'lut' (a .cube file read at import, `MediaAsset.lut`) and `ClipGrade.lut` (the media, mix, first or last, made for): a lut
+  is media, never a clip.
+- `Spatial.matte` (`{ clip, mode }` on a picture clip): the clip that cuts this one, in one of four modes.
 
 ## the frame renderer
 
@@ -223,6 +285,20 @@ numbers at draw time (effects get a per-clip `seed`).
   uploaded only when its key changes. the dither hashes the pixel, never the time. the grade effect pass: a `grade`
   effect def run by the effects runner, `effectPassAt` returns null for an inactive grade (no pass, no split 3d run).
   no webgl2 or a failed build: no grade, in preview and export alike.
+- the grade's order inside the pass: key, adjust, l1 (a lut placed first), g1 wheels, g2 tone curves, g3 color curves, l2 (a lut placed
+  last), g4 dither, premultiply. a lut (`ClipGrade.lut`) is a .cube table on texture units 2 (3d) and 3 (1d), RGB32F, read with
+  texelFetch and the interpolation by hand (a 32 bit float is not filterable), tetrahedral for the 3d one. every lut program sets its
+  sampler units right after link (`setLutUnits`): two sampler types on one unit are an error at draw. a neutral lut (mix 0, an identity
+  table, a table not loaded or unreadable) is no bind, so the old program and the old pixels. the plain and the grade programs stay
+  byte identical, a third is built on the first live lut (a failed build draws the grade without the lut, warned once). a grade
+  effect with a lut runs the def 'grade-lut', which sits outside the registry (`defs/grade.ts`).
+- the render scope and the tables per thread: `renderFrame` wraps its paint in `withLuts` when the resolver has `lut`, so nothing passes
+  the resolver down through the look, the 3d paths or `effectPassAt`. outside a render `lutNow` gives null (thumbnails, the bench): no
+  lut. one parser (`lib/cube.ts`) on every thread gives the same Float32Array and the same upload (`media/lutTables.ts`). the preview
+  reads a table lazily and draws without it until it loads, then redraws (`onLutChange`). the export reads every lut first
+  (`sources.ts` `loadExportLuts`, the workers get the blobs through `parallel.ts` and read them before the first frame). removing a lut
+  media takes `grade.lut` off every clip like the sky: no history clear, an undo that names it again draws without it. the lut row
+  lives in `features/properties/GradeLut.tsx` (plans in `lutPlan.ts`, save as .cube in `lutSave.ts`).
 - per-clip motion blur (`clip.motionBlur`): the clip is painted several times at sub-frame times and
   averaged. only its placement is sampled, the picture stays the one of the frame. a 3d clip is drawn as
   its own 3d run once per sample into the same accumulator (the camera is not sampled: a camera move is
@@ -255,6 +331,17 @@ numbers at draw time (effects get a per-clip `seed`).
   transition), after that clip's own effects (`frameFx`). the two tracks can be anywhere in the stack. a 3d target is
   drawn as a run of its own. temporal effects with a target do nothing. a clip drawn frozen by a transition (before
   its start / after its end) keeps the effects of its edge frame.
+- track mattes (`Spatial.matte`, `engine/matte.ts`): a picture clip names another picture clip, its matte clip, that decides where it
+  shows (alpha, alpha inverted, luma, luma inverted). `matteTable(project)` is the one gate: null when no matte counts (the matte clip
+  is a picture clip on a visible video track, has no matte of its own, is not the clip itself), cached per project, so a project
+  without mattes pays one null check. the matte clip is not painted on its own: `visibleClipsAt`, `paintListAt`, `paintItemsAt`,
+  `backdropShapes` and `pickFreezeTarget` skip it like a face source, and `neededClipsAt` keeps it ready while it plays (the export
+  decodes a video one frame after the other). a key layer right above a matte clip keys it (`frameFx` binds it). a matted clip is a run
+  of its own in `paintLayers`: `paintMatted` paints its whole alone picture and the matte clip's whole alone picture, at the time the
+  matted clip is drawn at, into two scratch canvases per channel, cuts with destination-in or destination-out (luma is one pass through
+  the existing alpha runner, no runner change), then lays the result into the frame with the clip's blend mode. a matte that does not
+  count changes nothing. split and links: `repointLinks` names the right halves and the copies, `unlinkRemoved` takes the matte off a clip
+  whose matte clip is deleted, and a matte clip is cut only when every clip it cuts across the cut can be cut.
 - per-clip motion blur kinds (`clip.motionBlur.style`): 'even' averages the open shutter, 'trail' keeps the
   clip sharp and leaves a tail fading into the past, 'ghost' draws a few separate copies behind it.
 - running numbers (`TextClip.counter`): `resolveVisual` writes the number into the text right after the
@@ -282,9 +369,18 @@ numbers at draw time (effects get a per-clip `seed`).
   (escape during a drag, a plan that failed) call `rollback()`, never `undo()`: it only removes what was
   written since the last `pushHistory()`. undo and redo bring back the selection the step was made with.
 - undo, redo and rollback keep what history does not hold (`keepLive` in editorStore.ts): the media list, marks included
-  (they are media data, `MediaAsset.marks`, not history), and the timeline in / out (`project.range`), as they are now.
-- ids that point at other clips (`parent`, `lookTarget`, a camera's target, `group`) are kept right by the
-  store: delete unlinks, duplicate and paste relink to the copies, `updateClip` refuses a parent loop.
+  (they are media data, `MediaAsset.marks`, not history), the timeline in / out (`project.range`) and the heights of now
+  (`keepHeights` in lib/trackTools.ts), as they are now.
+- a track height is a view setting like the zoom: `setTrackHeights` writes it with no undo step (it joins an open gesture's step),
+  and undo never moves the rows. the sync lock (`updateTrack`) and a reorder (`moveTrack`) are undo steps. one rule says which tracks
+  move with an edit, `syncTrackIds` in lib/trackTools.ts: unlocked and (edited or sync lock on). `movingTracks` in syncShift.ts returns
+  it, and `pairDrift` names the clips that would go out of sync with their mate, so the readout, the toast and the mcp answer can say so.
+- the keyframe panel and the graph never edit keys one by one: `keyPlan.ts` and `graphPlan.ts` are pure planners that give whole
+  `keyframes` records per clip, `setManyKeyframes` writes them in one mutate, so one gesture is one undo step. start, duration and track
+  never change, so followers, groups and transitions are untouched. undo brings the key selection back (`followKeySel`). delete, copy,
+  cut, paste, select all, esc and alt + arrows act on keyframes only while the panel has the focus (`keyPanelHasKeys`), else on clips.
+- ids that point at other clips (`parent`, `lookTarget`, a camera's target, `group`, a matte clip) are kept right by the
+  store: delete unlinks, duplicate and paste relink to the copies, `updateClip` refuses a parent loop and a bad matte.
   read them through `lib/links.ts`, which also guards against loops in old data.
 - placement goes through `moveClips` / `trimClip` / `setClipSpeed` / `insertAsset` / `addText`.
   `updateClip` ignores `start`, `duration`, `trackId`, `trimStart`, `speed`.
@@ -342,6 +438,7 @@ scrubbing, dragging clips and zooming, with dozens of clips.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
    observer, object url, raf and ImageBitmap you create.
 10. painters tap their picture (scopeTap.ts); nothing listens while the scopes and the probe are closed.
+11. the keyframe panel and its graph mount only while open and draw only on a change; the loudness strip taps the output only while it is open and on screen.
 
 ## visual rules (monochrome, high contrast, flat)
 
@@ -353,9 +450,10 @@ scrubbing, dragging clips and zooming, with dozens of clips.
   `--danger`, `--warn` (destructive actions, the fps health dot).
 - no glow of any kind: no `box-shadow`, `text-shadow`, `filter: blur/drop-shadow`, `backdrop-filter`.
 - no gradients. solid fills only. depth = surface tokens + 1px borders.
-- three stated exceptions: the wallpaper layer may blur its picture (`#ncut-wallpaper`, one static layer behind the app),
-  the mcp cursors have 8 hues (`features/mcp/mcpCursors.css`), because several agents have to be told apart, and
-  the scopes (features/preview/scopePlot.ts) and the probe swatch draw measured colors on black in both themes.
+- four stated exceptions: the wallpaper layer may blur its picture (`#ncut-wallpaper`, one static layer behind the app),
+  the mcp cursors have 8 hues (`features/mcp/mcpCursors.css`), because several agents have to be told apart,
+  the scopes (features/preview/scopePlot.ts) and the probe swatch draw measured colors on black in both themes, and
+  the graph's lines are colored by value (`features/timeline/graph.css`, the `--graph-*` tokens, set for both themes), so a line is told from its neighbour.
 - the trim cursors (`features/timeline/trimCursors.ts`) are 24 px svg data urls drawn black under white by color name, because a css cursor image cannot read tokens and black under white reads on both themes.
 - wallpaper: while `<html data-wallpaper="on">` the tokens `--surface-0..5` are the solid colors (`--solid-0..5`) at the
   user's panels percentage, so a surface is see-through without any selector knowing about it. anything that floats
@@ -416,7 +514,11 @@ slower way).
 - the dialog asks the browser what it can encode for the chosen size, frame rate and quality. the answers are
   kept for the session (`planMemo.ts`, only a yes) and the first question after a quiet moment is not debounced, so
   the export button is ready at once when the dialog opens.
-- the sound mix (`audioMix.ts`): clipSchedule is exactly what mixChunk schedules for one clip in a mix window, pure, so node tests compare two mixes bit for bit. the fader, pan and output level come from lib/mix.ts, the same rule as the preview.
+- the sound mix (`audioMix.ts`): clipSchedule is exactly what mixChunk schedules for one clip in a mix window, pure, so node tests compare two mixes bit for bit. the fader, pan and output level come from lib/mix.ts, the same rule as the preview. clipSchedule schedules the head too: a clip in a playing crossfade starts before its own start (`soundIndex`, `soundGainPoints`), and a clip without a crossfade gets the exact old numbers.
+- delivery (`delivery.ts`, `deliveryProbe.ts`, `deliveryArgs.ts`, `alphaNotes.ts`, `frameFit.ts`, `AdvancedExport.tsx`, `useDeliveryStatus.ts`): `ExportOptions.delivery` holds every advanced choice (codec, bitrate, key frame interval, size and fit, audio codec, bitrate and rate, transparent). no delivery means `DEFAULT_DELIVERY`, which is today's path: the same planner calls, the same canvases, no new job keys. the choices are saved per browser, never in the project. the probes run only while the advanced part is open (closed, only a set codec the plan said no to is asked). a size of another shape than the project is drawn at the project's shape on a helper canvas and placed 1:1 (`frameFit.ts`: fit with bars, fill with the edges cut), so whole picture effects match the preview and every path agrees.
+- the alpha path (a see-through webm or png, `transparent`): `renderFrame` clears instead of filling, the frame canvas has alpha, see-through video is decoded with its alpha, the encoder gets alpha 'keep' and `canBeTransparent`, the join keeps the packets' `sideData`, and `checkAlphaFile` reads the file back and warns when the browser dropped the alpha. `alphaNotes` names what cannot stay see-through (the format, a sky, a whole picture effect, a blend over nothing). the tell-the-encoder-a-rate path of `encoderSetup.ts` is never used for transparent. the rules below hold at the default delivery.
+- the loudness output stage (`audioPump.ts`, `outputPlan.ts`, `lib/limiter.ts`): the pump gives the mix to the audio source and, when the export has a loudness target or a peak limit, runs it through `createOutputStage`: a gain and a limiter only past the ceiling, its state carried across the 30 s chunks and 1 s slices. off is off: no choice means no measure and no stage, the pump runs the old body, and a choice that changes nothing (a gain under 0.05 db, no peak over) makes no stage either, so the samples are bit identical. the gain is planned on a measure of the same mix (`measureMix.ts`, the export's own `createAudioMixer`, rate and range) kept with a trace of its blocks, so blocks crossing the -70 gate count. a measure is cached by `soundSignature` (every sound field of the project in the range), shared by the mixer strip, the dialog, the export and mcp, and a run in flight is shared too. the sound is mixed on the main thread only, so every way gives the same samples. the delivery and loudness choices are saved per browser, never in the project.
+- the live loudness (`features/media/mixer/loudnessTap.ts`): the preview adds only `audioOut()` in `meterTaps.ts` (the output level node), and a tap is built from it only while the strip is held, open and on screen. nothing in `audioMix.ts` knows about it. no live limiter.
 - rules for changes here: the picture must stay identical to one thread (the 3d renderer has a run to run noise
   of a level or two on a handful of pixels, nothing else may differ), the file must keep its frame count, key frame
   rhythm, codec string and duration, and every new path needs its fallback. reference frames are only comparable
@@ -489,11 +591,15 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 
 ## dev hook
 
-in dev builds `window.__ncut = { useEditor, usePlayback, useUi, useSource, session, importFiles, mcp, rig, fx, mix, scopes, editTargets }` is available for testing.
+in dev builds `window.__ncut = { useEditor, usePlayback, useUi, useSource, session, importFiles, mcp, rig, fx, mix, loudness, scopes, editTargets, keys, graph }` is available for testing.
 `fx` has the effect and transition registries plus `checkEffects()` / `checkTransitions()`, which compile
 every shader in the browser and return the ones that fail (an empty list = all good).
 `useSource` is the source view's store, `mix` has `useSolo` and the sound routing counters (`debug`), `scopes` has the scope
 counters (`debug`) and `useScopes`, `editTargets` is the three point edit targets store.
+`mix.debug` also counts the sound twins of a crossfade (`twins`). `loudness` (`loudnessDebug`) counts live taps, tap reads, measures and cache
+hits, and has `samples(l, r, rate)` (measure two sample arrays) and `mix(start?, end?, rate?)` (measure the mix, the same cache as the strip).
+`keys` has `useKeyPanel` (the panel's prefs and open state) and `debug` (draws, last draw time, rows). `graph` has `useGraph` (kind, hidden
+lines, windows) and `debug` (draws, last draw time, lines, segments).
 
 `window.__ncut.bench` (`src/dev/bench.ts`, dev builds and `vite build --mode bench --outDir dist-bench`) makes test
 footage and projects, exports them with the options of `exportProject` and reports frames per second, the workers

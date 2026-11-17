@@ -22,8 +22,11 @@ import { StillCopies, keptStep } from './stillCopies';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
+import { GRADE_LUT_DEF } from './effects/defs/grade';
 import { GRADE_EFFECT } from '../lib/gradeData';
 import { gradeData } from './grade';
+import { type LutLookup, withLuts } from './lutScope';
+import { MATTE_LUMA_PASS, isInverted, matteTable, type MatteRef, type MatteTable } from './matte';
 import { releaseEffectRunner, renderEffects, renderEffectsAlpha } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance, homeRig } from './scene3d/camera';
@@ -142,8 +145,10 @@ export function imagePixelSize(image: unknown, fallbackW: number, fallbackH: num
  * or null when it is not available (still loading / missing) - the clip is skipped.
  * `sky`: the pictures of the project's sky (Project.sky), or null while they load. missing = no sky is drawn (the
  * bench, thumbnails).
+ * `lut`: the table of a lut media, or null while it loads or when it cannot be read (the grade then draws without it).
+ * missing = no luts (the bench, thumbnails)
  */
-export type SourceResolver = ((clip: VideoClip | ImageClip, sourceTime: number) => DrawSource | null) & { sky?: SkyPictureOf };
+export type SourceResolver = ((clip: VideoClip | ImageClip, sourceTime: number) => DrawSource | null) & { sky?: SkyPictureOf; lut?: LutLookup };
 
 /**
  * axis-aligned box of a clip before rotation, in canvas pixels. cx / cy is the clip's position: its pivot, the middle of
@@ -379,11 +384,12 @@ export function visibleClipsAt(project: Project, time: number): VisualClip[] {
   const out: VisualClip[] = [];
   // a clip that is shown on a side of a solid is not painted on its own (faces.ts)
   const onSides = faceSourceSet(project);
+  const mattes = matteTable(project)?.sources;
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
     for (const clip of clipsOnTrack(project, track.id)) {
-      if (!isVisualClip(clip) || onSides.has(clip.id)) continue;
+      if (!isVisualClip(clip) || onSides.has(clip.id) || mattes?.has(clip.id)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -429,6 +435,18 @@ export function neededClipsAt(project: Project, time: number): VisualClip[] {
       }
     }
   }
+  // a matte clip is not painted on its own but its picture is used: while it plays (the export decodes a video one
+  // frame after the other) and at the time a transition holds a matted clip on
+  const mt = matteTable(project);
+  if (mt) {
+    for (const src of mt.sourceClips) {
+      if (time >= src.start - 1e-6 && time < clipEnd(src) - 1e-6 && !out.includes(src)) out.push(src);
+    }
+    for (const [c, at] of solids) {
+      const m = mt.byClip.get(c.id);
+      if (m && at >= m.src.start - 1e-6 && at < clipEnd(m.src) - 1e-6 && !out.includes(m.src)) out.push(m.src);
+    }
+  }
   return out;
 }
 
@@ -439,12 +457,13 @@ export function neededClipsAt(project: Project, time: number): VisualClip[] {
 export function paintListAt(project: Project, time: number): (VisualClip | EffectClip)[] {
   const out: (VisualClip | EffectClip)[] = [];
   const onSides = faceSourceSet(project);
+  const mattes = matteTable(project)?.sources;
   for (let i = project.tracks.length - 1; i >= 0; i--) {
     const track = project.tracks[i]!;
     if (track.kind !== 'video' || track.hidden) continue;
     for (const clip of clipsOnTrack(project, track.id)) {
       if (clip.type !== 'effect' && !isVisualClip(clip)) continue;
-      if (onSides.has(clip.id)) continue;
+      if (onSides.has(clip.id) || mattes?.has(clip.id)) continue;
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) out.push(clip);
     }
   }
@@ -492,7 +511,7 @@ export function effectPassAt(raw: EffectClip, time: number, grid?: BeatGrid | nu
       params = { ...params, [def.sync.param]: 1 / (cycle * def.sync.cycles) };
     }
   }
-  const pass: EffectPass = { def, time: passTime, duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params };
+  const pass: EffectPass = { def: grade?.lut ? GRADE_LUT_DEF : def, time: passTime, duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params };
   if (grade) pass.grade = grade;
   return pass;
 }
@@ -1709,6 +1728,11 @@ export interface RenderOptions {
    * to see in motion (fewer motion blur samples). default 1.
    */
   quality?: number;
+  /**
+   * true = no background: the frame starts cleared instead of filled with project.background, so a canvas made with
+   * alpha stays see-through where nothing covers it (a transparent webm or png export). missing = filled, as always.
+   */
+  transparent?: boolean;
 }
 
 type PaintItem =
@@ -1723,6 +1747,7 @@ type PaintItem =
 function paintItemsAt(project: Project, time: number, above: number): PaintItem[] {
   const out: PaintItem[] = [];
   const onSides = faceSourceSet(project);
+  const mattes = matteTable(project)?.sources;
   const own = ownLayers(project);
   for (let i = project.tracks.length - 1; i > above; i--) {
     const track = project.tracks[i]!;
@@ -1738,11 +1763,11 @@ function paintItemsAt(project: Project, time: number, above: number): PaintItem[
         continue;
       }
       // a clip that is shown on a side of a solid is not painted on its own, and a transition into it does nothing
-      if (!isVisualClip(clip) || onSides.has(clip.id)) continue;
+      if (!isVisualClip(clip) || onSides.has(clip.id) || mattes?.has(clip.id)) continue;
       if (clip.transition && !span) {
         const sp = transitionSpan(project, clip);
         // an outgoing clip that lives on a solid is not blended in: the transition runs from nothing
-        if (sp && time >= sp.start - 1e-6 && time < sp.end - 1e-6 && getTransition(sp.id)) span = sp.from && onSides.has(sp.from.id) ? { ...sp, from: null } : sp;
+        if (sp && time >= sp.start - 1e-6 && time < sp.end - 1e-6 && getTransition(sp.id)) span = sp.from && (onSides.has(sp.from.id) || mattes?.has(sp.from.id)) ? { ...sp, from: null } : sp;
       }
       if (time >= clip.start - 1e-6 && time < clipEnd(clip) - 1e-6) natural = clip;
     }
@@ -1763,6 +1788,8 @@ interface Env {
   fx: TargetIndex | null;
   /** the clips an own layer (a chroma key on a track of its own) is bound to at this frame (see frameFx). null / missing = none */
   bound?: ReadonlySet<string> | null;
+  /** the clips cut by a matte and the matte clips (matte.ts). null / missing = none, the old path */
+  mattes?: MatteTable | null;
 }
 
 /** temporal effects nested deeper than this are ignored (each level multiplies the work) */
@@ -2108,6 +2135,16 @@ export function frameFx(project: Project, time: number): FrameFx {
     for (const c of keys) pics.set(c.id, c);
     if (keys.length > 0) targets.push({ track: it.track, keys: keys.map((c) => c.id) });
   }
+  // a matte clip is not painted on its own, but a key layer right above it keys it (a green screen used as a matte)
+  const mt = matteTable(project);
+  if (mt) {
+    const onSides = faceSourceSet(project);
+    for (const src of mt.sourceClips) {
+      if (!picture(src) || onSides.has(src.id) || time < src.start - 1e-6 || time >= clipEnd(src) - 1e-6) continue;
+      pics.set(src.id, src);
+      targets.push({ track: project.tracks.findIndex((t) => t.id === src.trackId), keys: [src.id] });
+    }
+  }
   const bound = new Map<string, EffectClip[]>();
   for (const [id, list] of bindOwnLayers(layers, targets)) {
     const pic = pics.get(id)!;
@@ -2186,8 +2223,10 @@ function paintWithFx(ctx: Ctx, project: Project, passes: EffectPass[], op: Globa
  */
 function paintAlone(ctx: Ctx, project: Project, raw: VisualClip, time: number, env: Env, rig: () => CameraRig, frozen = false, frameTime = time): boolean {
   let drawn = false;
+  const matte = env.mattes?.byClip.get(raw.id);
   guarded(ctx, raw.id, () => {
-    drawn = paintAloneRaw(ctx, project, raw, time, env, rig, frozen, frameTime);
+    // a transition side: normal blending, the mix goes on with the blend mode of the incoming clip
+    drawn = matte ? paintMatted(ctx, project, raw, matte, time, env, rig, frozen, frameTime, null) : paintAloneRaw(ctx, project, raw, time, env, rig, frozen, frameTime);
   });
   return drawn;
 }
@@ -2228,6 +2267,56 @@ function paintAloneRaw(ctx: Ctx, project: Project, raw: VisualClip, time: number
   return true;
 }
 
+/** a full frame picture onto ctx in canvas pixels with op */
+function layFull(ctx: Ctx, pic: CanvasImageSource, op: GlobalCompositeOperation, w: number, h: number): void {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = op;
+  ctx.drawImage(pic, 0, 0, w, h);
+  ctx.restore();
+}
+
+/**
+ * one clip cut by its matte (matte.ts). the matte clip alone at the same time goes into 'matteSrc' (luma: its brightness
+ * becomes alpha in one gpu pass), the clip as paintAloneRaw draws it into 'matteFill', 'destination-in' keeps it where
+ * the matte is ('destination-out' when inverted), the result goes on ctx with `op` (its blend mode, null = normal). a matte
+ * clip that does not play or draws nothing is an empty matte. no webgl2: luma uses the alpha. false = nothing drawn.
+ */
+function paintMatted(ctx: Ctx, project: Project, raw: VisualClip, matte: MatteRef, time: number, env: Env, rig: () => CameraRig, frozen: boolean, frameTime: number, op: GlobalCompositeOperation | null): boolean {
+  const canvas = ctx.canvas as AnyCanvas | undefined;
+  const fill = scratchFor(ctx, env.channel, 'matteFill');
+  const hole = scratchFor(ctx, env.channel, 'matteSrc');
+  // no scratch canvas: drawn as if it had no matte
+  if (!canvas || !fill || !hole) return paintAloneRaw(ctx, project, raw, time, env, rig, frozen, frameTime);
+  const inv = isInverted(matte.mode);
+  const src = matte.src;
+  const plays = time >= src.start - 1e-6 && time < clipEnd(src) - 1e-6;
+  if (!plays && !inv) return false;
+  clearScratch(hole);
+  let cut = false;
+  if (plays) {
+    // at the time the clip is drawn, its own effects too. an error in it = an empty matte
+    guarded(hole.ctx, src.id, () => {
+      cut = paintAloneRaw(hole.ctx, project, src, time, env, rig, false, time);
+    });
+    if (!cut) clearScratch(hole);
+  }
+  if (!cut && !inv) return false;
+  if (cut && (matte.mode === 'luma' || matte.mode === 'luma-inv')) {
+    const w = hole.canvas.width;
+    const h = hole.canvas.height;
+    const out = renderEffectsAlpha(hole.canvas, w, h, [MATTE_LUMA_PASS], { projectWidth: project.width, projectHeight: project.height, channel: env.channel });
+    // the runner's canvas is reused by its next call: copied right away
+    if (out) layFull(hole.ctx, out, 'copy', w, h);
+  }
+  clearScratch(fill);
+  if (!paintAloneRaw(fill.ctx, project, raw, time, env, rig, frozen, frameTime)) return false;
+  if (cut) layFull(fill.ctx, hole.canvas, inv ? 'destination-out' : 'destination-in', fill.canvas.width, fill.canvas.height);
+  layFull(ctx, fill.canvas, op ?? 'source-over', canvas.width, canvas.height);
+  return true;
+}
+
 function seedOf(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000;
@@ -2243,6 +2332,7 @@ const sideMemo = new SideMemo();
  * can change what paintAlone draws is in the key (frozenSideKey). `sc` = the scratch canvas the side is painted into.
  */
 function sideKeyOf(project: Project, raw: VisualClip, paintTime: number, frozen: boolean, frameTime: number, env: Env, sc: Scratch): string | null {
+  if (env.mattes?.byClip.has(raw.id)) return null;
   // a key layer can change while the side stays frozen: no memo for a bound clip
   if (env.bound?.has(raw.id)) return null;
   if (!constantSideKind(raw.type, raw.threeD, frozen)) return null;
@@ -2341,7 +2431,7 @@ function paintTransition(ctx: Ctx, project: Project, time: number, span: Transit
 
 /**
  * paint the background and every layer below track index `above` (-1 = the whole frame) at a time.
- * the canvas ends up opaque.
+ * the canvas ends up opaque, unless opts.transparent.
  */
 function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: number): void {
   const items = paintItemsAt(project, time, above);
@@ -2384,13 +2474,16 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         acc.ctx.drawImage(sc.canvas, 0, 0, canvas.width, canvas.height);
         acc.ctx.restore();
       }
-      // the sum can fall a level or two short of opaque from rounding: lay it over the background so the frame stays opaque
+      // the sum can fall a level or two short of opaque from rounding: lay it over the background so the frame stays opaque, or clears it when transparent
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = project.background || '#000000';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (env.opts.transparent) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      else {
+        ctx.fillStyle = project.background || '#000000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
       ctx.drawImage(acc.canvas, 0, 0, canvas.width, canvas.height);
       ctx.restore();
       first = k + 1;
@@ -2398,8 +2491,11 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     }
   }
   if (first === 0) {
-    ctx.fillStyle = project.background || '#000000';
-    ctx.fillRect(0, 0, project.width, project.height);
+    if (env.opts.transparent) ctx.clearRect(0, 0, project.width, project.height);
+    else {
+      ctx.fillStyle = project.background || '#000000';
+      ctx.fillRect(0, 0, project.width, project.height);
+    }
   }
 
   // consecutive 3d clips share one depth sorted scene. a 2d clip, a transition or an effect in between splits it.
@@ -2456,6 +2552,16 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       continue;
     }
     const raw = it.clip;
+    // a clip cut by a matte is a run of its own: drawn alone, cut, laid on with its blend mode. a 3d one does not
+    // depth-test against the 3d clips around it (like a blended one)
+    const matte = env.mattes?.byClip.get(raw.id);
+    if (matte) {
+      flushRuns();
+      guarded(ctx, raw.id, () => {
+        paintMatted(ctx, project, raw, matte, time, env, getRig, false, time, blendOp(raw.blend));
+      });
+      continue;
+    }
     // one clip that cannot be drawn is left out, the layers around it are still painted
     guarded(ctx, raw.id, () => {
       // keyframes baked in. the resolver still gets the stored clip (it is keyed by identity).
@@ -2547,14 +2653,16 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
  */
 export function renderFrame(ctx: Ctx, project: Project, time: number, resolve: SourceResolver, opts: RenderOptions = {}): void {
   const quality = Math.min(1, Math.max(0.1, opts.quality ?? 1));
-  paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0, ...frameFx(project, time) }, -1);
+  const run = () => paintLayers(ctx, project, time, { resolve, opts, channel: channelOf(ctx), quality, depth: 0, mattes: matteTable(project), ...frameFx(project, time) }, -1);
+  if (resolve.lut) withLuts(resolve.lut, run);
+  else run();
 }
 
 /**
  * the scene view: the 3d world seen from a free editor camera instead of the project camera.
  * shows every active 3d clip as a plane, the output frame (the canvas rectangle at z = 0)
  * and the project camera as a wire pyramid (the floor grid is the scene overlay's). 2d clips and effects are screen space and are not drawn.
- * crop and radius apply here too; blend modes do not (all planes share one depth sorted run).
+ * crop and radius apply here too; blend modes and mattes do not (all planes share one depth sorted run).
  * `lineColor` is straight rgba 0..1 for the helpers (pass a theme color).
  */
 export function renderSceneView(
@@ -2572,39 +2680,43 @@ export function renderSceneView(
   ctx.fillRect(0, 0, project.width, project.height);
   ctx.restore();
 
-  const W = project.width;
-  const H = project.height;
-  const rig = cameraRig(viewCamera, W, H);
-  const layers: Layer3D[] = [];
-  for (const raw of paintListAt(project, time)) {
-    if (raw.type === 'effect') continue;
-    const clip = resolveVisual(raw, time, project);
-    if (!clip.threeD) continue;
-    const alpha = clip.transform.opacity * fadeFactor(clip, time);
-    if (alpha <= 0.001) continue;
-    let source: DrawSource | null = null;
-    if (raw.type === 'video' || raw.type === 'image') {
-      source = resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
-      if (!source) continue;
+  const run = (): void => {
+    const W = project.width;
+    const H = project.height;
+    const rig = cameraRig(viewCamera, W, H);
+    const layers: Layer3D[] = [];
+    for (const raw of paintListAt(project, time)) {
+      if (raw.type === 'effect') continue;
+      const clip = resolveVisual(raw, time, project);
+      if (!clip.threeD) continue;
+      const alpha = clip.transform.opacity * fadeFactor(clip, time);
+      if (alpha <= 0.001) continue;
+      let source: DrawSource | null = null;
+      if (raw.type === 'video' || raw.type === 'image') {
+        source = resolve(raw, raw.type === 'video' ? sourceTimeAt(raw, time) : 0);
+        if (!source) continue;
+      }
+      layers.push({ clip, source, alpha, time, resolve });
     }
-    layers.push({ clip, source, alpha, time, resolve });
-  }
 
-  const seg = (out: number[], a: readonly number[], b: readonly number[]) => out.push(a[0]!, a[1]!, a[2]!, b[0]!, b[1]!, b[2]!);
-  // the output frame
-  const frame: number[] = [];
-  seg(frame, [0, 0, 0], [W, 0, 0]);
-  seg(frame, [W, 0, 0], [W, H, 0]);
-  seg(frame, [W, H, 0], [0, H, 0]);
-  seg(frame, [0, H, 0], [0, 0, 0]);
-  // the project camera
-  const camClip = cameraClipAt(project, time);
-  const camRig = cameraRig(camClip ? cameraFromClip(camClip, time, project) : DEFAULT_CAMERA, W, H);
-  const far = frustumCorners(camRig, homeDistance(H));
-  for (let i = 0; i < 4; i++) {
-    seg(frame, camRig.eye, far[i]!);
-    seg(frame, far[i]!, far[(i + 1) % 4]!);
-  }
-  const channel = channelOf(ctx);
-  draw3d(ctx, project, layers, rig, channel, [{ points: frame, color: lineColor }], 'source-over', project.sky ? skyDrawFor(project, resolve.sky, channel, rig) : null);
+    const seg = (out: number[], a: readonly number[], b: readonly number[]) => out.push(a[0]!, a[1]!, a[2]!, b[0]!, b[1]!, b[2]!);
+    // the output frame
+    const frame: number[] = [];
+    seg(frame, [0, 0, 0], [W, 0, 0]);
+    seg(frame, [W, 0, 0], [W, H, 0]);
+    seg(frame, [W, H, 0], [0, H, 0]);
+    seg(frame, [0, H, 0], [0, 0, 0]);
+    // the project camera
+    const camClip = cameraClipAt(project, time);
+    const camRig = cameraRig(camClip ? cameraFromClip(camClip, time, project) : DEFAULT_CAMERA, W, H);
+    const far = frustumCorners(camRig, homeDistance(H));
+    for (let i = 0; i < 4; i++) {
+      seg(frame, camRig.eye, far[i]!);
+      seg(frame, far[i]!, far[(i + 1) % 4]!);
+    }
+    const channel = channelOf(ctx);
+    draw3d(ctx, project, layers, rig, channel, [{ points: frame, color: lineColor }], 'source-over', project.sky ? skyDrawFor(project, resolve.sky, channel, rig) : null);
+  };
+  if (resolve.lut) withLuts(resolve.lut, run);
+  else run();
 }

@@ -12,6 +12,8 @@ import { releaseRenderResources, renderFrame, renderSceneView } from '../../engi
 import { releaseSky } from '../../engine/scene3d/renderer';
 import { type SkyPicture, skyAssetIds, skyFaceSize, skyKey, skyUsable, sourceFaceOf } from '../../engine/scene3d/sky';
 import { loadSkyFaces } from '../../media/skyFaces';
+import { dropLuts, lutProblem, lutTableOf, onLutChange, requestLut, usedLutIds } from '../../media/lutTables';
+import type { LutTable } from '../../lib/cube';
 import { isExporting } from '../../engine/exportState';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
 import { onFontsChanged } from '../../lib/fonts';
@@ -19,6 +21,8 @@ import { APPEARANCE_EVENT } from '../../lib/appearance';
 import { sourceTimeAt } from '../../lib/timelineOps';
 import { clipMix, outputGain, soloSet } from '../../lib/mix';
 import { transitionHolds } from '../../lib/transitions';
+import { type ClipSound, EMPTY_SOUNDS, soundIndex } from '../../lib/audioCross';
+import { timelineOnlyChange } from '../../lib/trackTools';
 import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import { useEditor } from '../../store/editorStore';
@@ -38,6 +42,7 @@ import { onTapWanted, tapFrame } from './scopeTap';
 import { METER_WINDOW, OUTPUT_TAP, blockLevels, clearMeterSource, setMeterSource } from './meterTaps';
 import type { MeterSource, TapLevels } from './meterTaps';
 import { fallbackVolume, mixDebug, soundOnlyChange } from './mixRoute';
+import { needsTwin, soundActive, soundInWindow, twinKey } from './soundSync';
 
 type LineColor = [number, number, number, number];
 const FALLBACK_LINE: LineColor = [1, 1, 1, 0.6];
@@ -73,6 +78,9 @@ function setPreservesPitch(el: HTMLMediaElement, value: boolean): void {
 
 interface MediaEntry {
   clipId: string;
+  /** the pool key: the clip id, or twinKey for a video clip's sound twin */
+  key: string;
+  twin: boolean;
   assetId: string;
   url: string;
   kind: 'video' | 'audio';
@@ -144,6 +152,8 @@ export class PreviewEngine implements MeterSource {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pool = new Map<string, MediaEntry>();
+  /** the crossfade sounds of the project, set by sync() */
+  private sounds: ReadonlyMap<string, ClipSound> = EMPTY_SOUNDS;
   private readonly images = new Map<string, ImageEntry>();
   /** video elements of clips that left the window, by url (see destroyEntry / createEntry) */
   private readonly parked = new ParkingLot<ParkedMedia>();
@@ -224,6 +234,8 @@ export class PreviewEngine implements MeterSource {
     );
     this.unsubs.push(
       useEditor.subscribe((s, prev) => {
+        // a track height or sync lock: no frame and no sample changes, nothing syncs and nothing repaints
+        if (s.project && prev.project && s.project !== prev.project && s.selection === prev.selection && timelineOnlyChange(prev.project, s.project)) return;
         // a fader or pan drag, a mute or a typed clip volume: only the gains move, nothing syncs and nothing repaints
         if (s.project && prev.project && s.project !== prev.project && s.selection === prev.selection && soundOnlyChange(prev.project, s.project)) {
           this.applyGains();
@@ -239,7 +251,12 @@ export class PreviewEngine implements MeterSource {
           // bitmaps are decoded bounded by the project size: decode again at the new bound
           this.clearImages();
         }
-        if (s.project?.assets !== prev.project?.assets) this.pruneImages(s.project);
+        if (s.project?.assets !== prev.project?.assets) {
+          this.pruneImages(s.project);
+          // the tables of lut media that are gone go, the ones the grades use are read (once, the draw only asks)
+          dropLuts(new Set(s.project ? s.project.assets.filter((a) => a.kind === 'lut').map((a) => a.id) : []));
+          if (s.project) for (const id of usedLutIds(s.project)) void requestLut(id, getAssetBlob);
+        }
         this.sync();
         // a closed project, another project or changed assets: parked elements of urls nobody uses any more go
         if (s.project?.assets !== prev.project?.assets) this.purgeParked(s.project);
@@ -290,6 +307,11 @@ export class PreviewEngine implements MeterSource {
     }
     // a font that finished loading changes how text measures and draws
     this.unsubs.push(onFontsChanged(() => this.invalidate()));
+    // a lut table that was read (or failed) changes what a graded clip draws
+    this.unsubs.push(onLutChange(() => {
+      this.mustDraw = true;
+      this.invalidate();
+    }));
     this.watchDpr();
     this.unsubs.push(() => this.dprOff?.());
     // text clips drawn before their web font finished loading must be redrawn once it arrives
@@ -418,6 +440,9 @@ export class PreviewEngine implements MeterSource {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
       if (this.disposed) return null;
     }
+    // the luts the grades use are read before the frame is drawn (a frame without one would be wrong)
+    await Promise.all(usedLutIds(project).map((id) => requestLut(id, getAssetBlob)));
+    if (this.disposed) return null;
     if (yieldToExport && isExporting()) return null;
     const canvas = new OffscreenCanvas(project.width, project.height);
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -639,7 +664,7 @@ export class PreviewEngine implements MeterSource {
       }
       return this.imageSource(clip.assetId);
     },
-    { sky: (sky: SceneSky) => this.skyPicture(sky) },
+    { sky: (sky: SceneSky) => this.skyPicture(sky), lut: (id: string) => this.lutTable(id) },
   );
 
   /** the sky's faces for the renderer: read once per pictures and face size, null while they load */
@@ -672,6 +697,17 @@ export class PreviewEngine implements MeterSource {
         for (const f of [...this.skyReady]) f();
       }
     });
+    return null;
+  }
+
+  /** the table of a lut media for the renderer: null while it is read, when it cannot be read or when the id is no lut of the open project */
+  private lutTable(id: string): LutTable | null {
+    const project = useEditor.getState().project;
+    // a removed lut can still have its blob registered: it must not draw
+    if (!project || !project.assets.some((a) => a.id === id && a.kind === 'lut')) return null;
+    const table = lutTableOf(id);
+    if (table) return table;
+    if (lutProblem(id) === null) void requestLut(id, getAssetBlob);
     return null;
   }
 
@@ -708,7 +744,7 @@ export class PreviewEngine implements MeterSource {
     if (entry.settle) window.clearTimeout(entry.settle);
     entry.settle = window.setTimeout(() => {
       entry.settle = 0;
-      if (this.disposed || this.pool.get(entry.clipId) !== entry || entry.failed) return;
+      if (this.disposed || this.pool.get(entry.key) !== entry || entry.failed) return;
       if (usePlayback.getState().playing || !Number.isFinite(entry.target)) return;
       this.seek(entry, entry.target, entry.tol);
     }, SETTLE_MS);
@@ -726,7 +762,7 @@ export class PreviewEngine implements MeterSource {
       const blob = getAssetBlob(entry.assetId);
       if (!blob) return;
       entry.feed = new ScrubFeed(blob, () => {
-        if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        if (this.disposed || this.pool.get(entry.key) !== entry) return;
         if (!usePlayback.getState().playing) this.invalidate();
       });
     }
@@ -915,14 +951,17 @@ export class PreviewEngine implements MeterSource {
     const solo = soloSet(project, useSolo.getState().solo);
     for (const clip of project.clips) {
       if (clip.type !== 'video' && clip.type !== 'audio') continue;
+      const snd = this.sounds.get(clip.id) ?? null;
+      const twin = snd && needsTwin(clip, snd) ? this.pool.get(twinKey(clip.id)) : undefined;
+      if (twin) this.setGain(twin, clip, project, time, solo, snd);
       const entry = this.pool.get(clip.id);
-      if (entry) this.setGain(entry, clip, project, time, solo);
+      if (entry) this.setGain(entry, clip, project, time, solo, snd, twin !== undefined && !twin.failed);
     }
   }
 
-  private setGain(entry: MediaEntry, clip: VideoClip | AudioClip, project: Project, time: number, solo: ReadonlySet<string> | null): void {
-    const m = clipMix(project, clip, time, solo);
-    const g = entry.rateMute ? 0 : m.gain;
+  private setGain(entry: MediaEntry, clip: VideoClip | AudioClip, project: Project, time: number, solo: ReadonlySet<string> | null, snd: ClipSound | null = null, quiet = false): void {
+    const m = clipMix(project, clip, time, solo, snd);
+    const g = entry.rateMute || quiet ? 0 : m.gain;
     const gain = entry.gain;
     if (!gain) {
       // no web audio: the element's own volume is all there is (no pan, no meters)
@@ -1126,6 +1165,8 @@ export class PreviewEngine implements MeterSource {
     return true;
   }
 
+  audioOut(): { ctx: BaseAudioContext; node: AudioNode } | null { return this.audioCtx && this.mixIn ? { ctx: this.audioCtx, node: this.mixIn } : null; }
+
   /* ---------- media pool + clock sync ---------- */
 
   /** bring the pool and the element states in line with the project and the clock */
@@ -1138,14 +1179,20 @@ export class PreviewEngine implements MeterSource {
     if (project) {
       const holds = transitionHolds(project);
       const solo = soloSet(project, useSolo.getState().solo);
+      const sounds = (this.sounds = soundIndex(project));
       for (const clip of project.clips) {
         if (clip.type !== 'video' && clip.type !== 'audio') continue;
-        if (!this.inWindow(clip, holds, time)) continue;
+        const snd = sounds.get(clip.id) ?? null;
+        const twin = snd !== null && needsTwin(clip, snd);
+        const twinUp = twin ? this.syncTwin(clip as VideoClip, snd!, project, holds, time, playing, rate, solo) : false;
+        // a video with a twin keeps the picture rules: rest on its first / last frame, play its own range
+        const own = twin ? null : snd;
+        if (!this.inWindow(clip, holds, time, own)) continue;
         const entry = this.ensureEntry(clip, project, holds, time);
         if (!entry) continue;
         entry.gen = this.gen;
-        this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < clip.start + clip.duration, rate);
-        this.setGain(entry, clip, project, time, solo);
+        this.syncEntry(entry, clip, project, time, playing, soundActive(clip, own, time), rate, own);
+        this.setGain(entry, clip, project, time, solo, snd, twinUp);
       }
       this.evictImages(project, time);
     }
@@ -1154,14 +1201,34 @@ export class PreviewEngine implements MeterSource {
     }
   }
 
-  /** is the clip's element wanted at this time (its range, the lookahead / linger, the frozen edges of a transition) */
-  private inWindow(clip: VideoClip | AudioClip, holds: ReturnType<typeof transitionHolds>, time: number): boolean {
+  /** the sound twin of a video clip with a head or tail: an audio element on the same file. false when it is not up */
+  private syncTwin(
+    clip: VideoClip,
+    snd: ClipSound,
+    project: Project,
+    holds: ReturnType<typeof transitionHolds>,
+    time: number,
+    playing: boolean,
+    rate: number,
+    solo: ReadonlySet<string> | null,
+  ): boolean {
+    if (!soundInWindow(clip, snd, time, LOOKAHEAD, LINGER)) return false;
+    const t = this.ensureEntry(clip, project, holds, time, twinKey(clip.id), true);
+    if (!t) return false;
+    t.gen = this.gen;
+    this.syncEntry(t, clip, project, time, playing, soundActive(clip, snd, time), rate, snd);
+    this.setGain(t, clip, project, time, solo, snd);
+    return !t.failed;
+  }
+
+  /** is the clip's element wanted at this time (its range, the lookahead / linger, the frozen edges of a transition). snd widens it by head and tail */
+  private inWindow(clip: VideoClip | AudioClip, holds: ReturnType<typeof transitionHolds>, time: number, snd: ClipSound | null = null): boolean {
     const end = clip.start + clip.duration;
     // a clip in a transition shows its frozen first / last frame outside its own range
     const hold = holds.get(clip.id);
     const before = hold ? Math.max(LOOKAHEAD, hold.before + 0.25) : LOOKAHEAD;
     const after = hold ? Math.max(LINGER, hold.after + 0.1) : LINGER;
-    return !(time < clip.start - before || time >= end + after);
+    return !(time < clip.start - (snd ? snd.head : 0) - before || time >= end + (snd ? snd.tail : 0) + after);
   }
 
   /**
@@ -1172,9 +1239,12 @@ export class PreviewEngine implements MeterSource {
     this.swept = true;
     for (const clip of project.clips) {
       if (clip.type !== 'video' && clip.type !== 'audio') continue;
+      const snd = this.sounds.get(clip.id) ?? null;
+      const twin = snd !== null && needsTwin(clip, snd);
       const e = this.pool.get(clip.id);
-      if (!e || e.assetId !== clip.assetId || e.url !== getAssetUrl(clip.assetId)) continue;
-      if (this.inWindow(clip, holds, time)) e.gen = this.gen;
+      if (e && e.assetId === clip.assetId && e.url === getAssetUrl(clip.assetId) && this.inWindow(clip, holds, time, twin ? null : snd)) e.gen = this.gen;
+      const t = twin ? this.pool.get(twinKey(clip.id)) : undefined;
+      if (t && snd && t.assetId === clip.assetId && t.url === getAssetUrl(clip.assetId) && soundInWindow(clip, snd, time, LOOKAHEAD, LINGER)) t.gen = this.gen;
     }
     for (const entry of Array.from(this.pool.values())) {
       if (entry.gen !== this.gen) this.destroyEntry(entry);
@@ -1189,6 +1259,7 @@ export class PreviewEngine implements MeterSource {
     playing: boolean,
     active: boolean,
     rate: number,
+    snd: ClipSound | null = null,
   ): void {
     const el = entry.el;
     entry.rateMute = false;
@@ -1210,10 +1281,10 @@ export class PreviewEngine implements MeterSource {
       entry.feed?.rest();
       // lookahead (or just ended): keep it parked on its first frame, silent
       if (!el.paused) el.pause();
-      const park = toSource(clip.trimStart);
-      if (time < clip.start) this.seek(entry, park, halfFrame);
+      const park = toSource(snd ? sourceTimeAt(clip, clip.start - snd.head) : clip.trimStart);
+      if (time < clip.start - (snd ? snd.head : 0)) this.seek(entry, park, halfFrame);
       // ended: a video rests on its last frame (a transition out of it shows that frame)
-      else if (clip.type === 'video') this.seek(entry, toSource(sourceTimeAt(clip, clip.start + clip.duration) - halfFrame), halfFrame * 2);
+      else if (entry.kind === 'video') this.seek(entry, toSource(sourceTimeAt(clip, clip.start + clip.duration) - halfFrame), halfFrame * 2);
       return;
     }
 
@@ -1299,9 +1370,16 @@ export class PreviewEngine implements MeterSource {
     }
   }
 
-  private ensureEntry(clip: VideoClip | AudioClip, project: Project, holds: ReturnType<typeof transitionHolds>, time: number): MediaEntry | null {
+  private ensureEntry(
+    clip: VideoClip | AudioClip,
+    project: Project,
+    holds: ReturnType<typeof transitionHolds>,
+    time: number,
+    key: string = clip.id,
+    twin = false,
+  ): MediaEntry | null {
     const url = getAssetUrl(clip.assetId);
-    let entry = this.pool.get(clip.id);
+    let entry = this.pool.get(key);
     if (entry && (entry.assetId !== clip.assetId || entry.url !== url)) {
       this.destroyEntry(entry);
       entry = undefined;
@@ -1309,11 +1387,12 @@ export class PreviewEngine implements MeterSource {
     if (entry) return entry;
     if (!url) return null;
     if (!this.swept) this.sweepStale(project, holds, time);
-    return this.createEntry(clip, url);
+    return this.createEntry(clip, url, key, twin);
   }
 
-  private createEntry(clip: Clip & { assetId: string }, url: string): MediaEntry {
-    const isVideo = clip.type === 'video';
+  private createEntry(clip: Clip & { assetId: string }, url: string, key: string = clip.id, twin = false): MediaEntry {
+    // a twin is an audio element, never parked
+    const isVideo = clip.type === 'video' && !twin;
     // a parked element of the same file (metadata and decoder already there) is set up like a new one
     const parked = isVideo ? this.parked.take(url) : undefined;
     let el: HTMLVideoElement | HTMLAudioElement;
@@ -1334,6 +1413,8 @@ export class PreviewEngine implements MeterSource {
 
     const entry: MediaEntry = {
       clipId: clip.id,
+      key,
+      twin,
       assetId: clip.assetId,
       url,
       kind: isVideo ? 'video' : 'audio',
@@ -1406,7 +1487,7 @@ export class PreviewEngine implements MeterSource {
     const v = el as RvfcElement;
     if (isVideo && typeof v.requestVideoFrameCallback === 'function') {
       const onFrame = (_now: number, meta?: { mediaTime?: number }) => {
-        if (this.disposed || this.pool.get(entry.clipId) !== entry) return;
+        if (this.disposed || this.pool.get(entry.key) !== entry) return;
         // which frame the element shows now (a paused seek can say 'seeked' before its picture is there)
         entry.shown = typeof meta?.mediaTime === 'number' ? meta.mediaTime : Number.NaN;
         this.framesPresented++;
@@ -1426,7 +1507,8 @@ export class PreviewEngine implements MeterSource {
       entry.rvfc = 0;
     };
 
-    this.pool.set(clip.id, entry);
+    if (twin) mixDebug.twins++;
+    this.pool.set(key, entry);
     if (this.audioCtx) this.routeEntry(entry);
     // a parked element will not fire loadeddata / canplay again: ask for the redraw those events would have asked for
     if (parked) this.invalidate();
@@ -1441,11 +1523,12 @@ export class PreviewEngine implements MeterSource {
   }
 
   private destroyEntry(entry: MediaEntry): void {
+    if (entry.twin) mixDebug.twins--;
     entry.cleanup();
     this.dropSettle(entry);
     entry.feed?.dispose();
     entry.feed = null;
-    if (this.pool.get(entry.clipId) === entry) this.pool.delete(entry.clipId);
+    if (this.pool.get(entry.key) === entry) this.pool.delete(entry.key);
     entry.source = null;
     if (this.canPark(entry)) {
       const el = entry.el as HTMLVideoElement;

@@ -328,10 +328,10 @@ describe('paths of file tools', () => {
   });
 
   it('the media list is the importers list', () => {
-    for (const e of ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', 'ts', 'mts', '3gp', 'mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus', 'weba', 'aiff', 'aif', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg']) {
+    for (const e of ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', 'ts', 'mts', '3gp', 'mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus', 'weba', 'aiff', 'aif', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'cube']) {
       expect(media).toContain(e);
     }
-    expect(media).toHaveLength(29);
+    expect(media).toHaveLength(30);
   });
 
   it('names the path and the reason', () => {
@@ -347,6 +347,9 @@ describe('paths of file tools', () => {
     expect(r.fileSpec('import_project')).toMatchObject({ arg: 'path', many: false, exts: ['ncut'] });
     for (const t of ['get_state', 'export_video', 'toString', '__proto__', 'constructor', '', undefined, 5]) expect(r.fileSpec(t)).toBeNull();
     expect(r.wantsTicket('export_video')).toBe(true);
+    expect(r.wantsTicket('save_grade_lut')).toBe(true);
+    expect(r.wantsTicket('export_video', { check: true })).toBe(false);
+    expect(r.wantsTicket('export_video', { check: false })).toBe(true);
     for (const t of ['export_status', 'import_media', 'export_cancel', '', undefined]) expect(r.wantsTicket(t)).toBe(false);
   });
 
@@ -513,7 +516,7 @@ describe('the marked download', () => {
 
 describe('what a ticket download and a copy may be', () => {
   it('ticketExtOk takes what export_video makes, in any case, and nothing else', () => {
-    for (const n of ['a.mp4', 'a.WEBM', 'a.Gif', 'a.wav', 'x.y.ogg', 'a.png', 'a.JPG']) expect(r.ticketExtOk(n)).toBe(true);
+    for (const n of ['a.mp4', 'a.WEBM', 'a.Gif', 'a.wav', 'x.y.ogg', 'a.png', 'a.JPG', 'a.cube', 'my grade.CUBE']) expect(r.ticketExtOk(n)).toBe(true);
     for (const n of ['a.bat', 'a.lnk', 'a.exe', 'a', 'mp4', 'a.mp4.exe', 'a.jpeg', 'a.svg', 'a.png.lnk', '', undefined]) expect(r.ticketExtOk(n)).toBe(false);
   });
 

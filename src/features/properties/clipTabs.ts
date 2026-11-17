@@ -5,9 +5,9 @@ export type InspectorTab = 'basic' | 'look' | 'animate' | 'sound' | 'all';
 
 export const INSPECTOR_TABS: { id: InspectorTab; label: string; title: string }[] = [
   { id: 'basic', label: 'basic', title: 'name, timing, the main settings, transform, attach, speed, fades' },
-  { id: 'look', label: 'look', title: 'style, color, grade, mask, effects, 3d, bend' },
+  { id: 'look', label: 'look', title: 'style, color, grade, mask, matte, effects, 3d, bend' },
   { id: 'animate', label: 'animate', title: 'keyframes, motion, path, repeat, transition' },
-  { id: 'sound', label: 'sound', title: 'volume and tempo' },
+  { id: 'sound', label: 'sound', title: 'volume, crossfades and tempo' },
   { id: 'all', label: 'all', title: 'every section in one list' },
 ];
 
@@ -34,10 +34,12 @@ export const SECTION_ORDER = [
   'color',
   'grade',
   'mask',
+  'matte',
   'clip-effects',
   'motion',
   'transition',
   'audio',
+  'crossfade',
   'tempo',
   'speed',
   'fades',
@@ -62,6 +64,7 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
   color: 'look',
   grade: 'look',
   mask: 'look',
+  matte: 'look',
   'clip-effects': 'look',
   threed: 'look',
   bend: 'look',
@@ -74,6 +77,7 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
   repeat: 'animate',
   transition: 'animate',
   audio: 'sound',
+  crossfade: 'sound',
   tempo: 'sound',
 };
 
@@ -112,11 +116,13 @@ export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true, gra
       case 'look':
       case 'color':
       case 'mask':
+      case 'matte':
       case 'clip-effects':
       case 'motion':
       case 'transition':
         return visual;
       case 'audio':
+      case 'crossfade':
       case 'tempo':
         return sound;
       case 'speed':

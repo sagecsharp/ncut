@@ -8,6 +8,8 @@ import type { DrawSource } from '../../engine/draw';
 import { ensureProjectFonts } from '../../lib/fonts';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
 import type { Project } from '../../types';
+import { createFrameDrawer } from './frameFit';
+import type { FrameDrawer, FramePlacement } from './frameFit';
 import { createFrameSources } from './sources';
 
 /** a single picture, no sound and no length */
@@ -46,6 +48,10 @@ export interface StillOptions {
   mime: StillMime;
   /** jpg only: 0..1 */
   quality?: number;
+  /** true = no background: a png that is see-through where nothing is drawn. missing = the background is drawn */
+  transparent?: boolean;
+  /** missing = the frame fills the picture. set = drawn at the project's shape and placed (frameFit.ts) */
+  place?: FramePlacement;
 }
 
 export interface StillHooks {
@@ -88,10 +94,10 @@ export async function renderStill(project: Project, options: StillOptions, hooks
   if (signal?.aborted) throw abortError();
   const { width, height } = options;
   const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const ctx = canvas.getContext('2d', { alpha: !!options.transparent });
   if (!ctx) throw new Error('2d canvas is not available');
   // the renderer draws in project pixels
-  ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+  const drawer: FrameDrawer = createFrameDrawer(canvas, ctx, project, options.place ?? null, !!options.transparent);
   // a grid of one frame that starts at the time: the sources open exactly what that picture shows
   const sources = createFrameSources({
     project,
@@ -102,14 +108,17 @@ export async function renderStill(project: Project, options: StillOptions, hooks
     loadImageElement,
     onWarning,
     signal,
+    ...(options.transparent ? { alpha: true } : {}),
   });
   try {
     await sources.open();
     if (signal?.aborted) throw abortError();
     await sources.step(0, (at) => {
       // twice: the first drawing of a frame may still be loading a texture
-      renderFrame(ctx, project, at, sources.resolver);
-      renderFrame(ctx, project, at, sources.resolver);
+      const opts = options.transparent ? { transparent: true } : undefined;
+      renderFrame(drawer.target, project, at, sources.resolver, opts);
+      renderFrame(drawer.target, project, at, sources.resolver, opts);
+      drawer.finish();
     });
     if (signal?.aborted) throw abortError();
     hooks.onCanvas?.(canvas);
@@ -119,6 +128,7 @@ export async function renderStill(project: Project, options: StillOptions, hooks
     if (signal?.aborted) throw abortError();
     return blob;
   } finally {
+    drawer.dispose();
     await sources.dispose();
     releaseRenderResources('export');
     canvas.width = 0;

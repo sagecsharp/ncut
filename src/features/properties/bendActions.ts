@@ -5,6 +5,7 @@
 import { getClipBox } from '../../engine/draw';
 import { knownShape } from '../../engine/scene3d/meshes';
 import { KEY_EPS, evalKeys, keyIndexAt, withKeyAt, withValueAt, withoutKeyAt } from '../../lib/anim';
+import { sameHandles, scaleHandleValues } from '../../lib/keyBezier';
 import { useEditor } from '../../store/editorStore';
 import type { ActionOpts, BendWrite } from '../../store/editorStore';
 import { isVisualClip } from '../../types';
@@ -83,7 +84,7 @@ function bendOf(angle: number, along: BendAlong, center: number | undefined, spa
 
 const angleNow = (c: VisualClip, time: number): number => {
   const keys = c.keyframes?.['bend.angle'];
-  return keys && keys.length > 0 ? evalKeys(keys, time - c.start) : (c.bend?.angle ?? 0);
+  return keys && keys.length > 0 ? evalKeys(keys, time - c.start, c, 'bend.angle') : (c.bend?.angle ?? 0);
 };
 
 /**
@@ -212,7 +213,7 @@ export function bendEach(ids: readonly string[], change: BendChange, time: numbe
 }
 
 const sameKeyList = (a: readonly Keyframe[], b: readonly Keyframe[]): boolean =>
-  a.length === b.length && a.every((k, i) => Math.abs(k.t - b[i]!.t) <= KEY_EPS && Math.abs(k.v - b[i]!.v) <= 1e-9 && k.ease === b[i]!.ease);
+  a.length === b.length && a.every((k, i) => Math.abs(k.t - b[i]!.t) <= KEY_EPS && Math.abs(k.v - b[i]!.v) <= 1e-9 && k.ease === b[i]!.ease && sameHandles(k, b[i]!));
 
 /** give every clip the leader's bend.angle keys (keysFor). one undo step. answers how many clips changed */
 export function matchBendKeys(ids: readonly string[], opts: ActionOpts): number {
@@ -262,7 +263,7 @@ export function bendAlone(id: string, time: number, opts: ActionOpts): boolean {
       {
         id,
         bend: bendOf(c.bend.angle * ratio, c.bend.along === 'height' ? 'height' : 'width', undefined, undefined),
-        keys: keys && keys.length > 0 ? keys.map((k) => ({ ...k, v: k.v * ratio })) : undefined,
+        keys: keys && keys.length > 0 ? keys.map((k) => ({ ...scaleHandleValues(k, ratio), v: k.v * ratio })) : undefined,
       },
     ],
     SKIP,

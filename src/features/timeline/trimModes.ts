@@ -26,6 +26,8 @@ export interface TrimPlan {
   stop: TrimStop | null;  // set exactly when the plan does less than asked
   moved: string[];        // ids the sync rule shifted
   lockedBehind: string[]; // locked track ids with a clip at or after the edit point
+  freeBehind?: string[];  // unlocked sync lock off track ids that keep a clip at or after the edit point
+  drift?: string[];       // clips that go out of sync: a pair in sync where one moves and its mate stays
   speed?: number;         // stretch: the grabbed clip's new speed
   trimStart?: number;     // slip: the grabbed clip's new trimStart
   key: string;            // `${mode}:${r6(delta)}`
@@ -317,7 +319,7 @@ function followOps(p: P, byId: ReadonlyMap<string, Clip>, ph: Phases): void {
 }
 
 /** simulate the ops, refuse what would start before 0 or overlap, else the plan */
-function finish(p: P, byId: ReadonlyMap<string, Clip>, mode: TrimMode, ops: TrimOp[], d: number, stop: TrimStop | null, x: Partial<Pick<TrimPlan, 'moved' | 'lockedBehind' | 'speed' | 'trimStart'>> = {}): TrimPlan {
+function finish(p: P, byId: ReadonlyMap<string, Clip>, mode: TrimMode, ops: TrimOp[], d: number, stop: TrimStop | null, x: Partial<Pick<TrimPlan, 'moved' | 'lockedBehind' | 'freeBehind' | 'drift' | 'speed' | 'trimStart'>> = {}): TrimPlan {
   const lockedBehind = x.lockedBehind ?? [];
   const spans = simulate(byId, ops);
   const tracks = new Set<string>();
@@ -348,6 +350,8 @@ function finish(p: P, byId: ReadonlyMap<string, Clip>, mode: TrimMode, ops: Trim
   }
   const delta = r6(d);
   const plan: TrimPlan = { mode, ops, delta, stop, moved: x.moved ?? [], lockedBehind, key: `${mode}:${delta}` };
+  if (x.freeBehind && x.freeBehind.length > 0) plan.freeBehind = x.freeBehind;
+  if (x.drift && x.drift.length > 0) plan.drift = x.drift;
   if (x.speed !== undefined) plan.speed = x.speed;
   if (x.trimStart !== undefined) plan.trimStart = x.trimStart;
   return plan;
@@ -405,7 +409,7 @@ export function planRipple(p: P, clipId: string, edge: Edge, asked: number, pool
       ph.c.push({ kind: 'trim', id: c.id, edge: 'start', time: c.start });
     }
   }
-  return finish(p, byId, 'ripple', phased(ph), d, stop, { moved: shifted.map((m) => m.id), lockedBehind: shift.lockedBehind });
+  return finish(p, byId, 'ripple', phased(ph), d, stop, { moved: shifted.map((m) => m.id), lockedBehind: shift.lockedBehind, freeBehind: shift.freeBehind, drift: shift.drift });
 }
 
 /** move the edit between left and the clip touching it: one gets longer, the other shorter, nothing else moves. asked: + = right */

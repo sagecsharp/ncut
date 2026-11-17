@@ -261,3 +261,28 @@ describe('isStaticAt: grade', () => {
     expect(frameInfo(project([i, g]), 5).allStatic).toBe(false);
   });
 });
+
+describe('isStaticAt: matte', () => {
+  const twoTracks = (clips: Clip[]): Project => ({
+    ...project(clips),
+    tracks: [
+      { id: 't1', kind: 'video', name: 'v1', muted: false, hidden: false, locked: false },
+      { id: 't2', kind: 'video', name: 'v2', muted: false, hidden: false, locked: false },
+    ],
+  });
+  it('matte is a known field', () => {
+    const c = image('i', { matte: { clip: 'm', mode: 'alpha' } });
+    expect(isStaticAt(project([c]), c, 5)).toBe(true);
+  });
+  it('a matted clip is static only while its playing matte clip is', () => {
+    const m = video('m', { trackId: 't1', duration: 5, keyframes: kf });
+    const c = video('c', { trackId: 't2', matte: { clip: 'm', mode: 'luma' } });
+    const p = twoTracks([m, c]);
+    expect(frameInfo(p, 2).allStatic).toBe(false);
+    // the matte clip has ended: an empty matte, nothing moves
+    expect(frameInfo(p, 7).allStatic).toBe(true);
+    // a still matte clip does not stop the frame being static
+    const still = video('m', { trackId: 't1', duration: 5 });
+    expect(frameInfo(twoTracks([still, c]), 2).allStatic).toBe(true);
+  });
+});

@@ -31,8 +31,8 @@ export const COMMON_FIELDS: FieldRow[] = rows<TextClip>([
   ['fadeOut', 'number s, 0 or more', 'fade out at the tail, kept inside the clip length like fadeIn'],
 ]);
 
-const GRADE_TYPE = '{ liftR..offsetY, curves, off } | null';
-const GRADE_NOTE = 'color grade. lift, gamma, gain, offset as R, G, B and Y (level), -1..1, 0 = no change. curves { y, r, g, b, hueSat, hueHue, lumaSat }: [x, y] lists 0..1, at most 16; hue x from red toward yellow, wrapping; y 0.5 keeps. off: true hides it, the export too. keyable as grade.liftR ..';
+const GRADE_TYPE = '{ liftR..offsetY, curves, lut, off } | null';
+const GRADE_NOTE = 'color grade. lift, gamma, gain, offset as R, G, B and Y (level), -1..1, 0 = no change. curves { y, r, g, b, hueSat, hueHue, lumaSat }: [x, y] lists 0..1, at most 16; hue x from red toward yellow, wrapping; y 0.5 keeps. off: true hides it, the export too. keyable as grade.liftR .. lut { media, mix 0..1, last, tv }: a .cube from the media. last: true runs it after the curves, else before the wheels. tv: true for a lut made for 16 to 235. a lut that is missing or cannot be read is left out.';
 const GRADE_EXAMPLE = { liftB: 0.05, gammaY: 0.1, curves: { y: [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]] } };
 
 /** video, image, text and shape clips (everything with a picture) */
@@ -59,6 +59,7 @@ export const PICTURE_FIELDS: FieldRow[] = rows<TextClip>([
   ['grade', GRADE_TYPE, GRADE_NOTE, GRADE_EXAMPLE],
   ['chromaKey', '{ color, tolerance, softness, spill } | null', 'green screen: color hex to remove, tolerance, softness, spill each 0..1', { color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 }],
   ['mask', '{ shape, x, y, width, height, rotation, feather, invert, radius? } | null', 'show part of the picture. shape rect | ellipse | split | band | star | heart. x, y -1..1 and width, height 0..3 are fractions of the picture, rotation -360..360 deg, feather 0..1, invert boolean, radius 0..1 (rect)', { shape: 'ellipse', x: 0, y: 0, width: 0.8, height: 0.8, rotation: 0, feather: 0.1, invert: false }],
+  ['matte', '{ clip, mode } | null', "cut this clip with another picture clip, its matte. clip = a video, image, text or shape clip id, mode alpha (default, inside its outline) | alpha-inv (outside it) | luma (where it is bright) | luma-inv (where it is dark). the matte clip is not drawn on its own and is read at its own time: where it does not play, alpha and luma hide this clip, the inverted modes show it all. a matte clip cannot have a matte. null = no matte. not keyable", { clip: 'clp_id', mode: 'luma' }],
 ]);
 
 const SOUND_FIELDS = [
@@ -68,6 +69,9 @@ const SOUND_FIELDS = [
   ['speed', `number ${MIN_SPEED}..${MAX_SPEED}`, 'playback rate, 1 = normal. outside the range the store clamps it (10 gives 4) and the answer still says speed changed. the clip gets shorter or longer to match (clamped to the next clip on the track)'],
   ['bpm', `number ${BPM_MIN}..${BPM_MAX} | null`, 'tempo of the sound, for effects that follow the beat. null = unknown, and a number outside the range is stored as null', 120],
   ['beatOffset', 'number s | null', 'source seconds where a beat falls', 0.2],
+  ['crossfade', '{ before, after, shape?, withTransition? } | null', 'the sound of the clip before fades into this one across the edit at its start, from the media past the edit. before, after 0..10 s each side, together at least 0.001. shape power (equal power, default) | linear | smooth. withTransition true: the sides follow its transition. a side without media plays shorter (crossfadePlays in the answer). null = a hard edit', { before: 0.125, after: 0.125 }],
+  ['fadeInShape', "'power' | 'linear' | 'smooth' | null", 'the shape of the sound of fadeIn. null or linear = straight (default). the picture always fades straight', 'power'],
+  ['fadeOutShape', "'power' | 'linear' | 'smooth' | null", 'the shape of the sound of fadeOut. null or linear = straight (default). the picture always fades straight', 'smooth'],
 ] as const;
 
 export const VIDEO_FIELDS: FieldRow[] = rows<VideoClip>(SOUND_FIELDS);

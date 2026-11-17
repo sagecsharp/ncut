@@ -82,6 +82,7 @@ export function createProject(name = 'untitled project', preset: CanvasPreset = 
 
 /** the clip type a media gives for what is taken of it: null when the media has none of that part */
 export function clipTypeFor(a: Pick<MediaAsset, 'kind' | 'hasAudio'>, parts: ClipParts = 'both'): 'video' | 'audio' | 'image' | null {
+  if (a.kind === 'lut') return null;
   if (parts === 'sound') return a.kind === 'audio' || (a.kind === 'video' && a.hasAudio) ? 'audio' : null;
   if (parts === 'picture') return a.kind === 'audio' ? null : a.kind;
   return a.kind;
@@ -107,6 +108,7 @@ export function createClipFromAsset(
   start: number,
   take?: ClipTake,
 ): VideoClip | ImageClip | AudioClip {
+  if (asset.kind === 'lut') throw new Error('a lut is not a clip');
   const base = { id: uid('clp'), trackId, start, name: asset.name, fadeIn: 0, fadeOut: 0 };
   const type = clipTypeFor(asset, take?.parts) ?? asset.kind;
   if (type === 'video') {

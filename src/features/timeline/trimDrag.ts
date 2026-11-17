@@ -5,7 +5,7 @@ import { isTimedClip } from '../../types';
 import { formatAmount, formatTimecode } from '../../lib/time';
 import { planMoveEdit, planRipple, planSlide, planSlip, planStretch } from './trimModes';
 import type { P, TrimPlan, TrimStop } from './trimModes';
-import { trimStopText } from './trimText';
+import { syncSuffix, trimStopText } from './trimText';
 import type { TrimPress } from './trimPress';
 
 /** an amount of seconds as frames, or timecode from a second on. always timecode style, in every display mode */
@@ -62,6 +62,7 @@ export function readoutText(plan: TrimPlan, stop: TrimStop | null, p: P, clipId:
   }
   if (stop) text += `, stops: ${trimStopText(stop, p)}`;
   if (plan.lockedBehind.length > 0) text += ', locked tracks stay';
+  text += syncSuffix(plan);
   return text;
 }
 

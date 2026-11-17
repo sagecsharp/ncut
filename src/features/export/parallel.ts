@@ -13,6 +13,7 @@ import type { FontKit } from '../../lib/fontKit';
 import { KEYFRAME_SECONDS, renderSegment } from './segment';
 import type { SegmentJob, SegmentResult } from './segment';
 import { loadExportSky } from './sources';
+import { usedLutIds } from '../../media/lutTables';
 
 /** a part is at most this long, so the workers stay evenly loaded on long timelines and little is held in memory */
 export const MAX_SEGMENT_SECONDS = 20;
@@ -35,19 +36,19 @@ export interface Span {
 }
 
 /** the key frame group of a frame: the rule both ways of exporting drive the encoder by (segment.ts keyStep) */
-export function keyGroupOf(frame: number, fps: number): number {
-  return Math.floor(frame / fps / KEYFRAME_SECONDS);
+export function keyGroupOf(frame: number, fps: number, keySeconds = KEYFRAME_SECONDS): number {
+  return Math.floor(frame / fps / keySeconds);
 }
 
 /**
  * the first frame of key frame group k, which is where one encoder writes that group's key frame. not k * 2 * fps
  * rounded: at 29.97 or 23.976 fps the groups are not all the same length.
  */
-export function keyFrameIndex(k: number, fps: number): number {
+export function keyFrameIndex(k: number, fps: number, keySeconds = KEYFRAME_SECONDS): number {
   if (!(k > 0) || !(fps > 0)) return 0;
-  let i = Math.max(0, Math.round(k * KEYFRAME_SECONDS * fps));
-  while (keyGroupOf(i, fps) < k) i++;
-  while (i > 0 && keyGroupOf(i - 1, fps) >= k) i--;
+  let i = Math.max(0, Math.round(k * keySeconds * fps));
+  while (keyGroupOf(i, fps, keySeconds) < k) i++;
+  while (i > 0 && keyGroupOf(i - 1, fps, keySeconds) >= k) i--;
   return i;
 }
 
@@ -56,17 +57,17 @@ export function keyFrameIndex(k: number, fps: number): number {
  * where one encoder would start a group (every part starts with a key frame anyway, so the file keeps the key
  * frames of a one-thread export), at most MAX_SEGMENT_SECONDS each. a short tail joins the part before it.
  */
-export function planSegments(totalFrames: number, fps: number, workers: number): Span[] {
+export function planSegments(totalFrames: number, fps: number, workers: number, keySeconds = KEYFRAME_SECONDS): Span[] {
   const total = Math.max(0, Math.floor(totalFrames));
   if (total === 0) return [];
   if (!(fps > 0)) return [{ from: 0, to: total }];
-  const groups = keyGroupOf(total - 1, fps) + 1;
-  const cap = Math.max(1, Math.floor(MAX_SEGMENT_SECONDS / KEYFRAME_SECONDS));
+  const groups = keyGroupOf(total - 1, fps, keySeconds) + 1;
+  const cap = Math.max(1, Math.floor(MAX_SEGMENT_SECONDS / keySeconds));
   const per = Math.max(1, Math.min(cap, Math.ceil(groups / Math.max(1, Math.floor(workers)))));
   const out: Span[] = [];
   let from = 0;
   for (let k = per; from < total; k += per) {
-    const to = Math.min(total, keyFrameIndex(k, fps));
+    const to = Math.min(total, keyFrameIndex(k, fps, keySeconds));
     // below half a frame per second several groups start on one frame
     if (to <= from) continue;
     out.push({ from, to });
@@ -74,7 +75,7 @@ export function planSegments(totalFrames: number, fps: number, workers: number):
   }
   if (out.length > 1) {
     const last = out[out.length - 1]!;
-    if (last.to - last.from < (KEYFRAME_SECONDS * fps) / 2) {
+    if (last.to - last.from < (keySeconds * fps) / 2) {
       out.pop();
       out[out.length - 1]!.to = total;
     }
@@ -92,7 +93,7 @@ export function runAhead(workers: number): number {
  * measured on a 28 thread desktop with one gpu: up to full hd three encoders nearly add up and a fourth adds
  * nothing; above that two are the best (more of them fight over the same memory bandwidth).
  */
-export function pickWorkers(width: number, height: number, totalFrames: number, fps: number, cores: number): number {
+export function pickWorkers(width: number, height: number, totalFrames: number, fps: number, cores: number, keySeconds = KEYFRAME_SECONDS): number {
   if (!(fps > 0) || totalFrames < MIN_PARALLEL_FRAMES) return 1;
   if (cores < 4) return 1;
   const big = width * height > 1920 * 1088 * 1.2;
@@ -100,7 +101,7 @@ export function pickWorkers(width: number, height: number, totalFrames: number, 
   if (cores < 8) n = Math.min(n, 2);
   // fewer parts than workers: plan again for that many (the parts change with the number of workers)
   for (;;) {
-    const parts = planSegments(totalFrames, fps, n).length;
+    const parts = planSegments(totalFrames, fps, n, keySeconds).length;
     if (parts >= n || n <= 1) return Math.max(1, n);
     n = Math.max(1, parts);
   }
@@ -402,6 +403,13 @@ export function startSegments(init: SegmentPoolInit): SegmentPool {
     }
     // the sky's pictures too (they have no clip)
     for (const id of skyAssetIds(init.project.sky)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const blob = init.blobOf(id);
+      if (blob) blobs.push([id, blob]);
+    }
+    // the luts the grades use (a lut has no clip)
+    for (const id of usedLutIds(init.project)) {
       if (seen.has(id)) continue;
       seen.add(id);
       const blob = init.blobOf(id);

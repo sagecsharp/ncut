@@ -17,6 +17,8 @@ export interface TrackMenuOpen {
 export const timelineCommands: {
   fit?(): void;
   fitSelection?(): void;
+  /** zoom and scroll so the time range fills the view (one time: scroll only) */
+  fitTimes?(start: number, end: number): void;
   openClipMenu?(r?: ClipMenuOpen): void;
   openTrackMenu?(r: TrackMenuOpen): void;
 } = {};

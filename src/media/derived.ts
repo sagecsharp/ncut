@@ -10,6 +10,8 @@ import type { InputVideoTrack } from 'mediabunny';
 import type { MediaAsset } from '../types';
 import { useEditor } from '../store/editorStore';
 import { getAssetBlob, getAssetUrl } from './registry';
+import { requestLut } from './lutTables';
+import { LUT_STRIP_H, LUT_STRIP_W, lutStrip } from './lutStrip';
 import { seekFrame } from './seekFrame';
 import { pickPosterTime, pickSlotTime } from './stripPlan';
 import { createShrinker, shrunkSize } from './shrink';
@@ -306,7 +308,7 @@ async function thumbFromVideoElement(assetId: string, duration: number): Promise
 
 /**
  * small poster image (object url) for an asset: a frame for video, the picture for images.
- * null for audio or when it cannot be produced. cached.
+ * for a lut the strip (lutStrip.ts: a hue sweep over a gray ramp through the table, 64 x 36). null for audio, or when it cannot be produced. cached.
  */
 export function getThumbnail(assetId: string): Promise<string | null> {
   const cached = thumbs.get(assetId);
@@ -314,6 +316,25 @@ export function getThumbnail(assetId: string): Promise<string | null> {
   const asset = getAsset(assetId);
   if (!asset || asset.kind === 'audio') return Promise.resolve(null);
   const token = tokenFor(assetId);
+  if (asset.kind === 'lut') {
+    // a small picture: no queue and no stored copy, the table is already read or one parse away
+    const pl = (async (): Promise<string | null> => {
+      const table = await requestLut(assetId, getAssetBlob);
+      if (!table || token.cancelled) return null;
+      const c = makeCanvas(LUT_STRIP_W, LUT_STRIP_H);
+      c.getContext('2d')?.putImageData(new ImageData(lutStrip(table), LUT_STRIP_W, LUT_STRIP_H), 0, 0);
+      const out = await canvasToBlob(c, 'image/png', 1);
+      if (!out || token.cancelled) return null;
+      const url = URL.createObjectURL(out);
+      thumbUrls.set(assetId, url);
+      return url;
+    })();
+    thumbs.set(assetId, pl);
+    void pl.then((u) => {
+      if (u === null && thumbs.get(assetId) === pl) thumbs.delete(assetId);
+    });
+    return pl;
+  }
   const cacheKey = thumbCacheKey(assetId, THUMB_WIDTH, THUMB_QUALITY);
   const compute = () => enqueue('thumb', async () => {
     if (token.cancelled) return null;

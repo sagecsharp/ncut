@@ -16,6 +16,7 @@
 import {
   ALL_FORMATS,
   AudioBufferSource,
+  BlobSource,
   BufferSource,
   BufferTarget,
   CanvasSource,
@@ -46,6 +47,11 @@ import { GifPoolError, createGifPool, gifPartWorkers, gifWorkerCount, planGifPar
 import { type TimeRange, clampRange, rangeFrameCount } from './range';
 import { createFrameSources } from './sources';
 import { isStillContainer, jpegQuality, renderStill, stillMime, stillSize } from './still';
+import { TEXT, autoAudioBitrate, deliverySize, resolveDelivery } from './delivery';
+import type { ExportDelivery, ResolvedDelivery } from './delivery';
+import { alphaNotes } from './alphaNotes';
+import { createFrameDrawer, placeFrame } from './frameFit';
+import type { FrameDrawer } from './frameFit';
 import type { StillContainer } from './still';
 import { KEYFRAME_SECONDS, unpackGifFrames } from './segment';
 import { pickWorkers, planSegments, sameDecoderConfig, startSegments } from './parallel';
@@ -57,8 +63,14 @@ import type { ExportSink } from './sink';
 import type { PartsMedia } from './mediaCheck';
 import type { SegmentPool } from './parallel';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
-import { MIX_CHANNELS, MIX_SAMPLE_RATE, createAudioMixer, sliceAudioBuffer } from './audioMix';
+import { MIX_CHANNELS, createAudioMixer } from './audioMix';
 import type { AudioMixer } from './audioMix';
+import { createAudioPump } from './audioPump';
+import type { AudioPump } from './audioPump';
+import { decideOutput } from './outputPlan';
+import type { OutputPlanned } from './outputPlan';
+import { wantsLoudness } from './loudnessTypes';
+import type { ExportLoudness, LoudnessReport } from './loudnessTypes';
 
 export type VideoContainer = 'mp4' | 'webm';
 /** wav / ogg are audio only files (no picture) */
@@ -103,10 +115,14 @@ export interface ExportOptions {
   gpuEncoder?: boolean;
   /** tests: video exports expected to be at least this many bytes are written to disk while they are made (missing = sink.ts DISK_MIN_BYTES) */
   diskBytes?: number;
+  /** loudness target and peak limit (loudnessTypes.ts). missing or both null = the sound as it is */
+  loudness?: ExportLoudness;
+  /** the advanced choices (delivery.ts). missing = DEFAULT_DELIVERY = what an export always did */
+  delivery?: ExportDelivery;
 }
 
 export interface ExportProgress {
-  phase: 'audio' | 'palette' | 'video' | 'finalizing';
+  phase: 'loudness' | 'audio' | 'palette' | 'video' | 'finalizing';
   /** 0..1 over the whole export */
   progress: number;
   frame: number;
@@ -123,6 +139,10 @@ export interface ExportStats {
   height: number;
   fps: number;
   codec: string;
+  /** true = a see-through export. missing = not */
+  alpha?: boolean;
+  /** the key frame interval asked for, in seconds. missing = the usual one */
+  keySeconds?: number;
   /** parts rendered at once (1 = the plain way on this thread) */
   workers: number;
   /** the frame rate the encoders were told to get the gpu encoder (encoderSetup.ts). missing = the real one. */
@@ -167,6 +187,8 @@ export interface ExportHooks {
    * onFrame saw before this are not the ones in the file (they come again).
    */
   onFallback?: (reason: string) => void;
+  /** once, when an export with sound and a loudness choice ends well: what came out */
+  onLoudness?: (report: LoudnessReport) => void;
 }
 
 /** tried in this order, the first one the browser can encode at the chosen size + fps + bitrate wins */
@@ -222,16 +244,24 @@ export interface PlanRequest {
   height: number;
   fps: number;
   quality: ExportQuality;
+  /** only this codec is asked (a delivery choice). missing = the container's list in order */
+  codec?: VideoCodec;
+  /** whole bits per second instead of the one the quality gives. missing = the quality's */
+  bitrate?: number;
 }
 
+/** what canEncodeVideo is: tests and the probe hand in their own */
+export type CanEncodeVideo = (codec: VideoCodec, options: NonNullable<Parameters<typeof canEncodeVideo>[1]>) => Promise<boolean>;
+
 /** first codec of the container the browser says it can encode for this exact size, fps and bitrate. null = none. */
-export async function planExport(req: PlanRequest, signal?: AbortSignal): Promise<ExportPlan | null> {
+export async function planExport(req: PlanRequest, signal?: AbortSignal, can: CanEncodeVideo = canEncodeVideo): Promise<ExportPlan | null> {
   if (typeof VideoEncoder === 'undefined') return null;
-  for (const codec of VIDEO_CODECS[req.container]) {
+  const codecs = req.codec === undefined ? VIDEO_CODECS[req.container] : VIDEO_CODECS[req.container].includes(req.codec) ? [req.codec] : [];
+  for (const codec of codecs) {
     if (signal?.aborted) throw abortError();
-    const bitrate = videoBitrate(req.width, req.height, req.fps, req.quality, codec);
+    const bitrate = req.bitrate ?? videoBitrate(req.width, req.height, req.fps, req.quality, codec);
     try {
-      const ok = await canEncodeVideo(codec, {
+      const ok = await can(codec, {
         width: req.width,
         height: req.height,
         frameRate: req.fps,
@@ -293,33 +323,42 @@ function yieldToUi(): Promise<void> {
 }
 
 /**
- * feeds the chunks of an audio mixer to an audio source in 1 s slices, in order. `to(seconds)` mixes (one chunk at a
- * time) and adds everything up to that time of the mix.
+ * the sound codec and quality of a file: the delivery's choice, else the first codec of the format this browser can
+ * encode at the mix rate. a codec or bitrate that was asked for and finds nothing falls back to the usual one (the
+ * format's list at the medium quality, the same rate) and says so. null = no encoder at all.
  */
-function createAudioPump(mixer: AudioMixer, source: AudioBufferSource) {
-  let pos = 0;
-  let idx = 0;
-  let cur: AudioBuffer | null = null;
-  return {
-    /** frames fed so far */
-    position: () => pos,
-    async to(untilSeconds: number): Promise<void> {
-      const target = Math.min(mixer.totalFrames, Math.ceil(untilSeconds * MIX_SAMPLE_RATE));
-      while (pos < target) {
-        const chunk = mixer.chunks[idx];
-        if (!chunk) return;
-        if (!cur) cur = await mixer.renderChunk(idx);
-        const chunkEnd = chunk.startFrame + chunk.frames;
-        const end = Math.min(target, chunkEnd, pos + MIX_SAMPLE_RATE);
-        await source.add(sliceAudioBuffer(cur, pos - chunk.startFrame, end - chunk.startFrame));
-        pos = end;
-        if (pos >= chunkEnd) {
-          cur = null;
-          idx++;
-        }
-      }
-    },
-  };
+async function pickAudio(
+  container: ExportContainer,
+  d: ResolvedDelivery,
+  rate: number,
+  onWarning?: (message: string) => void,
+): Promise<{ codec: AudioCodec; quality: Quality } | null> {
+  const list = AUDIO_CODECS[container];
+  const set = d.audioCodec !== 'auto' || d.audioBitrate !== null;
+  const asked: AudioCodec[] = d.audioCodec === 'auto' ? list : [d.audioCodec];
+  const quality = d.audioBitrate ? new Quality({ bitrate: d.audioBitrate }) : QUALITY_MEDIUM;
+  const first = await getFirstEncodableAudioCodec(asked, { numberOfChannels: MIX_CHANNELS, sampleRate: rate, quality });
+  if (first) return { codec: first, quality };
+  if (!set) return null;
+  const usual = await getFirstEncodableAudioCodec(list, { numberOfChannels: MIX_CHANNELS, sampleRate: rate, quality: QUALITY_MEDIUM });
+  if (!usual) return null;
+  const name = asked[0] ?? usual;
+  const kbps = (d.audioBitrate ?? autoAudioBitrate(name === 'aac' || name === 'opus' || name === 'vorbis' ? name : 'aac')) / 1000;
+  onWarning?.(TEXT.audioFallback(name, kbps, rate / 1000, usual));
+  return { codec: usual, quality: QUALITY_MEDIUM };
+}
+
+/** true when the finished file really holds alpha data (the header flag alone is written for every see-through export, a browser can drop the alpha without saying so) */
+export async function checkAlphaFile(blob: Blob): Promise<boolean> {
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(blob) });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track || !(await track.canBeTransparent())) return false;
+    const first = await new EncodedPacketSink(track).getFirstPacket();
+    return !!first?.sideData.alpha;
+  } finally {
+    input.dispose();
+  }
 }
 
 export { clipEdgeTimestamp, clipTimestamps } from './sources';
@@ -389,14 +428,27 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   const range = clampRange(options.range, projectLength);
   if (!range) throw new Error('the range is empty, pick a start before the end');
   if (signal?.aborted) throw abortError();
-  if (isAudioContainer(options.container)) return exportAudioOnly(project, options.container, range, hooks);
+  // what the advanced choices mean for this format: what a format cannot hold is said once, here
+  const d = resolveDelivery(options.container, options.delivery);
+  for (const note of d.notes) onWarning(note);
+  if (isAudioContainer(options.container)) return exportAudioOnly(project, options.container, range, hooks, d, options.loudness);
   if (isStillContainer(options.container)) {
     // one picture: the frame a video of this range starts with. no encoder, no sound, no frame rate
-    const size = stillSize(project, options.scale);
+    const size = deliverySize(stillSize(project, options.scale), options.container, d);
+    const stillPlace = d.size ? placeFrame(project.width, project.height, size.width, size.height, d.size.fit) : null;
+    if (d.transparent) for (const n of alphaNotes(project, { start: range.start, end: range.start + 1 / project.fps })) onWarning(n.text);
     onProgress?.({ phase: 'video', progress: 0, frame: 0, totalFrames: 1 });
     const blob = await renderStill(
       project,
-      { time: range.start, width: size.width, height: size.height, mime: stillMime(options.container), quality: jpegQuality(options.quality) },
+      {
+        time: range.start,
+        width: size.width,
+        height: size.height,
+        mime: stillMime(options.container),
+        quality: jpegQuality(options.quality),
+        ...(d.transparent ? { transparent: true } : {}),
+        ...(stillPlace && !stillPlace.direct ? { place: stillPlace } : {}),
+      },
       { onWarning, signal },
     );
     onProgress?.({ phase: 'finalizing', progress: 1, frame: 1, totalFrames: 1 });
@@ -413,18 +465,28 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   const wantedFps = options.fps > 0 ? options.fps : project.fps;
   // a gif cannot go faster than 50 fps (delays are whole 1/100 s, below 2 browsers play it slow)
   const fps = isGif ? gifExportFps(wantedFps) : wantedFps;
-  const { width, height } = outputSize(project, options.scale);
+  const { width, height } = deliverySize(outputSize(project, options.scale), options.container, d);
   const totalFrames = rangeFrameCount(range, fps);
   const container = options.container;
+  // a custom size of another shape: drawn at the project's shape and placed (frameFit.ts). the project's shape is drawn as always
+  const framePlace = d.size ? placeFrame(project.width, project.height, width, height, d.size.fit) : null;
+  const place = framePlace && !framePlace.direct ? framePlace : null;
+  const keySeconds = d.keySeconds ?? KEYFRAME_SECONDS;
+  if (d.transparent) for (const n of alphaNotes(project, range)) onWarning(n.text);
 
   let videoCodec: VideoCodec = 'avc';
   let videoBitrate = 0;
   let videoQuality = QUALITY_MEDIUM;
   if (container !== 'gif') {
-    const plan = await planExport({ container, width, height, fps, quality: options.quality }, signal);
+    const plan = await planExport(
+      { container, width, height, fps, quality: options.quality, ...(d.codec !== 'auto' ? { codec: d.codec } : {}), ...(d.bitrate !== null ? { bitrate: d.bitrate } : {}) },
+      signal,
+    );
     if (!plan) {
       throw new Error(
-        `this browser cannot encode ${container} at ${width}x${height} and ${fps} fps, try a lower frame rate, a smaller resolution or the other format`,
+        d.codec !== 'auto' || d.bitrate !== null
+          ? TEXT.noPlan(CODEC_LABEL[d.codec] ?? container, width, height, fps, d.bitrate)
+          : `this browser cannot encode ${container} at ${width}x${height} and ${fps} fps, try a lower frame rate, a smaller resolution or the other format`,
       );
     }
     videoCodec = plan.codec;
@@ -452,26 +514,33 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   if (signal?.aborted) throw abortError();
 
   /** the sound of the range, or null (no sound wanted, none there, or no encoder for it). mixed in chunks while the video renders. */
-  const openAudio = async (): Promise<{ mixer: AudioMixer; codec: AudioCodec } | null> => {
+  let plan: Promise<OutputPlanned | null> | null = null;
+  const openAudio = async (): Promise<{ mixer: AudioMixer; codec: AudioCodec; quality: Quality; planned: OutputPlanned | null } | null> => {
     if (!options.includeAudio || isGif) return null;
     report('audio', 0, 0);
     await yieldToUi();
-    const m = createAudioMixer(project, duration, signal, onWarning, rangeStart);
-    let codec: AudioCodec | null = null;
+    const m = createAudioMixer(project, duration, signal, onWarning, rangeStart, d.sampleRate);
+    let picked: { codec: AudioCodec; quality: Quality } | null = null;
     if (m.hasAudio) {
-      codec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
-        numberOfChannels: MIX_CHANNELS,
-        sampleRate: MIX_SAMPLE_RATE,
-        quality: QUALITY_MEDIUM,
-      });
-      if (!codec) onWarning('this browser cannot encode audio for this format, exported without sound');
+      picked = await pickAudio(container, d, m.sampleRate, onWarning);
+      if (!picked) onWarning('this browser cannot encode audio for this format, exported without sound');
+    }
+    let planned: OutputPlanned | null = null;
+    if (picked && wantsLoudness(options.loudness)) {
+      // measured once for the export: the parts and the plain way after them share it
+      try {
+        planned = await (plan ??= decideOutput(project, { start: rangeStart, end: rangeStart + duration }, m.sampleRate, options.loudness, { signal, onProgress: (f) => report('loudness', 0.05 * f, 0, false) }));
+      } catch (err) {
+        m.dispose();
+        throw err;
+      }
     }
     report('audio', 0.05, 0);
-    if (!codec) {
+    if (!picked) {
       m.dispose();
       return null;
     }
-    return { mixer: m, codec };
+    return { mixer: m, codec: picked.codec, quality: picked.quality, planned };
   };
 
   const finish = (workers: number) => {
@@ -480,9 +549,26 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     stats.height = height;
     stats.fps = fps;
     stats.codec = videoCodec;
+    if (d.transparent) stats.alpha = true;
+    if (d.keySeconds !== null) stats.keySeconds = d.keySeconds;
     stats.workers = workers;
     stats.totalMs = performance.now() - startedAt;
     hooks.onStats?.(stats);
+  };
+
+  /** a see-through webm is read back: a browser can drop the alpha without saying so */
+  const alphaCheck = async (blob: Blob): Promise<void> => {
+    if (!d.transparent || container !== 'webm') return;
+    const kept = await checkAlphaFile(blob).catch(() => false);
+    if (!kept) onWarning(TEXT.alphaLost);
+  };
+
+  /** what the loudness choice did to the file: its warnings, then the report (once, when the file is made) */
+  const tellLoudness = (plan: OutputPlanned | null, pump: AudioPump | null) => {
+    if (!plan) return;
+    const made = plan.reportFor(pump?.stageReport() ?? null);
+    for (const w of made.warnings) onWarning(w);
+    hooks.onLoudness?.(made.report);
   };
 
   const captureSet = hooks.captureFrames ? new Set(hooks.captureFrames) : null;
@@ -492,7 +578,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
    * the front like the ones built in memory: the room for it is set aside up front, which needs the packet counts.
    */
   const openOutput = async (withAudio: boolean) => {
-    const expected = expectedExportBytes(videoBitrate, withAudio ? 192_000 : 0, duration);
+    const expected = expectedExportBytes(videoBitrate * (d.transparent ? 2 : 1), withAudio ? Math.max(192_000, d.audioBitrate ?? 0) : 0, duration);
     const sink = await openExportSink(expected, container, options.diskBytes ?? DISK_MIN_BYTES);
     const reserve = sink.onDisk && container === 'mp4';
     const format = container === 'mp4' ? new Mp4OutputFormat({ fastStart: reserve ? 'reserve' : 'in-memory' }) : new WebMOutputFormat();
@@ -501,7 +587,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       format,
       output: new Output({ format, target: sink.target }),
       // exact for the picture, generous for the sound (one packet is 20 ms or more in every codec used here)
-      videoMeta: { frameRate: fps, ...(reserve ? { maximumPacketCount: totalFrames + 2 } : {}) },
+      videoMeta: { frameRate: fps, ...(reserve ? { maximumPacketCount: totalFrames + 2 } : {}), ...(d.transparent ? { canBeTransparent: true } : {}) },
       audioMeta: reserve ? { maximumPacketCount: Math.ceil(duration * 100 * 1.34) + 200 } : {},
     };
   };
@@ -512,7 +598,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
   // ---- the fast way: parts of the timeline rendered and encoded at once, joined here in order ----
   const runParts = async (workers: number, onMain: boolean, lenient: readonly string[], setup: EncoderSetup | null): Promise<Blob> => {
-    const segments = planSegments(totalFrames, fps, workers);
+    const segments = planSegments(totalFrames, fps, workers, keySeconds);
     // the bar moves with the frames the workers finish and, for the last tenth, with the frames in the file
     let rendered = 0;
     let joined = 0;
@@ -530,11 +616,11 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       output = opened.output;
       const videoSource = new EncodedVideoPacketSource(videoCodec);
       output.addVideoTrack(videoSource, opened.videoMeta);
-      let pump: ReturnType<typeof createAudioPump> | null = null;
+      let pump: AudioPump | null = null;
       if (audio) {
-        const audioSource = new AudioBufferSource({ codec: audio.codec, quality: QUALITY_MEDIUM });
+        const audioSource = new AudioBufferSource({ codec: audio.codec, quality: audio.quality });
         output.addAudioTrack(audioSource, opened.audioMeta);
-        pump = createAudioPump(audio.mixer, audioSource);
+        pump = createAudioPump(audio.mixer, audioSource, audio.planned?.makeStage() ?? null);
       }
       await output.start();
       const feedAudio = async (untilSeconds: number) => {
@@ -558,6 +644,9 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           fps,
           rangeStart,
           totalFrames,
+          ...(d.keySeconds !== null ? { keySeconds } : {}),
+          ...(d.transparent ? { alpha: true } : {}),
+          ...(place ? { place } : {}),
           ...(options.acceleration ? { acceleration: options.acceleration } : {}),
           ...(lenient.length > 0 ? { lenient: [...lenient] } : {}),
           ...(setup ? { encoder: setup } : {}),
@@ -602,9 +691,9 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
           if (!config) {
             config = cfg;
             trackConfig = cfg;
-            const d = cfg.description;
-            if (setup && videoCodec === 'avc' && d) {
-              const bytes = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer, d.byteOffset, d.byteLength) : new Uint8Array(d);
+            const desc = cfg.description;
+            if (setup && videoCodec === 'avc' && desc) {
+              const bytes = ArrayBuffer.isView(desc) ? new Uint8Array(desc.buffer, desc.byteOffset, desc.byteLength) : new Uint8Array(desc);
               const level = avcLevel(width, height, fps, videoBitrate);
               const raised = raiseAvcLevel(bytes, level);
               if (raised) {
@@ -670,6 +759,8 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       const blob = await sink.finish(format.mimeType);
       sink = null;
       if (opened.sink.onDisk) stats.onDisk = true;
+      await alphaCheck(blob);
+      tellLoudness(audio?.planned ?? null, pump);
       finish(Math.min(workers, segments.length));
       report('finalizing', 1, totalFrames);
       return blob;
@@ -692,7 +783,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 
   if (container !== 'gif') {
     const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
-    const workers = options.workers ?? pickWorkers(width, height, totalFrames, fps, cores);
+    const workers = options.workers ?? pickWorkers(width, height, totalFrames, fps, cores, keySeconds);
     let onMain = !!options.partsOnMain;
     // every frame is wanted by the caller: only this thread can hand over the canvas itself
     const watched = !!hooks.onFrame && !captureSet;
@@ -700,11 +791,11 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     // the gpu encoder for sizes and frame rates the plain setup would encode in software: only parts can have it
     // (their times are rewritten at the join), so such an export is done in parts even when it is one part
     const wantSetup = options.gpuEncoder === true || (options.gpuEncoder !== false && options.workers !== 1 && !options.acceleration);
-    const setup = canParts && wantSetup ? await pickEncoderSetup(videoCodec, width, height, fps, videoBitrate) : null;
+    const setup = canParts && wantSetup && !d.transparent ? await pickEncoderSetup(videoCodec, width, height, fps, videoBitrate) : null;
     if (signal?.aborted) throw abortError();
     let inWorkers = !onMain && typeof Worker !== 'undefined' && !needsMainThread(project);
     let lenient: readonly string[] = [];
-    let able = canParts && (setup !== null || (workers > 1 && planSegments(totalFrames, fps, workers).length > 1)) && (onMain || inWorkers || setup !== null);
+    let able = canParts && (setup !== null || (workers > 1 && planSegments(totalFrames, fps, workers, keySeconds).length > 1)) && (onMain || inWorkers || setup !== null);
     if (able && inWorkers) {
       // a picture only an <img> can show keeps the export here; a video nothing can decode is skipped everywhere
       const media = await partsMedia();
@@ -743,6 +834,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     onWarning,
     signal,
     stats,
+    ...(d.transparent ? { alpha: true } : {}),
   });
   const resolver = sources.resolver;
   const stepFrame = sources.step;
@@ -751,11 +843,16 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
   let finished = false;
   let mixer: AudioMixer | null = null;
   let audioCodec: AudioCodec | null = null;
+  let audioQuality = QUALITY_MEDIUM;
+  let planned: OutputPlanned | null = null;
+  let drawer: FrameDrawer | null = null;
 
   try {
     const audio = await openAudio();
     mixer = audio?.mixer ?? null;
     audioCodec = audio?.codec ?? null;
+    audioQuality = audio?.quality ?? QUALITY_MEDIUM;
+    planned = audio?.planned ?? null;
     if (signal?.aborted) throw abortError();
 
     // ---- gif: pass 1 samples a few small frames for one global palette, pass 2 encodes every frame ----
@@ -939,17 +1036,23 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     output = opened.output;
 
     const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d', { alpha: d.transparent });
     if (!ctx) throw new Error('2d canvas is not available');
-    ctx.setTransform(width / project.width, 0, 0, height / project.height, 0, 0);
+    drawer = createFrameDrawer(canvas, ctx, project, place, d.transparent);
+    const frames = drawer;
 
-    const videoSource = new CanvasSource(canvas, { codec: videoCodec, quality: videoQuality, keyFrameInterval: KEYFRAME_SECONDS });
+    const videoSource = new CanvasSource(canvas, {
+      codec: videoCodec,
+      quality: videoQuality,
+      keyFrameInterval: keySeconds,
+      ...(d.transparent ? { alpha: 'keep' as const } : {}),
+    });
     output.addVideoTrack(videoSource, opened.videoMeta);
-    let pump: ReturnType<typeof createAudioPump> | null = null;
+    let pump: AudioPump | null = null;
     if (mixer && audioCodec) {
-      const audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_MEDIUM });
+      const audioSource = new AudioBufferSource({ codec: audioCodec, quality: audioQuality });
       output.addAudioTrack(audioSource, opened.audioMeta);
-      pump = createAudioPump(mixer, audioSource);
+      pump = createAudioPump(mixer, audioSource, planned?.makeStage() ?? null);
     }
     await output.start();
     stats.setupMs = performance.now() - startedAt;
@@ -969,7 +1072,8 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
       if (signal?.aborted) throw abortError();
       await stepFrame(i, async (t) => {
         const t0 = performance.now();
-        renderFrame(ctx, project, t, resolver);
+        renderFrame(frames.target, project, t, resolver, d.transparent ? { transparent: true } : undefined);
+        frames.finish();
         if (!captureSet || captureSet.has(i)) hooks.onFrame?.(i, canvas);
         const t1 = performance.now();
         await videoSource.add(i / fps, frameDur);
@@ -994,6 +1098,8 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     const blob = await sink.finish(format.mimeType);
     sink = null;
     if (opened.sink.onDisk) stats.onDisk = true;
+    await alphaCheck(blob);
+    tellLoudness(planned, pump);
     finish(1);
     report('finalizing', 1, totalFrames);
     return blob;
@@ -1009,6 +1115,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
     if (signal?.aborted && !(err instanceof DOMException && err.name === 'AbortError')) throw abortError();
     throw err;
   } finally {
+    drawer?.dispose();
     await sources.dispose();
     mixer?.dispose();
     releaseRenderResources('export');
@@ -1016,7 +1123,7 @@ async function runExport(project: Project, options: ExportOptions, hooks: Export
 }
 
 /** wav / ogg: only the audio mix of the range, no picture */
-async function exportAudioOnly(project: Project, container: AudioContainer, range: TimeRange, hooks: ExportHooks): Promise<Blob> {
+async function exportAudioOnly(project: Project, container: AudioContainer, range: TimeRange, hooks: ExportHooks, d: ResolvedDelivery, loudness?: ExportLoudness): Promise<Blob> {
   const { onProgress, onWarning, signal } = hooks;
   const length = range.end - range.start;
   let lastReport = 0;
@@ -1029,7 +1136,7 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
 
   report('audio', 0);
   await yieldToUi();
-  const mixer = createAudioMixer(project, length, signal, onWarning, range.start);
+  const mixer = createAudioMixer(project, length, signal, onWarning, range.start, d.sampleRate);
   if (!mixer.hasAudio) {
     mixer.dispose();
     throw new Error('there is no sound in this range, nothing to export');
@@ -1039,14 +1146,18 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
     throw abortError();
   }
 
-  const codec = await getFirstEncodableAudioCodec(AUDIO_CODECS[container], {
-    numberOfChannels: MIX_CHANNELS,
-    sampleRate: MIX_SAMPLE_RATE,
-    quality: QUALITY_MEDIUM,
-  });
-  if (!codec) {
+  const picked = await pickAudio(container, d, mixer.sampleRate, onWarning);
+  if (!picked) {
     mixer.dispose();
     throw new Error(`this browser cannot encode ${container} audio, try wav`);
+  }
+
+  let planned: OutputPlanned | null = null;
+  try {
+    planned = await decideOutput(project, range, mixer.sampleRate, loudness, { signal, onProgress: (f) => report('loudness', 0.5 * f, false) });
+  } catch (err) {
+    mixer.dispose();
+    throw err;
   }
 
   const format = container === 'wav' ? new WavOutputFormat() : new OggOutputFormat();
@@ -1054,15 +1165,16 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
   const output = new Output({ format, target });
   let finished = false;
   try {
-    const source = new AudioBufferSource({ codec, quality: QUALITY_MEDIUM });
+    const source = new AudioBufferSource({ codec: picked.codec, quality: picked.quality });
     output.addAudioTrack(source);
     await output.start();
     // 1 s slices (mixed 30 s at a time), so cancel and progress stay responsive
-    const pump = createAudioPump(mixer, source);
+    const pump = createAudioPump(mixer, source, planned?.makeStage() ?? null);
     for (let sec = 1; pump.position() < mixer.totalFrames; sec++) {
       if (signal?.aborted) throw abortError();
       await pump.to(sec);
-      report('audio', 0.98 * (pump.position() / mixer.totalFrames), false);
+      const share = pump.position() / mixer.totalFrames;
+      report('audio', planned ? 0.5 + 0.48 * share : 0.98 * share, false);
       if (performance.now() - lastYield > 14) await yieldToUi();
     }
     report('finalizing', 0.98);
@@ -1072,6 +1184,11 @@ async function exportAudioOnly(project: Project, container: AudioContainer, rang
     if (signal?.aborted) throw abortError();
     const buffer = target.buffer;
     if (!buffer) throw new Error('the encoder produced no data');
+    if (planned) {
+      const made = planned.reportFor(pump.stageReport());
+      for (const w of made.warnings) onWarning?.(w);
+      hooks.onLoudness?.(made.report);
+    }
     report('finalizing', 1);
     return new Blob([buffer], { type: format.mimeType });
   } catch (err) {

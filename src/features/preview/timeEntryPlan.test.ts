@@ -106,6 +106,12 @@ describe('planTimeEntry', () => {
     expect(run('+15', s, deps(locked, null)).text).toBe('ripple trim the end of "intro" +15f' + ENTRY_TEXT.lockedSuffix);
   });
 
+  it('a typed trim says sync lock off tracks stay', () => {
+    const held = { ...okTrim, freeBehind: ['v2'], drift: ['a'] } as unknown as TrimPlan;
+    const s = state({ from: 'timeline', edge: edgeEnd });
+    expect(run('+15', s, deps(held, null)).text).toBe('ripple trim the end of "intro" +15f, sync lock off tracks stay, 1 clip out of sync');
+  });
+
   it('a blocked trim says why', () => {
     const stop: TrimStop = { why: 'timeline-start', clipId: 'a' };
     const s = state({ from: 'timeline', edge: edgeEnd });

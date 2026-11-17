@@ -351,3 +351,88 @@ describe('the export job', () => {
     expect(job.status()).toEqual({ state: 'cancelled' });
   });
 });
+
+describe('planMcpExport delivery and loudness', () => {
+  it('no new argument leaves the options as they were', () => {
+    const p = planMcpExport(project(), {});
+    expect(p.options.delivery).toBeUndefined();
+    expect(p.options.loudness ?? null).toBeNull();
+  });
+
+  it('the delivery arguments reach the options', () => {
+    const p = planMcpExport(project(), { codec: 'h265', bitrate_mbps: 12, key_seconds: 4, audio_codec: 'aac', audio_kbps: 192, sample_rate: 44100 });
+    expect(p.options.delivery).toMatchObject({ codec: 'hevc', audioCodec: 'aac', sampleRate: 44100 });
+    expect(p.options.delivery!.bitrate).toBe(12e6);
+    expect(p.options.delivery!.keySeconds).toBe(4);
+    expect(p.options.delivery!.audioBitrate).toBe(192000);
+  });
+
+  it('width and height give the planned size', () => {
+    const p = planMcpExport(project(), { width: 1280, height: 720 });
+    expect(p.width).toBe(1280);
+    expect(p.height).toBe(720);
+  });
+
+  it('a preset fills format, fps and size, and an explicit argument wins', () => {
+    const y = planMcpExport(project(), { preset: 'youtube-1080' });
+    expect(y.container).toBe('mp4');
+    expect(y.width).toBe(1920);
+    const r = planMcpExport(project(), { preset: 'reels' });
+    expect(r.width).toBe(1080);
+    expect(r.height).toBe(1920);
+    expect(planMcpExport(project(), { preset: 'youtube-1080', fps: 24 }).options.fps).toBe(24);
+  });
+
+  it('a given scale or fps wins over the preset', () => {
+    const a = planMcpExport(project(), { preset: 'youtube-1080', scale: 0.5 });
+    expect(a.width).toBe(project().width * 0.5);
+    expect(a.notes.join(' ')).toMatch(/size was dropped/);
+    expect(planMcpExport(project(), { preset: 'master', fps: 60 }).options.fps).toBe(60);
+  });
+
+  it('a bad combination is an error naming the argument', () => {
+    expect(() => planMcpExport(project(), { transparent: true })).toThrow(/transparent needs format webm or png/);
+    expect(() => planMcpExport(project(), { format: 'webm', codec: 'h264' })).toThrow(/a webm holds vp9 or av1/);
+  });
+
+  it('loudness goes into the options, off without it', () => {
+    expect(planMcpExport(project(), { loudness: { target: -16, ceiling: -1 } }).options.loudness).toEqual({ target: -16, ceiling: -1 });
+  });
+
+  it('the start answer names the choices that are set', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    const info = job.start(project(), { codec: 'h265', loudness: { target: -16, ceiling: -1 } }, null);
+    expect(info.delivery).toMatchObject({ codec: 'h265' });
+    expect(info.loudness).toEqual({ target_lufs: -16, peak_limit_dbtp: -1 });
+    f.finish();
+    await job.settled();
+    const plain = createExportJob(fake().deps).start(project(), {}, null);
+    expect(plain.delivery).toBeUndefined();
+    expect(plain.loudness).toBeUndefined();
+  });
+
+  it('done carries what the loudness hook reported', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), { loudness: { target: -16, ceiling: -1 } }, null);
+    const n = { integrated: -16, lra: 3, truePeak: -1.5, samplePeak: -2, maxMomentary: -10, maxShortTerm: -12, seconds: 10 };
+    f.hooks().onLoudness?.({ target: -16, ceiling: -1, sampleRate: 48000, before: n, after: n, gainDb: 0, limitDb: 0, limitShare: 0 });
+    f.finish();
+    await job.settled();
+    const s = job.status();
+    expect(s.state).toBe('done');
+    if (s.state === 'done') expect(s.loudness).toMatchObject({ target: -16, ceiling: -1 });
+  });
+
+  it('done has no loudness when nothing was measured', async () => {
+    const f = fake();
+    const job = createExportJob(f.deps);
+    job.start(project(), {}, null);
+    f.finish();
+    await job.settled();
+    const s = job.status();
+    if (s.state === 'done') expect(s.loudness).toBeNull();
+    else throw new Error('not done');
+  });
+});

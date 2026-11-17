@@ -20,7 +20,9 @@ import type {
   Clip,
   ClipBend,
   ClipGrade,
+  ClipMatte,
   ClipParts,
+  Crossfade,
   Easing,
   EffectClip,
   ImageClip,
@@ -53,8 +55,12 @@ import {
   clipTypeFor,
 } from '../lib/factory';
 import { cleanRange, sameRange } from '../lib/inOut';
-import { normalizeGrade, sameGrade, withoutGradeKeys } from '../lib/gradeData';
+import { normalizeGrade, sameGrade, withoutGradeKeys, withoutLutOf } from '../lib/gradeData';
 import { patchOutput, patchTrack, planMixerReset } from '../lib/mix';
+import { cleanCrossfade, cleanFadeShape, sameCrossfade } from '../lib/audioCross';
+import { cleanHandle, mergeSameTime, sameHandles, tidyHandles } from '../lib/keyBezier';
+import { keepHeights, withHeight } from '../lib/trackTools';
+import { isMatteMode, matteField, matteProblem, matteUsersMap } from '../engine/matte';
 import { keepsSoundGroup, ownSoundsOf } from '../lib/soundPair';
 import { getEffect } from '../engine/effects/registry';
 import { hasKeyedPose, reparentTransform } from '../engine/parent';
@@ -112,6 +118,9 @@ export interface ActionOpts {
   skipHistory?: boolean;
 }
 
+/** the whole keyframes record of one clip (setManyKeyframes) */
+export interface KeyframesWrite { id: string; keyframes: Keyframes }
+
 /** one edit of setClipValues. time is a timeline time, value in stored units */
 export interface ClipValueEdit {
   id: string;
@@ -152,12 +161,13 @@ const SPATIAL_KEYS = [
   'mask',
   'lookTarget',
   'bend',
+  'matte',
   'pivot',
   'grade',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
-  video: [...SPATIAL_KEYS, 'bpm', 'beatOffset', 'pan'],
-  audio: ['bpm', 'beatOffset', 'pan'],
+  video: [...SPATIAL_KEYS, 'bpm', 'beatOffset', 'pan', 'crossfade', 'fadeInShape', 'fadeOutShape'],
+  audio: ['bpm', 'beatOffset', 'pan', 'crossfade', 'fadeInShape', 'fadeOutShape'],
   image: SPATIAL_KEYS,
   text: [
     ...SPATIAL_KEYS,
@@ -202,7 +212,7 @@ export type TrimOp =
   | { kind: 'slip'; id: string; trimStart: number };
 
 export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light' | 'sky' | 'output'>>;
-export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>> & { volume?: number | null; pan?: number | null };
+export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked' | 'syncLock'>> & { volume?: number | null; pan?: number | null };
 
 export interface EditorState {
   project: Project | null;
@@ -239,7 +249,7 @@ export interface EditorState {
 
   // assets (not undoable)
   addAsset(asset: MediaAsset): void;
-  /** removes the asset and every clip that uses it. clears history. */
+  /** removes the asset and every clip that uses it. clears history. a lut media is taken off every grade, history stays. */
   removeAsset(assetId: string): void;
   renameAsset(assetId: string, name: string): void;
   /** set or clear (null) the marked part of a video or audio media. not an undo step. false when nothing changed */
@@ -255,6 +265,8 @@ export interface EditorState {
   resetMixer(opts?: ActionOpts): void;
   /** reorder a track. index is in project.tracks. tracks stay grouped video-first. */
   moveTrack(trackId: string, toIndex: number, opts?: ActionOpts): void;
+  /** row heights by track id (null: normal). a view setting: not an undo step, kept through undo. false when nothing changed */
+  setTrackHeights(patch: Readonly<Record<string, number | null>>): boolean;
 
   // clips
   /**
@@ -318,6 +330,9 @@ export interface EditorState {
    * (timeline seconds, default the clip start).
    */
   setClipKeyframes(id: string, keyframes: Keyframes, opts?: ActionOpts & { time?: number }): void;
+  /** setClipKeyframes for many clips in ONE update (one undo step). a property losing all keys keeps its value at
+   *  opts.time clamped into the clip (default its start). locked, missing, unchanged writes skipped. true on a change */
+  setManyKeyframes(writes: readonly KeyframesWrite[], opts?: ActionOpts & { time?: number }): boolean;
   /** remove every key of one property (or of all when prop is omitted). values freeze as they are at `time`. */
   clearKeyframes(id: string, time: number, prop?: string, opts?: ActionOpts): void;
   /** set one parameter of an effect clip (clamped to the param range). */
@@ -355,7 +370,7 @@ export interface EditorState {
    * split at a timeline time. ids defaults to the selection, or every clip under the time when
    * nothing is selected. clips on locked tracks are skipped. returns ids of the new right-hand parts.
    */
-  splitClips(time: number, ids?: string[], opts?: ActionOpts): string[];
+  splitClips(time: number, ids?: string[], opts?: ActionOpts & { open?: ReadonlySet<string> }): string[];
   /** ripple: close the gap by shifting later clips on the same track left */
   deleteClips(ids: string[], opts?: ActionOpts & { ripple?: boolean }): void;
   /** copies land right after the originals when there is room. selects and returns the copies. */
@@ -470,6 +485,9 @@ export function repointSplitDependents(clips: Clip[], rightOf: ReadonlyMap<strin
       const look = map(c.lookTarget);
       if (parent) c = { ...c, parent } as Clip;
       if (look) c = { ...c, lookTarget: look } as Clip;
+      const mt = matteField(c);
+      const half = mt ? map(mt.clip) : undefined;
+      if (mt && half) c = { ...c, matte: { ...mt, clip: half } } as Clip;
       // a solid that shows a clip that was cut shows its right half from the cut on
       if (isVisualClip(c) && c.faces) c = remapSides([c], (id) => rightOf.get(id))[0]!;
     }
@@ -752,6 +770,26 @@ function clampProp(clip: Clip, prop: string, value: number): number | null {
   return info.int ? Math.round(v) : v;
 }
 
+/** the range clampProp clamps a property to. null when the clip has no such property. no int rounding here */
+export function propLimits(clip: Clip, prop: string): { min: number; max: number } | null {
+  if (prop.startsWith('p.')) {
+    if (clip.type !== 'effect') return null;
+    const param = getEffect(clip.effect)?.params.find((q) => q.key === prop.slice(2));
+    return param ? { min: param.min, max: param.max } : null;
+  }
+  const info = animProps(clip).find((a) => a.prop === prop);
+  if (!info) return null;
+  const min = info.min ?? -Infinity;
+  let max = info.max ?? Infinity;
+  const across = CROP_ACROSS[prop];
+  if (across) {
+    let taken = baseValue(clip, across) ?? 0;
+    for (const k of clip.keyframes?.[across] ?? []) taken = Math.max(taken, k.v);
+    max = Math.min(max, Math.max(0, MAX_CROP_SUM - taken));
+  }
+  return { min, max };
+}
+
 /** setClipValue for one clip: the new clip, or null for "nothing to do" (locked track, no such prop, same value) */
 function valueEdit(p: Project, clip: Clip, prop: string, time: number, value: number): Clip | null {
   if (isLocked(p, clip.trackId) || !Number.isFinite(value)) return null;
@@ -819,9 +857,14 @@ function cleanBendKeys(keys: readonly Keyframe[]): Keyframe[] {
   const out: Keyframe[] = [];
   for (const k of keys) {
     if (!k || !Number.isFinite(k.t) || !Number.isFinite(k.v)) continue;
-    out.push({ t: k.t, v: clamp(k.v, -360, 360), ease: k.ease ?? 'ease' });
+    const key: Keyframe = { t: k.t, v: clamp(k.v, -360, 360), ease: k.ease ?? 'ease' };
+    const hin = cleanHandle(k.in);
+    const hout = cleanHandle(k.out);
+    if (hin) key.in = hin;
+    if (hout) key.out = hout;
+    out.push(key);
   }
-  return out.sort((a, b) => a.t - b.t);
+  return tidyHandles(out.sort((a, b) => a.t - b.t));
 }
 
 function sameClipBend(a: ClipBend | null | undefined, b: ClipBend | null | undefined): boolean {
@@ -838,7 +881,7 @@ function sameKeyframes(a: Keyframes | undefined, b: Keyframes | undefined): bool
     const p = x[prop]!;
     const q = y[prop];
     if (!q || p.length !== q.length) return false;
-    for (let i = 0; i < p.length; i++) if (p[i]!.t !== q[i]!.t || p[i]!.v !== q[i]!.v || p[i]!.ease !== q[i]!.ease) return false;
+    for (let i = 0; i < p.length; i++) if (p[i]!.t !== q[i]!.t || p[i]!.v !== q[i]!.v || p[i]!.ease !== q[i]!.ease || !sameHandles(p[i]!, q[i]!)) return false;
   }
   return true;
 }
@@ -857,28 +900,35 @@ export function cleanKeyframes(clip: Clip, input: Keyframes): Keyframes | undefi
         ok = false;
         break;
       }
-      list.push({ t: k.t, v, ease: k.ease ?? 'ease' });
+      const key: Keyframe = { t: k.t, v, ease: k.ease ?? 'ease' };
+      const hin = cleanHandle(k.in);
+      const hout = cleanHandle(k.out);
+      if (hin) key.in = hin;
+      if (hout) key.out = hout;
+      list.push(key);
     }
     if (!ok || list.length === 0) continue;
     list.sort((a, b) => a.t - b.t);
     // a key at the same time as the one before replaces it
     const dedup: Keyframe[] = [];
     for (const k of list) {
-      if (dedup.length > 0 && k.t - dedup[dedup.length - 1]!.t < KEY_EPS) dedup[dedup.length - 1] = k;
+      if (dedup.length > 0 && k.t - dedup[dedup.length - 1]!.t < KEY_EPS) dedup[dedup.length - 1] = mergeSameTime(dedup[dedup.length - 1]!, k);
       else dedup.push(k);
     }
-    out[prop] = dedup;
+    out[prop] = tidyHandles(dedup);
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /* ---------- store ---------- */
 
-/** what history does not hold: the media list and the timeline in / out stay as they are now */
+/** what history does not hold: the media list, the timeline in / out and the track heights stay as they are now */
 function keepLive(snap: Project, now: Project): Project {
   const out: Project = { ...snap, assets: now.assets };
   if (now.range) out.range = now.range;
   else delete out.range;
+  // a track height is a view setting: history brings back the edit, never the rows
+  out.tracks = keepHeights(snap.tracks, now.tracks);
   return out;
 }
 
@@ -1016,7 +1066,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       const next: Project = {
         ...project,
         assets: project.assets.filter((a) => a.id !== assetId),
-        clips: gone.size > 0 ? removeClipsKeepingPose(project, gone) : project.clips,
+        clips: withoutLutOf(gone.size > 0 ? removeClipsKeepingPose(project, gone) : project.clips, assetId),
       };
       // the sky goes with one of its pictures. undo keeps the current media list, so a sky that comes back with an undo
       // has its picture missing and is simply not drawn (sky.ts skyUsable): no need to clear the history for it
@@ -1041,7 +1091,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       const { project } = get();
       if (!project) return false;
       const a = project.assets.find((x) => x.id === assetId);
-      if (!a || a.kind === 'image') return false;
+      if (!a || a.kind === 'image' || a.kind === 'lut') return false;
       const clean = cleanRange(marks);
       if (sameRange(cleanRange(a.marks), clean)) return false;
       const { marks: _old, ...rest } = a;
@@ -1207,6 +1257,26 @@ export const useEditor = create<EditorState>()((set, get) => {
       const past = get().past;
       set(past.includes(project) ? { project: next, past: past.map((p) => (p === project ? next : p)) } : { project: next });
     },
+    setTrackHeights(patch) {
+      const { project } = get();
+      if (!project) return false;
+      let changed = false;
+      const tracks = project.tracks.map((t) => {
+        if (!(t.id in patch)) return t;
+        const n = withHeight(t, patch[t.id] ?? null);
+        if (n !== t) changed = true;
+        return n;
+      });
+      if (!changed) return false;
+      const next: Project = { ...project, tracks };
+      // not an undo step (like setRange): an open gesture keeps its step whole
+      if (pending === project) pending = next;
+      const sel = selectionAt.get(project);
+      if (sel) selectionAt.set(next, sel);
+      const past = get().past;
+      set(past.includes(project) ? { project: next, past: past.map((p) => (p === project ? next : p)) } : { project: next });
+      return true;
+    },
 
     addEffect(effect, opts) {
       const def = getEffect(effect);
@@ -1337,7 +1407,7 @@ export const useEditor = create<EditorState>()((set, get) => {
           const moved = { ...keys[at]!, t: to };
           // a key already sitting at the target is replaced
           const rest = keys.filter((k, i) => i !== at && Math.abs(k.t - to) > KEY_EPS);
-          kf[name] = [...rest, moved].sort((a, b) => a.t - b.t);
+          kf[name] = tidyHandles([...rest, moved].sort((a, b) => a.t - b.t));
           changed = true;
         }
         return changed ? replaceClip(p, { ...clip, keyframes: kf }) : null;
@@ -1352,10 +1422,33 @@ export const useEditor = create<EditorState>()((set, get) => {
         let next: Clip = clip;
         // a property that lost all its keys keeps the value it had at `freeze`
         for (const [prop, keys] of Object.entries(clip.keyframes ?? {})) {
-          if (keys.length > 0 && !kf?.[prop]) next = withBaseValue(next, prop, evalKeys(keys, freeze - clip.start));
+          if (keys.length > 0 && !kf?.[prop]) next = withBaseValue(next, prop, evalKeys(keys, freeze - clip.start, clip, prop));
         }
         if (next === clip && sameKeyframes(clip.keyframes, kf)) return null;
         return replaceClip(p, { ...next, keyframes: kf });
+      }, opts);
+    },
+    setManyKeyframes(writes, opts) {
+      return mutate((p) => {
+        const index = new Map<string, number>();
+        p.clips.forEach((c, i) => { if (!index.has(c.id)) index.set(c.id, i); });
+        let clips: Clip[] | null = null;
+        for (const w of writes) {
+          const i = index.get(w.id);
+          if (i === undefined) continue;
+          const clip = (clips ?? p.clips)[i]!;
+          if (isLocked(p, clip.trackId)) continue;
+          const kf = cleanKeyframes(clip, w.keyframes);
+          const freeze = clamp(opts?.time ?? clip.start, clip.start, clip.start + clip.duration);
+          let next: Clip = clip;
+          for (const [prop, keys] of Object.entries(clip.keyframes ?? {})) {
+            if (keys.length > 0 && !kf?.[prop]) next = withBaseValue(next, prop, evalKeys(keys, freeze - clip.start, clip, prop));
+          }
+          if (next === clip && sameKeyframes(clip.keyframes, kf)) continue;
+          if (!clips) clips = p.clips.slice();
+          clips[i] = { ...next, keyframes: kf };
+        }
+        return clips ? { ...p, clips } : null;
       }, opts);
     },
     clearKeyframes(id, time, prop, opts) {
@@ -1416,6 +1509,18 @@ export const useEditor = create<EditorState>()((set, get) => {
               continue;
             }
           }
+          // a crossfade is cleaned (sides 0..10 s, a known shape) and compared by value. none = no field
+          if (key === 'crossfade' && (clip.type === 'video' || clip.type === 'audio')) {
+            value = cleanCrossfade(value);
+            if (sameCrossfade(next.crossfade as Crossfade | null | undefined, value as Crossfade | null)) continue;
+            if (value === null) { delete next.crossfade; changed = true; continue; }
+          }
+          // a fade shape: linear (the old fade) = no field
+          if ((key === 'fadeInShape' || key === 'fadeOutShape') && (clip.type === 'video' || clip.type === 'audio')) {
+            value = cleanFadeShape(value);
+            if ((next[key] ?? null) === value) continue;
+            if (value === null) { delete next[key]; changed = true; continue; }
+          }
           // a bend is cleaned like setBends does. null takes the field and its keys off. an equal bend is no change
           if (key === 'bend') {
             const clean = value === null ? null : parseBend(value);
@@ -1466,6 +1571,23 @@ export const useEditor = create<EditorState>()((set, get) => {
               changed = true;
             }
             continue;
+          }
+          // a matte: null = no field. itself, a non picture or a chain is refused. a partial one lies over the current
+          if (key === 'matte') {
+            const v = value as Partial<ClipMatte> | null | undefined;
+            if (v === null || v === undefined) {
+              if ('matte' in next) {
+                delete next.matte;
+                changed = true;
+              }
+              continue;
+            }
+            const was = matteField(clip);
+            const mode = v.mode ?? was?.mode ?? 'alpha';
+            const id = typeof v.clip === 'string' ? v.clip : was?.clip;
+            if (!id || !isMatteMode(mode) || matteProblem(p.clips, clip.id, id)) continue;
+            if (was && was.clip === id && was.mode === mode) continue;
+            value = { clip: id, mode };
           }
           // a sound's pan is -1..1 and the middle = no field (a saved project stays as it was). a camera's pan is degrees, untouched
           if (key === 'pan' && (clip.type === 'video' || clip.type === 'audio')) {
@@ -1628,15 +1750,23 @@ export const useEditor = create<EditorState>()((set, get) => {
         const scope = ids ?? (sel.length > 0 ? sel : p.clips.map((c) => c.id));
         const targets = new Set(scope);
         const asked = new Set(scope);
-        const cuttable = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId);
+        const cuttable = (c: Clip): boolean => time > c.start + MIN_CLIP_DURATION && time < clipEnd(c) - MIN_CLIP_DURATION && !isLocked(p, c.trackId) && (!opts?.open || opts.open.has(c.trackId) || c.type === 'effect');
         // a clip that lives on a side of a solid is cut only when every solid that shows it is cut with it (below: what
         // hangs on a cut clip is cut too). a side names one clip: a half its solid cannot follow (the solid is locked, or
         // does not reach over the cut) would be left without a solid and start to paint on its own.
         const onSides = faceSourceIds(p);
+        // a matte clip is cut only when every clip it cuts that reaches over the cut can be cut too (cut along below, so
+        // right halves keep right halves). one before or after the cut follows by itself (repointSplitDependents)
+        const matteUsers = matteUsersMap(p.clips);
         const cuts = (c: Clip): boolean => {
           if (!cuttable(c)) return false;
           const solids = onSides.get(c.id);
-          return !solids || solids.every((id) => p.clips.some((s) => s.id === id && cuttable(s)));
+          if (solids && !solids.every((id) => p.clips.some((s) => s.id === id && cuttable(s)))) return false;
+          const users = matteUsers.get(c.id);
+          return !users || users.every((id) => {
+            const u = p.clips.find((x) => x.id === id);
+            return !u || u.start >= time - 1e-6 || clipEnd(u) <= time + 1e-6 || cuttable(u) || (!!opts?.open && !opts.open.has(u.trackId) && !isLocked(p, u.trackId));
+          });
         };
         // what hangs on a clip that is cut is cut with it, so its right half can follow the right half of that
         // clip: an effect put on it, a clip attached to it or looking at it, a camera aiming at it (and what
@@ -1650,7 +1780,7 @@ export const useEditor = create<EditorState>()((set, get) => {
             const hangsOn =
               c.type === 'effect' || c.type === 'camera'
                 ? !!c.target && extra.has(c.target)
-                : isVisualClip(c) && ((!!c.parent && extra.has(c.parent)) || (!!c.lookTarget && extra.has(c.lookTarget)) || showsAny(c, extra));
+                : isVisualClip(c) && ((!!c.parent && extra.has(c.parent)) || (!!c.lookTarget && extra.has(c.lookTarget)) || showsAny(c, extra) || extra.has(matteField(c)?.clip ?? ''));
             if (!hangsOn) continue;
             targets.add(c.id);
             extra.add(c.id);
@@ -1673,6 +1803,7 @@ export const useEditor = create<EditorState>()((set, get) => {
           const leftDraft = { ...c, duration: time - c.start, fadeOut: 0 } as Record<string, unknown>;
           delete leftDraft.motionOut;
           delete leftDraft.animOut;
+          delete leftDraft.fadeOutShape;
           // an effect cut in two keeps the length its look was spread over (see EffectClip.fullDuration)
           if (c.type === 'effect') leftDraft.fullDuration = c.fullDuration ?? c.duration;
           // same for a running number: both halves count over the old length
@@ -1684,6 +1815,8 @@ export const useEditor = create<EditorState>()((set, get) => {
           delete rightDraft.transition;
           delete rightDraft.motionIn;
           delete rightDraft.animIn;
+          delete rightDraft.crossfade;
+          delete rightDraft.fadeInShape;
           const right = {
             ...(rightDraft as unknown as Clip),
             id: uid('clp'),
@@ -1794,6 +1927,16 @@ export const useEditor = create<EditorState>()((set, get) => {
           if (!doomed.some((d) => d.trackId === old.trackId && Math.abs(clipEnd(d) - old.start) < 1e-6)) return c;
           if (touched(c)) return c;
           const { transition: _drop, ...rest } = c;
+          void _drop;
+          return rest as Clip;
+        });
+        // the same for a crossfade: it plays from the sound right before it
+        clips = clips.map((c) => {
+          if ((c.type !== 'video' && c.type !== 'audio') || !c.crossfade) return c;
+          const old = was.get(c.id)!;
+          if (!doomed.some((d) => d.trackId === old.trackId && Math.abs(clipEnd(d) - old.start) < 1e-6)) return c;
+          if (touched(c)) return c;
+          const { crossfade: _drop, ...rest } = c;
           void _drop;
           return rest as Clip;
         });

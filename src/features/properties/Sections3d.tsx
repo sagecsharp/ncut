@@ -23,6 +23,7 @@ import { lookTargetOptions } from './parentOptions';
 import { currentLabel } from './selectModel';
 import { copyKeysAction, fitKeysAction, pasteKeysAction, repeatKeysAction, reverseKeysAction, wiggleAction, wiggleDefault, wiggleProps } from './keyActions';
 import { useKeyClipboard } from './keyClipboard';
+import { openKeyPanel } from '../timeline/keyLaneActions';
 import { dropToFloor, frameWithCamera, layFlat, putInFrontOfCamera, standUp } from './placeActions';
 
 const actions = () => useEditor.getState();
@@ -102,6 +103,9 @@ export const AnimationSection = memo(function AnimationSection({
           onClick={() => pasteKeysAction(id)}
         >
           <ClipboardPaste size={14} />
+        </button>
+        <button type="button" className="btn btn-sm" {...tip('keyframe panel', { does: 'every keyframe of the selected clips in rows under the tracks', keys: 'key-panel' })} onClick={openKeyPanel}>
+          keyframe panel
         </button>
       </div>
       {chosen ? (

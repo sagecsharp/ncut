@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { ALPHA_BLOCK, CUT_BLOCK, MAIN, MAIN_ALPHA, MAIN_CUT, PLAIN_BLOCK, PRELUDE } from './glsl';
 import { GRADE_GLSL } from '../grade';
+import type { GradeData } from '../grade';
+import { GRADE_LUT_GLSL } from '../gradeLut';
+import { GRADE_DEFS, GRADE_LUT_DEF, gradeDefFor } from './defs/grade';
 import { EFFECTS, effectParamValue, effectsInCategory, getEffect } from './registry';
 import { checkEffects, effectsSupported, fragmentSource, renderEffects, renderEffectsAlpha } from './runner';
 import { EFFECT_CATEGORIES } from './types';
@@ -410,5 +413,38 @@ describe('the grade effect', () => {
     expect(def.glsl).toContain('gradeApply(');
     expect(def.glsl).toContain('gDither(');
     expect(fragmentSource(def)).toContain('uniform highp sampler2D u_gCurves;');
+  });
+});
+
+describe('the grade effect with a lut', () => {
+  const def = getEffect('grade')!;
+  const data = (lut: boolean): GradeData => ({
+    lift: [0, 0, 0],
+    gain: [1, 1, 1],
+    gamma: [1, 1, 1],
+    offset: [0, 0, 0],
+    on: [1, 0, 0, 1],
+    tone: [0, 0, 0, 0],
+    table: null,
+    key: '',
+    ...(lut ? { lut: { table: {} as never, mix: 1, last: false, tv: false } } : {}),
+  });
+  it('grade-lut is not registered, same params', () => {
+    expect(getEffect('grade-lut')).toBeUndefined();
+    expect(EFFECTS.some((d) => d.id === 'grade-lut')).toBe(false);
+    expect(GRADE_DEFS.some((d) => d.id === 'grade-lut')).toBe(false);
+    expect(GRADE_LUT_DEF.id).toBe('grade-lut');
+    expect(GRADE_LUT_DEF.params).toEqual(def.params);
+    expect({ ...GRADE_LUT_DEF, id: def.id, glsl: def.glsl }).toEqual(def);
+    expect(GRADE_LUT_DEF.glsl.startsWith(GRADE_GLSL + GRADE_LUT_GLSL)).toBe(true);
+    expect(GRADE_LUT_DEF.glsl).toContain('gradeLutApply(clamp(s, 0.0, 1.0))');
+    expect(GRADE_LUT_DEF.glsl).not.toContain('gradeApply(clamp');
+    expect(fragmentSource(GRADE_LUT_DEF)).toContain('uniform highp sampler3D u_gLut3;');
+    expect(fragmentSource(def)).not.toContain('u_gLut3');
+  });
+  it('gradeDefFor picks grade-lut only with a lut', () => {
+    expect(gradeDefFor(null)).toBe(def);
+    expect(gradeDefFor(data(false))).toBe(def);
+    expect(gradeDefFor(data(true))).toBe(GRADE_LUT_DEF);
   });
 });

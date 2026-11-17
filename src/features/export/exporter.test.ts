@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project, ShapeClip, VideoClip } from '../../types';
 import { neededClipsAt } from '../../engine/draw';
 import { projectDuration } from '../../lib/timelineOps';
-import { clipEdgeTimestamp, clipTimestamps, fileExtension, frameCount, isAudioContainer, isGifContainer, outputSize, planExport, videoBitrate } from './exporter';
+import { VIDEO_CODECS, clipEdgeTimestamp, clipTimestamps, fileExtension, frameCount, isAudioContainer, isGifContainer, outputSize, planExport, videoBitrate } from './exporter';
+import type { CanEncodeVideo } from './exporter';
 import { MIX_SAMPLE_RATE } from './audioMix';
 
 function withDuration(d: number): Pick<Project, 'clips'> {
@@ -144,5 +145,77 @@ describe('gif container', () => {
     expect(isGifContainer('mp4')).toBe(false);
     expect(isAudioContainer('gif')).toBe(false);
     expect(fileExtension('gif')).toBe('gif');
+  });
+});
+
+describe('planExport with a delivery', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  type Call = { codec: string; width: number; height: number; frameRate: number | undefined; bitrate: number | undefined };
+  /** a can that records what it was asked and says yes only to the codecs in `yes` */
+  const recorder = (yes: string[] = []): { can: CanEncodeVideo; calls: Call[] } => {
+    const calls: Call[] = [];
+    const can: CanEncodeVideo = async (codec, o) => {
+      calls.push({ codec, width: o.width!, height: o.height!, frameRate: o.frameRate, bitrate: (o.quality as unknown as { _bitrate?: number })._bitrate });
+      return yes.includes(codec);
+    };
+    return { can, calls };
+  };
+
+  it('the default plan asks what it always asked', async () => {
+    vi.stubGlobal('VideoEncoder', function () {});
+    for (const container of ['mp4', 'webm'] as const) {
+      const { can, calls } = recorder();
+      expect(await planExport({ container, width: 1920, height: 1080, fps: 60, quality: 'high' }, undefined, can)).toBeNull();
+      // the loop of before this change, copied in
+      const old: Call[] = [];
+      for (const codec of VIDEO_CODECS[container]) old.push({ codec, width: 1920, height: 1080, frameRate: 60, bitrate: videoBitrate(1920, 1080, 60, 'high', codec) });
+      expect(calls).toEqual(old);
+    }
+    const { can, calls } = recorder(['hevc']);
+    expect(await planExport({ container: 'mp4', width: 1280, height: 720, fps: 30, quality: 'low' }, undefined, can)).toEqual({ codec: 'hevc', bitrate: videoBitrate(1280, 720, 30, 'low', 'hevc') });
+    expect(calls.map((c) => c.codec)).toEqual(['avc', 'hevc']);
+  });
+
+  it('a set codec asks once', async () => {
+    vi.stubGlobal('VideoEncoder', function () {});
+    const { can, calls } = recorder(['hevc']);
+    const plan = await planExport({ container: 'mp4', width: 1920, height: 1080, fps: 30, quality: 'high', codec: 'hevc' }, undefined, can);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.codec).toBe('hevc');
+    expect(plan).toEqual({ codec: 'hevc', bitrate: videoBitrate(1920, 1080, 30, 'high', 'hevc') });
+    // a set bitrate is asked as it is and kept
+    const again = recorder(['vp9']);
+    const custom = await planExport({ container: 'webm', width: 640, height: 360, fps: 30, quality: 'high', codec: 'vp9', bitrate: 7_000_000 }, undefined, again.can);
+    expect(again.calls).toHaveLength(1);
+    expect(again.calls[0]!.bitrate).toBe(7_000_000);
+    expect(custom).toEqual({ codec: 'vp9', bitrate: 7_000_000 });
+    // a no for the set codec is no plan, nothing else is tried
+    const no = recorder();
+    expect(await planExport({ container: 'mp4', width: 640, height: 360, fps: 30, quality: 'high', codec: 'av1' }, undefined, no.can)).toBeNull();
+    expect(no.calls).toHaveLength(1);
+  });
+
+  it('a set bitrate alone goes to every codec in order', async () => {
+    vi.stubGlobal('VideoEncoder', function () {});
+    const { can, calls } = recorder(['hevc']);
+    await planExport({ container: 'mp4', width: 640, height: 360, fps: 30, quality: 'high', bitrate: 3_000_000 }, undefined, can);
+    expect(calls.map((c) => [c.codec, c.bitrate])).toEqual([['avc', 3_000_000], ['hevc', 3_000_000]]);
+  });
+
+  it('vp8 is never asked for an mp4', async () => {
+    vi.stubGlobal('VideoEncoder', function () {});
+    const { can, calls } = recorder(['vp8']);
+    expect(await planExport({ container: 'mp4', width: 640, height: 360, fps: 30, quality: 'high', codec: 'vp8' }, undefined, can)).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a probe that throws is a no', async () => {
+    vi.stubGlobal('VideoEncoder', function () {});
+    const can: CanEncodeVideo = async (codec) => {
+      if (codec === 'avc') throw new Error('gpu process gone');
+      return codec === 'hevc';
+    };
+    expect((await planExport({ container: 'mp4', width: 640, height: 360, fps: 30, quality: 'high' }, undefined, can))?.codec).toBe('hevc');
   });
 });

@@ -15,15 +15,21 @@ import {
   canGrade,
   gradeNum,
   hasGrade,
+  hasGradeMath,
   isCurveNeutral,
   isGradeActive,
   isHueKind,
   isToneKind,
+  lutIdsOf,
+  lutMixOf,
+  lutOf,
   normalizeCurve,
   normalizeGrade,
+  normalizeLut,
   sameGrade,
   wheelOf,
   withoutGradeKeys,
+  withoutLutOf,
 } from './gradeData';
 
 const base = { trackId: 't', start: 0, duration: 5, name: 'c', fadeIn: 0, fadeOut: 0 };
@@ -314,5 +320,100 @@ describe('canGrade and hasGrade', () => {
   });
   it('hasGrade: a clip that cannot carry one never has one', () => {
     expect(hasGrade(effect('shake', { grade: { liftR: 0.5 } }))).toBe(false);
+  });
+});
+
+describe('lut in a grade', () => {
+  it('normalizeGrade keeps the key order wheels, curves, lut, off', () => {
+    const g = normalizeGrade({ off: true, lut: { media: 'm', tv: true, mix: 0.5 }, curves: { y: [[0, 0.1], [1, 1]] }, liftR: 0.2 })!;
+    expect(Object.keys(g)).toEqual(['liftR', 'curves', 'lut', 'off']);
+    expect(Object.keys(g.lut!)).toEqual(['media', 'mix', 'tv']);
+  });
+  it('a lut without a media is dropped', () => {
+    expect(normalizeGrade({ lut: { mix: 0.5 } })).toEqual({});
+    expect(normalizeGrade({ lut: { media: '' } })).toEqual({});
+    expect(normalizeGrade({ lut: { media: 4 } })).toEqual({});
+    expect(normalizeLut(null)).toBeNull();
+  });
+  it('normalizeLut cleans mix, last and tv', () => {
+    expect(normalizeLut({ media: 'm', mix: 1 })).toEqual({ media: 'm' });
+    expect(normalizeLut({ media: 'm', mix: 2 })).toEqual({ media: 'm' });
+    expect(normalizeLut({ media: 'm', mix: 0.123456 })).toEqual({ media: 'm', mix: 0.1235 });
+    expect(normalizeLut({ media: 'm', mix: 0 })).toEqual({ media: 'm', mix: 0 });
+    expect(normalizeLut({ media: 'm', mix: Number.NaN })).toEqual({ media: 'm' });
+    expect(normalizeLut({ media: 'm', last: 1, tv: 'yes' })).toEqual({ media: 'm' });
+    expect(normalizeLut({ media: 'm', last: true, tv: true })).toEqual({ media: 'm', last: true, tv: true });
+  });
+  it('a lut is kept at mix 0', () => {
+    expect(normalizeGrade({ lut: { media: 'm', mix: 0 } })).toEqual({ lut: { media: 'm', mix: 0 } });
+  });
+  it('lutOf and lutMixOf read the lut', () => {
+    expect(lutOf(null)).toBeNull();
+    expect(lutOf({ liftR: 0.2 })).toBeNull();
+    expect(lutOf({ lut: { media: '' } })).toBeNull();
+    expect(lutOf({ lut: { media: 'm' } })).toEqual({ media: 'm' });
+    expect(lutMixOf({ media: 'm' })).toBe(1);
+    expect(lutMixOf({ media: 'm', mix: 0.4 })).toBe(0.4);
+    expect(lutMixOf({ media: 'm', mix: 3 })).toBe(1);
+    expect(lutMixOf({ media: 'm', mix: -1 })).toBe(0);
+    expect(lutMixOf({ media: 'm', mix: Number.NaN })).toBe(1);
+  });
+  it('isGradeActive counts a lut, not at mix 0, not when off', () => {
+    expect(isGradeActive({ lut: { media: 'm' } })).toBe(true);
+    expect(isGradeActive({ lut: { media: 'm', mix: 0.3 } })).toBe(true);
+    expect(isGradeActive({ lut: { media: 'm', mix: 0 } })).toBe(false);
+    expect(isGradeActive({ lut: { media: 'm' }, off: true })).toBe(false);
+    expect(isGradeActive({ lut: { media: '' } })).toBe(false);
+  });
+  it('hasGradeMath is the old gate', () => {
+    expect(hasGradeMath({ lut: { media: 'm' } })).toBe(false);
+    expect(hasGradeMath({ liftR: 0.2 })).toBe(true);
+    expect(hasGradeMath({ liftR: 0.2, off: true })).toBe(false);
+    expect(hasGradeMath(null)).toBe(false);
+    expect(hasGradeMath({ curves: { y: [[0, 0.2], [1, 1]] } })).toBe(true);
+  });
+  it('hasGrade sees a lut at mix 0 and off', () => {
+    expect(hasGrade(video({ grade: { lut: { media: 'm', mix: 0 } } }))).toBe(true);
+    expect(hasGrade(video({ grade: { lut: { media: 'm' }, off: true } }))).toBe(true);
+    expect(hasGrade(effect(GRADE_EFFECT, { grade: { lut: { media: 'm' } } }))).toBe(true);
+    expect(hasGrade(effect('shake', { grade: { lut: { media: 'm' } } }))).toBe(false);
+  });
+  it('old grades clean to the same json', () => {
+    const g: ClipGrade = { liftR: 0.2, gainY: -0.1, curves: { y: [[0, 0], [0.5, 0.6], [1, 1]] }, off: true };
+    expect(JSON.stringify(normalizeGrade(g))).toBe(JSON.stringify(g));
+    expect(sameGrade(g, { ...g, lut: undefined })).toBe(true);
+  });
+  it('lutIdsOf lists the luts of every clip that can grade', () => {
+    const clips: Clip[] = [
+      video({ id: 'a', grade: { lut: { media: 'm1' } } }),
+      video({ id: 'b', grade: { lut: { media: 'm2', mix: 0 }, off: true } }),
+      effect(GRADE_EFFECT, { id: 'c', grade: { lut: { media: 'm3' } } }),
+      effect('shake', { id: 'd', grade: { lut: { media: 'm4' } } }),
+      video({ id: 'e', grade: { liftR: 0.2 } }),
+    ];
+    expect([...lutIdsOf(clips)].sort()).toEqual(['m1', 'm2', 'm3']);
+    expect(lutIdsOf([]).size).toBe(0);
+  });
+  it('withoutLutOf takes the lut off and keeps the rest of the grade', () => {
+    const a = video({ id: 'a', grade: { liftR: 0.2, lut: { media: 'm1' } } });
+    const b = video({ id: 'b', grade: { liftR: 0.2, lut: { media: 'm2' } } });
+    const out = withoutLutOf([a, b], 'm1');
+    expect(out[0]!.type === 'video' && out[0]!.grade).toEqual({ liftR: 0.2 });
+    expect(out[1]).toBe(b);
+  });
+  it('withoutLutOf drops the grade key when nothing is left', () => {
+    const only = video({ id: 'a', grade: { lut: { media: 'm1' } } });
+    const offLone = video({ id: 'b', grade: { lut: { media: 'm1' }, off: true } });
+    const out = withoutLutOf([only, offLone], 'm1');
+    expect('grade' in out[0]!).toBe(false);
+    expect('grade' in out[1]!).toBe(false);
+    const eff = withoutLutOf([effect(GRADE_EFFECT, { id: 'c', grade: { lut: { media: 'm1' } } })], 'm1');
+    expect('grade' in eff[0]!).toBe(false);
+  });
+it('withoutLutOf keeps the off switch when the clip has grade keys', () => {    const keyed = video({ id: 'a', grade: { lut: { media: 'm1' }, off: true }, keyframes: { 'grade.liftR': [key(0, 0), key(2, 0.5)] } });    const out = withoutLutOf([keyed], 'm1');    expect(out[0]!.type === 'video' && out[0]!.grade).toEqual({ off: true });  });
+  it('withoutLutOf gives the same array when no clip uses the lut', () => {
+    const clips: Clip[] = [video({ id: 'a', grade: { lut: { media: 'm1' } } }), video({ id: 'b' })];
+    expect(withoutLutOf(clips, 'other')).toBe(clips);
+    expect(withoutLutOf([], 'm')).toEqual([]);
   });
 });

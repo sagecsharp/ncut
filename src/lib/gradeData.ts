@@ -2,7 +2,7 @@
  * the data side of the color grade (types.ts ClipGrade): names, the one gate (isGradeActive), cleaning and comparing.
  * pure, imports only types.ts. the math (lib/gradeMath.ts) and the pixels (engine/grade.ts) build on it.
  */
-import type { Clip, ClipGrade, GradeCurves, GradePoint, Keyframes } from '../types';
+import type { Clip, ClipGrade, GradeCurves, GradeLut, GradePoint, Keyframes } from '../types';
 import { isVisualClip } from '../types';
 
 /** the id of the grade effect (engine/effects/defs/grade.ts) */
@@ -60,6 +60,19 @@ export function canGrade(c: Clip): boolean {
   return isVisualClip(c) || (c.type === 'effect' && c.effect === GRADE_EFFECT);
 }
 
+/** a lut as it is stored: needs a media id. mix 0..1 rounded to 4 decimals and kept only under 1 (0 is kept), last and tv only when true. null for anything else */
+export function normalizeLut(v: unknown): GradeLut | null {
+  if (!isObj(v) || typeof v.media !== 'string' || v.media === '') return null;
+  const out: GradeLut = { media: v.media };
+  if (typeof v.mix === 'number' && Number.isFinite(v.mix)) {
+    const m = round4(clamp01(v.mix));
+    if (m < 1) out.mix = m;
+  }
+  if (v.last === true) out.last = true;
+  if (v.tv === true) out.tv = true;
+  return out;
+}
+
 /** a missing or empty list, or one that changes nothing (a tone curve on the diagonal, the others on 0.5) */
 export function isCurveNeutral(kind: CurveKind, pts: readonly GradePoint[] | null | undefined): boolean {
   if (!pts || pts.length === 0) return true;
@@ -71,8 +84,8 @@ export function isCurveNeutral(kind: CurveKind, pts: readonly GradePoint[] | nul
   return true;
 }
 
-/** true when the grade changes the picture: not off, and some wheel number or some curve is not neutral. the one gate for engine, effect pass, store and ui */
-export function isGradeActive(g: ClipGrade | null | undefined): boolean {
+/** not off, and some wheel number or some curve is not neutral. a lut is not counted here */
+export function hasGradeMath(g: ClipGrade | null | undefined): boolean {
   if (!g || typeof g !== 'object' || g.off === true) return false;
   for (const k of GRADE_KEYS) if (Math.abs(gradeNum(g, k)) >= GRADE_EPS) return true;
   const curves = g.curves;
@@ -80,11 +93,33 @@ export function isGradeActive(g: ClipGrade | null | undefined): boolean {
   return false;
 }
 
+/** the lut of a grade when it names a media, else null */
+export function lutOf(g: ClipGrade | null | undefined): GradeLut | null {
+  if (!g || typeof g !== 'object') return null;
+  const l = g.lut;
+  return l && typeof l === 'object' && typeof l.media === 'string' && l.media !== '' ? l : null;
+}
+
+/** the mix of a lut, 0..1. missing or not finite = 1 */
+export function lutMixOf(l: GradeLut): number {
+  const m = l.mix;
+  return typeof m === 'number' && Number.isFinite(m) ? Math.min(1, Math.max(0, m)) : 1;
+}
+
+/** true when the grade changes the picture: not off, and some wheel number or some curve is not neutral, or a lut with a mix. the data gate; a lut draws once its table is loaded (gradeShows). the one gate for engine, effect pass, store and ui */
+export function isGradeActive(g: ClipGrade | null | undefined): boolean {
+  if (hasGradeMath(g)) return true;
+  if (!g || typeof g !== 'object' || g.off === true) return false;
+  const l = lutOf(g);
+  return !!l && lutMixOf(l) >= GRADE_EPS;
+}
+
 /** the clip shows a grade or has keys on one (switched off counts: it is still there) */
 export function hasGrade(c: Clip): boolean {
   if (!canGrade(c)) return false;
   const grade = (c as { grade?: ClipGrade | null }).grade;
   if (isGradeActive({ ...grade, off: false })) return true;
+  if (lutOf(grade)) return true;
   const kf = c.keyframes;
   if (kf) for (const k in kf) if (k.startsWith('grade.') && kf[k]!.length > 0) return true;
   return false;
@@ -132,7 +167,7 @@ export function normalizeCurve(kind: CurveKind, v: unknown): GradePoint[] | null
 /**
  * a grade as it is stored: wheel numbers finite, clamped -1..1, rounded to 4 decimals and left out under GRADE_EPS, curves
  * cleaned per kind (a neutral list is kept, a bad one dropped), `off` only when true, unknown keys dropped. keys come in a
- * fixed order (the wheel numbers, the curves, off), so equal grades have equal json. null only for a value that is no object
+ * fixed order (the wheel numbers, the curves, the lut, off), so equal grades have equal json. null only for a value that is no object
  */
 export function normalizeGrade(v: unknown): ClipGrade | null {
   if (!isObj(v)) return null;
@@ -152,6 +187,8 @@ export function normalizeGrade(v: unknown): ClipGrade | null {
     }
     if (Object.keys(clean).length > 0) out.curves = clean as GradeCurves;
   }
+  const lut = normalizeLut(v.lut);
+  if (lut) out.lut = lut;
   if (v.off === true) out.off = true;
   return out as ClipGrade;
 }
@@ -170,4 +207,38 @@ export function withoutGradeKeys(kf: Keyframes | undefined): Keyframes | undefin
   const out: Keyframes = {};
   for (const k in kf) if (!k.startsWith('grade.')) out[k] = kf[k]!;
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** the lut media of every clip that can grade (off and mix 0 too) */
+export function lutIdsOf(clips: readonly Clip[]): Set<string> {
+  const ids = new Set<string>();
+  for (const c of clips) {
+    if (!canGrade(c)) continue;
+    const l = lutOf((c as { grade?: ClipGrade | null }).grade);
+    if (l) ids.add(l.media);
+  }
+  return ids;
+}
+
+/** the clips whose grade names this lut media lose it (cleaned; a grade with nothing left is no grade field). the same array when none does */
+export function withoutLutOf(clips: Clip[], mediaId: string): Clip[] {
+  let out: Clip[] | null = null;
+  for (let i = 0; i < clips.length; i++) {
+    const c = clips[i]!;
+    if (!canGrade(c)) continue;
+    const grade = (c as { grade?: ClipGrade | null }).grade;
+    if (lutOf(grade)?.media !== mediaId) continue;
+    const { lut: _l, ...rest } = grade as ClipGrade;
+    void _l;
+    const g = normalizeGrade(rest);
+    out ??= clips.slice();
+    const keyed = !!c.keyframes && Object.keys(c.keyframes).some((k) => k.startsWith('grade.') && c.keyframes![k]!.length > 0);
+    if (g && (Object.keys(g).some((k) => k !== 'off') || (g.off && keyed))) out[i] = { ...c, grade: g } as Clip;
+    else {
+      const { grade: _g, ...bare } = c as Clip & { grade?: ClipGrade | null };
+      void _g;
+      out[i] = bare as Clip;
+    }
+  }
+  return out ?? clips;
 }

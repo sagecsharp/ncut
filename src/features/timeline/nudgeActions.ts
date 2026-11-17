@@ -10,6 +10,7 @@ import { useUi } from '../../store/ui';
 import type { TrimEdge } from '../../store/ui';
 import { REASON_TEXT, editEndReason, reasonSnapshot } from '../shell/reasons';
 import { selectableIds } from '../../store/selectableIds';
+import { keyPanelHasKeys, nudgeKeysBy } from './keyLaneActions';
 import { groupIds } from './selectionRules';
 import { NUDGE_TEXT, isFollowerClip, liveEdge, planEditStep, planNudge } from './timeNudge';
 import type { NudgePlan } from './timeNudge';
@@ -74,6 +75,7 @@ export function nudgeBy(frames: number, repeat = false): void {
   const st = useEditor.getState();
   const p = st.project;
   if (!p || interaction.gestureActive) return;
+  if (keyPanelHasKeys()) { nudgeKeysBy(frames, repeat); return; }
   if (sourceActive()) { toastOnce(REASON_TEXT.sourceHasKeys); return; }
   if (p.clips.length === 0) { toastOnce(REASON_TEXT.addClip); return; }
   const e = liveEdge(p, useUi.getState().trimEdge);

@@ -8,8 +8,8 @@ import { getTransition } from '../../engine/transitions/registry';
 
 export function kindOfPayload(payload: DragPayload, assets: MediaAsset[]): TrackKind | null {
   if (payload.kind === 'text' || payload.kind === 'shape' || payload.kind === 'effect' || payload.kind === 'camera') return 'video';
-  // transitions go on a clip, not on a lane
-  if (payload.kind === 'transition') return null;
+  // transitions and luts go on a clip, not on a lane
+  if (payload.kind === 'transition' || payload.kind === 'lut') return null;
   const asset = assets.find((a) => a.id === payload.assetId);
   if (!asset) return null;
   const t = clipTypeFor(asset, payload.parts);
@@ -27,7 +27,7 @@ export function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): n
   }
   if (payload.kind === 'effect') return DEFAULT_EFFECT_DURATION;
   if (payload.kind === 'camera') return DEFAULT_CAMERA_DURATION;
-  if (payload.kind === 'transition') return 1;
+  if (payload.kind === 'transition' || payload.kind === 'lut') return 1;
   const asset = assets.find((a) => a.id === payload.assetId);
   if (!asset) return 1;
   return clipRange(asset, payload.range).duration;

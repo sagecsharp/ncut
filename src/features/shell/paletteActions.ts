@@ -1,4 +1,5 @@
 import { PIVOT_SPOTS } from '../../engine/pivot';
+import { EASINGS } from '../../lib/anim';
 import { parentOf } from '../../lib/links';
 import type { TimeDisplay } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
@@ -7,6 +8,7 @@ import { closeProject, exportProjectFile } from '../../store/session';
 import { soloSelectedTracks, useSolo } from '../../store/solo';
 import { useTimeDisplay } from '../../store/timeDisplay';
 import { useUi } from '../../store/ui';
+import type { ExportAskInput } from '../../store/ui';
 import { isVisualClip } from '../../types';
 import { LAYOUT_RESET_EVENT } from '../editor/layoutReset';
 import { useGuides } from '../preview/guides';
@@ -23,20 +25,26 @@ import type { SceneTool } from '../preview/sceneGizmo';
 import { attachClips } from '../properties/attachActions';
 import { bendLeader, bendTogether, flattenBends } from '../properties/bendActions';
 import { addGradeEffect, copyGradeOf, pasteGradeOn, resetGrades, showGrade, toggleGradeOn } from '../properties/gradeActions';
+import { importLutFor, lutOffOn, saveGradeCube } from '../properties/lutActions';
+import { matteAbove, removeMattes, selectMatteOther, showMatte } from '../properties/matteActions';
 import { pivotModeBlocker, setPivotMany } from '../properties/pivotActions';
 import { clearKeysOf, closeGapsOnTrack, insertGapAt, selectEffectsOf, selectLike } from '../timeline/actions';
 import { clipHasSound, markBeats } from '../timeline/beatActions';
 import { timelineCommands } from '../timeline/commands';
+import { crossfadeTracksNow, fadeShapeNow } from '../timeline/crossfadeActions';
+import { fitGraphAll, fitGraphSelected, joinHandlesNow, showGraph, toggleAutoFit } from '../timeline/graphActions';
+import { copyKeysNow, deleteKeysNow, nudgeKeysBy, pasteKeysNow, selectAllKeysNow, setKeysEaseNow } from '../timeline/keyLaneActions';
 import { editNow, targetSelectedNow, targetsAutoNow } from '../timeline/editActions';
 import { clearIn, clearOut, markSelection } from '../timeline/rangeActions';
 import { cutAtMarkers, fitToMarkers, makeRow } from '../timeline/sequenceActions';
 import { joinSoundNow, selectSideNow, syncSoundNow } from '../timeline/soundActions';
 import { slideBy, slipBy } from '../timeline/trimActions';
+import { moveSelectedTrack, normalTrackHeights, toggleSelectedSyncLock } from '../timeline/trackActions';
 import type { FitSpan } from '../timeline/sequenceActions';
 import { interaction } from '../timeline/view';
 import { REASON_IDS, reasonFor } from './reasons';
 import type { ReasonInput } from './reasons';
-import { SHORTCUTS } from './shortcuts';
+import { openExport, SHORTCUTS } from './shortcuts';
 
 export interface PaletteAction {
   id: string;
@@ -87,6 +95,9 @@ function sequenceAction(id: string, title: string, run: (ids: string[]) => void,
     run: guarded(() => run(selection())),
   };
 }
+
+/** a row that opens the export dialog at a part of it or with a preset */
+const exportRow = (id: string, title: string, ask: ExportAskInput, also: readonly string[]): PaletteAction => ({ id, title, group: 'app', keys: [], also, run: () => openExport(ask) });
 
 const fitAction = (span: FitSpan, title: string) => sequenceAction(`fit-markers-${span}`, title, (ids) => fitToMarkers(ids, span));
 
@@ -180,6 +191,31 @@ const EXTRA: readonly PaletteAction[] = [
     keys: [],
     run: guarded(() => clearKeysOf(selection())),
   },
+  // the keyframe panel
+  { id: 'keys-delete', title: 'delete the selected keyframes', group: 'animation', keys: [], also: ['remove keyframes', 'delete keys'], run: guarded(deleteKeysNow) },
+  { id: 'keys-copy', title: 'copy the selected keyframes', group: 'animation', keys: [], also: ['copy keys'], run: guarded(copyKeysNow) },
+  { id: 'keys-paste', title: 'paste keyframes at the playhead onto the selected clips', group: 'animation', keys: [], also: ['paste keys'], run: guarded(pasteKeysNow) },
+  { id: 'keys-select-all', title: 'select every keyframe of the selected clips', group: 'animation', keys: [], also: ['select all keys'], run: guarded(selectAllKeysNow) },
+  { id: 'keys-nudge-left', title: 'move the selected keyframes 1 frame left', group: 'animation', keys: [], run: guarded(() => nudgeKeysBy(-1)) },
+  { id: 'keys-nudge-right', title: 'move the selected keyframes 1 frame right', group: 'animation', keys: [], run: guarded(() => nudgeKeysBy(1)) },
+  ...EASINGS.map(
+    (e): PaletteAction => ({
+      id: `keys-ease-${e.id}`,
+      title: `ease of the selected keyframes: ${e.label}`,
+      group: 'animation',
+      keys: [],
+      also: ['keyframe interpolation', 'easing'],
+      run: guarded(() => setKeysEaseNow(e.id)),
+    }),
+  ),
+  // the graph
+  { id: 'keys-ease-bezier', title: 'ease of the selected keyframes: custom', group: 'animation', keys: [], also: ['bezier', 'custom ease', 'keyframe handles'], run: guarded(() => setKeysEaseNow('bezier')) },
+  { id: 'keys-join-handles', title: 'join the handles of the selected keyframes', group: 'animation', keys: [], also: ['continuous bezier', 'unify handles'], run: guarded(joinHandlesNow) },
+  { id: 'graph-value', title: 'show the value graph', group: 'animation', keys: [], also: ['value graph', 'graph editor'], run: guarded(() => showGraph('value')) },
+  { id: 'graph-speed', title: 'show the speed graph', group: 'animation', keys: [], also: ['speed graph', 'velocity graph'], run: guarded(() => showGraph('speed')) },
+  { id: 'graph-fit-all', title: 'graph: fit every line', group: 'animation', keys: [], also: ['frame all'], run: guarded(fitGraphAll) },
+  { id: 'graph-fit-selected', title: 'graph: fit the selected keyframes', group: 'animation', keys: [], also: ['frame selected'], run: guarded(fitGraphSelected) },
+  { id: 'graph-auto-fit', title: 'graph: auto fit on or off', group: 'animation', keys: [], also: ['auto zoom graph'], run: guarded(toggleAutoFit) },
   {
     id: 'detach',
     title: 'detach the selected clips (they stay where they are)',
@@ -195,7 +231,7 @@ const EXTRA: readonly PaletteAction[] = [
   { id: 'select-effects', title: 'select the effects on the selected clips', group: 'editing', keys: [], run: () => selectEffectsOf(selection()) },
   {
     id: 'insert-gap',
-    title: 'insert a 1 second gap at the playhead (all unlocked tracks)',
+    title: 'insert a 1 second gap at the playhead (unlocked tracks with sync lock on)',
     group: 'timeline',
     keys: [],
     run: guarded(() => insertGapAt()),
@@ -210,6 +246,38 @@ const EXTRA: readonly PaletteAction[] = [
       const first = p?.clips.find((c) => selection().includes(c.id));
       if (first) closeGapsOnTrack(first.trackId);
     }),
+  },
+  {
+    id: 'tracks-normal',
+    title: 'normal track heights: every track back to its normal height',
+    group: 'timeline',
+    keys: [],
+    also: ['reset track height', 'default track height'],
+    run: normalTrackHeights,
+  },
+  {
+    id: 'track-up',
+    title: 'move the track of the selected clip up (a video track higher up draws on top)',
+    group: 'timeline',
+    keys: [],
+    also: ['reorder tracks', 'track order', 'raise track', 'bring track forward', 'layer order'],
+    run: guarded(() => moveSelectedTrack(-1)),
+  },
+  {
+    id: 'track-down',
+    title: 'move the track of the selected clip down',
+    group: 'timeline',
+    keys: [],
+    also: ['reorder tracks', 'lower track', 'send track back'],
+    run: guarded(() => moveSelectedTrack(1)),
+  },
+  {
+    id: 'sync-lock-toggle',
+    title: 'sync lock on or off for the tracks of the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['sync lock', 'track sync', 'keep in sync', 'ripple other tracks', 'pin track'],
+    run: guarded(toggleSelectedSyncLock),
   },
   {
     id: 'marker-delete',
@@ -281,6 +349,19 @@ const EXTRA: readonly PaletteAction[] = [
     keys: [],
     run: () => void window.dispatchEvent(new Event(LAYOUT_RESET_EVENT)),
   },
+  // export: advanced part and presets
+  exportRow('export-transparent', 'export with a see-through background (webm or png)', { focus: 'transparent' }, ['transparent background', 'alpha channel', 'alpha', 'transparency', 'no background', 'cutout']),
+  exportRow('export-codec', 'export: pick the video codec (h.264, h.265, av1, vp9)', { focus: 'codec' }, ['hevc', 'avc', 'x264', 'x265', 'encoder', 'vp9', 'av1']),
+  exportRow('export-bitrate', 'export: set the bitrate in mbps', { focus: 'bitrate' }, ['data rate', 'mbps', 'vbr', 'file size', 'compression']),
+  exportRow('export-interval', 'export: key frame interval', { focus: 'interval' }, ['gop', 'keyframe interval', 'i-frame', 'seek points']),
+  exportRow('export-size', 'export at a custom size (width x height)', { focus: 'size' }, ['custom resolution', 'dimensions', 'letterbox', 'crop to fill', 'output size']),
+  exportRow('export-audio', 'export: audio codec, bitrate and sample rate', { focus: 'audio' }, ['aac', 'opus', 'kbps', '44.1 khz', '48 khz', 'audio bitrate', 'sample rate']),
+  exportRow('export-youtube', 'export for youtube (1080p)', { preset: 'youtube-1080' }, ['upload', 'youtube preset', 'web video', 'full hd']),
+  exportRow('export-youtube-4k', 'export for youtube (4k)', { preset: 'youtube-4k' }, ['uhd', '2160p', '4k upload']),
+  exportRow('export-vimeo', 'export for vimeo', { preset: 'vimeo' }, ['vimeo preset', 'upload']),
+  exportRow('export-reels', 'export vertical for reels, shorts and tiktok', { preset: 'reels' }, ['vertical video', '9:16', 'portrait', 'instagram', 'shorts', 'tiktok']),
+  exportRow('export-master', 'export a high bitrate master', { preset: 'master' }, ['mezzanine', 'archive copy', 'intermediate', 'high quality file']),
+  exportRow('export-loudness', 'export at a loudness target with a peak limit', { focus: 'loudness' }, ['normalize', 'loudness normalization', 'limiter', 'brickwall', 'peak limit', 'true peak limit', '-14 lufs', 'podcast loudness']),
   // trim modes
   {
     id: 'slip-earlier',
@@ -430,6 +511,17 @@ const EXTRA: readonly PaletteAction[] = [
     also: ['reset faders', 'reset levels', 'unity gain'],
     run: guarded(() => useEditor.getState().resetMixer()),
   },
+  {
+    id: 'measure-loudness',
+    title: 'measure the loudness of the mix (lufs, range, true peak)',
+    group: 'app',
+    keys: [],
+    also: ['lufs', 'loudness meter', 'ebu r128', 'true peak', 'loudness range', 'lra', 'measure mix'],
+    run: () => {
+      useUi.getState().showMixer();
+      void import('../export/measureMix').then((m) => m.measureMixNow());
+    },
+  },
   // time display
   displayAction('timecode', 'show times as timecode (hours:minutes:seconds:frames)', ['time display', 'timecode display', 'display format', 'time format', 'show timecode']),
   displayAction('frames', 'show times as frames', ['frame count', 'frame numbers', 'show frames', 'display frames']),
@@ -535,6 +627,76 @@ const EXTRA: readonly PaletteAction[] = [
     keys: [],
     also: ['target selected tracks', 'patch to selection', 'destination track'],
     run: targetSelectedNow,
+  },
+  // lut
+  {
+    id: 'lut-import',
+    title: 'import a lut (.cube) and put it on the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['lut', 'look up table', 'load lut', 'cube file', 'creative lut', 'technical lut', 'camera lut', 'input lut', 'log to rec 709', 'lumetri input lut', 'film look'],
+    run: guarded(() => void importLutFor(selection()).then((t) => t && toast(t))),
+  },
+  {
+    id: 'lut-off',
+    title: 'take the lut off the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['remove lut', 'clear lut', 'no lut', 'lut off'],
+    run: guarded(() => {
+      const t = lutOffOn(selection());
+      if (t) toast(t);
+    }),
+  },
+  {
+    id: 'lut-save',
+    title: 'save the color and grade of the selected clip as a .cube lut',
+    group: 'editing',
+    keys: [],
+    also: ['save grade as .cube', 'export lut', 'generate lut', 'bake grade', 'save lut', 'make lut', 'export look'],
+    run: guarded(() => void saveGradeCube(selection()).then((t) => t && toast(t))),
+  },
+  // crossfades
+  { id: 'crossfade-track', title: 'crossfade every edit on the tracks of the selected clips', group: 'editing', keys: [], run: guarded(() => crossfadeTracksNow(null, 'add')) },
+  { id: 'crossfade-track-off', title: 'remove every crossfade on the tracks of the selected clips', group: 'editing', keys: [], run: guarded(() => crossfadeTracksNow(null, 'remove')) },
+  { id: 'fade-shape-power', title: 'fade shape of the selected clips: equal power', group: 'editing', keys: [], run: guarded(() => fadeShapeNow(null, 'power')) },
+  { id: 'fade-shape-linear', title: 'fade shape of the selected clips: linear', group: 'editing', keys: [], run: guarded(() => fadeShapeNow(null, 'linear')) },
+  { id: 'fade-shape-smooth', title: 'fade shape of the selected clips: smooth', group: 'editing', keys: [], run: guarded(() => fadeShapeNow(null, 'smooth')) },
+  // mattes
+  {
+    id: 'matte-show',
+    title: 'show the matte of the selected clip',
+    group: 'editing',
+    keys: [],
+    also: ['track matte', 'alpha matte', 'luma matte', 'stencil'],
+    run: guarded(() => showMatte(selection())),
+  },
+  {
+    id: 'matte-above',
+    title: 'use the clip above as the matte of the selected clip',
+    group: 'editing',
+    keys: [],
+    also: ['set matte', 'track matte', 'clipping mask', 'video inside text'],
+    run: guarded(() => toast(matteAbove(selection()))),
+  },
+  {
+    id: 'matte-remove',
+    title: 'take the matte off the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['remove matte', 'release clipping mask', 'remove track matte'],
+    run: guarded(() => toast(removeMattes(selection()))),
+  },
+  {
+    id: 'matte-select',
+    title: 'select the matte clip of the selected clip, or the clips it is the matte of',
+    group: 'editing',
+    keys: [],
+    also: ['select matte', 'go to matte', 'find matte'],
+    run: guarded(() => {
+      const t = selectMatteOther(selection());
+      if (t) toast(t);
+    }),
   },
   // bend and pivot, last on purpose. no `why`: reasons.ts does not know them, the rows toast their own messages
   {

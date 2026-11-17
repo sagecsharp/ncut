@@ -6,21 +6,22 @@ import type { Clip, Project } from '../../types';
 import { MIN_CLIP_DURATION, isVisualClip } from '../../types';
 import type { Span } from '../../lib/inOut';
 import { editableTrackIds } from '../../lib/inOut';
+import { syncLockOf } from '../../lib/trackTools';
 import { clipEnd, rangesOverlap } from '../../lib/timelineOps';
 import { previousClipOnTrack } from '../../lib/transitions';
 import type { ClipMove } from '../../store/editorStore';
 import { withFollowerMoves } from './followMoves';
+import { staysWithTarget } from './syncShift';
 
 const EPS = 1e-6;
 
 type Planned = Pick<Project, 'clips' | 'tracks'>;
 
 /** the clips an edit at t may cut: on unlocked tracks, with room on both sides (what splitClips cuts) */
-export function cuttableAt(p: Project, t: number): string[] {
-  const open = editableTrackIds(p);
+export function cuttableAt(p: Project, t: number, open: ReadonlySet<string> = editableTrackIds(p)): string[] {
   const out: string[] = [];
   for (const c of p.clips) {
-    if (open.has(c.trackId) && t > c.start + MIN_CLIP_DURATION && t < clipEnd(c) - MIN_CLIP_DURATION) out.push(c.id);
+    if (open.has(c.trackId) && t > c.start + MIN_CLIP_DURATION && t < clipEnd(c) - MIN_CLIP_DURATION && !staysWithTarget(c, p.clips, open)) out.push(c.id);
   }
   return out;
 }
@@ -35,13 +36,12 @@ export interface RemovalPlan {
 }
 
 /** what leaves the span on unlocked tracks. run after the splits: a clip over a mark is cut there */
-export function planRangeRemoval(p: Planned, span: Span): RemovalPlan {
-  const open = editableTrackIds(p);
+export function planRangeRemoval(p: Planned, span: Span, open: ReadonlySet<string> = editableTrackIds(p)): RemovalPlan {
   const rank = new Map<string, number>();
   p.tracks.forEach((t, i) => rank.set(t.id, i));
   const plan: RemovalPlan = { deletes: [], trims: [], slivers: 0, blocked: null };
   const hit = p.clips
-    .filter((c) => open.has(c.trackId) && c.start < span.end - EPS && clipEnd(c) > span.start + EPS)
+    .filter((c) => open.has(c.trackId) && c.start < span.end - EPS && clipEnd(c) > span.start + EPS && !staysWithTarget(c, p.clips, open))
     .sort((a, b) => (rank.get(a.trackId) ?? 0) - (rank.get(b.trackId) ?? 0) || a.start - b.start);
   for (const c of hit) {
     const end = clipEnd(c);
@@ -78,15 +78,14 @@ export interface CloseUpPlan {
   clash: { clip: Clip; other: Clip } | null;
 }
 
-/** extract: every unlocked clip at or after the span end moves left by the span length, one amount for all tracks */
-export function planCloseUp(p: Planned, span: Span): CloseUpPlan {
-  const open = editableTrackIds(p);
+/** extract: every clip on a moving track at or after the span end moves left by the span length, one amount for all tracks */
+export function planCloseUp(p: Planned, span: Span, open: ReadonlySet<string> = editableTrackIds(p)): CloseUpPlan {
   const amount = span.end - span.start;
   const base: ClipMove[] = [];
   for (const c of p.clips) {
     if (open.has(c.trackId) && c.start >= span.end - EPS) base.push({ id: c.id, trackId: c.trackId, start: Math.max(0, c.start - amount) });
   }
-  const moves = withFollowerMoves(p.clips, p.tracks, base);
+  const moves = withFollowerMoves(p.clips, p.tracks, base, true);
   const byId = new Map(p.clips.map((c) => [c.id, c]));
   const moving = new Map(moves.map((m) => [m.id, m]));
   for (const m of moves) {
@@ -141,4 +140,11 @@ export function lockedTracksHit(p: Project, span: Span, extract: boolean): numbe
     if (inside || after) hit.add(c.trackId);
   }
   return hit.size;
+}
+
+/** extract: the unlocked sync lock off tracks with a clip ending after the span start (inside it or after it), in track order */
+export function syncOffTracksHit(p: Planned, span: Span): string[] {
+  const hit = new Set<string>();
+  for (const c of p.clips) if (clipEnd(c) > span.start + EPS) hit.add(c.trackId);
+  return p.tracks.filter((t) => !t.locked && !syncLockOf(t) && hit.has(t.id)).map((t) => t.id);
 }

@@ -1,0 +1,7 @@
+/* a clip that is the matte of another clip: a small half filled square, top right (LinkMarks sets the class) */
+.timeline-clip.is-matte-src::after {
+  content: ''; position: absolute; top: 3px; right: 3px; width: 8px; height: 8px;
+  border: 1px solid var(--clip-label); border-radius: 2px; opacity: 0.8; pointer-events: none;
+  background: linear-gradient(135deg, var(--clip-label) 50%, transparent 50%);
+}
+.timeline-clip-icon.is-off { opacity: 0.45; }

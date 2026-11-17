@@ -132,6 +132,7 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
     if (key in OTHER_TOOL) throw new ToolError(`${key} cannot be set here: use ${OTHER_TOOL[key]}`);
     if (apart && key === 'muted' && value === false) throw new ToolError(`the sound of ${id} is the clip ${soundId}: unmute that one (or join_sound)`);
     if (apart && (key === 'bpm' || key === 'beatOffset')) throw new ToolError(`the tempo of ${id} is on the clip ${soundId}: set it there (or join_sound)`);
+    if (apart && (key === 'crossfade' || key === 'fadeInShape' || key === 'fadeOutShape')) throw new ToolError(`${key}: the sound of this video is the clip ${soundId} on an audio track: set it there`);
     // the picture is muted: a level or pan set here is never heard, and join_sound would write the sound clip's over it
     if (apart && (key === 'volume' || key === 'pan') && value !== ((before as unknown as Record<string, unknown>)[key] ?? (key === 'pan' ? 0 : undefined))) {
       throw new ToolError(`the sound of ${id} is the clip ${soundId}: set ${key} there (or join_sound)`);
@@ -232,8 +233,8 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   // updateClip ignores a key the clip type does not have (it is not stored, so it is not in the clip afterwards)
   const ignored = Object.keys(rest).filter((k) => {
     if (k in after) return false;
-    // the store drops these keys when the value is the default (pan 0, no grade): the clip type still has the field
-    if ((k === 'grade' || k === 'pan') && knowsField(before.type, k)) return false;
+    // the store drops these keys when the value is the default (pan 0, no grade, no crossfade, a linear fade shape, no matte): the clip type still has the field
+    if ((k === 'grade' || k === 'pan' || k === 'crossfade' || k === 'fadeInShape' || k === 'fadeOutShape' || k === 'matte') && knowsField(before.type, k)) return false;
     const v = rest[k];
     // an empty value on a clip that never had the field is the same as nothing, not a mistake
     if (k === 'faces' || k === 'beat' || k === 'pivot' || k === 'bend') return !(v === null || (isObject(v) && Object.keys(v).length === 0));

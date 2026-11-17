@@ -156,6 +156,7 @@ export function FieldView(p: ViewProps) {
                 {x.label}
               </option>
             ))}
+            {p.ease === 'bezier' ? <option value="bezier">custom</option> : null}
           </select>
         </div>
       ) : null}
@@ -220,12 +221,12 @@ function StaticBody(p: BodyProps & { stored: number; seed: boolean }) {
  * has keys: reads the playhead through selectors that return what is shown (rounded value, booleans,
  * a string) so react re-renders only when the display changes, not on every frame.
  */
-function AnimatedBody(p: BodyProps & { keys: Keyframe[] }) {
-  const { id, prop, keys, start, duration, fps, feel } = p;
+function AnimatedBody(p: BodyProps & { keys: Keyframe[]; clip: Clip }) {
+  const { id, prop, keys, clip, start, duration, fps, feel } = p;
   const tol = 0.5 / fps;
   const t0 = useRef(0);
 
-  const value = usePlayback((s) => roundShown(evalKeys(keys, s.time - start) * feel.scale, feel.precision));
+  const value = usePlayback((s) => roundShown(evalKeys(keys, s.time - start, clip, prop) * feel.scale, feel.precision));
   const keyHere = usePlayback((s) => keyIndexAt(keys, localTime(s.time, start, duration), tol) >= 0);
   const hasPrev = usePlayback((s) => {
     const l = localTime(s.time, start, duration);
@@ -291,7 +292,7 @@ export const AnimField = memo(function AnimField(props: AnimFieldProps) {
   const { id, prop, label, title, wide, fallback } = props;
   const body: BodyProps = { id, prop, label, title, wide, fallback, feel, start: clip.start, duration: clip.duration, fps };
   const keys = clip.keyframes?.[props.prop];
-  if (keys && keys.length > 0) return <AnimatedBody key={props.prop} {...body} keys={keys} />;
+  if (keys && keys.length > 0) return <AnimatedBody key={props.prop} {...body} keys={keys} clip={clip} />;
   const base = baseValue(clip, props.prop);
   const seed = base === undefined && props.fallback !== undefined && isSeedable(clip, props.prop);
   return <StaticBody key={props.prop} {...body} stored={base ?? props.fallback ?? 0} seed={seed} />;

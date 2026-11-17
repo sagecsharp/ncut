@@ -9,6 +9,7 @@
 }
 .mixer-toolbar {
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .mixer-toolbar .btn {
   display: inline-flex;
@@ -22,14 +23,16 @@
   --mx-pan-h: 26px;
   --mx-level-h: 22px;
   --mx-btn-h: 26px;
+  --mix-out-w: 66px;
+  --mix-loud-w: 80px;
   --mx-min: calc(var(--mx-name-h) + var(--mx-pan-h) + var(--mx-level-h) + var(--mx-btn-h) + 120px);
   display: flex;
   flex: 1;
   align-items: stretch;
   min-height: 0;
   overflow: auto;
-  /* the sticky scale column (24 px) and output strip (66 px) cover the edges: scrollIntoView keeps clear of them */
-  scroll-padding-inline: 24px 66px;
+  /* the sticky scale column (24 px), the loudness strip and the output strip cover the edges: scrollIntoView keeps clear of them */
+  scroll-padding-inline: 24px calc(var(--mix-out-w) + var(--mix-loud-w));
   border-top: 1px solid var(--border);
 }
 
@@ -85,9 +88,20 @@
   position: sticky;
   right: 0;
   z-index: 2;
-  width: 66px;
-  margin-left: auto;
+  width: var(--mix-out-w);
+  margin-left: 0;
   border-right: 0;
+  border-left: 1px solid var(--border);
+}
+.mixer-row:has(.mixer-strip.is-loudness.is-folded) {
+  --mix-loud-w: 24px;
+}
+.mixer-strip.is-loudness {
+  position: sticky;
+  right: var(--mix-out-w);
+  z-index: 2;
+  width: var(--mix-loud-w);
+  margin-left: auto;
   border-left: 1px solid var(--border);
 }
 .mixer-strip.is-current {
@@ -310,9 +324,100 @@
   margin: 0;
 }
 
+/* ---------- loudness strip ---------- */
+
+.mixer-strip.is-loudness.is-folded {
+  min-height: 0;
+}
+.mixer-loud-name {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mixer-loud-name:hover {
+  color: var(--accent);
+}
+.mixer-loud-row {
+  justify-content: flex-start;
+  padding: 0 4px;
+}
+.mixer-loud-bar {
+  position: relative;
+  flex: none;
+  width: 12px;
+  height: 100%;
+}
+.mixer-loud-nums {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: var(--mx-inset);
+}
+.mixer-loud-num {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mixer-loud-num.is-dim {
+  color: var(--text-faint);
+}
+.mixer-loud-num.is-over {
+  color: var(--danger);
+}
+.mixer-loud-unit {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+/* ---------- measure bar ---------- */
+
+.mixer-dim {
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+.mixer-measure-bar {
+  display: inline-block;
+  width: 80px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-4);
+}
+.mixer-measure-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.mixer-measure {
+  flex-basis: 100%;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+.mixer-measure.is-stale {
+  opacity: 0.55;
+}
+
 /* ---------- solo ---------- */
 
-.icon-btn.is-solo {
+.icon-btn.is-solo,
+.icon-btn.is-sync-off {
   background: color-mix(in oklch, var(--warn) 24%, transparent);
   color: var(--warn);
 }
@@ -339,7 +444,7 @@
 .timeline-head-mix:hover {
   color: var(--text);
 }
-/* the toggles of a head leave no room for a badge like "-12.5 db" or "pan r100" (137 px inside, five toggles take 118): the badge goes to the top row, between the name and the remove button (6 padding + 22 remove + 4 gap). the sticky head holds it. 8 characters are 45 px wide, a 7 character name like "audio 1" keeps 46 */
+/* the toggles of a head leave no room for a badge like "-12.5 db" or "pan r100" (137 px inside, five toggles take 118, six at 20 px take 130): the badge goes to the top row, between the name and the remove button (6 padding + 22 remove + 4 gap). the sticky head holds it. 8 characters are 45 px wide, a 7 character name like "audio 1" keeps 46 */
 .timeline-head:has(.timeline-head-mix) .timeline-head-mix {
   position: absolute;
   right: 32px;
@@ -354,7 +459,18 @@
 .timeline-head:has(.timeline-head-mix) .timeline-head-input {
   margin-right: 48px;
 }
-.timeline-head.is-unheard .timeline-head-top {
+.timeline-head.is-unheard:not(.is-compact) .timeline-head-top {
+  opacity: 0.5;
+}
+/* a short track has its toggles in the top row: only the kind button and the name fade, the lit lock, mute and sync lock keep their strength (timeline.css fades the whole row of a locked track, so it is put back here) */
+.timeline-head.is-compact.is-locked .timeline-head-top,
+.timeline-head.is-compact.is-unheard .timeline-head-top {
+  opacity: 1;
+}
+.timeline-head.is-compact.is-locked .timeline-head-top > :not(.timeline-head-toggles) {
+  opacity: 0.55;
+}
+.timeline-head.is-compact.is-unheard .timeline-head-top > :not(.timeline-head-toggles) {
   opacity: 0.5;
 }
 

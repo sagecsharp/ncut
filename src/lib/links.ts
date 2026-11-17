@@ -132,6 +132,7 @@ function repointLinks(c: Clip, idMap: ReadonlyMap<string, string>): Clip {
   if (isVisualClip(next) && next.lookTarget && idMap.has(next.lookTarget)) next = { ...next, lookTarget: idMap.get(next.lookTarget)! };
   if (isCameraClip(next) && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
   if (next.type === 'effect' && next.target && idMap.has(next.target)) next = { ...next, target: idMap.get(next.target)! };
+  if (isVisualClip(next) && next.matte && idMap.has(next.matte.clip)) next = { ...next, matte: { ...next.matte, clip: idMap.get(next.matte.clip)! } };
   return next;
 }
 
@@ -180,6 +181,12 @@ export function relinkCopies(copies: Clip[], idMap: ReadonlyMap<string, string>,
 export function unlinkRemoved(clips: Clip[], removed: ReadonlySet<string>): Clip[] {
   return clips.map((c0) => {
     let c = c0;
+    // a matte whose clip is gone goes too: the clip shows in full again
+    if (isVisualClip(c) && c.matte && removed.has(c.matte.clip)) {
+      const { matte: _m, ...rest } = c;
+      void _m;
+      c = rest as Clip;
+    }
     if (isVisualClip(c) && c.lookTarget && removed.has(c.lookTarget)) c = { ...c, lookTarget: null };
     if (isVisualClip(c) && c.parent && removed.has(c.parent)) return { ...c, parent: null };
     if (isCameraClip(c) && c.target && removed.has(c.target)) return { ...c, target: null };

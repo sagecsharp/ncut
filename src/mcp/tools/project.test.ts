@@ -896,7 +896,7 @@ describe('mixer fields', () => {
     expect((await call('update_track', { id: a.id, volume: -1 })).text).toMatch(/volume must be/);
     expect((await call('update_track', { id: a.id, volumeDb: 13 })).text).toMatch(/volumeDb must be/);
     expect((await call('update_track', { id: a.id, pan: 2 })).text).toMatch(/pan must be/);
-    expect((await call('update_track', { id: a.id })).text).toMatch(/nothing to change: send name, muted, hidden, locked, volume, volumeDb or pan/);
+    expect((await call('update_track', { id: a.id })).text).toMatch(/nothing to change: send name, muted, hidden, locked, syncLock, volume, volumeDb, pan, height or index/);
     const before = past();
     // 1 and 0 are what a track has without them
     expect((await call('update_track', { id: a.id, volume: 1 })).text).toMatch(/already has those settings, nothing changed/);
@@ -1100,5 +1100,116 @@ describe('seek by frame and by edit', () => {
     usePlayback.getState().seek(0);
     expect((await call('seek', { edit: 'previous' })).text).toBe(editEndReason('selection', -1));
     expect(usePlayback.getState().time).toBe(0);
+  });
+});
+
+describe('update_track height, index and syncLock', () => {
+  it('update_track height is 28 to 240 px or null, no undo step', async () => {
+    const v = project().tracks[0]!;
+    const before = past();
+    const r = await call('update_track', { id: v.id, height: 128 });
+    expect(r.json).toMatchObject({ id: v.id, height: 128, syncLock: true, index: 0 });
+    expect(project().tracks[0]!.height).toBe(128);
+    expect(past()).toBe(before);
+    expect((await call('update_track', { id: v.id, height: 128 })).text).toMatch(/already has those settings/);
+    expect((await call('update_track', { id: v.id, height: 20 })).text).toMatch(/height must be 28 to 240 px, or null for the normal height/);
+    expect((await call('update_track', { id: v.id, height: 241 })).text).toMatch(/height must be 28 to 240/);
+    expect((await call('update_track', { id: v.id, height: 'tall' })).error).toBe(true);
+    const back = await call('update_track', { id: v.id, height: null });
+    expect(back.json).toMatchObject({ height: 56 });
+    expect(project().tracks[0]).not.toHaveProperty('height');
+    expect(past()).toBe(before);
+  });
+
+  it('update_track index moves inside its kind in one step', async () => {
+    useEditor.getState().addTrack('video');
+    const ids = project().tracks.map((t) => t.id);
+    const top = ids[0]!;
+    const before = past();
+    const r = await call('update_track', { id: top, index: 1 });
+    expect(r.json).toMatchObject({ id: top, index: 1 });
+    expect(project().tracks.map((t) => t.id)).toEqual([ids[1], top, ...ids.slice(2)]);
+    expect(past()).toBe(before + 1);
+    // clamped into the video group: the audio track stays last
+    expect((await call('update_track', { id: top, index: 200 })).text).toMatch(/already has those settings/);
+    expect(project().tracks[project().tracks.length - 1]!.kind).toBe('audio');
+    // a name and a move together are one step
+    const n = past();
+    await call('update_track', { id: top, name: 'first', index: 0 });
+    expect(past()).toBe(n + 1);
+    expect(project().tracks[0]).toMatchObject({ id: top, name: 'first' });
+    useEditor.getState().undo();
+    expect(project().tracks[1]).toMatchObject({ id: top });
+    expect(project().tracks[1]!.name).not.toBe('first');
+  });
+
+  it('update_track syncLock is one step, only false is stored', async () => {
+    const v = project().tracks[0]!;
+    const before = past();
+    const off = await call('update_track', { id: v.id, syncLock: false });
+    expect(off.json).toMatchObject({ syncLock: false });
+    expect(project().tracks[0]!.syncLock).toBe(false);
+    expect(past()).toBe(before + 1);
+    expect((await call('update_track', { id: v.id, syncLock: false })).text).toMatch(/already has those settings/);
+    const on = await call('update_track', { id: v.id, syncLock: true });
+    expect(on.json).toMatchObject({ syncLock: true });
+    expect(project().tracks[0]).not.toHaveProperty('syncLock');
+    expect(past()).toBe(before + 2);
+  });
+
+  it('update_track index on a locked track is refused', async () => {
+    useEditor.getState().addTrack('video');
+    const top = project().tracks[0]!.id;
+    useEditor.getState().updateTrack(top, { locked: true });
+    const before = past();
+    const order = project().tracks.map((t) => t.id);
+    const r = await call('update_track', { id: top, index: 1 });
+    expect(r.text).toMatch(/the track .* is locked. unlock it with update_track first/);
+    expect(project().tracks.map((t) => t.id)).toEqual(order);
+    expect(past()).toBe(before);
+    // unlocking in the same call lets the move through, locking in it does not
+    const open = await call('update_track', { id: top, locked: false, index: 1 });
+    expect(open.error, open.text).toBe(false);
+    expect((await call('update_track', { id: top, locked: true, index: 0 })).error).toBe(true);
+    expect(project().tracks[1]!.locked).toBe(false);
+  });
+
+  it('get_project lists height and syncLock only when set', async () => {
+    const [v, a] = project().tracks;
+    let list = (await call('get_project')).json!.trackList as Record<string, any>[];
+    expect(list[0]).not.toHaveProperty('height');
+    expect(list[0]).not.toHaveProperty('syncLock');
+    await call('update_track', { id: v!.id, height: 96 });
+    await call('update_track', { id: a!.id, syncLock: false });
+    list = (await call('get_project')).json!.trackList as Record<string, any>[];
+    expect(list[0]).toMatchObject({ height: 96 });
+    expect(list[0]).not.toHaveProperty('syncLock');
+    expect(list[1]).toMatchObject({ syncLock: false });
+    expect(list[1]).not.toHaveProperty('height');
+  });
+});
+
+describe('get_clip matteOf and the lut media', () => {
+  it('get_clip lists matteOf', async () => {
+    const ed = useEditor.getState();
+    const v = project().tracks[0]!.id;
+    const a = ed.addText({ start: 0, duration: 2, trackId: v });
+    const m = ed.addText({ start: 0, duration: 2, trackId: ed.addTrack('video') });
+    expect((await call('get_clip', { id: m })).json!.matteOf).toBeUndefined();
+    ed.updateClip(a, { matte: { clip: m, mode: 'alpha' } });
+    expect((await call('get_clip', { id: m })).json!.matteOf).toEqual([a]);
+    expect((await call('get_clip', { id: a })).json!.matteOf).toBeUndefined();
+  });
+
+  it('mediaList shows a lut with its lut field', async () => {
+    const lut: MediaAsset = { id: 'cube1', name: 'film.cube', kind: 'lut', mime: '', size: 1, duration: 0, width: 0, height: 0, hasAudio: false, createdAt: 0, lut: { size3: 33, size1: 0, title: 'film' } };
+    const plain: MediaAsset = { id: 'cube2', name: 'b.cube', kind: 'lut', mime: '', size: 1, duration: 0, width: 0, height: 0, hasAudio: false, createdAt: 0, lut: { size3: 17, size1: 256 } };
+    useEditor.getState().addAsset(lut);
+    useEditor.getState().addAsset(plain);
+    useEditor.getState().addAsset(mediaAsset('vid', 'video', 5));
+    const list = (await call('get_project')).json!.mediaList as Record<string, any>[];
+    expect(list.find((x) => x.id === 'cube1')).toMatchObject({ kind: 'lut', lut: { size3: 33, size1: 0, title: 'film' } });
+    expect(list.find((x) => x.id === 'cube2')!.lut).toEqual({ size3: 17, size1: 256 });
+    expect(list.find((x) => x.id === 'vid')).not.toHaveProperty('lut');
   });
 });

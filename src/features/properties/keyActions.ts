@@ -1,4 +1,5 @@
 import { animProps, evalKeys, valueAt } from '../../lib/anim';
+import { sameHandles } from '../../lib/keyBezier';
 import { shiftGrid } from '../../lib/tempo';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
@@ -7,7 +8,7 @@ import { useUi } from '../../store/ui';
 import type { Clip, Keyframe, Keyframes } from '../../types';
 import { beatSources } from '../timeline/tempoActions';
 import { type BeatKeysError, fitKeysToBeats, loopKeysOnBeats, sameKeys, snapKeysToGrid } from './beatKeys';
-import { captureKeys, getKeyClip, placeKeys, setKeyClip } from './keyClipboard';
+import { captureKeys, getKeyClip, placeKeys, setKeyCopy } from './keyClipboard';
 import { fitKeys, repeatKeys, repeatTooBig, reverseKeys, wiggleKeys, wiggleOnto } from './keyTools';
 
 const toast = (msg: string, kind?: 'info' | 'error') => useUi.getState().toast(msg, kind);
@@ -28,7 +29,7 @@ function same(a: Keyframe[] | undefined, b: Keyframe[] | undefined): boolean {
   const x = a ?? [];
   const y = b ?? [];
   if (x.length !== y.length) return false;
-  for (let i = 0; i < x.length; i++) if (x[i]!.t !== y[i]!.t || x[i]!.v !== y[i]!.v || x[i]!.ease !== y[i]!.ease) return false;
+  for (let i = 0; i < x.length; i++) if (x[i]!.t !== y[i]!.t || x[i]!.v !== y[i]!.v || x[i]!.ease !== y[i]!.ease || !sameHandles(x[i]!, y[i]!)) return false;
   return true;
 }
 
@@ -157,7 +158,7 @@ export function copyKeysAction(id: string): void {
     toast('no keyframes to copy', 'info');
     return;
   }
-  setKeyClip(data);
+  setKeyCopy({ items: [{ clipId: id, keys: data }] });
   toast('keys copied');
 }
 

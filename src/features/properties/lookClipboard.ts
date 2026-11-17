@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react';
-import type { ClipType, VisualClip } from '../../types';
+import type { ClipGrade, ClipType, VisualClip } from '../../types';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
+import { keepKnownLut } from './lutPlan';
 
 /** fields every visual clip shares (copied as is; a missing one becomes null = removed on paste) */
 const COMMON_KEYS = ['blend', 'crop', 'radius', 'motionIn', 'motionOut', 'motionLoop', 'transition', 'adjust', 'chromaKey', 'motionBlur', 'mask', 'grade'] as const;
@@ -123,7 +124,9 @@ export function pasteLook(ids: string[]): number {
   if (targets.length === 0) return 0;
   st.pushHistory();
   for (const c of targets) {
-    st.updateClip(c.id, keepRun(lookPatch(look, c.type), c) as ClipPatch, { skipHistory: true });
+    const patch = keepRun(lookPatch(look, c.type), c);
+    if (patch.grade) patch.grade = keepKnownLut(patch.grade as ClipGrade, p.assets);
+    st.updateClip(c.id, patch as ClipPatch, { skipHistory: true });
     st.updateTransform(c.id, { opacity: look.opacity }, { skipHistory: true });
   }
   return targets.length;

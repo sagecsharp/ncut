@@ -11,7 +11,7 @@ import { clipEnd } from './timelineOps';
 /** sync points closer than this are the same */
 export const SYNC_EPS = 1e-6;
 /** the fields of a video clip that only change its sound */
-export const SOUND_FIELDS = ['volume', 'muted', 'pan', 'bpm', 'beatOffset'] as const;
+export const SOUND_FIELDS = ['volume', 'muted', 'pan', 'bpm', 'beatOffset', 'crossfade', 'fadeInShape', 'fadeOutShape'] as const;
 
 /** the keyframe properties that only change sound: volume and pan */
 export function soundProps(): string[] {

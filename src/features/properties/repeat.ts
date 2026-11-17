@@ -1,3 +1,4 @@
+import { scaleHandleValues } from '../../lib/keyBezier';
 import type { Clip, Keyframe, Keyframes, Transform, VisualClip } from '../../types';
 
 /** most clips a repeat makes in all (the original included) */
@@ -137,7 +138,7 @@ export function repeatPlan(clip: VisualClip, opts: Partial<RepeatOptions>): Repe
     for (const r of rules) {
       const keys = clip.keyframes?.[r.prop];
       if (keys && keys.length > 0) {
-        keyframes[r.prop] = keys.map((key): Keyframe => ({ ...key, v: stepValue(key.v, r, k) }));
+        keyframes[r.prop] = keys.map((key): Keyframe => ({ ...(r.mode === 'mul' ? scaleHandleValues(key, Math.pow(r.step, k)) : key), v: stepValue(key.v, r, k) }));
       } else {
         transform[r.prop] = stepValue(tr[r.prop] ?? (r.prop === 'scale' || r.prop === 'opacity' ? 1 : 0), r, k);
       }

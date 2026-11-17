@@ -1,6 +1,7 @@
 /** pure planning of a freeze frame (no store, no dom): which clip, where the still goes, what moves */
 import { resolveClip } from '../../lib/anim';
 import { faceSourceSet } from '../../engine/scene3d/faces';
+import { matteSourceSet } from '../../engine/matte';
 import { clipEnd, fadeFactor } from '../../lib/timelineOps';
 import { formatTimecode } from '../../lib/time';
 import type { Clip, ClipAnim, EffectClip, ImageClip, Project, Transition, VideoClip } from '../../types';
@@ -31,9 +32,11 @@ export function pickFreezeTarget(project: Project, selection: readonly string[],
   const hidden = new Set(project.tracks.filter((t) => t.hidden).map((t) => t.id));
   // a clip that is shown on a side of a solid is not on screen by itself: the frame there is the solid's
   const onSides = faceSourceSet(project);
+  // a matte clip is not on screen by itself either
+  const mattes = matteSourceSet(project);
   for (const track of project.tracks) {
     if (hidden.has(track.id)) continue;
-    const hit = project.clips.find((c) => c.trackId === track.id && !onSides.has(c.id) && inside(c));
+    const hit = project.clips.find((c) => c.trackId === track.id && !onSides.has(c.id) && !mattes.has(c.id) && inside(c));
     if (hit) return hit as VideoClip;
   }
   return null;
@@ -191,7 +194,7 @@ export function freezeEffectCopies(clips: readonly Clip[], videoId: string, time
 /**
  * the still: the video clip's look (static, already resolved at the time) as a fresh image clip.
  * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, lit, faces, crop, radius,
- * mask, blend, adjust, grade, chromaKey, parent, pivot, motionBlur, bend) and, from `handover`, the entrance / exit.
+ * mask, blend, adjust, grade, chromaKey, parent, pivot, motionBlur, bend, matte) and, from `handover`, the entrance / exit.
  * deliberately NOT copied:
  * - id, trackId (same track), name, start, duration: the still has its own.
  * - keyframes: the still holds the pose of that moment (transform is resolved by the caller), it does not animate.
@@ -242,5 +245,6 @@ export function stillClipFrom(
   if (video.grade) still.grade = structuredClone(video.grade);
   if (video.chromaKey) still.chromaKey = structuredClone(video.chromaKey);
   if (video.motionBlur) still.motionBlur = structuredClone(video.motionBlur);
+  if (video.matte) still.matte = { ...video.matte };
   return still;
 }

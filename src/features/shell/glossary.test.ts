@@ -57,6 +57,11 @@ const BANNED = [
   /\bire\b/,
   /\bcurve editor\b/,
   /\bfit to fill\b/,
+  /\bvelocity\b/,
+  /\btangents?\b/,
+  /\bf-curves?\b/,
+  /\binterpolation\b/,
+  /\btrack mattes?\b/,
 ];
 
 /** the ui strings of one file: title, aria-label, placeholder and label values, the first string of tip( and does: */

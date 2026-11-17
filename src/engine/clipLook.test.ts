@@ -16,6 +16,10 @@ import {
   releaseClipLook,
   type Rgb,
 } from './clipLook';
+import type { LutTable } from '../lib/cube';
+import { GRADE_GLSL, gradeData } from './grade';
+import { GRADE_LUT_GLSL, withoutLut } from './gradeLut';
+import { withLuts } from './lutScope';
 
 const adj = (p: Partial<ClipAdjust>): ClipAdjust => ({ ...DEFAULT_ADJUST, ...p });
 const key = (p: Partial<ChromaKey> = {}): ChromaKey => ({ ...DEFAULT_CHROMA_KEY, ...p });
@@ -341,5 +345,78 @@ describe('the grade in the look', () => {
       expect(clipLookSignature(clip({ adjust: a, grade }))).toBe('a0.2,0,0,10,0');
       expect(clipLookSignature(clip({ chromaKey: key(), grade }))).toBe('|k0.0000,0.8157,0.0000,0.3,0.1,0.5');
     }
+  });
+});
+
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+describe('the lut leaves the looks alone', () => {
+  it('plain and graded shaders are unchanged', () => {
+    expect(fnv1a(lookShaderSource(true))).toBe('c495661a');
+  });
+});
+
+const TABLE: LutTable = {
+  title: '',
+  size3: 2,
+  data3: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0.9, 0.9, 0.9]),
+  min3: [0, 0, 0],
+  max3: [1, 1, 1],
+  size1: 0,
+  data1: new Float32Array(0),
+  min1: [0, 0, 0],
+  max1: [1, 1, 1],
+  identity: false,
+  key: 'm',
+};
+const withTable = <T>(fn: () => T): T => withLuts((id) => (id === 'm' ? TABLE : null), fn);
+
+describe('the lut in the look', () => {
+  const lut = lookShaderSource(true, true);
+  const LINE = '  c = gDither(gradeLutApply(c), floor(v_uv * u_gRes));\n';
+
+  it('the lut chunk after the grade chunk, one gradeLutApply', () => {
+    expect(lut.split(LINE)).toHaveLength(2);
+    expect(lut.split('vec3 gradeLutApply(vec3 c)')).toHaveLength(2);
+    expect(lut.split('vec3 gradeApply(vec3 c)')).toHaveLength(2);
+    expect(lut.split('gradeApply(c), floor')).toHaveLength(1);
+    expect(lut.split('uniform vec2 u_gRes;\n')).toHaveLength(2);
+    const grade = lut.indexOf(GRADE_GLSL);
+    const chunk = lut.indexOf(GRADE_LUT_GLSL);
+    expect(grade).toBeGreaterThan(0);
+    expect(chunk).toBe(grade + GRADE_GLSL.length);
+    expect(lut.indexOf(LINE)).toBeGreaterThan(chunk);
+    expect(lut.indexOf('  o = vec4(c * a, a);')).toBe(lut.indexOf(LINE) + LINE.length);
+    // the lut wins over the grade flag
+    expect(lookShaderSource(false, true)).toBe(lut);
+    // a lut shader is the grade shader plus the chunk and the other apply
+    expect(lut.replace(GRADE_LUT_GLSL, '').replace('gradeLutApply(c), floor', 'gradeApply(c), floor')).toBe(lookShaderSource(true));
+  });
+
+  it('hasClipLook is false for a lut only grade with no table', () => {
+    const grade = { lut: { media: 'm' } };
+    expect(hasClipLook(clip({ grade }))).toBe(false);
+    expect(clipLookSignature(clip({ grade }))).toBe('');
+    expect(withTable(() => hasClipLook(clip({ grade })))).toBe(true);
+    expect(withTable(() => clipLookSignature(clip({ grade })))).toMatch(/^\|g.*\|Lm:1$/);
+    expect(withTable(() => hasClipLook(clip({ grade: { lut: { media: 'other' } } })))).toBe(false);
+    expect(withTable(() => hasClipLook(clip({ grade: { lut: { media: 'm', mix: 0 } } })))).toBe(false);
+    expect(withTable(() => hasClipLook(clip({ grade: { lut: { media: 'm' }, off: true } })))).toBe(false);
+  });
+
+  it('withoutLut keeps the grade math', () => {
+    const d = withTable(() => gradeData({ liftR: 0.2, lut: { media: 'm' } }))!;
+    expect(d.lut).toBeDefined();
+    const bare = withoutLut(d)!;
+    expect('lut' in bare).toBe(false);
+    expect(bare).toStrictEqual(gradeData({ liftR: 0.2 }));
+    expect(withoutLut(withTable(() => gradeData({ lut: { media: 'm' } }))!)).toBeNull();
   });
 });

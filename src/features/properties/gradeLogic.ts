@@ -360,9 +360,11 @@ export const CURVE_TABS: readonly { kind: CurveKind; label: string }[] = [
   { kind: 'lumaSat', label: 'luma vs sat' },
 ];
 
-/** 'lift, luma curves', 'lift, gain, 2 curves' or 'nothing set yet' */
-export function gradeSummary(values: Readonly<Record<GradeKey, number>>, curves: GradeCurves | null | undefined): string {
+/** 'lift, luma curves', 'lift, gain, 2 curves' or 'nothing set yet'. a lut is named in its place: 'lut film, lift' (first) or 'lift, lut film' (last). name null = the lut is gone from the media */
+export function gradeSummary(values: Readonly<Record<GradeKey, number>>, curves: GradeCurves | null | undefined, lut?: { name: string | null; last: boolean } | null): string {
   const parts: string[] = [];
+  const lutText = lut ? (lut.name === null ? 'missing lut' : `lut ${lut.name}`) : '';
+  if (lut && !lut.last) parts.push(lutText);
   for (const wheel of GRADE_WHEELS) {
     const set = (['R', 'G', 'B', 'Y'] as const).some((p) => Math.abs(values[`${wheel}${p}` as GradeKey] ?? 0) >= GRADE_EPS);
     if (set) parts.push(wheel);
@@ -370,5 +372,6 @@ export function gradeSummary(values: Readonly<Record<GradeKey, number>>, curves:
   const lists = CURVE_TABS.filter((t) => !isCurveNeutral(t.kind, curves?.[t.kind]));
   if (lists.length === 1) parts.push(`${lists[0]!.label} curves`);
   else if (lists.length > 1) parts.push(`${lists.length} curves`);
+  if (lut?.last) parts.push(lutText);
   return parts.length > 0 ? parts.join(', ') : 'nothing set yet';
 }

@@ -204,6 +204,7 @@ const MEDIA_EXTS = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi', 'ts', 'mts', '3gp',
   'mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus', 'weba', 'aiff', 'aif',
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg',
+  'cube',
 ];
 
 /** which argument holds the paths, how many, which extensions */
@@ -217,9 +218,10 @@ function fileSpec(tool) {
   return typeof tool === 'string' && Object.prototype.hasOwnProperty.call(FILE_TOOLS, tool) ? FILE_TOOLS[tool] : null;
 }
 
-/** only export_video makes a file the shell saves */
-function wantsTicket(tool) {
-  return tool === 'export_video';
+/** export_video and save_grade_lut make a file the shell saves. an export_video check makes none */
+function wantsTicket(tool, args) {
+  if (tool === 'export_video' && args && args.check === true) return false;
+  return tool === 'export_video' || tool === 'save_grade_lut';
 }
 
 const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
@@ -366,8 +368,8 @@ function savedFileName(file) {
   return shellRules.safeFileName(file).slice(0, MAX_NAME_CHARS);
 }
 
-/** the only extensions a ticket download may have: what export_video makes. nothing else is saved without a dialog */
-const TICKET_EXTS = ['mp4', 'webm', 'gif', 'wav', 'ogg', 'png', 'jpg'];
+/** the only extensions a ticket download may have: what export_video makes and a .cube lut. nothing else is saved without a dialog */
+const TICKET_EXTS = ['mp4', 'webm', 'gif', 'wav', 'ogg', 'png', 'jpg', 'cube'];
 
 function ticketExtOk(name) {
   const m = /\.([A-Za-z0-9]+)$/.exec(String(name ?? ''));

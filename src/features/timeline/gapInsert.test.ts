@@ -23,6 +23,14 @@ describe('insert gap', () => {
       { id: '5', trackId: 'b', start: 4 },
     ]);
   });
+  it('skips sync lock off tracks, not a named track', () => {
+    const off = [track('a'), { ...track('b'), syncLock: false } as unknown as Track];
+    const all = [clip('1', 'a', 5), clip('2', 'b', 5)];
+    expect(planInsertGap(all, off, 0).map((m) => m.id)).toEqual(['1']);
+    expect(planInsertGap(all, off, 0, 1, 'b').map((m) => m.id)).toEqual(['2']);
+    expect(planInsertGap([clip('2', 'b', 5)], off, 0)).toEqual([]);
+    expect(planInsertGap([clip('9', 'zz', 5)], off, 0)).toEqual([]);
+  });
   it('does nothing for a locked track, a bad size or nothing after', () => {
     expect(planInsertGap(clips, tracks, 0, 1, 'c')).toEqual([]);
     expect(planInsertGap(clips, tracks, 0, 0)).toEqual([]);

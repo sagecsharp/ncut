@@ -6,6 +6,8 @@ import { create } from 'zustand';
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
 import type { MediaAsset, MediaKind } from '../types';
 import { uid } from '../lib/id';
+import { parseCube, CUBE_MAX_BYTES } from '../lib/cube';
+import { putLut } from './lutTables';
 import { putMediaBlob, deleteMediaBlob } from '../storage/db';
 import { trackMediaWrite, whenAssetStored } from '../storage/pendingMedia';
 import { useEditor } from '../store/editorStore';
@@ -15,7 +17,7 @@ import { releaseDerived } from './derived';
 
 export { whenMediaStored } from '../storage/pendingMedia';
 
-export const ACCEPTED_TYPES = 'video/*,audio/*,image/*';
+export const ACCEPTED_TYPES = 'video/*,audio/*,image/*,.cube';
 
 const CONCURRENCY = 3;
 const PROBE_TIMEOUT_MS = 20000;
@@ -24,6 +26,7 @@ const EXT_KIND: Record<string, MediaKind> = {
   mp4: 'video', m4v: 'video', mov: 'video', webm: 'video', mkv: 'video', ogv: 'video', avi: 'video', ts: 'video', mts: 'video', '3gp': 'video',
   mp3: 'audio', wav: 'audio', ogg: 'audio', oga: 'audio', m4a: 'audio', aac: 'audio', flac: 'audio', opus: 'audio', weba: 'audio', aiff: 'audio', aif: 'audio',
   png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', bmp: 'image', avif: 'image', svg: 'image',
+  cube: 'lut',
 };
 
 const EXT_MIME: Record<string, string> = {
@@ -33,6 +36,7 @@ const EXT_MIME: Record<string, string> = {
   opus: 'audio/ogg', weba: 'audio/webm', aiff: 'audio/aiff', aif: 'audio/aiff',
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
   avif: 'image/avif', svg: 'image/svg+xml',
+  cube: 'text/plain',
 };
 
 function extOf(name: string): string {
@@ -42,6 +46,7 @@ function extOf(name: string): string {
 
 /** media kind from a mime type / file name, or null when the file is not supported */
 export function detectKind(file: { type: string; name: string }): MediaKind | null {
+  if (extOf(file.name) === 'cube') return 'lut';
   if (file.type.startsWith('video/')) return 'video';
   if (file.type.startsWith('audio/')) return 'audio';
   if (file.type.startsWith('image/')) return 'image';
@@ -206,7 +211,7 @@ async function probeOne(blob: Blob, kind: 'video' | 'audio'): Promise<Probe> {
   return result;
 }
 
-async function probe(blob: Blob, kind: MediaKind): Promise<{ info: Probe; kind: MediaKind }> {
+async function probe(blob: Blob, kind: Exclude<MediaKind, 'lut'>): Promise<{ info: Probe; kind: MediaKind }> {
   if (kind === 'image') return { info: await probeImage(blob), kind };
   try {
     return { info: await probeOne(blob, kind), kind };
@@ -223,7 +228,37 @@ async function probe(blob: Blob, kind: MediaKind): Promise<{ info: Probe; kind: 
 
 /* ---------- import ---------- */
 
+/** a .cube: parsed here (a broken one is skipped with its line), no probe, the table is primed for every thread's first draw */
+async function importLut(file: File, projectId: string): Promise<MediaAsset> {
+  if (file.size > CUBE_MAX_BYTES) throw new Error('the file is over 64 mb');
+  const cube = parseCube(await file.text());
+  const current = useEditor.getState().project;
+  if (!current || current.id !== projectId) throw new Error('project closed');
+  const mime = 'text/plain';
+  const blob: File | Blob = file.type || !mime ? file : new Blob([file], { type: mime });
+  const id = uid('ast');
+  registerAsset(id, blob);
+  putLut(id, cube);
+  const asset: MediaAsset = {
+    id,
+    name: file.name,
+    kind: 'lut',
+    mime,
+    size: file.size,
+    duration: 0,
+    width: 0,
+    height: 0,
+    hasAudio: false,
+    createdAt: Date.now(),
+    lut: { size3: cube.size3, size1: cube.size1, ...(cube.title !== '' ? { title: cube.title } : {}) },
+  };
+  useEditor.getState().addAsset(asset);
+  storeInBackground(asset, blob, projectId);
+  return asset;
+}
+
 async function importOne(file: File, requestedKind: MediaKind, projectId: string): Promise<MediaAsset> {
+  if (requestedKind === 'lut') return importLut(file, projectId);
   const mime = file.type || EXT_MIME[extOf(file.name)] || '';
   // files with an empty type get the guessed one so media elements can sniff reliably
   const blob: File | Blob = file.type || !mime ? file : new Blob([file], { type: mime });

@@ -1,0 +1,212 @@
+/* the keyframe panel: under .timeline-body, flex none, no transform or contain (the menu inside it is fixed) */
+.key-panel {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  max-height: max(72px, calc(100% - 140px));
+  background: var(--surface-1);
+  border-top: 1px solid var(--border-soft);
+}
+.key-panel-grip {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 5px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.key-panel-grip:hover {
+  background: var(--accent-muted);
+}
+.key-panel-grip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.key-panel-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  height: 24px;
+  padding: 0 var(--space-2);
+  background: var(--surface-2);
+  font-size: var(--font-size-xs);
+}
+.key-panel-title {
+  color: var(--text);
+}
+.key-panel-count {
+  color: var(--text-dim);
+}
+.key-panel-spacer {
+  flex: 1;
+}
+.key-panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-0);
+}
+.key-panel-body:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.key-panel-rows {
+  position: relative;
+  cursor: crosshair;
+  user-select: none;
+}
+.key-panel-stage {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.key-panel-canvas {
+  position: absolute;
+  top: 0;
+}
+.key-panel-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--playhead);
+}
+.key-panel-snap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--snap-line);
+}
+.key-panel-box {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 1px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+.key-panel-readout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 4px;
+  background: var(--surface-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 13px;
+  white-space: nowrap;
+}
+.key-panel-snap[hidden],
+.key-panel-box[hidden],
+.key-panel-readout[hidden] {
+  display: none;
+}
+.key-panel-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+/* the rows: labels are dom, only the visible ones are made */
+.key-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+.key-row-head {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  height: 100%;
+  padding: 0 var(--space-2) 0 var(--space-1);
+  overflow: hidden;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border-soft);
+  pointer-events: auto;
+}
+.key-row.is-alt .key-row-head {
+  background: color-mix(in oklab, var(--surface-1), var(--surface-2) 50%);
+}
+.key-row-value .key-row-head {
+  padding-left: 14px;
+}
+.key-row.is-outside .key-row-head {
+  opacity: 0.6;
+}
+.key-caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.key-chip {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.key-label {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.key-label-value {
+  color: var(--text-dim);
+}
+.key-label:hover {
+  color: var(--accent);
+}
+.key-note {
+  position: absolute;
+  z-index: 2;
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.key-menu-check {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+}

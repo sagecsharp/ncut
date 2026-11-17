@@ -162,7 +162,7 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
       <button
         className="menu-item"
         role="menuitem"
-        {...tip('insert gap here', { does: 'push every clip that starts at or after this point right by 1 second, on all unlocked tracks', side: 'right' })}
+        {...tip('insert gap here', { does: 'push every clip that starts at or after this point right by 1 second, on every unlocked track with sync lock on', side: 'right' })}
         onClick={run(() => insertGapAt(snapToFrame(time, useEditor.getState().project?.fps ?? 30)))}
       >
         <MoveHorizontal size={14} />

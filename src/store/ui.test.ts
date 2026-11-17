@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sameIds, useUi } from './ui';
+import { sameIds, sameKeyRefs, useUi } from './ui';
 
 beforeEach(() => {
   vi.useFakeTimers();
-  useUi.setState({ toasts: [], previewMode: 'output', programMode: 'output', trimMode: false, trimEdge: null, mediaTab: 'media', mixerFocus: null });
+  useUi.setState({ toasts: [], previewMode: 'output', programMode: 'output', trimMode: false, trimEdge: null, mediaTab: 'media', mixerFocus: null, keySel: [], keyFocus: false, crossfadePick: null, exportAsk: null, dialog: null });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -159,5 +159,101 @@ describe('media tab and mixer', () => {
     expect(useUi.getState().mixerFocus).toEqual({ track: 'trk_1', n: 1 });
     useUi.getState().showMixer();
     expect(useUi.getState().mixerFocus).toEqual({ track: null, n: 2 });
+  });
+});
+
+describe('key selection', () => {
+  const a = { clipId: 'c1', prop: 'x', t: 1 };
+  const b = { clipId: 'c1', prop: 'y', t: 2 };
+
+  it('key selection setters skip equal writes', () => {
+    let calls = 0;
+    const off = useUi.subscribe(() => calls++);
+    const sel = [a, b];
+    useUi.getState().setKeySel(sel);
+    expect(calls).toBe(1);
+    expect(useUi.getState().keySel).not.toBe(sel);
+    expect(useUi.getState().keySel).toEqual(sel);
+    useUi.getState().setKeySel([{ ...b, t: b.t + 5e-5 }, { ...a }]);
+    expect(calls).toBe(1);
+    useUi.getState().setKeySel([a, { ...b, t: b.t + 1e-3 }]);
+    expect(calls).toBe(2);
+    useUi.getState().setKeyFocus(true);
+    useUi.getState().setKeyFocus(true);
+    expect(calls).toBe(3);
+    expect(useUi.getState().keyFocus).toBe(true);
+    off();
+  });
+
+  it('sameKeyRefs ignores order and tiny t', () => {
+    expect(sameKeyRefs([a, b], [b, a])).toBe(true);
+    expect(sameKeyRefs([a], [{ ...a, t: a.t + 9e-5 }])).toBe(true);
+    expect(sameKeyRefs([a], [{ ...a, t: a.t + 2e-4 }])).toBe(false);
+    expect(sameKeyRefs([a], [a, b])).toBe(false);
+    expect(sameKeyRefs([a], [{ ...a, prop: 'z' }])).toBe(false);
+    expect(sameKeyRefs([a], [{ ...a, clipId: 'c2' }])).toBe(false);
+    expect(sameKeyRefs([], [])).toBe(true);
+    const x = [b, a];
+    const y = [b, a];
+    sameKeyRefs(x, y);
+    expect(x).toEqual([b, a]);
+    expect(y).toEqual([b, a]);
+  });
+});
+
+describe('crossfade pick', () => {
+  const edge = { clipId: 'a', edge: 'end' as const, both: true, alone: false };
+  const sel = ['a', 'b'];
+
+  it('crossfade pick', () => {
+    let calls = 0;
+    const off = useUi.subscribe(() => calls++);
+    useUi.getState().setCrossfadePick(null);
+    expect(calls).toBe(0);
+    useUi.getState().setCrossfadePick({ clipId: 'b', selection: sel });
+    expect(calls).toBe(1);
+    useUi.getState().setCrossfadePick({ clipId: 'b', selection: sel });
+    expect(calls).toBe(1);
+    useUi.getState().setCrossfadePick({ clipId: 'b', selection: [...sel] });
+    expect(calls).toBe(2);
+    useUi.getState().setCrossfadePick(null);
+    useUi.getState().setCrossfadePick(null);
+    expect(calls).toBe(3);
+    off();
+  });
+
+  it('a pick clears the trim edge and keeps trim mode, an edge clears the pick', () => {
+    useUi.getState().setTrimEdge(edge);
+    expect(useUi.getState().trimMode).toBe(true);
+    useUi.getState().setCrossfadePick({ clipId: 'b', selection: sel });
+    expect(useUi.getState().trimEdge).toBeNull();
+    expect(useUi.getState().trimMode).toBe(true);
+    useUi.getState().setTrimEdge(edge);
+    expect(useUi.getState().crossfadePick).toBeNull();
+    expect(useUi.getState().trimEdge).toEqual(edge);
+  });
+});
+
+describe('export ask', () => {
+  it('askExport opens export and counts up', () => {
+    useUi.getState().askExport({ preset: 'web' });
+    expect(useUi.getState().dialog).toBe('export');
+    expect(useUi.getState().exportAsk).toEqual({ advanced: false, preset: 'web', focus: null, n: 1 });
+    useUi.getState().closeDialog();
+    expect(useUi.getState().exportAsk?.n).toBe(1);
+    useUi.getState().askExport({ focus: 'codec' });
+    expect(useUi.getState().exportAsk).toEqual({ advanced: true, preset: null, focus: 'codec', n: 2 });
+    useUi.getState().askExport({ advanced: true });
+    expect(useUi.getState().exportAsk).toEqual({ advanced: true, preset: null, focus: null, n: 3 });
+    useUi.getState().askExport({});
+    expect(useUi.getState().exportAsk).toEqual({ advanced: false, preset: null, focus: null, n: 4 });
+  });
+
+  it('a loudness focus leaves advanced off', () => {
+    useUi.getState().askExport({ focus: 'loudness' });
+    expect(useUi.getState().exportAsk?.advanced).toBe(false);
+    expect(useUi.getState().exportAsk?.focus).toBe('loudness');
+    useUi.getState().askExport({ focus: 'codec' });
+    expect(useUi.getState().exportAsk?.advanced).toBe(true);
   });
 });

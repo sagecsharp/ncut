@@ -1,5 +1,6 @@
 /** which assets the media tab lists and in what order. pure: no react, no store. */
-import type { Clip, MediaAsset, MediaKind, SceneSky } from '../../types';
+import type { Clip, LutInfo, MediaAsset, MediaKind, SceneSky } from '../../types';
+import { canGrade, lutIdsOf, lutOf } from '../../lib/gradeData';
 import { skyAssetIds } from '../../engine/scene3d/sky';
 
 export type MediaFilter = 'all' | MediaKind;
@@ -17,7 +18,29 @@ export function usedAssetIds(clips: readonly Clip[], sky?: SceneSky | null): Set
   const used = new Set<string>();
   for (const c of clips) if ('assetId' in c && c.assetId) used.add(c.assetId);
   for (const id of skyAssetIds(sky)) used.add(id);
+  for (const id of lutIdsOf(clips)) used.add(id);
   return used;
+}
+
+/** how many clips have this lut in their grade (off and mix 0 too) */
+export function lutUses(clips: readonly Clip[], mediaId: string): number {
+  let n = 0;
+  for (const c of clips) if (canGrade(c) && lutOf((c as { grade?: Parameters<typeof lutOf>[0] }).grade)?.media === mediaId) n++;
+  return n;
+}
+
+/** the remove dialog text of a lut some clips use */
+export function removeLutText(name: string, n: number): string {
+  return `"${name}" is the lut of ${n} clip${n === 1 ? '' : 's'}. removing it takes it off their grade.`;
+}
+
+/** the size line of a lut card: "1d and 3d, 33 points", "3d, 33 points", "1d, 4096 points", '' for none */
+export function lutSizeText(lut: LutInfo | undefined): string {
+  if (!lut) return '';
+  if (lut.size3 > 0 && lut.size1 > 0) return `1d and 3d, ${lut.size3} points`;
+  if (lut.size3 > 0) return `3d, ${lut.size3} points`;
+  if (lut.size1 > 0) return `1d, ${lut.size1} points`;
+  return '';
 }
 
 export interface MediaListOptions {

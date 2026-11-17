@@ -10,7 +10,8 @@ import { normalizePivot, PIVOT_MAX, PIVOT_SPOTS } from '../../engine/pivot';
 import { BPM_MAX, BPM_MIN } from '../../lib/tempo';
 import { CURVE_KINDS, GRADE_EFFECT, GRADE_KEYS, MAX_CURVE_POINTS } from '../../lib/gradeData';
 import { BEND_ANGLE_MAX, BEND_CENTER_MAX, BEND_SPAN_MAX, BEND_SPAN_MIN } from '../../engine/scene3d/bend';
-import { BEND_ALONG, BLEND_MODES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
+import { matteProblem, MATTE_MODES } from '../../engine/matte';
+import { BEND_ALONG, BLEND_MODES, FADE_SHAPES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
 import { needProject, ToolError } from '../helpers';
 
 /** returns the value to store. `cur` is what the clip holds there now */
@@ -151,7 +152,38 @@ const points: Check = (v, path) => {
 const curvesCheck: Check = orNull(obj(Object.fromEntries(CURVE_KINDS.map((k) => [k, orNull(points)])), [], {}));
 
 /** the color grade: a partial one lies over the current. what lands is cleaned by the store */
-const gradeCheck: Check = orNull(obj({ ...Object.fromEntries(GRADE_KEYS.map((k) => [k, num(-1, 1)])), curves: curvesCheck, off: bool }, [], {}));
+const gradeCheck: Check = orNull(
+  obj(
+    {
+      ...Object.fromEntries(GRADE_KEYS.map((k) => [k, num(-1, 1)])),
+      curves: curvesCheck,
+      // a lut: a partial one lies over the current one, null takes it off. the store cleans it (false last and tv are dropped)
+      lut: orNull((v, path, cur, clip) => {
+        const out = obj(
+          {
+            media: (v, path) => {
+              if (typeof v !== 'string') throw new ToolError(`${path} must be the id of a lut media, got ${kindOf(v)}`);
+              const asset = needProject().assets.find((a) => a.id === v);
+              if (!asset) throw new ToolError(`no media ${v}`);
+              if (asset.kind !== 'lut') throw new ToolError(`the media ${v} is ${asset.kind}, not a lut. import a .cube file with import_media`);
+              return v;
+            },
+            mix: num(0, 1),
+            last: bool,
+            tv: bool,
+          },
+          [],
+          {},
+        )(v, path, cur, clip) as Record<string, unknown>;
+        if (typeof out.media !== 'string') throw new ToolError(`${path} needs media: the id of a lut (import a .cube file with import_media)`);
+        return out;
+      }),
+      off: bool,
+    },
+    [],
+    {},
+  ),
+);
 
 /** every picture clip (video, image, text, shape) */
 const PICTURE: Record<string, Check> = {
@@ -186,7 +218,13 @@ const PICTURE: Record<string, Check> = {
       ['shape', 'x', 'y', 'width', 'height', 'rotation', 'feather', 'invert'],
       { x: 0, y: 0, width: 1, height: 1, rotation: 0, feather: 0, invert: false },
     ),
-  ),
+  ),  // a matte: { clip, mode }. a partial one lies over the current one, mode alpha when there was none
+  matte: orNull((v, path, cur, clip) => {
+    const out = obj({ clip: pictureClip, mode: oneOf(MATTE_MODES) }, ['clip'], { mode: 'alpha' })(v, path, cur, clip) as { clip: string };
+    const why = matteProblem(needProject().clips, clip.id, out.clip);
+    if (why) throw new ToolError(`${path}: ${why}`);
+    return out;
+  }),
 };
 
 /** a fade cannot be longer than the clip (the store would cut it back and say nothing) */
@@ -208,6 +246,14 @@ const SOUND: Record<string, Check> = {
   muted: bool,
   // null takes the tempo away
   bpm: orNull(num(BPM_MIN, BPM_MAX)),
+  // the sound of the clip before fades into this one across the edit at its start. a merged before + after under 0.001 is no crossfade
+  crossfade: orNull((v, path, cur, clip) => {
+    const out = obj({ before: num(0, 10), after: num(0, 10), shape: oneOf(FADE_SHAPES), withTransition: bool }, ['before', 'after'], { before: 0.125, after: 0.125 })(v, path, cur, clip) as { before: number; after: number };
+    if (out.before + out.after < 0.001) throw new ToolError(`${path}: before + after must be at least 0.001 s (null takes it away)`);
+    return out;
+  }),
+  fadeInShape: orNull(oneOf(FADE_SHAPES)),
+  fadeOutShape: orNull(oneOf(FADE_SHAPES)),
 };
 
 const TEXT: Record<string, Check> = {

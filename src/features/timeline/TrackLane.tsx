@@ -3,10 +3,12 @@ import type { Project, Track } from '../../types';
 import { transitionSpan } from '../../lib/transitions';
 import { useEditor } from '../../store/editorStore';
 import { ClipView } from './ClipView';
+import { CrossfadeLayer } from './CrossfadeLayer';
 import { buildLaneIndex, spanInWindow, windowBounds, windowKey, windowMask } from './clipWindow';
 import { laneHeight } from './layout';
 import { selectTrackClips } from './trackClips';
 import { TransitionMarker } from './TransitionMarker';
+import { useTrackDrop } from './trackDrop';
 import { notifyClipMount, subscribeView, view } from './view';
 
 interface Props {
@@ -29,7 +31,9 @@ export const TrackLane = memo(function TrackLane({ track, zoom }: Props) {
   const assets = useEditor((s) => s.project?.assets);
   const selected = useMemo(() => new Set(selection), [selection]);
   const assetById = useMemo(() => new Map((assets ?? []).map((a) => [a.id, a])), [assets]);
-  const laneH = laneHeight(track.kind);
+  const laneH = laneHeight(track);
+  const dragging = useTrackDrop((s) => s.dragging === track.id);
+  const dropSide = useTrackDrop((s) => (s.over === track.id ? s.side : null));
   const count = clips.length;
   // '' (mount everything) for a small lane, else the bucketed window. re-renders only when it changes
   const getKey = useCallback(() => windowKey(view.scrollLeft, view.width, count), [count]);
@@ -64,7 +68,7 @@ export const TrackLane = memo(function TrackLane({ track, zoom }: Props) {
     <div
       className={`timeline-lane timeline-lane-area is-${track.kind}${track.locked ? ' is-locked' : ''}${
         track.hidden ? ' is-hidden-track' : ''
-      }`}
+      }${dragging ? ' is-drag-source' : ''}${dropSide ? ` is-drop-${dropSide}` : ''}`}
       data-track-id={track.id}
     >
       {shownClips.map((c) => (
@@ -89,6 +93,7 @@ export const TrackLane = memo(function TrackLane({ track, zoom }: Props) {
           selected={selected.has(sp.to.id)}
         />
       ))}
+      <CrossfadeLayer trackId={track.id} kind={track.kind} locked={!!track.locked} zoom={zoom} laneH={laneH} bounds={bounds} selected={selected} />
     </div>
   );
 });

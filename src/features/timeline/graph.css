@@ -1,0 +1,300 @@
+/* the graph view of the keyframe panel: the head switch, the bar, the list of lines and the plot */
+:root {
+  /* the line colors, each 3:1 against the panel */
+  --graph-red: #ff6a5f;
+  --graph-green: #4ddc7c;
+  --graph-blue: #6a9bff;
+  --graph-amber: #f5b73b;
+  --graph-gray: #9aa0a6;
+  --graph-cyan: #3fd0e0;
+  --graph-violet: #b48cff;
+  --graph-orange: #ff9a3c;
+  --graph-pink: #ff7ab8;
+  --graph-teal: #2fd4b0;
+  --graph-lime: #b5e04a;
+}
+:root[data-theme='light'] {
+  --graph-red: #d8281c;
+  --graph-green: #12963f;
+  --graph-blue: #1f5ce0;
+  --graph-amber: #b27300;
+  --graph-gray: #5f6368;
+  --graph-cyan: #00808f;
+  --graph-violet: #7a45d6;
+  --graph-orange: #c75a00;
+  --graph-pink: #cc2f7c;
+  --graph-teal: #0b8a6e;
+  --graph-lime: #5f8a00;
+}
+
+/* the rows | graph switch in the panel head */
+.graph-switch {
+  display: flex;
+  gap: 1px;
+}
+.graph-switch-btn {
+  height: 18px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+.graph-switch-btn:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.graph-switch-btn:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.graph-switch-btn:hover {
+  color: var(--text);
+}
+.graph-switch-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.graph-switch-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.graph-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-0);
+}
+.graph-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* the bar */
+.graph-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: 2px var(--space-2);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--font-size-xs);
+}
+.graph-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.graph-bar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-soft);
+}
+.graph-bar-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.graph-bar-label {
+  color: var(--text-dim);
+}
+.graph-bar-box {
+  width: 84px;
+}
+.graph-bar-btn.is-active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.graph-kind {
+  display: flex;
+  gap: 1px;
+}
+.graph-kind-btn {
+  height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+.graph-kind-btn:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+.graph-kind-btn:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.graph-kind-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* the list of lines, as wide as the timeline's headers */
+.graph-list {
+  position: relative;
+  flex: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border-soft);
+  user-select: none;
+}
+.graph-list-rows {
+  position: relative;
+}
+.graph-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) 0 var(--space-1);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+.graph-row.is-clip {
+  color: var(--text);
+}
+.graph-row.is-line {
+  padding-left: 14px;
+  color: var(--text-dim);
+}
+.graph-row.is-active {
+  color: var(--text);
+  background: var(--accent-muted);
+}
+.graph-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.graph-caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.graph-chip {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.graph-name {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.graph-name:hover {
+  color: var(--accent);
+}
+.graph-swatch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.graph-swatch:hover {
+  background: var(--surface-3);
+}
+.graph-swatch[aria-pressed='false'] svg {
+  opacity: 0.3;
+}
+
+/* the plot */
+.graph-plot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+}
+.graph-plot:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.graph-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+.graph-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--playhead);
+  pointer-events: none;
+}
+.graph-readout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 4px;
+  background: var(--surface-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.graph-readout[hidden] {
+  display: none;
+}
+.graph-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  pointer-events: none;
+}
+.graph-handles-note {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-1);
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+  pointer-events: none;
+}

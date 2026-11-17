@@ -125,7 +125,7 @@ export const useSource = create<SourceState>()((set, get) => ({
 
   open(assetId, time) {
     const project = useEditor.getState().project;
-    if (!project || !project.assets.some((a) => a.id === assetId)) return;
+    if (!project || !project.assets.some((a) => a.id === assetId && a.kind !== 'lut')) return;
     const s = get();
     if (s.assetId === assetId) {
       if (time !== undefined) get().seek(time);

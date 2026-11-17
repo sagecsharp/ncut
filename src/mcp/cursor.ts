@@ -190,6 +190,9 @@ const makesClip = (label: string, first?: (a: Args) => Target): Rule => ({
   after: (_a, res) => clip(res?.id),
 });
 
+/** the clip ids of a keys list ([{ id, ... }]) */
+const keyIdsOf = (v: unknown): string[] => (Array.isArray(v) ? v.map((k) => (k && typeof k === 'object' ? str((k as Record<string, unknown>).id) : undefined)).filter((x): x is string => !!x) : []);
+
 /**
  * one rule per tool. a test walks TOOLS and fails for a tool that has none, so a tool added later cannot be forgotten
  * (the rule can be { before: () => NOWHERE } when it points at nothing).
@@ -226,6 +229,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
   edit_media: { label: 'edits media into the timeline', before: (a) => media(a.asset), after: (_a, res) => clips(briefIds(res?.clips)) },
   replace_media: { label: 'swaps the media of a clip', before: (a) => media(a.asset), after: (a) => clip(a.id) },
   remove_media: { label: 'removes media', before: (a) => (a.unused === true ? media() : media(strs(a.ids)[0])), after: () => media() },
+  save_grade_lut: { label: 'saves the grade as a .cube lut', before: (a) => clip(a.clip) },
   // new clips
   add_text: makesClip('adds text', (a) => track(a.track)),
   add_shape: makesClip('adds a shape', (a) => track(a.track)),
@@ -273,6 +277,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
   separate_sound: onClips('separates sound'),
   join_sound: onClips('joins sound back'),
   sync_sound: onClips('lines up picture and sound'),
+  crossfade_edits: onClips('crossfades the sound'),
   // keyframes
   set_keyframe: {
     label: 'sets a keyframe',
@@ -288,8 +293,13 @@ export const CURSOR_RULES: Record<string, Rule> = {
   remove_keyframe: onClip('removes a keyframe'),
   set_keyframes: onClip('sets keyframes'),
   clear_keyframes: onClip('clears keyframes'),
+  retime_keyframes: { label: 'retimes keyframes', before: (a) => clips(keyIdsOf(a.keys)) },
+  ease_keyframes: { label: 'sets the ease of keyframes', before: (a) => clips(keyIdsOf(a.keys)) },
+  copy_keyframes: { label: 'copies keyframes', before: (a) => clips(strs(a.to)) },
+  sample_keyframes: { label: 'samples keyframes', before: () => INSPECTOR },
   // output
   render_frame: { label: 'renders a frame', before: () => PREVIEW },
+  measure_loudness: { label: 'measures the loudness', before: () => button('export') },
   export_video: { label: 'starts an export', before: () => button('export') },
   export_status: { label: 'checks the export', before: () => button('export') },
   export_cancel: { label: 'cancels the export', before: () => button('export') },

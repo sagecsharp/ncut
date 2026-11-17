@@ -1,11 +1,12 @@
 import type { Track, TrackKind } from '../../types';
+import { DEFAULT_TRACK_H, trackHeightOf } from '../../lib/trackTools';
 
 export const HEADER_W = 150;
 export const RULER_H = 26;
 /** thin "new track" drop zones above the first and below the last track */
 export const ZONE_H = 14;
-export const LANE_H_VIDEO = 56;
-export const LANE_H_AUDIO = 48;
+export const LANE_H_VIDEO = DEFAULT_TRACK_H.video;
+export const LANE_H_AUDIO = DEFAULT_TRACK_H.audio;
 /** vertical gap between a lane edge and the clip inside it */
 export const CLIP_INSET = 3;
 export const CLIP_LABEL_H = 14;
@@ -14,8 +15,8 @@ export const SNAP_PX = 8;
 /** minimum blank space after the last clip, in px */
 export const TAIL_MIN_PX = 160;
 
-export function laneHeight(kind: TrackKind): number {
-  return kind === 'video' ? LANE_H_VIDEO : LANE_H_AUDIO;
+export function laneHeight(t: Pick<Track, 'kind' | 'height'>): number {
+  return trackHeightOf(t);
 }
 
 export interface Layout {
@@ -35,7 +36,7 @@ export function computeLayout(tracks: Track[]): Layout {
   const heights: number[] = [];
   let y = ZONE_H;
   for (const t of tracks) {
-    const h = laneHeight(t.kind);
+    const h = laneHeight(t);
     tops.push(y);
     heights.push(h);
     y += h;

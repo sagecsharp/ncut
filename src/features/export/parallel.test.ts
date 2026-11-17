@@ -225,3 +225,39 @@ describe('heldAtFrame', () => {
     expect(heldAtFrame(p, a, grid, last, 62)).toBe(true);
   });
 });
+
+describe('keySeconds', () => {
+  it('keySeconds 2 is the old plan', () => {
+    for (const total of [1, 480, 1799, 3600, 14400]) {
+      for (const fps of [23.976, 24, 29.97, 30, 60, 240]) {
+        for (const workers of [1, 2, 3, 4]) {
+          expect(planSegments(total, fps, workers)).toEqual(planSegments(total, fps, workers, 2));
+        }
+        expect(pickWorkers(1920, 1080, total, fps, 16)).toBe(pickWorkers(1920, 1080, total, fps, 16, 2));
+      }
+    }
+  });
+
+  it('keySeconds 1 at 30 fps cuts on multiples of 30', () => {
+    const parts = planSegments(1800, 30, 3, 1);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts[0]!.from).toBe(0);
+    expect(parts[parts.length - 1]!.to).toBe(1800);
+    for (const p of parts) {
+      expect(p.from % 30).toBe(0);
+      if (p.to !== 1800) expect(p.to % 30).toBe(0);
+    }
+  });
+
+  it('keySeconds reaches planSegments and pickWorkers', () => {
+    expect(planSegments(90, 30, 3, 1)).toEqual([{ from: 0, to: 30 }, { from: 30, to: 60 }, { from: 60, to: 90 }]);
+    expect(planSegments(90, 30, 3)).toEqual([{ from: 0, to: 60 }, { from: 60, to: 90 }]);
+    expect(pickWorkers(1920, 1080, 480, 240, 16)).toBe(1);
+    expect(pickWorkers(1920, 1080, 480, 240, 16, 1)).toBe(2);
+  });
+
+  it('keyFrameIndex and keyGroupOf take keySeconds', () => {
+    expect(keyFrameIndex(3, 30, 1)).toBe(90);
+    expect(keyGroupOf(59, 30, 0.5)).toBe(3);
+  });
+});

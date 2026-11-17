@@ -33,6 +33,9 @@ import { GradeSection } from './GradeSection';
 import { AudioSection } from './AudioSection';
 import { OnSidesNote } from './FacesSection';
 import { MaskSection } from './MaskSection';
+import { MatteSection, MatteSourceNote } from './MatteSection';
+import { CrossfadeSection } from './CrossfadeSection';
+import { FadeShapeRow } from './FadeShapeRow';
 import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
 import { hasLinks } from '../../lib/links';
@@ -300,12 +303,14 @@ const FadeSection = memo(function FadeSection({
   fadeIn,
   fadeOut,
   duration,
+  sound,
   hint,
 }: {
   id: string;
   fadeIn: number;
   fadeOut: number;
   duration: number;
+  sound: boolean;
   hint?: string;
 }) {
   return (
@@ -338,6 +343,7 @@ const FadeSection = memo(function FadeSection({
           />
         </Pair>
       </Row>
+      {sound ? <FadeShapeRow id={id} /> : null}
       {hint ? <div className="props-hint">{hint}</div> : null}
     </Section>
   );
@@ -560,6 +566,7 @@ export function ClipInspector({ id }: { id: string }) {
         <FeelContext.Provider value={feelCtx}>
         <InspectedClip.Provider value={clip}>
         {isVisualClip(clip) ? <OnSidesNote id={clip.id} /> : null}
+        {isVisualClip(clip) ? <MatteSourceNote id={clip.id} /> : null}
         {show('clip') ? (
         <ClipSection
           id={clip.id}
@@ -622,14 +629,16 @@ export function ClipInspector({ id }: { id: string }) {
         {show('color') && isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
         {show('grade') && canGrade(clip) ? <GradeSection clip={clip as VisualClip | EffectClip} /> : null}
         {show('mask') && isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
+        {show('matte') && isVisualClip(clip) ? <MatteSection clip={clip} /> : null}
         {show('clip-effects') && isVisualClip(clip) ? <ClipEffectsSection clip={clip} /> : null}
         {show('motion') && isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {show('transition') && isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {show('audio') && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
+        {show('crossfade') && (clip.type === 'video' || clip.type === 'audio') && !apart ? <CrossfadeSection id={clip.id} /> : null}
         {show('tempo') && (clip.type === 'video' || clip.type === 'audio') && !apart ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
         {show('speed') && (clip.type === 'video' || clip.type === 'audio') ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
         {show('fades') ? (
-          <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}
+          <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration} sound={(clip.type === 'audio' || (clip.type === 'video' && hasAudio)) && !apart}
             hint={clip.type === 'effect' ? 'fades ramp the effect strength in and out' : undefined}
           />
         ) : null}

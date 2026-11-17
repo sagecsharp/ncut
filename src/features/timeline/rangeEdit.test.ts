@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Clip, EffectClip, ImageClip, Project } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
 import { createProject } from '../../lib/factory';
-import { cuttableAt, lockedTracksHit, planCloseUp, planRangeRemoval, splitOrigins, transitionsToDrop } from './rangeEdit';
+import { syncTrackIds } from '../../lib/trackTools';
+import { cuttableAt, lockedTracksHit, planCloseUp, planRangeRemoval, splitOrigins, syncOffTracksHit, transitionsToDrop } from './rangeEdit';
 
 const image = (trackId: string, id: string, start: number, duration: number, over: Partial<ImageClip> = {}): ImageClip => ({
   id, type: 'image', trackId, start, duration, name: id, fadeIn: 0, fadeOut: 0, assetId: 'img1', transform: { ...DEFAULT_TRANSFORM }, ...over,
@@ -132,5 +133,45 @@ describe('lockedTracksHit', () => {
     const q = proj([image(T1, 'x', 3, 5), image(T1, 'y', 9, 1)], true);
     expect(lockedTracksHit(q, span, false)).toBe(1);
     expect(lockedTracksHit(q, span, true)).toBe(1);
+  });
+});
+
+describe('sync lock off', () => {
+  const off = (clips: Clip[]): Project => {
+    const p = proj(clips);
+    return { ...p, tracks: p.tracks.map((t) => (t.id === T1 ? { ...t, syncLock: false } : t)) };
+  };
+
+  it('extract leaves sync lock off tracks alone', () => {
+    const p = off([image(T0, 'a', 1, 4), image(T0, 'b', 5, 1), image(T1, 'c', 2.5, 1), image(T1, 'd', 5, 1)]);
+    const open = syncTrackIds(p.tracks, new Set());
+    expect(cuttableAt(p, 3, open)).toEqual(['a']);
+    expect(cuttableAt(p, 3)).toEqual(['a', 'c']);
+    const cut = off([image(T0, 'e', 2, 2), image(T1, 'c', 2.5, 1)]);
+    expect(planRangeRemoval(cut, span, open).deletes).toEqual(['e']);
+    expect(planRangeRemoval(cut, span).deletes).toEqual(['e', 'c']);
+    expect(planCloseUp(p, span, open).moves.map((m) => m.id)).toEqual(['b']);
+    expect(planCloseUp(p, span).moves.map((m) => m.id).sort()).toEqual(['b', 'd']);
+  });
+
+  it('a follower of a held target stays whole and in place', () => {
+    const fxc = (id: string, target: string, start: number, duration: number): EffectClip => ({
+      id, type: 'effect', trackId: T0, start, duration, name: id, fadeIn: 0, fadeOut: 0, effect: 'shake', params: {}, amount: 1, seed: 1, target,
+    });
+    const p = off([image(T0, 'a', 0, 2), image(T0, 'b', 4, 1), image(T1, 'r', 5, 2), fxc('e', 'r', 5, 2)]);
+    const open = syncTrackIds(p.tracks, new Set());
+    expect(planCloseUp(p, { start: 2, end: 3 }, open).moves.map((m) => m.id)).toEqual(['b']);
+    expect(cuttableAt(p, 6, open)).toEqual([]);
+    expect(planRangeRemoval(p, { start: 5, end: 6 }, open).deletes).toEqual([]);
+  });
+
+  it('syncOffTracksHit', () => {
+    const p = off([image(T0, 'a', 0, 1), image(T1, 'c', 3, 1)]);
+    expect(syncOffTracksHit(p, span)).toEqual([T1]);
+    expect(syncOffTracksHit(off([image(T1, 'd', 0, 2)]), span)).toEqual([]);
+    expect(syncOffTracksHit(off([image(T1, 'd', 6, 1)]), span)).toEqual([T1]);
+    expect(syncOffTracksHit(proj([image(T1, 'd', 3, 1)]), span)).toEqual([]);
+    const locked = { ...p, tracks: p.tracks.map((t) => (t.id === T1 ? { ...t, locked: true } : t)) };
+    expect(syncOffTracksHit(locked, span)).toEqual([]);
   });
 });

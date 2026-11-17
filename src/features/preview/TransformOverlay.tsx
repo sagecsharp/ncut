@@ -11,6 +11,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip, stretchX, stretchY } from '../../types';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
+import { selectedMattesAt } from '../../engine/matte';
 import { pictureBox, pivotOf } from '../../engine/pivot';
 import { isBent } from '../../engine/scene3d/bend';
 import { faceSourceSet } from '../../engine/scene3d/faces';
@@ -352,11 +353,24 @@ interface PointerSnapshot {
   alt: boolean;
 }
 
+/** does one clip's box (2d: the bent strip or the kept picture box, 3d: the visible projected quad) hold the canvas point. no lock check */
+function hitsOne(project: Project, clip: VisualClip, time: number, rig: CameraRig, px: number, py: number, minHit: number): boolean {
+  if (!clip.threeD) {
+    const shown = worldClip(project, clip, time);
+    // a bent clip is the bent strip, a flat one its kept picture box
+    return isBent(shown) ? pointInBent(clipQuad(project, asScenePlane(clip), time, homeRig(project.width, project.height)), px, py) : hitTestKept(keptBox(pictureBox(getClipBox(project, shown)), shown.crop), px, py, minHit);
+  }
+  const q = clipQuad(project, clip, time, rig);
+  return q.visible && (q.bent ? pointInBent(q, px, py) : pointInQuad(q.p, px, py));
+}
+
 /**
  * top-most visual clip under a canvas point (skips locked tracks). 2d clips use their rotated box,
  * 3d clips their projected quad; a run of consecutive 3d clips is depth sorted like the renderer does.
+ * a selected matte clip (it is not drawn on its own, so it is not in the visible list) is tried first.
  */
-function hitTest(project: Project, time: number, rig: CameraRig, px: number, py: number, minHit: number): VisualClip | null {
+function hitTest(project: Project, time: number, rig: CameraRig, px: number, py: number, minHit: number, selection: readonly string[] = []): VisualClip | null {
+  for (const c of selectedMattesAt(project, selection, time)) if (hitsOne(project, c, time, rig, px, py, minHit)) return c;
   const visible = visibleClipsAt(project, time);
   const locked = (c: VisualClip) => project.tracks.find((t) => t.id === c.trackId)?.locked ?? true;
   let i = visible.length - 1;
@@ -365,9 +379,7 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
     if (!clip.threeD) {
       i--;
       if (locked(clip)) continue;
-      const shown = worldClip(project, clip, time);
-      // a bent clip is the bent strip, a flat one its kept picture box
-      if (isBent(shown) ? pointInBent(clipQuad(project, asScenePlane(clip), time, homeRig(project.width, project.height)), px, py) : hitTestKept(keptBox(pictureBox(getClipBox(project, shown)), shown.crop), px, py, minHit)) return clip;
+      if (hitsOne(project, clip, time, rig, px, py, minHit)) return clip;
       continue;
     }
     let best: VisualClip | null = null;
@@ -708,7 +720,7 @@ function OutputOverlay() {
       return;
     }
 
-    const hit = hitTest(project, time, rig, px, py, MIN_HIT_PX / f);
+    const hit = hitTest(project, time, rig, px, py, MIN_HIT_PX / f, store.selection);
     if (!hit) {
       if (!e.shiftKey) store.clearSelection();
       return;

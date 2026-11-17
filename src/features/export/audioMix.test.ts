@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioClip } from '../../types';
-import { MIX_CHUNK_SECONDS, MIX_SAMPLE_RATE, clipSchedule, clipWindow, gainPoints, planMixChunks, trimGainPoints } from './audioMix';
+import { createProject } from '../../lib/factory';
+import { MIX_CHUNK_SECONDS, MIX_SAMPLE_RATE, clipSchedule, clipWindow, createAudioMixer, gainPoints, planMixChunks, soundWindow, trimGainPoints } from './audioMix';
 
 describe('clipWindow', () => {
   it('a clip fully inside the range lands at its offset', () => {
@@ -113,5 +114,46 @@ describe('clipSchedule', () => {
   });
   it('a negative trimStart reads as 0', () => {
     expect(clipSchedule(clip({ trimStart: -3 }), 0, 10)!.from).toBe(0);
+  });
+});
+
+describe('mix rate', () => {
+  it('mixes at 48000 by default', () => {
+    const m = createAudioMixer(createProject('x'), 2.5);
+    expect(m.sampleRate).toBe(48000);
+    expect(m.totalFrames).toBe(120000);
+  });
+  it('an export can ask for 44100', () => {
+    const m = createAudioMixer(createProject('x'), 2.5, undefined, undefined, 0, 44100);
+    expect(m.sampleRate).toBe(44100);
+    expect(m.totalFrames).toBe(110250);
+    expect(m.chunks).toEqual([{ startFrame: 0, frames: 110250 }]);
+  });
+  it('chunks are cut at the mix rate and cover the mix', () => {
+    const m = createAudioMixer(createProject('x'), 70, undefined, undefined, 0, 44100);
+    expect(m.chunks.map((c) => c.frames)).toEqual([1323000, 1323000, 441000]);
+    expect(m.chunks.reduce((n, c) => n + c.frames, 0)).toBe(m.totalFrames);
+  });
+});
+
+describe('crossfade hooks without a sound', () => {
+  const clip = (over: Partial<AudioClip> = {}): AudioClip => ({
+    id: 'c', name: 'c', type: 'audio', trackId: 't', assetId: 'a', start: 2, duration: 4, trimStart: 0.25, speed: 1.5, volume: 0.8, muted: false,
+    fadeIn: 0.5, fadeOut: 1, keyframes: { volume: [{ t: 0, v: 0.5, ease: 'linear' }, { t: 2, v: 1, ease: 'linear' }] }, ...over,
+  });
+  it('soundWindow with no sound is clipWindow', () => {
+    const c = clip();
+    for (const [offset, length] of [[0, 10], [3, 2], [5, 30]] as const) {
+      expect(soundWindow(c, null, offset, length)).toEqual(clipWindow(c.start, c.duration, c.speed, offset, length));
+    }
+    expect(soundWindow(c, null, 6, 5)).toBeNull();
+  });
+  it('clipSchedule with a null sound is the old schedule, head 0', () => {
+    const c = clip();
+    for (const [offset, length] of [[0, 10], [3, 2], [5, 30]] as const) {
+      const old = clipSchedule(c, offset, length)!;
+      expect(clipSchedule(c, offset, length, null)).toEqual(old);
+      expect(old.head).toBe(0);
+    }
   });
 });

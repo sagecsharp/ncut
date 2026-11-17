@@ -32,6 +32,7 @@
  */
 import type { Clip, Easing, Keyframe, Keyframes } from '../types';
 import { GRADE_EFFECT, GRADE_KEYS, GRADE_LABEL } from './gradeData';
+import { bezierValue, splitBezierAt, tidyHandles, toBezier, withNamedEase, type ValueRange } from './keyBezier';
 
 export type { Easing, Keyframe, Keyframes };
 
@@ -45,6 +46,20 @@ export const EASINGS: { id: Easing; label: string }[] = [
   { id: 'elastic', label: 'elastic' },
   { id: 'hold', label: 'hold' },
 ];
+
+/** every ease with its label: the eight of EASINGS, then 'bezier' as "custom" */
+export const EASE_LABEL: Record<Easing, string> = {
+  linear: 'linear',
+  ease: 'smooth',
+  'ease-in': 'ease in',
+  'ease-out': 'ease out',
+  back: 'overshoot',
+  bounce: 'bounce',
+  elastic: 'elastic',
+  hold: 'hold',
+  bezier: 'custom',
+};
+export const ALL_EASES: readonly Easing[] = [...EASINGS.map((e) => e.id), 'bezier'];
 
 /** two keys closer than this are the same key */
 export const KEY_EPS = 1e-4;
@@ -84,11 +99,13 @@ export function applyEasing(ease: Easing, u: number): number {
       const c4 = (2 * Math.PI) / 3;
       return Math.pow(2, -10 * u) * Math.sin((u * 10 - 0.75) * c4) + 1;
     }
+    default:
+      return u;
   }
 }
 
-/** value of a key list at a clip-local time. the list must be sorted and non-empty. */
-export function evalKeys(keys: readonly Keyframe[], t: number): number {
+/** value of a key list at a clip-local time. the list must be sorted and non-empty. a clip and prop clamp a custom part to the range of the prop */
+export function evalKeys(keys: readonly Keyframe[], t: number, clip?: Clip, prop?: string): number {
   const n = keys.length;
   const first = keys[0]!;
   if (n === 1 || t <= first.t) return first.v;
@@ -106,7 +123,23 @@ export function evalKeys(keys: readonly Keyframe[], t: number): number {
   const b = keys[hi]!;
   const span = b.t - a.t;
   if (span <= KEY_EPS) return b.v;
+  if (a.ease === 'bezier') {
+    const info = clip && prop !== undefined ? rangeInfo(clip, prop) : undefined;
+    return info ? bezierValue(a, b, t, info.min, info.max) : bezierValue(a, b, t);
+  }
   return a.v + (b.v - a.v) * applyEasing(a.ease, (t - a.t) / span);
+}
+
+/** the animProps entry of prop when it has both min and max. a plain loop: effect and audio animProps return fresh arrays. p.<key> has none */
+function rangeInfo(clip: Clip, prop: string): AnimPropInfo | undefined {
+  for (const x of animProps(clip)) if (x.prop === prop) return x.min !== undefined && x.max !== undefined ? x : undefined;
+  return undefined;
+}
+
+/** the range a custom part of this prop is clamped to (before the key values widen it), or undefined */
+export function keyRange(clip: Clip, prop: string): ValueRange | undefined {
+  const x = rangeInfo(clip, prop);
+  return x ? { lo: x.min!, hi: x.max! } : undefined;
 }
 
 /** index of the key at time t (within tolerance), or -1 */
@@ -119,22 +152,39 @@ export function keyIndexAt(keys: readonly Keyframe[], t: number, tolerance = KEY
 export function withKey(keys: readonly Keyframe[], t: number, v: number, ease?: Easing): Keyframe[] {
   const at = keyIndexAt(keys, t);
   if (at >= 0) {
+    const old = keys[at]!;
+    if (ease === 'bezier' && old.ease !== 'bezier') {
+      const next = toBezier(keys, at).slice();
+      next[at] = { ...next[at]!, ease: 'bezier', v };
+      return tidyHandles(next);
+    }
     const next = keys.slice();
-    next[at] = { t: keys[at]!.t, v, ease: ease ?? keys[at]!.ease };
-    return next;
+    next[at] = { ...old, v, ease: ease ?? old.ease };
+    return tidyHandles(next);
+  }
+  // a key inside a custom part splits it exactly: the line does not bend
+  const split = splitBezierAt(keys, t);
+  if (split) {
+    const i = split.findIndex((k) => k.t === t);
+    split[i] = { ...split[i]!, v };
+    return ease === undefined || ease === 'bezier' ? split : withNamedEase(split, i, ease);
   }
   // a new key inherits the easing of the key before it so inserting in the middle keeps the feel
-  let prev: Keyframe | undefined;
-  for (const k of keys) if (k.t < t) prev = k;
-  const next = [...keys, { t, v, ease: ease ?? prev?.ease ?? 'ease' }];
+  let prevAt = -1;
+  keys.forEach((k, i) => { if (k.t < t) prevAt = i; });
+  const prev = prevAt >= 0 ? keys[prevAt] : undefined;
+  const base = keys.slice();
+  // after a last custom key the new part is smooth: that key had nothing to shape
+  if (prev && prev.ease === 'bezier' && prevAt === keys.length - 1) base[prevAt] = { ...prev, ease: 'ease' };
+  const next = [...base, { t, v, ease: ease ?? (prev?.ease === 'bezier' ? 'ease' : prev?.ease) ?? 'ease' }];
   next.sort((a, b) => a.t - b.t);
-  return next;
+  return tidyHandles(next);
 }
 
 export function withoutKey(keys: readonly Keyframe[], t: number, tolerance = KEY_EPS): Keyframe[] {
   const at = keyIndexAt(keys, t, tolerance);
   if (at < 0) return keys as Keyframe[];
-  return keys.filter((_, i) => i !== at);
+  return tidyHandles(keys.filter((_, i) => i !== at));
 }
 
 /** shift every key by dt (used when the clip's start moves but the animation should stay in place) */
@@ -501,7 +551,7 @@ export function hasKeyframes(clip: Clip): boolean {
 export function valueAt(clip: Clip, prop: string, time: number): number | undefined {
   const keys = clip.keyframes?.[prop];
   if (keys && keys.length > 0) {
-    const v = evalKeys(keys, time - clip.start);
+    const v = evalKeys(keys, time - clip.start, clip, prop);
     return lookDef(clip, prop)?.int ? Math.round(v) : v;
   }
   return baseValue(clip, prop);
@@ -566,16 +616,16 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
       case 'shape':
         if (TRANSFORM_KEYS.has(prop)) {
           transform ??= { ...clip.transform };
-          transform[prop] = evalKeys(keys, local);
+          transform[prop] = evalKeys(keys, local, clip, prop);
           own().transform = transform;
-        } else if (prop === 'volume' && clip.type === 'video') own().volume = evalKeys(keys, local);
-        else if (prop === 'pan' && clip.type === 'video') own().pan = evalKeys(keys, local);
-        else if (clip.type === 'shape' && DRAW_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
+        } else if (prop === 'volume' && clip.type === 'video') own().volume = evalKeys(keys, local, clip, prop);
+        else if (prop === 'pan' && clip.type === 'video') own().pan = evalKeys(keys, local, clip, prop);
+        else if (clip.type === 'shape' && DRAW_KEYS.has(prop)) own()[prop] = evalKeys(keys, local, clip, prop);
         else {
           const x = LOOK_BY_PROP[clip.type].get(prop);
           // a value in an object the clip does not have (and that is not made on write) is left alone, like withBaseValue
           if (x && lookWritable(clip, x)) {
-            let v = evalKeys(keys, local);
+            let v = evalKeys(keys, local, clip, prop);
             if (x.int) v = Math.round(v);
             if (x.textStyle) styled = true;
             if (!x.parent) own()[x.key] = v;
@@ -592,15 +642,15 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
         }
         break;
       case 'audio':
-        if (prop === 'volume') own().volume = evalKeys(keys, local);
-        else if (prop === 'pan') own().pan = evalKeys(keys, local);
+        if (prop === 'volume') own().volume = evalKeys(keys, local, clip, prop);
+        else if (prop === 'pan') own().pan = evalKeys(keys, local, clip, prop);
         break;
       case 'effect':
-        if (prop === 'amount') own().amount = evalKeys(keys, local);
+        if (prop === 'amount') own().amount = evalKeys(keys, local, clip, prop);
         else if (prop.startsWith('p.')) {
           params ??= { ...clip.params };
           // defineProperty: a param called __proto__ is an own key, as it is in an object literal
-          Object.defineProperty(params, prop.slice(2), { value: evalKeys(keys, local), enumerable: true, writable: true, configurable: true });
+          Object.defineProperty(params, prop.slice(2), { value: evalKeys(keys, local, clip, prop), enumerable: true, writable: true, configurable: true });
           own().params = params;
         } else if (prop.startsWith('grade.') && clip.effect === GRADE_EFFECT) {
           const x = GRADE_BY_PROP.get(prop);
@@ -612,12 +662,12 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
               o = nested.grade = { ...((clip as unknown as Rec).grade as Rec | null | undefined ?? x.create) };
               own().grade = o;
             }
-            o[x.key] = evalKeys(keys, local);
+            o[x.key] = evalKeys(keys, local, clip, prop);
           }
         }
         break;
       case 'camera':
-        if (CAMERA_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
+        if (CAMERA_KEYS.has(prop)) own()[prop] = evalKeys(keys, local, clip, prop);
         break;
     }
   }
@@ -688,7 +738,7 @@ export function withoutKeyAt<T extends Clip>(clip: T, prop: string, time: number
     kf[prop] = next;
     return { ...clip, keyframes: kf };
   }
-  const held = evalKeys(keys, time - clip.start);
+  const held = evalKeys(keys, time - clip.start, clip, prop);
   delete kf[prop];
   const cleared = { ...clip, keyframes: Object.keys(kf).length > 0 ? kf : undefined } as T;
   return withBaseValue(cleared, prop, held);
@@ -707,7 +757,7 @@ export function withoutKeys<T extends Clip>(clip: T, time: number, prop?: string
       rest[p] = keys;
       continue;
     }
-    if (keys.length > 0) out = withBaseValue(out, p, evalKeys(keys, time - clip.start));
+    if (keys.length > 0) out = withBaseValue(out, p, evalKeys(keys, time - clip.start, clip, p));
   }
   return { ...out, keyframes: Object.keys(rest).length > 0 ? rest : undefined };
 }

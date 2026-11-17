@@ -4,6 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useSource } from '../../store/source';
 import { useUi } from '../../store/ui';
+import { useKeyPanel } from '../timeline/keyPanelState';
 import { REASON_TEXT } from './reasons';
 import { GROUP_LABEL, SHORTCUTS, SHORTCUT_GROUPS, findShortcut, groupLabel } from './shortcuts';
 
@@ -142,7 +143,7 @@ describe('shortcut table', () => {
       expect(s.match(key('a'))).toBe(false);
     }
     for (const g of SHORTCUT_GROUPS) expect(SHORTCUTS.some((s) => s.group === g), g).toBe(true);
-    expect(SHORTCUTS.filter((s) => s.group === 'mouse').length).toBe(40);
+    expect(SHORTCUTS.filter((s) => s.group === 'mouse').length).toBe(52);
   });
   it('the blender only scene rows say blender controls', () => {
     const blender = ['scene-grab', 'scene-clear', 'scene-copy', 'scene-delete', 'scene-select-all', 'scene-views', 'scene-frame-all'];
@@ -330,5 +331,114 @@ describe('shortcut table', () => {
     const go = SHORTCUTS.find((s) => s.id === 'go-to-time')!;
     expect(typeof go.runKey).toBe('function');
     expect(go.mutates).toBeFalsy();
+  });
+  it('key panel rows', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    const row = (id: string) => SHORTCUTS.find((s) => s.id === id)!;
+    expect(ids.indexOf('key-panel')).toBe(ids.indexOf('key-add') + 1);
+    expect(ids.indexOf('key-panel-keys')).toBe(ids.indexOf('key-panel') + 1);
+    expect(row('key-panel').keys).toEqual([['shift', 'u']]);
+    expect(row('key-panel').group).toBe('animation');
+    expect(row('key-panel').mutates).toBeFalsy();
+    expect(row('key-panel-keys').info).toBe(true);
+    const u = key('U', { shiftKey: true, code: 'KeyU' });
+    expect(SHORTCUTS.filter((s) => s.match(u)).map((s) => s.id)).toEqual(['key-panel']);
+    expect(SHORTCUTS.filter((s) => s.match(key('U', { shiftKey: true, ctrlKey: true }))).length).toBe(0);
+    expect(SHORTCUTS.filter((s) => s.match(key('U', { shiftKey: true, altKey: true }))).length).toBe(0);
+    expect(findShortcut(key('u'))?.id).toBe('edit-select');
+    expect(findShortcut(key('p'))).toBeUndefined();
+    expect(ids.slice(ids.indexOf('mouse-key') + 1, ids.indexOf('mouse-key') + 3)).toEqual(['mouse-key-panel', 'mouse-key-stretch']);
+  });
+  it('graph rows', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    const one = (e: KeyboardEvent, id: string) => expect(SHORTCUTS.filter((s) => s.match(e)).map((s) => s.id)).toEqual([id]);
+    one(key('G', { shiftKey: true, code: 'KeyG' }), 'key-graph');
+    one(key('E', { shiftKey: true, code: 'KeyE' }), 'key-easy-ease');
+    one(key('F9', { shiftKey: true }), 'key-ease-into');
+    one(key('F9', { shiftKey: true, ctrlKey: true }), 'key-ease-out-of');
+    one(key('F9'), 'insert-edit');
+    one(key('f'), 'match-frame');
+    one(key('e', { ctrlKey: true }), 'export');
+    const order = ['key-panel-keys', 'key-graph', 'key-easy-ease', 'key-ease-into', 'key-ease-out-of', 'key-value-up', 'key-value-down', 'key-graph-keys'];
+    expect(ids.slice(ids.indexOf('key-panel-keys'), ids.indexOf('key-panel-keys') + 8)).toEqual(order);
+    for (const id of ['key-easy-ease', 'key-ease-into', 'key-ease-out-of', 'key-value-up', 'key-value-down']) expect(SHORTCUTS.find((s) => s.id === id)?.mutates, id).toBe(true);
+    expect(SHORTCUTS.find((s) => s.id === 'key-graph-keys')?.info).toBe(true);
+    // alt+up and alt+down belong to the keyframe panel only
+    const up = key('ArrowUp', { altKey: true });
+    const down = key('ArrowDown', { altKey: true, shiftKey: true });
+    expect(findShortcut(up)).toBeUndefined();
+    expect(findShortcut(down)).toBeUndefined();
+    useUi.setState({ keyFocus: true });
+    useKeyPanel.setState({ open: true });
+    try {
+      expect(findShortcut(up)?.id).toBe('key-value-up');
+      expect(findShortcut(down)?.id).toBe('key-value-down');
+      expect(findShortcut(key('ArrowUp', { altKey: true, ctrlKey: true }))).toBeUndefined();
+    } finally {
+      useUi.setState({ keyFocus: false });
+      useKeyPanel.setState({ open: false });
+    }
+    const at = ids.indexOf('mouse-key-stretch');
+    expect(ids.slice(at + 1, at + 4)).toEqual(['mouse-graph-key', 'mouse-graph-handle', 'mouse-graph-wheel']);
+  });
+  it('shift+t and ctrl+shift+d crossfade, t and ctrl+d stay', () => {
+    const one = (e: KeyboardEvent, id: string) => expect(SHORTCUTS.filter((s) => s.match(e)).map((s) => s.id)).toEqual([id]);
+    one(key('T', { shiftKey: true, code: 'KeyT' }), 'crossfade');
+    one(key('D', { shiftKey: true, ctrlKey: true, code: 'KeyD' }), 'crossfade');
+    one(key('t'), 'add-text');
+    one(key('d', { ctrlKey: true }), 'duplicate');
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids.indexOf('crossfade')).toBe(ids.indexOf('separate-sound') + 1);
+    const row = SHORTCUTS.find((s) => s.id === 'crossfade')!;
+    expect(row.mutates).toBe(true);
+    expect(row.keys).toEqual([['shift', 't'], ['ctrl', 'shift', 'd']]);
+  });
+  it('alt+= and alt+- (and the numpad) change track heights, = and - still zoom', () => {
+    const one = (e: KeyboardEvent, id: string) => expect(SHORTCUTS.filter((s) => s.match(e)).map((s) => s.id)).toEqual([id]);
+    one(key('=', { altKey: true, code: 'Equal' }), 'tracks-taller');
+    one(key('+', { altKey: true, code: 'NumpadAdd' }), 'tracks-taller');
+    one(key('-', { altKey: true, code: 'Minus' }), 'tracks-shorter');
+    one(key('-', { altKey: true, code: 'NumpadSubtract' }), 'tracks-shorter');
+    one(key('=', { code: 'Equal' }), 'zoom-in');
+    one(key('-', { code: 'Minus' }), 'zoom-out');
+    for (const id of ['tracks-taller', 'tracks-shorter']) {
+      const row = SHORTCUTS.find((s) => s.id === id)!;
+      expect(row.group, id).toBe('timeline');
+      expect(row.mutates, id).toBe(true);
+      expect(row.repeat, id).toBe(true);
+    }
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids.indexOf('tracks-taller')).toBe(ids.indexOf('snapping') + 1);
+    expect(ids.indexOf('tracks-shorter')).toBe(ids.indexOf('tracks-taller') + 1);
+    expect(ids.indexOf('zoom-fit')).toBe(ids.indexOf('tracks-shorter') + 1);
+  });
+  it('the lut mouse rows follow mouse-effect-on', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    const at = ids.indexOf('mouse-effect-on');
+    expect(ids.slice(at + 1, at + 3)).toEqual(['mouse-lut-card', 'mouse-lut-drop']);
+    expect(SHORTCUTS.find((s) => s.id === 'mouse-lut-card')?.keys).toEqual([['double click'], ['enter']]);
+    expect(SHORTCUTS.find((s) => s.id === 'mouse-lut-drop')?.keys).toEqual([['drag']]);
+  });
+  it('the round 2 rows sit where the plan puts them', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    const after = (id: string, prev: string) => expect(ids.indexOf(id), `${id} after ${prev}`).toBe(ids.indexOf(prev) + 1);
+    after('crossfade', 'separate-sound');
+    after('key-panel', 'key-add');
+    after('tracks-taller', 'snapping');
+    after('export-advanced', 'export');
+    after('mouse-key-panel', 'mouse-key');
+    after('mouse-key-stretch', 'mouse-key-panel');
+    after('mouse-graph-key', 'mouse-key-stretch');
+    after('mouse-graph-wheel', 'mouse-graph-handle');
+    after('mouse-crossfade', 'mouse-transition');
+    after('mouse-crossfade-move', 'mouse-crossfade');
+    after('mouse-crossfade-pick', 'mouse-crossfade-move');
+    after('mouse-track-move', 'mouse-track-rename');
+    after('mouse-track-height', 'mouse-track-move');
+    after('mouse-lut-card', 'mouse-effect-on');
+    const e = key('E', { ctrlKey: true, shiftKey: true, code: 'KeyE' });
+    expect(SHORTCUTS.filter((s) => s.match(e)).map((s) => s.id)).toEqual(['export-advanced']);
+    expect(findShortcut(key('e', { ctrlKey: true }))?.id).toBe('export');
+    expect(findShortcut(key('F10', { shiftKey: true }))?.id).toBe('clip-menu');
   });
 });

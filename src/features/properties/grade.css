@@ -22,8 +22,34 @@
 .grade-body.is-locked .grade-wheels,
 .grade-body.is-locked .grade-numbers,
 .grade-body.is-locked .grade-curves,
-.grade-body.is-locked .grade-swatches {
+.grade-body.is-locked .grade-swatches,
+.grade-body.is-locked .grade-lut {
   opacity: 0.5;
+}
+
+/* ---------- lut ---------- */
+.grade-lut {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.grade-lut .select {
+  min-width: 0;
+  max-width: 100%;
+}
+.grade-lut-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.grade-lut-btn {
+  padding: 0 6px;
+}
+.grade-lut-btn.is-active {
+  background: var(--accent-muted);
+  color: var(--text);
 }
 
 /* ---------- wheels ---------- */
@@ -118,6 +144,11 @@
   vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 1px #000);
 }
+.grade-lut .props-hint,
+.grade-summary {
+  overflow-wrap: anywhere;
+}
+
 .grade-readout {
   min-height: 1.4em;
   color: var(--text-dim);

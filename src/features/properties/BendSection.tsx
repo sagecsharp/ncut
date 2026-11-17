@@ -57,7 +57,7 @@ export function GroupBendField(p: { ids: readonly string[]; how: 'one' | 'each';
   const plain = leader?.bend?.angle ?? 0;
 
   // the same subscriptions as AnimField's AnimatedBody: they return what is shown, so a frame that changes nothing renders nothing
-  const value = usePlayback((s) => roundShown((keyed ? evalKeys(keys, local(s.time)) : plain) * feel.scale, feel.precision));
+  const value = usePlayback((s) => roundShown((keyed ? evalKeys(keys, local(s.time), leader ?? undefined, 'bend.angle') : plain) * feel.scale, feel.precision));
   const keyHere = usePlayback((s) => keyed && keyIndexAt(keys, local(s.time), tol) >= 0);
   const hasPrev = usePlayback((s) => keyed && keys.some((k) => inClip(k, duration) && k.t < local(s.time) - tol));
   const hasNext = usePlayback((s) => keyed && keys.some((k) => inClip(k, duration) && k.t > local(s.time) + tol));
@@ -95,7 +95,7 @@ export function GroupBendField(p: { ids: readonly string[]; how: 'one' | 'each';
         if (!c) return v;
         const ks = c.keyframes?.['bend.angle'];
         const at = clamp(t0.current, c.start, c.start + c.duration);
-        return ks && ks.length > 0 ? evalKeys(ks, at - c.start) : (isVisualClip(c) ? (c.bend?.angle ?? v) : v);
+        return ks && ks.length > 0 ? evalKeys(ks, at - c.start, c, 'bend.angle') : (isVisualClip(c) ? (c.bend?.angle ?? v) : v);
       }}
       onToggle={() => {
         run({ key: 'toggle' }, now(), {});

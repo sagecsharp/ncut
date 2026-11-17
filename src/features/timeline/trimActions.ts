@@ -11,7 +11,7 @@ import { edgePlan, editsAt, planRippleToPlayhead, planSlide, planSlip, selectedT
 import type { Edge, EditAt, TrimPlan } from './trimModes';
 import { setTrimView } from './trimLive';
 import type { TrimViewReq } from './trimLive';
-import { TRIM_TEXT, clipLabel, lockedTracksText, trimStopText } from './trimText';
+import { TRIM_TEXT, clipLabel, lockedTracksText, outOfSyncText, trimStopText } from './trimText';
 import { interaction } from './view';
 
 export function toggleTrimMode(): void {
@@ -37,6 +37,7 @@ export function clearTrimEdge(): boolean {
 function runPlan(p: Project, plan: TrimPlan, req: TrimViewReq): boolean {
   if (!useEditor.getState().applyTrimPlan(plan.ops)) return false;
   if (plan.lockedBehind.length > 0) useUi.getState().toast(TRIM_TEXT.lockedStay.replace('{tracks}', lockedTracksText(p, plan.lockedBehind)));
+  if (plan.drift?.length) useUi.getState().toast(outOfSyncText(p, plan.drift));
   setTrimView(req, 1500);
   return true;
 }

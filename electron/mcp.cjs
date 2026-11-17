@@ -444,7 +444,7 @@ function createMcp(opts) {
       sendArgs = rules.withoutPathArg(spec, args);
     }
     const callId = nextId++;
-    const ticket = rules.wantsTicket(name) ? grantTicket(callId) : null;
+    const ticket = rules.wantsTicket(name, args) ? grantTicket(callId) : null;
     const out = await ask({ id: callId, kind: 'call', name, args: sendArgs, files, ticket }, timing.call);
     // an error answer, or none at all: the export never started, so its ticket is not needed
     if (out.notReady || out.gone || out.bad || (out.value && out.value.isError === true)) dropUnarmed(ticket);

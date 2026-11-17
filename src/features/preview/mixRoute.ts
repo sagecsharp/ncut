@@ -2,7 +2,7 @@
 import type { Project } from '../../types';
 
 /** counters for the proof (devtools __ncut.mix.debug) */
-export const mixDebug = { panChains: 0, taps: 0, reads: 0 };
+export const mixDebug = { panChains: 0, taps: 0, reads: 0, twins: 0 };
 
 const SOUND_KEYS = new Set(['volume', 'pan', 'muted']);
 

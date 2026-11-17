@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioClip, Clip, ImageClip, MediaAsset, Project, VideoClip } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
+import { EASINGS } from '../../lib/anim';
 import { createProject } from '../../lib/factory';
+import { beginExport, endExport, isExporting } from '../../engine/exportState';
+import { MATTE_TEXT } from '../../engine/matte';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useSolo } from '../../store/solo';
@@ -9,12 +12,18 @@ import { useSource } from '../../store/source';
 import { useUi } from '../../store/ui';
 import { attachClips } from '../properties/attachActions';
 import { GRADE_TEXT } from '../properties/gradeActions';
+import { setKeyCopy } from '../properties/keyClipboard';
+import { CROSS_TEXT } from '../timeline/crossfadeText';
 import { EDIT_TEXT } from '../timeline/editText';
+import { useKeyPanel } from '../timeline/keyPanelState';
 import { clearKeysOf, closeGapsOnTrack, insertGapAt, selectEffectsOf, selectLike } from '../timeline/actions';
 import { cutAtMarkers, fitToMarkers, makeRow } from '../timeline/sequenceActions';
+import { paletteActions } from './paletteActions';
 import { REASON_IDS, REASON_TEXT, reasonFor, reasonSnapshot } from './reasons';
 import type { ReasonInput } from './reasons';
 import { SHORTCUTS } from './shortcuts';
+
+vi.mock('../../store/session', () => ({ closeProject: vi.fn(), exportProjectFile: vi.fn() }));
 
 const ed = () => useEditor.getState();
 const proj = (): Project => ed().project!;
@@ -77,7 +86,10 @@ const input = (over: Partial<ReasonInput> = {}): ReasonInput => ({ ...reasonSnap
 beforeEach(() => {
   useEditor.setState({ project: null, selection: [], past: [], future: [], clipboard: [] });
   usePlayback.setState({ time: 0 });
-  useUi.setState({ toasts: [], previewMode: 'output', programMode: 'output', trimEdge: null });
+  useUi.setState({ toasts: [], previewMode: 'output', programMode: 'output', trimEdge: null, keySel: [], keyFocus: false, crossfadePick: null });
+  useKeyPanel.getState().setOpen(false);
+  setKeyCopy(null);
+  while (isExporting()) endExport();
 });
 
 describe('reasons', () => {
@@ -433,7 +445,7 @@ describe('reasons', () => {
     ];
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.length).toBe(50);
-    expect(REASON_IDS.size).toBe(40 + 50);
+    expect(REASON_IDS.size).toBe(40 + 50 + 54);
     for (const id of ids) {
       expect(REASON_IDS.has(id), id).toBe(true);
       expect(reasonFor(id, { project: null, selection: ['a'], time: 1, canUndo: false, canRedo: false, clipboard: 0, zoom: 4 }), id).toBeNull();
@@ -498,6 +510,248 @@ describe('reasons', () => {
           expect(snap(), `${id} in ${JSON.stringify(v)} edge ${edge}: ${why}`).toBe(before);
           checked++;
         }
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+});
+
+describe('round 2 reasons', () => {
+  const NONE = { project: null, selection: ['a'], time: 1, canUndo: false, canRedo: false, clipboard: 0, zoom: 4 } satisfies ReasonInput;
+  const ease = EASINGS.map((e) => 'keys-ease-' + e.id);
+  const BY_FEATURE: Record<string, string[]> = {
+    'key lanes': ['keys-delete', 'keys-copy', 'keys-nudge-left', 'keys-nudge-right', 'keys-paste', 'keys-select-all', ...ease],
+    graph: ['key-easy-ease', 'key-ease-into', 'key-ease-out-of', 'key-value-up', 'key-value-down', 'keys-join-handles', 'keys-ease-bezier'],
+    crossfade: ['crossfade', 'crossfade-track', 'crossfade-track-off', 'fade-shape-power', 'fade-shape-linear', 'fade-shape-smooth'],
+    'track tools': ['tracks-taller', 'tracks-shorter', 'tracks-normal', 'track-up', 'track-down', 'sync-lock-toggle'],
+    lut: ['lut-on', 'lut-off', 'lut-save'],
+    delivery: ['export-advanced', 'export-transparent', 'export-codec', 'export-bitrate', 'export-interval', 'export-size', 'export-audio', 'export-youtube', 'export-youtube-4k', 'export-vimeo', 'export-reels', 'export-master'],
+    loudness: ['measure-loudness', 'export-loudness'],
+    mattes: ['matte-show', 'matte-above', 'matte-remove', 'matte-select'],
+  };
+  const withClips = (fn: (c: Clip) => Clip): void => {
+    useEditor.setState({ project: { ...proj(), clips: proj().clips.map(fn) } });
+  };
+
+  it('round 2 ids are known', () => {
+    const counts = Object.values(BY_FEATURE).map((l) => l.length);
+    expect(counts).toEqual([14, 7, 6, 6, 3, 12, 2, 4]);
+    const all = Object.values(BY_FEATURE).flat();
+    expect(all.length).toBe(54);
+    expect(new Set(all).size).toBe(54);
+    open({ select: ['a'], time: 1 });
+    for (const id of all) {
+      expect(REASON_IDS.has(id), id).toBe(true);
+      expect(reasonFor(id, NONE), id).toBeNull();
+      expect(['string', 'object'], id).toContain(typeof reasonFor(id, input()));
+    }
+  });
+
+  it('round 2 texts', () => {
+    const T = REASON_TEXT;
+    expect(T.noMixSound).toBe('no clip with sound to measure');
+    expect(T.measureExport).toBe('an export is running: measure when it ends');
+    expect(T.selectKeys).toBe('select keyframes first: click a diamond in the keyframe panel or drag a box around some');
+    expect(T.openKeyPanel).toBe('open the keyframe panel first');
+    expect(T.copyKeysFirst).toBe('copy keyframes first');
+    expect(T.keysAtStart).toBe('the keyframes are at the start of their clip');
+    expect(T.keysAtEnd).toBe('the keyframes are at the end of their clip');
+    expect(T.keyInTheWay).toBe('another keyframe of that value is in the way: select it too, or go past it');
+    expect(T.keysNotHere).toBe('the copied keyframes do not fit the selected clips');
+    expect(T.noHandles).toBe('no handles to change there: bounce, elastic and hold have none, a first or last keyframe has one side only');
+    expect(T.easeNothing).toBe('the selected keyframes have nothing to ease: each is alone in its value');
+    expect(T.keysAtValueMin).toBe('a selected keyframe is at the lowest value it can have');
+    expect(T.keysAtValueMax).toBe('a selected keyframe is at the highest value it can have');
+    expect(T.tracksTallest).toBe('every track is as tall as it goes');
+    expect(T.tracksShortest).toBe('every track is as short as it goes');
+    expect(T.tracksNormal).toBe('every track has its normal height');
+    expect(T.trackNormal).toBe('the track has its normal height');
+    expect(T.trackTop).toBe('the track is as high as it goes (video tracks stay above audio tracks)');
+    expect(T.trackBottom).toBe('the track is as low as it goes (audio tracks stay below video tracks)');
+    expect(T.inOutSyncOff).toBe('the clips between the in and out points are on tracks with sync lock off');
+    expect(T.gapSyncOff).toBe('the clips after the playhead are on tracks with sync lock off');
+    expect(T.noLut).toBe('the selected clips have no lut');
+    expect(T.nothingToSave).toBe('the selected clip has no color or grade to save');
+    expect(T.lutNotClip).toBe('a lut is not a clip: drag it onto a clip, or pick it in the grade');
+    expect(T.oneVisual).toBe('select one video, image, text or shape clip first');
+    expect(T.noMatte).toBe('the selected clips have no matte');
+    expect(T.noMatteHere).toBe('the selected clips have no matte and are not the matte of a clip');
+    for (const [k, v] of Object.entries(CROSS_TEXT)) expect((T as Record<string, string>)[k], k).toBe(v);
+  });
+
+  it('key panel ids', () => {
+    const T = REASON_TEXT;
+    open({ select: ['a'], time: 1, keys: true });
+    const ref = { clipId: 'a', prop: 'x', t: 0 };
+    const four = ['keys-delete', 'keys-copy', 'keys-nudge-left', 'keys-nudge-right'];
+    const panel = [...four, ...ease, ...BY_FEATURE.graph!];
+    for (const id of panel) {
+      // closed, open with nothing selected, open with a keyframe selected
+      expect(reasonFor(id, input({ keyPanelOpen: false, keySel: [ref] })), id).toBe(T.openKeyPanel);
+      expect(reasonFor(id, input({ keyPanelOpen: false })), id).toBe(T.openKeyPanel);
+      expect(reasonFor(id, input({ keyPanelOpen: true, keySel: [] })), id).toBe(T.selectKeys);
+      expect(reasonFor(id, input({ keyPanelOpen: true })), id).toBe(T.selectKeys);
+      expect(reasonFor(id, input({ keyPanelOpen: true, keySel: [ref] })), id).toBeNull();
+    }
+    // paste: a copy first, then a selected clip
+    expect(reasonFor('keys-paste', input({ keyCopied: false }))).toBe(T.copyKeysFirst);
+    expect(reasonFor('keys-paste', input({ keyCopied: true, selection: [] }))).toBe(T.selectClip);
+    expect(reasonFor('keys-paste', input({ keyCopied: true }))).toBeNull();
+    // select all: a clip, then a clip with keyframes
+    expect(reasonFor('keys-select-all', input({ selection: [] }))).toBe(T.selectClip);
+    expect(reasonFor('keys-select-all', input({ selection: ['b'] }))).toBe(T.noKeys);
+    expect(reasonFor('keys-select-all', input({ selection: ['a'] }))).toBeNull();
+    expect(reasonFor('keys-select-all', input({ selection: ['a', 'b'] }))).toBeNull();
+  });
+
+  it('a picked crossfade keeps the edge and key rows alive', () => {
+    open({ select: ['v'], time: 1 });
+    withClips((c) => (c.id === 'v' ? ({ ...c, crossfade: { before: 0.25, after: 0.25 } } as Clip) : c));
+    const sel = ['v'];
+    expect(reasonFor('key-next', input({ selection: sel }))).toBe(REASON_TEXT.noKeys);
+    expect(reasonFor('key-next', input({ selection: sel, crossfadePick: { clipId: 'v', selection: sel } }))).toBeNull();
+    // a pick made for another selection array does not count
+    expect(reasonFor('key-next', input({ selection: sel, crossfadePick: { clipId: 'v', selection: ['v'] } }))).toBe(REASON_TEXT.noKeys);
+  });
+
+  it('lut reasons', () => {
+    const T = REASON_TEXT;
+    const lut = { media: 'lut1', mix: 1 };
+    open({ select: ['au'], time: 1 });
+    for (const id of ['lut-on', 'lut-off', 'lut-save']) expect(reasonFor(id, input()), id).toBe(T.gradeFirst);
+    // a picture with no lut, no grade and no adjust
+    open({ select: ['a'], time: 1 });
+    expect(reasonFor('lut-on', input())).toBeNull();
+    expect(reasonFor('lut-off', input())).toBe(T.noLut);
+    expect(reasonFor('lut-save', input())).toBe(T.nothingToSave);
+    // an active adjust or a grade is something to save
+    withClips((c) => (c.id === 'a' ? ({ ...c, adjust: { brightness: 0.4 } } as Clip) : c));
+    expect(reasonFor('lut-save', input())).toBeNull();
+    withClips((c) => (c.id === 'a' ? ({ ...c, adjust: undefined, grade: { liftR: 0.2 } } as Clip) : c));
+    expect(reasonFor('lut-save', input())).toBeNull();
+    // a lut: off works
+    withClips((c) => (c.id === 'a' ? ({ ...c, grade: { lut } } as Clip) : c));
+    expect(reasonFor('lut-off', input())).toBeNull();
+    expect(reasonFor('lut-save', input())).toBeNull();
+    // a locked track: on and off wait
+    open({ select: ['a'], time: 1, lock: true });
+    expect(reasonFor('lut-on', input())).toBe(T.trackLocked);
+    withClips((c) => (c.id === 'a' ? ({ ...c, grade: { lut } } as Clip) : c));
+    expect(reasonFor('lut-off', input())).toBe(T.trackLocked);
+    expect(reasonFor('lut-save', input())).toBeNull();
+    // one with a lut that is not locked and one locked without
+    open({ select: ['a', 'b'], time: 1, lock: true });
+    withClips((c) => (c.id === 'b' ? ({ ...c, grade: { lut } } as Clip) : c));
+    expect(reasonFor('lut-off', input())).toBeNull();
+    expect(reasonFor('lut-on', input())).toBeNull();
+  });
+
+  it('measure-loudness', () => {
+    const T = REASON_TEXT;
+    open({ clips: false });
+    expect(reasonFor('measure-loudness', input())).toBe(T.addClip);
+    // pictures only
+    open({ select: [] });
+    useEditor.setState({ project: { ...proj(), clips: proj().clips.filter((c) => c.type === 'image') } });
+    expect(reasonFor('measure-loudness', input())).toBe(T.noMixSound);
+    // a video without sound is no sound either
+    useEditor.setState({ project: { ...proj(), clips: [video(proj().tracks[2]!.id, 'v', 6, 2)], assets: proj().assets.map((a) => (a.id === 'vid1' ? { ...a, hasAudio: false } : a)) } });
+    expect(reasonFor('measure-loudness', input())).toBe(T.noMixSound);
+    // an audio clip, and a video whose media has sound
+    open({ select: [] });
+    expect(reasonFor('measure-loudness', input())).toBeNull();
+    useEditor.setState({ project: { ...proj(), clips: proj().clips.filter((c) => c.type === 'video') } });
+    expect(reasonFor('measure-loudness', input())).toBeNull();
+    // an export runs: the measure waits
+    beginExport();
+    try {
+      expect(reasonFor('measure-loudness', input())).toBe(T.measureExport);
+    } finally {
+      endExport();
+    }
+    expect(reasonFor('measure-loudness', input())).toBeNull();
+  });
+
+  it('export ids answer like export', () => {
+    const ids = [...BY_FEATURE.delivery!, 'export-loudness'];
+    expect(ids.length).toBe(13);
+    open({ clips: false });
+    for (const id of ids) expect(reasonFor(id, input()), id).toBe(REASON_TEXT.addClip);
+    expect(reasonFor('export', input())).toBe(REASON_TEXT.addClip);
+    open({ select: [] });
+    for (const id of ids) expect(reasonFor(id, input()), id).toBeNull();
+    expect(reasonFor('export', input())).toBeNull();
+    for (const id of ids) expect(reasonFor(id, NONE), id).toBeNull();
+  });
+
+  it('matte rows', () => {
+    const T = REASON_TEXT;
+    // t0 is the top track: a (0..2) is above b (3..5) in the project, but they never play together
+    open({ select: [], time: 1 });
+    expect(reasonFor('matte-show', input({ selection: ['a'] }))).toBeNull();
+    expect(reasonFor('matte-show', input({ selection: ['a', 'b'] }))).toBe(T.oneVisual);
+    expect(reasonFor('matte-show', input({ selection: ['au'] }))).toBe(T.oneVisual);
+    expect(reasonFor('matte-show', input({ selection: [] }))).toBe(T.oneVisual);
+    // above: one or two picture clips, then what the planner says
+    expect(reasonFor('matte-above', input({ selection: [] }))).toBe(MATTE_TEXT.pickOneOrTwo);
+    expect(reasonFor('matte-above', input({ selection: ['a'] }))).toBe(MATTE_TEXT.noneAbove);
+    expect(reasonFor('matte-above', input({ selection: ['a', 'b'] }))).toBeNull();
+    // remove: no matte, a matte, a matte on a locked track
+    expect(reasonFor('matte-remove', input({ selection: ['b'] }))).toBe(T.noMatte);
+    withClips((c) => (c.id === 'b' ? ({ ...c, matte: { clip: 'a', mode: 'alpha' } } as Clip) : c));
+    expect(reasonFor('matte-remove', input({ selection: ['b'] }))).toBeNull();
+    expect(reasonFor('matte-remove', input({ selection: ['a', 'b'] }))).toBeNull();
+    // select: a clip, a pair, the pair on a locked track
+    expect(reasonFor('matte-select', input({ selection: [] }))).toBe(T.selectClip);
+    expect(reasonFor('matte-select', input({ selection: ['v'] }))).toBe(T.noMatteHere);
+    expect(reasonFor('matte-select', input({ selection: ['b'] }))).toBeNull();
+    expect(reasonFor('matte-select', input({ selection: ['a'] }))).toBeNull();
+    open({ select: ['b'], time: 1, lock: true });
+    withClips((c) => (c.id === 'b' ? ({ ...c, matte: { clip: 'a', mode: 'alpha' } } as Clip) : c));
+    expect(reasonFor('matte-select', input())).toBe(T.trackLocked);
+    expect(reasonFor('matte-select', input({ selection: ['a'] }))).toBeNull();
+    // a locked matted clip: remove waits
+    useEditor.setState({ project: { ...proj(), tracks: proj().tracks.map((t) => (t.id === proj().clips.find((c) => c.id === 'b')!.trackId ? { ...t, locked: true } : { ...t, locked: false })) } });
+    expect(reasonFor('matte-remove', input({ selection: ['b'] }))).toBe(T.trackLocked);
+  });
+
+  it('the snapshot fills the round 2 fields', () => {
+    open({ select: ['a'], time: 1 });
+    let s = reasonSnapshot();
+    expect(s.keySel).toEqual([]);
+    expect(s.keyCopied).toBe(false);
+    expect(s.keyPanelOpen).toBe(false);
+    expect(s.crossfadePick).toBeNull();
+    const ref = { clipId: 'a', prop: 'x', t: 0 };
+    const pick = { clipId: 'a', selection: ['a'] };
+    useUi.setState({ keySel: [ref], crossfadePick: pick });
+    useKeyPanel.getState().setOpen(true);
+    setKeyCopy({ items: [{ clipId: 'a', keys: { x: [{ t: 0, v: 1, ease: 'linear' }] } }] });
+    s = reasonSnapshot();
+    expect(s.keySel).toEqual([ref]);
+    expect(s.keyCopied).toBe(true);
+    expect(s.keyPanelOpen).toBe(true);
+    expect(s.crossfadePick).toEqual(pick);
+  });
+
+  it('the round 2 rows: a reason means the row changes nothing', () => {
+    // the two that wait for an async answer have no sync run to compare. lut-on has no row, the grade section does it
+    const skip = new Set(['lut-save', 'measure-loudness', 'lut-on']);
+    const ids = Object.values(BY_FEATURE).flat().filter((id) => !skip.has(id));
+    expect(ids.length).toBe(51);
+    const snap = () => JSON.stringify({ project: proj(), selection: ed().selection, time: usePlayback.getState().time, clipboard: ed().clipboard.length });
+    let checked = 0;
+    for (const id of ids) {
+      for (const s of STATES) {
+        open(s);
+        const row = paletteActions().find((a) => a.id === id);
+        expect(row, id).toBeDefined();
+        const why = reasonFor(id, reasonSnapshot());
+        if (!why) continue;
+        const before = snap();
+        row!.run();
+        expect(snap(), `${id} in ${JSON.stringify(s)}: ${why}`).toBe(before);
+        checked++;
       }
     }
     expect(checked).toBeGreaterThan(20);

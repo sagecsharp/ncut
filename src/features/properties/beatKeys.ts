@@ -12,7 +12,8 @@
  *   next round starts.
  */
 import { evalKeys } from '../../lib/anim';
-import type { Keyframe, Keyframes } from '../../types';
+import { handlesOf, mirrorHandles, sameHandles, splitBezierAt } from '../../lib/keyBezier';
+import type { KeyHandle, Keyframe, Keyframes } from '../../types';
 import type { BeatGrid } from '../../lib/tempo';
 import { nearestLine } from '../../lib/tempo';
 import { MAX_KEYS_PER_PROP, MIN_GAP, fitKeys, keySpan, mirrorEase, normalizeKeys, shiftKeys } from './keyTools';
@@ -33,7 +34,7 @@ export function sameKeys(a: Keyframes, b: Keyframes): boolean {
     const y = b[prop];
     if (!y || y.length !== x.length) return false;
     for (let i = 0; i < x.length; i++) {
-      if (Math.abs(x[i]!.t - y[i]!.t) > TOL || x[i]!.v !== y[i]!.v || x[i]!.ease !== y[i]!.ease) return false;
+      if (Math.abs(x[i]!.t - y[i]!.t) > TOL || x[i]!.v !== y[i]!.v || x[i]!.ease !== y[i]!.ease || !sameHandles(x[i]!, y[i]!)) return false;
     }
   }
   return true;
@@ -163,6 +164,8 @@ interface Step {
   o: number;
   v: number;
   ease: Keyframe['ease'];
+  in?: KeyHandle;
+  out?: KeyHandle;
 }
 
 /**
@@ -173,6 +176,19 @@ interface Step {
 function cutCurve(first: Step[], keys: readonly Keyframe[], from: number, period: number): void {
   const open = first[first.length - 1]!;
   const span = period - open.o;
+  if (open.ease === 'bezier') {
+    // a custom part is cut in two on the curve itself: the open step keeps the front half, the end step is the cut
+    const split = splitBezierAt(keys, from + period);
+    if (split) {
+      const at = split.findIndex((k) => k.t === from + period);
+      const mid = split[at]!;
+      const out = split[at - 1]!.out;
+      if (out) open.out = out;
+      else delete open.out;
+      first.push({ o: period, v: mid.v, ease: 'linear', ...(mid.in ? { in: mid.in } : null) });
+      return;
+    }
+  }
   if (open.ease !== 'linear') {
     const want = open.ease === 'bounce' || open.ease === 'elastic' ? 24 : 8;
     const n = Math.max(1, Math.min(want, Math.floor(span / (4 * MIN_GAP))));
@@ -212,7 +228,7 @@ export function loopKeysOnBeats(kf: Keyframes, grid: BeatGrid, beats: number, du
     if (keys.length === 0) continue;
     // the first round of this value: its keys inside from .. from + period
     const first: Step[] = [];
-    for (const k of keys) if (k.t <= from + period + TOL) first.push({ o: Math.min(period, Math.max(0, k.t - from)), v: k.v, ease: k.ease });
+    for (const k of keys) if (k.t <= from + period + TOL) first.push({ o: Math.min(period, Math.max(0, k.t - from)), v: k.v, ease: k.ease, ...handlesOf(k) });
     if (first.length === 0) {
       // it only moves later than the first round: it holds what it shows there
       out[prop] = [{ t: from, v: keys[0]!.v, ease: keys[0]!.ease }];
@@ -227,7 +243,7 @@ export function loopKeysOnBeats(kf: Keyframes, grid: BeatGrid, beats: number, du
       const prev = first[first.length - 2]!;
       if (end.o >= period - TOL) {
         const afterJump = prev.ease === 'hold' || prev.o >= period - MIN_GAP - TOL;
-        const rest = !pingPong && first[0]!.o <= TOL && Math.abs(prev.v - end.v) <= SAME && Math.abs(end.v - first[0]!.v) <= SAME;
+        const rest = !pingPong && prev.ease !== 'bezier' && first[0]!.o <= TOL && Math.abs(prev.v - end.v) <= SAME && Math.abs(end.v - first[0]!.v) <= SAME;
         if (afterJump || rest) {
           first.pop();
           seam = true;
@@ -238,7 +254,7 @@ export function loopKeysOnBeats(kf: Keyframes, grid: BeatGrid, beats: number, du
     // rests there (the next key has the same value, or this one holds its value) needs no key for that
     const next = keys[first.length];
     const open = first[first.length - 1]!;
-    if (!seam && next && open.ease !== 'hold' && open.o < period - MIN_GAP - TOL && Math.abs(next.v - open.v) > SAME) cutCurve(first, keys, from, period);
+    if (!seam && next && open.ease !== 'hold' && open.o < period - MIN_GAP - TOL && (open.ease === 'bezier' || Math.abs(next.v - open.v) > SAME)) cutCurve(first, keys, from, period);
     if (first.length < 2) {
       out[prop] = [{ t: from + first[0]!.o, v: first[0]!.v, ease: first[0]!.ease }];
       continue;
@@ -267,10 +283,10 @@ export function loopKeysOnBeats(kf: Keyframes, grid: BeatGrid, beats: number, du
         const o = period - s.o;
         if (prev && prev.ease === 'hold' && Math.abs(prev.v - s.v) > SAME && s.o - prev.o > 2 * MIN_GAP + TOL) {
           // a step played backwards: this key's value for a moment, then the value that was held BEFORE the step
-          seq.push({ o, v: s.v, ease: 'hold' }, { o: o + MIN_GAP, v: prev.v, ease: 'linear' });
+          seq.push({ o, v: s.v, ease: 'hold', ...handlesOf(mirrorHandles(s)) }, { o: o + MIN_GAP, v: prev.v, ease: 'linear' });
         } else {
           // the reversed key starts the segment that used to end at it: the one the key before it described
-          seq.push({ o, v: s.v, ease: mirrorEase(prev ? prev.ease : s.ease) });
+          seq.push({ o, v: s.v, ease: mirrorEase(prev ? prev.ease : s.ease), ...handlesOf(mirrorHandles(s)) });
         }
       }
       // a round that does not begin with a key shows its first value from the start of the round. that only
@@ -279,12 +295,17 @@ export function loopKeysOnBeats(kf: Keyframes, grid: BeatGrid, beats: number, du
       // the key on the very end of the round before is the same moment as this round's first key. this one
       // says how it goes on, so the other one goes (left to the sort, float noise would pick the winner)
       const before = seqs[r - 1];
-      if (before && before.length > 1 && seq[0]!.o <= TOL && before[before.length - 1]!.o >= period - TOL) before.pop();
+      if (before && before.length > 1 && seq[0]!.o <= TOL && before[before.length - 1]!.o >= period - TOL) {
+        // the first key of this round takes over the handle that arrived at the popped one
+        const gone = before.pop()!;
+        if (gone.in) seq[0]!.in = gone.in;
+        else delete seq[0]!.in;
+      }
       seqs.push(seq);
     }
     const all: Keyframe[] = [];
     seqs.forEach((seq, r) => {
-      for (const s of seq) all.push({ t: from + r * period + s.o, v: s.v, ease: s.ease });
+      for (const s of seq) all.push({ t: from + r * period + s.o, v: s.v, ease: s.ease, ...handlesOf(s) });
     });
     // the last round is kept whole, also where it runs past the end of the clip (keys may lie outside a clip,
     // a split leaves them there too): cutting it would bend the curve, and a longer clip shows the rest of it

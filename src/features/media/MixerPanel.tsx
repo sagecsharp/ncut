@@ -5,6 +5,8 @@ import { useSolo } from '../../store/solo';
 import { useUi } from '../../store/ui';
 import { isMixFlat, mixerTracks, soloActive } from '../../lib/mix';
 import { tip } from '../shell/tip';
+import { LoudnessStrip } from './mixer/LoudnessStrip';
+import { MeasureBar } from './mixer/MeasureBar';
 import { ScaleColumn } from './mixer/ScaleColumn';
 import { Strip } from './mixer/Strip';
 import './mixer/mixer.css';
@@ -71,6 +73,7 @@ export function MixerPanel() {
             solo off
           </button>
         ) : null}
+        <MeasureBar />
       </div>
       <div className="mixer-row" ref={row}>
         <ScaleColumn />
@@ -79,6 +82,7 @@ export function MixerPanel() {
         ) : (
           tracks.map((t) => <Strip key={t.id} track={t} current={current.has(t.id)} />)
         )}
+        <LoudnessStrip />
         <Strip track={null} current={false} />
       </div>
     </div>

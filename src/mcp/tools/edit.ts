@@ -9,6 +9,7 @@ import { planNudge } from '../../features/timeline/timeNudge';
 import { trimStopText } from '../../features/timeline/trimText';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { crossfadeSpan } from '../../lib/audioCross';
 import { clipEnd, rangesOverlap } from '../../lib/timelineOps';
 import type { Clip, FaceFill, FaceFit, Project, VisualClip } from '../../types';
 import { isTimedClip, isVisualClip, trackKindForClip } from '../../types';
@@ -42,7 +43,7 @@ const updateClip: ToolDef = {
     'on an effect clip "params" is an object of numbers ({ "radius": 12 }, an unknown key is an error that lists the keys) and "amount" is 0..1. "speed" (video and audio clips, 0.25 to 4) re-times the clip and its length follows. ' +
     'null takes an optional field away (for example "mask": null). a field the clip type does not have is an error, not ignored. ' +
     'refused here: start (use move_clip), duration and trimStart (use trim_clip), trackId (move_clip), keyframes (set_keyframe, set_keyframes, clear_keyframes), faces (set_sides). ' +
-    'answers { clip: short brief of the clip, changed: [names of the fields that changed], moved?: [ids of attached clips that were moved so they stay in place] }. a patch that changes nothing is an error.',
+    'answers { clip: short brief of the clip, changed: [names of the fields that changed], moved?: [ids of attached clips that were moved so they stay in place], crossfadePlays?: what a crossfade plays now: { before, after, short? } in seconds, or { waits: true } }. a patch that changes nothing is an error.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -61,7 +62,14 @@ const updateClip: ToolDef = {
       useEditor.getState().rollback();
       throw new ToolError('nothing changed: every value was already set, or was limited to what it already is (get_clip shows the stored values)');
     }
-    return ok({ clip: clipBrief(needClip(id)), changed, ...(keep.moved.length > 0 ? { moved: keep.moved } : {}) });
+    const now = needClip(id);
+    const out: Record<string, unknown> = { clip: clipBrief(now), changed, ...(keep.moved.length > 0 ? { moved: keep.moved } : {}) };
+    if (changed.includes('crossfade') && 'crossfade' in now && now.crossfade) {
+      const span = crossfadeSpan(needProject(), now);
+      const short = span ? (span.shortBefore ?? span.shortAfter) : null;
+      out.crossfadePlays = span ? { before: round(span.before), after: round(span.after), ...(short ? { short } : {}) } : { waits: true };
+    }
+    return ok(out);
   },
 };
 
@@ -262,6 +270,11 @@ const nudgeClips: ToolDef = {
   },
 };
 
+/** the stored names of clips, in the order given */
+function clipNames(p: Project, clipIds: readonly string[]): string[] {
+  return clipIds.map((id) => p.clips.find((c) => c.id === id)?.name).filter((n): n is string => n !== undefined);
+}
+
 /** the names of tracks, in the order given */
 function trackNames(p: Project, trackIds: readonly string[]): string[] {
   return trackIds.map((id) => p.tracks.find((t) => t.id === id)?.name).filter((n): n is string => n !== undefined);
@@ -285,7 +298,7 @@ const trimClip: ToolDef = {
     'drag one edge of a clip to a timeline time (seconds), in one undo step. edge "start" cuts or extends the head (the picture of a video / audio clip stays in sync with the timeline), edge "end" the tail. ' +
     'the edge is limited like a drag in the editor: the clip stays at least 0.05 s long, does not run into its neighbours on the track, does not start before 0 and a video / audio clip cannot run past its media. ' +
     'answers the clip brief; when the edge stopped short of the time asked for, "note" says where it ended. to move the whole clip use move_clip, to cut it in two use split_clips. ' +
-    'with a mode, grouped clips with the same edge, edit, or span and speed come along unless alone. locked tracks never move. answers then also have mode, moved, speed, locked_tracks and note.',
+    'with a mode, grouped clips with the same edge, edit, or span and speed come along unless alone. locked tracks never move. answers then also have mode, moved, speed, locked_tracks, sync_off_tracks (tracks with sync lock off that stayed), out_of_sync (clips whose picture and sound no longer play together) and note.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -296,7 +309,7 @@ const trimClip: ToolDef = {
         type: 'string',
         enum: ['trim', 'ripple', 'move-edit', 'stretch'],
         description:
-          '"trim" (default) moves only this edge, a gap stays. "ripple" also moves everything after the edit on unlocked tracks, so no gap opens. "move-edit" moves the edit between this clip and the one touching this edge: one gets longer, the other shorter. "stretch" changes the speed so the same media fills the new length (0.25x to 4x)',
+          '"trim" (default) moves only this edge, a gap stays. "ripple" also moves everything after the edit on unlocked tracks with sync lock on (always the trimmed clip\'s own track), so no gap opens. "move-edit" moves the edit between this clip and the one touching this edge: one gets longer, the other shorter. "stretch" changes the speed so the same media fills the new length (0.25x to 4x)',
       },
       alone: { type: 'boolean', description: 'only this clip (move-edit: the two clips at the edit), not its group mates. default false' },
     },
@@ -332,6 +345,8 @@ const trimClip: ToolDef = {
       if (plan.moved.length > 0) out.moved = plan.moved;
       if (mode === 'stretch' && plan.speed !== undefined) out.speed = round(plan.speed);
       if (plan.lockedBehind.length > 0) out.locked_tracks = trackNames(p, plan.lockedBehind);
+      if (plan.freeBehind && plan.freeBehind.length > 0) out.sync_off_tracks = trackNames(p, plan.freeBehind);
+      if (plan.drift && plan.drift.length > 0) out.out_of_sync = clipNames(p, plan.drift);
       if (plan.stop) out.note = `the ${edge} edge stopped at ${round(got)} s, not ${round(time)} s: ${trimStopText(plan.stop, p)}`;
       return ok(out);
     }
@@ -500,6 +515,8 @@ function rangeRun(kind: RangeEditKind): ToolResult {
   if (kind === 'extract') out.moved = r.moved;
   if (r.slivers > 0) out.slivers = r.slivers;
   if (r.lockedTracks > 0) out.lockedTracks = r.lockedTracks;
+  if (r.syncOffTracks) out.syncOffTracks = r.syncOffTracks;
+  if (r.outOfSync && r.outOfSync.length > 0) out.outOfSync = clipNames(needProject(), r.outOfSync);
   if (kind === 'extract') out.range = rangeOf(needProject().range);
   return ok(out);
 }
@@ -519,8 +536,8 @@ const extractRange: ToolDef = {
   name: 'extract_range',
   title: 'extract the range',
   description:
-    'like lift_range, then every clip on every unlocked track after the out point moves left by out minus in, so the tracks stay in sync. locked tracks stay. the out point is cleared after it, the in point stays. the playhead goes to the in point. ' +
-    'answers { in, out, seconds, removed, split, trimmed, moved, slivers?, lockedTracks?, range }.',
+    'like lift_range, then every clip on every unlocked track with sync lock on after the out point moves left by out minus in, so the tracks stay in sync. locked tracks and tracks with sync lock off stay. the out point is cleared after it, the in point stays. the playhead goes to the in point. ' +
+    'answers { in, out, seconds, removed, split, trimmed, moved, slivers?, lockedTracks?, syncOffTracks?: how many tracks with sync lock off stayed, outOfSync?: names of clips that went out of sync, range }.',
   annotations: { destructiveHint: true },
   inputSchema: { type: 'object', properties: {} },
   run: () => rangeRun('extract'),

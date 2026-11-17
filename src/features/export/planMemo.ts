@@ -9,7 +9,9 @@
 import type { ExportPlan, PlanRequest } from './exporter';
 
 export function planKey(req: PlanRequest): string {
-  return `${req.container}|${req.width}x${req.height}|${req.fps}|${req.quality}`;
+  const base = `${req.container}|${req.width}x${req.height}|${req.fps}|${req.quality}`;
+  // a delivery choice is part of the question: only when set, so an old question keeps its old key
+  return `${base}${req.codec !== undefined ? `|${req.codec}` : ''}${req.bitrate !== undefined ? `|b${req.bitrate}` : ''}`;
 }
 
 export interface PlanMemo {

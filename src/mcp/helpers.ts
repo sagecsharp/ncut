@@ -78,6 +78,7 @@ export function clipBrief(clip: Clip): Record<string, unknown> {
     name: clip.name,
   };
   if (clip.type === 'video' || clip.type === 'image' || clip.type === 'audio') out.asset = clip.assetId;
+  if ((clip.type === 'video' || clip.type === 'audio') && clip.crossfade) out.crossfade = clip.crossfade;
   if (clip.type === 'text') out.text = clip.text.length > 80 ? `${clip.text.slice(0, 80)}...` : clip.text;
   if (clip.type === 'shape') out.kind = clip.kind;
   if (clip.type === 'effect') {

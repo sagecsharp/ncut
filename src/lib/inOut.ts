@@ -4,13 +4,14 @@
  */
 import type { Clip, InOutRange, Project } from '../types';
 import { clipEnd, projectDuration } from './timelineOps';
+import { syncTrackIds } from './trackTools';
 
 /** the shape of export's TimeRange */
 export interface Span {
   start: number;
   end: number;
 }
-export type RangeBlock = 'both' | 'nothing' | 'locked';
+export type RangeBlock = 'both' | 'nothing' | 'locked' | 'sync-off';
 export type AnyRange = InOutRange | null | undefined;
 
 const EPS = 1e-6;
@@ -188,19 +189,23 @@ export function editableTrackIds(p: Pick<Project, 'tracks'>): Set<string> {
 
 /**
  * why lift or extract cannot work: 'both' (a mark is missing), 'nothing' (nothing unlocked in the way), 'locked' (only
- * locked tracks are in the way). null when it can work
+ * locked tracks are in the way), 'sync-off' (extract: only unlocked tracks with sync lock off are in the way). null when it can work
  */
 export function rangeEditBlock(p: Pick<Project, 'clips' | 'tracks' | 'range'>, extract: boolean): RangeBlock | null {
   const s = editSpan(p.range);
   if (!s) return 'both';
-  const open = editableTrackIds(p);
+  const open = extract ? syncTrackIds(p.tracks, new Set()) : editableTrackIds(p);
+  const unlocked = new Set(p.tracks.filter((t) => !t.locked).map((t) => t.id));
   let lockedInside = false;
+  let offInside = false;
   for (const c of p.clips) {
     const inside = c.start < s.end - EPS && clipEnd(c) > s.start + EPS;
     const after = extract && c.start >= s.end - EPS;
     if (!inside && !after) continue;
     if (open.has(c.trackId)) return null;
-    if (inside) lockedInside = true;
+    if (!inside) continue;
+    if (unlocked.has(c.trackId)) offInside = true;
+    else lockedInside = true;
   }
-  return lockedInside ? 'locked' : 'nothing';
+  return offInside ? 'sync-off' : lockedInside ? 'locked' : 'nothing';
 }

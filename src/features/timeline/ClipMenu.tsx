@@ -17,6 +17,7 @@ import { applyEffectsToEverything, clearKeysOf, freezeAtPlayhead, goToEffectTarg
 import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
 import { getEffect } from '../../engine/effects/registry';
 import { effectsOn } from './effectTarget';
+import { CrossfadeClipItems } from './CrossfadeClipItems';
 import { useFloatingMenu } from './menuBehavior';
 import { cutAtMarkers, fitToMarkers, makeRow, canCutAtMarkers, sequenceableIds } from './sequenceActions';
 import { swapCandidates } from './swap';
@@ -483,6 +484,7 @@ export function ClipMenu({ x, y, clipId, focusFirst, onClose }: Props) {
           <MenuKeys id="toggle-3d" />
         </button>
       ) : null}
+      <CrossfadeClipItems clipId={clipId} ids={ids} onDone={onClose} />
       {timed ? (
         <>
           <div className="menu-sep" />

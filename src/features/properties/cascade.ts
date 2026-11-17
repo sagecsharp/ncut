@@ -4,6 +4,7 @@
  * that make a clip fly in or out. no store, no dom, so it is unit tested.
  */
 import { animProps, baseValue, evalKeys, valueAt } from '../../lib/anim';
+import { splitBezierAt } from '../../lib/keyBezier';
 import type { Clip, Easing, Keyframe, Keyframes, VisualClip } from '../../types';
 import { MIN_CLIP_DURATION, isTimedClip, isVisualClip } from '../../types';
 import { hash01, MIN_GAP } from './keyTools';
@@ -438,9 +439,9 @@ export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyO
     if (touches && other && keys) {
       // next to a fly of the other side: its own rest key (at its inner end) is the rest pose, never its far pose
       const o = propFly(keys, !incoming, len, other);
-      if (o) return evalKeys(keys, incoming ? o.a : o.b);
+      if (o) return evalKeys(keys, incoming ? o.a : o.b, clip, prop);
     }
-    if (keys && keys.length > 0) return evalKeys(keys, seamOf(prop));
+    if (keys && keys.length > 0) return evalKeys(keys, seamOf(prop), clip, prop);
     return baseValue(clip, prop) ?? 0;
   };
   const kind: FlyKind = opts.kind === 'depth' && !(clip as VisualClip).threeD ? 'zoom' : opts.kind;
@@ -503,17 +504,26 @@ export function flyPlanFull(clip: Clip, index: number, count: number, opts: FlyO
     const r = rest(prop);
     // a property that does not move (scale of a clip that is already tiny ...) is left alone
     if (Math.abs(far - r) < 1e-9) continue;
+    // a seam inside a custom part cuts the curve there, so the rest key keeps the curve that goes on (in) or came (outgoing).
+    // a seam on a key keeps that key's handle
+    const old = keysOf(prop);
+    const seam = seamOf(prop);
+    const split = splitBezierAt(old ?? [], seam);
+    const mid = split?.find((k) => k.t === seam);
+    const on = split ? undefined : old?.find((k) => Math.abs(k.t - seam) <= EPS);
+    const restOut = mid ? mid.out : on?.out;
+    const restIn = mid ? mid.in : on?.in;
     const fresh: Keyframe[] = incoming
       ? [
           { t: lo, v: far, ease },
-          { t: hi, v: r, ease: seamEase(prop) },
+          { t: hi, v: r, ease: seamEase(prop), ...(restOut ? { out: restOut } : null) },
         ]
       : [
-          { t: lo, v: r, ease },
+          { t: lo, v: r, ease, ...(restIn ? { in: restIn } : null) },
           { t: hi, v: far, ease: 'ease' },
         ];
     const z = zone(prop);
-    out[prop] = mergeSpan(keysOf(prop), fresh, z.a, z.b);
+    out[prop] = mergeSpan(split ?? old, fresh, z.a, z.b);
   }
   // what an earlier fly of another kind left on this side goes: its far key is removed, the rest key stays
   // (only on properties that carry that fly: same shape, same span)

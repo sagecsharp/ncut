@@ -5,12 +5,16 @@
  *
  * the glsl exists twice: as GRADE_GLSL (what runs) and as gradeColor / ditherAt (what the tests run). THEY MUST MATCH
  * stage by stage (g1 wheels, g2 tone curves, g3 color curves, g4 dither): when you change one, change the other.
+ * a lut (gradeLut.ts) sits at l1 (before the wheels) or l2 (after the curves) in the lut programs only: gradeLutColor
+ * is the mirror of both.
  */
 import type { ClipGrade, GradeCurves, GradePoint } from '../types';
-import { CURVE_KINDS, GRADE_EPS, GRADE_KEYS, gradeNum, isCurveNeutral, isGradeActive, normalizeCurve, wheelOf } from '../lib/gradeData';
+import { CURVE_KINDS, GRADE_EPS, GRADE_KEYS, gradeNum, hasGradeMath, isCurveNeutral, isGradeActive, normalizeCurve, wheelOf } from '../lib/gradeData';
 import type { CurveKind, GradeWheelName } from '../lib/gradeData';
 import { CB_DIV, CR_DIV, HUE_RED, KB, KG, KR, TAU, curveSampler } from '../lib/gradeMath';
 import type { Rgb3 } from '../lib/gradeMath';
+import { lutBindOf, lutColor } from './gradeLut';
+import type { LutBind } from './gradeLut';
 
 /** how far a wheel number moves its wheel: lift and offset by half, gain by one stop, gamma by a power of two */
 export const LIFT_K = 0.5;
@@ -32,6 +36,8 @@ export interface GradeData {
   table: Float32Array | null;
   /** the curves signature: the gpu uploads the table when it changes */
   key: string;
+  /** the lut of the grade, set only while it can draw */
+  lut?: LutBind;
 }
 
 /** the curve table of one set of lists */
@@ -140,12 +146,13 @@ export function gradeData(g: ClipGrade | null | undefined): GradeData | null {
   const bake = bakeCurves(g!.curves);
   const toneOn = bake !== null && bake.tone.some((t) => t > 0);
   const colorOn = bake !== null && bake.color;
-  if (!wheels && !toneOn && !colorOn) return null;
+  const lut = lutBindOf(g);
+  if (!wheels && !toneOn && !colorOn && !lut) return null;
   const per = (wheel: GradeWheelName, f: (p: number) => number): Rgb3 => {
     const [r, gg, b, y] = wheelOf(g, wheel).map(eps) as [number, number, number, number];
     return [f(y + r), f(y + gg), f(y + b)];
   };
-  return {
+  const data: GradeData = {
     lift: per('lift', (p) => LIFT_K * p),
     gain: per('gain', (p) => Math.max(0, 1 + GAIN_K * p)),
     gamma: per('gamma', (p) => 2 ** (-GAMMA_K * p)),
@@ -155,12 +162,21 @@ export function gradeData(g: ClipGrade | null | undefined): GradeData | null {
     table: bake ? bake.table : null,
     key: bake ? bake.key : '',
   };
+  if (lut) data.lut = lut;
+  return data;
 }
 
-/** changes with every wheel number and list. '' when the grade changes nothing */
+/** true when the grade changes pixels now: wheel or curve math, or a lut whose table is loaded */
+export function gradeShows(g: ClipGrade | null | undefined): boolean {
+  return hasGradeMath(g) || lutBindOf(g) !== null;
+}
+
+/** changes with every wheel number and list, and with the live lut. '' when the grade changes nothing */
 export function gradeSignature(g: ClipGrade | null | undefined): string {
-  if (!isGradeActive(g)) return '';
-  return 'g' + GRADE_KEYS.map((k) => eps(gradeNum(g, k))).join(',') + '|' + curvesKey(g!.curves);
+  if (!gradeShows(g)) return '';
+  const lut = lutBindOf(g);
+  const tail = lut ? `|L${lut.table.key}:${lut.mix}${lut.last ? 'l' : ''}${lut.tv ? 't' : ''}` : '';
+  return 'g' + GRADE_KEYS.map((k) => eps(gradeNum(g, k))).join(',') + '|' + curvesKey(g!.curves) + tail;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -312,6 +328,17 @@ export function gradeColor(rgb: Rgb3, d: GradeData): Rgb3 {
     }
   }
   return [r, g, b];
+}
+
+/** the grade with its lut, without the dither */
+export function gradeLutColor(rgb: Rgb3, d: GradeData): Rgb3 {
+  let c = rgb;
+  // l1 lut first
+  if (d.lut && !d.lut.last) c = lutColor(c, d.lut);
+  c = gradeColor(c, d);
+  // l2 lut last
+  if (d.lut && d.lut.last) c = lutColor(c, d.lut);
+  return c;
 }
 
 function gHash(v: number): number {

@@ -157,3 +157,14 @@ describe('createClipFromAsset', () => {
     expect(clipTypeFor({ kind: 'image', hasAudio: false }, 'picture')).toBe('image');
   });
 });
+
+describe('a lut media', () => {
+  const lut: MediaAsset = { id: 'l', name: 'look.cube', kind: 'lut', mime: 'application/x-cube', size: 10, duration: 0, width: 0, height: 0, hasAudio: false, createdAt: 0, lut: { size3: 33, size1: 0 } };
+  it('clipTypeFor gives null for a lut for every part', () => {
+    for (const parts of ['both', 'picture', 'sound'] as const) expect(clipTypeFor(lut, parts)).toBeNull();
+    expect(clipTypeFor(lut)).toBeNull();
+  });
+  it('createClipFromAsset throws for a lut', () => {
+    expect(() => createClipFromAsset(lut, 't', 0)).toThrow('a lut is not a clip');
+  });
+});

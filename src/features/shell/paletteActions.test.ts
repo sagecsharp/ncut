@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EASINGS } from '../../lib/anim';
 import { createProject, createShapeClip, createTextClip, createTrack } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -19,10 +20,24 @@ const NEW_IDS = [
   'side-by-side', 'media-skim', 'source-empty', 'source-add',
   'mark-selection', 'clear-in', 'clear-out',
   'join-sound', 'move-into-sync', 'slip-into-sync', 'select-sound', 'select-picture',
-  'solo-selection', 'solo-off', 'mixer-reset',
+  'solo-selection', 'solo-off', 'mixer-reset', 'measure-loudness',
   'time-display-timecode', 'time-display-frames', 'time-display-seconds',
   'grade-show', 'grade-on-off', 'grade-reset', 'grade-copy', 'grade-paste', 'grade-add',
   'replace-edit', 'fit-edit', 'append-edit', 'edit-targets-auto', 'edit-targets-selected',
+  'lut-import', 'lut-off', 'lut-save',
+  'crossfade-track', 'crossfade-track-off', 'fade-shape-power', 'fade-shape-linear', 'fade-shape-smooth',
+  'matte-show', 'matte-above', 'matte-remove', 'matte-select',
+];
+
+const KEY_IDS = [
+  'keys-delete', 'keys-copy', 'keys-paste', 'keys-select-all', 'keys-nudge-left', 'keys-nudge-right',
+  ...['linear', 'ease', 'ease-in', 'ease-out', 'back', 'bounce', 'elastic', 'hold'].map((e) => 'keys-ease-' + e),
+];
+const GRAPH_IDS = ['keys-ease-bezier', 'keys-join-handles', 'graph-value', 'graph-speed', 'graph-fit-all', 'graph-fit-selected', 'graph-auto-fit'];
+const TRACK_IDS = ['tracks-normal', 'track-up', 'track-down', 'sync-lock-toggle'];
+const EXPORT_IDS = [
+  'export-transparent', 'export-codec', 'export-bitrate', 'export-interval', 'export-size', 'export-audio',
+  'export-youtube', 'export-youtube-4k', 'export-vimeo', 'export-reels', 'export-master',
 ];
 
 const find = (id: string) => paletteActions().find((a) => a.id === id)!;
@@ -87,8 +102,8 @@ describe('palette actions', () => {
     const inset = ids.indexOf('output-inset');
     expect(ids.slice(inset + 1, inset + 6)).toEqual(NEW_IDS.slice(25, 30));
     const bend = ids.indexOf('bend-together');
-    expect(ids.slice(bend - 33, bend)).toEqual(NEW_IDS.slice(30));
-    expect(NEW_IDS.length).toBe(25 + 5 + 33);
+    expect(ids.slice(bend - 46, bend)).toEqual(NEW_IDS.slice(30));
+    expect(NEW_IDS.length).toBe(25 + 5 + 33 + 13);
   });
   it('the new search rows with a reason id have a why', () => {
     let withReason = 0;
@@ -102,10 +117,65 @@ describe('palette actions', () => {
       expect(typeof a.why, id).toBe('function');
       withReason++;
     }
-    expect(withReason).toBe(28);
+    expect(withReason).toBe(40);
     for (const id of ['slip-earlier', 'slip-later', 'slide-left', 'slide-right', 'source-add', 'mark-selection', 'clear-in', 'clear-out', 'join-sound', 'solo-selection', 'solo-off', 'mixer-reset', 'grade-show', 'grade-copy', 'grade-paste', 'replace-edit', 'fit-edit', 'append-edit']) {
       expect(REASON_IDS.has(id), id).toBe(true);
     }
+  });
+  it('the keyframe panel rows follow clear-keys', () => {
+    const ids = paletteActions().map((a) => a.id);
+    const at = ids.indexOf('clear-keys');
+    expect(ids.slice(at + 1, at + 15)).toEqual(KEY_IDS);
+    for (const id of KEY_IDS) {
+      const a = find(id);
+      expect(a.keys, id).toEqual([]);
+      expect(a.group, id).toBe('animation');
+      expect(typeof a.why, id).toBe('function');
+    }
+  });
+  it('the easing rows are the EASINGS of the table', () => {
+    expect(KEY_IDS.slice(6)).toEqual(EASINGS.map((e) => 'keys-ease-' + e.id));
+  });
+  it('the graph rows follow the keyframe panel rows', () => {
+    const ids = paletteActions().map((a) => a.id);
+    const at = ids.indexOf('keys-ease-hold');
+    expect(ids.slice(at + 1, at + 8)).toEqual(GRAPH_IDS);
+    for (const id of GRAPH_IDS) {
+      const a = find(id);
+      expect(a.keys, id).toEqual([]);
+      expect(a.group, id).toBe('animation');
+      expect(typeof a.why === 'function', id).toBe(REASON_IDS.has(id));
+    }
+  });
+  it('the track rows come right after close-gaps and have a why', () => {
+    const ids = paletteActions().map((a) => a.id);
+    const at = ids.indexOf('close-gaps');
+    expect(ids.slice(at + 1, at + 5)).toEqual(TRACK_IDS);
+    for (const id of TRACK_IDS) {
+      expect(find(id).keys, id).toEqual([]);
+      expect(typeof find(id).why, id).toBe('function');
+    }
+    expect(find('sync-lock-toggle').group).toBe('editing');
+    expect(find('insert-gap').title).toBe('insert a 1 second gap at the playhead (unlocked tracks with sync lock on)');
+  });
+  it('the export rows follow reset-layout and want a clip', () => {
+    const ids = paletteActions().map((a) => a.id);
+    const at = ids.indexOf('reset-layout');
+    expect(ids.slice(at + 1, at + 12)).toEqual(EXPORT_IDS);
+    useEditor.getState().openProject({ ...createProject('empty'), clips: [] });
+    const snap = reasonSnapshot();
+    for (const id of EXPORT_IDS) {
+      const a = find(id);
+      expect(a.group, id).toBe('app');
+      expect(a.keys, id).toEqual([]);
+      expect(a.why?.(snap), id).toBe(REASON_TEXT.addClip);
+    }
+  });
+  it('export-loudness follows export-master and wants a clip', () => {
+    const ids = paletteActions().map((a) => a.id);
+    expect(ids[ids.indexOf('export-master') + 1]).toBe('export-loudness');
+    useEditor.getState().openProject({ ...createProject('empty'), clips: [] });
+    expect(find('export-loudness').why?.(reasonSnapshot())).toBe(REASON_TEXT.addClip);
   });
   it('bend together on a keyed leader only fits: no new key at the playhead', () => {
     const base = createProject('bend');

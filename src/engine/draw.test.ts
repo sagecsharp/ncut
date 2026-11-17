@@ -1,13 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTextClip } from '../lib/factory';
-import type { Crop, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
+import type { Crop, EffectClip, ImageClip, Project, ShapeClip, Track, VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, TEXTURE_MAX, resetClipErrors, textureSize, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, setCanvasChannel, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt } from './draw';
+import { type Layer3D, MAX_MOTION_BLUR_SAMPLES, TEXTURE_MAX, resetClipErrors, textureSize, blendOp, extrudeFades, imagePixelSize, getClipBoxWorld, motionBlurTimes, pruneSamples, releaseRenderResources, setCanvasChannel, textureQuality, containSize, cropRect, getClipBox, hitTestBox, normalizeCrop, planeFor, radiusPx, renderFrame, visibleClipsAt, effectPassAt } from './draw';
 import type { ClipBox, DrawSource, SourceResolver } from './draw';
 import { SCENE_RETRY_MS, releaseSceneRenderer, renderScene, sceneRendererCount, startBlocked } from './scene3d/renderer';
 import { effectRunnerCount, releaseEffectRunner } from './effects/runner';
 import { releaseTransitionRunner, transitionRunnerCount } from './transitions/runner';
 import { clipLookCount, releaseClipLook } from './clipLook';
+import { lutNow, withLuts } from './lutScope';
+import type { LutTable } from '../lib/cube';
 
 let seq = 0;
 function video(trackId: string, start: number, duration: number, over: Partial<VideoClip> = {}): VideoClip {
@@ -246,6 +248,9 @@ class FakeCtx {
   fillRect(...a: number[]): void {
     this.rec('fillRect', a);
   }
+  clearRect(...a: number[]): void {
+    this.rec('clearRect', a);
+  }
   drawImage(...a: unknown[]): void {
     this.rec('drawImage', a);
   }
@@ -443,6 +448,39 @@ describe('renderFrame', () => {
     const ctx = new FakeCtx();
     renderFrame(asCtx(ctx), p, 0, () => null);
     expect(ctx.ops('fillRect')[0]!.fill).toBe('#000000');
+  });
+
+  it('a transparent frame starts cleared, never filled', () => {
+    const p = project([], tracks);
+    const plain = new FakeCtx();
+    renderFrame(asCtx(plain), p, 0, () => null);
+    expect(plain.ops('fillRect')[0]!.args).toEqual([0, 0, 1920, 1080]);
+    expect(plain.ops('clearRect').length).toBe(0);
+    const clear = new FakeCtx();
+    renderFrame(asCtx(clear), p, 0, () => null, { transparent: true });
+    expect(clear.ops('clearRect')[0]!.args).toEqual([0, 0, 1920, 1080]);
+    expect(clear.ops('fillRect').length).toBe(0);
+  });
+
+  it('renderFrame runs inside the lut scope of its resolver', () => {
+    const p = project([video('top', 0, 5)], tracks);
+    const t = { key: 'k' } as unknown as LutTable;
+    let inside: LutTable | null | undefined;
+    const withLut = ((clip: VideoClip | ImageClip) => {
+      inside = lutNow('m');
+      return mkSource(clip.id);
+    }) as SourceResolver;
+    withLut.lut = () => t;
+    renderFrame(asCtx(new FakeCtx()), p, 1, withLut);
+    expect(inside).toBe(t);
+    expect(lutNow('m')).toBeNull();
+    let plainInside: LutTable | null | undefined;
+    const plain = ((clip: VideoClip | ImageClip) => {
+      plainInside = lutNow('m');
+      return mkSource(clip.id);
+    }) as SourceResolver;
+    renderFrame(asCtx(new FakeCtx()), p, 1, plain);
+    expect(plainInside).toBeNull();
   });
 });
 
@@ -1168,5 +1206,24 @@ describe('paintFlat with a pivot', () => {
     expect(t.args[1]).toBeCloseTo(1070, 6);
     const d = ctx.ops('drawImage')[0]!;
     expect(d.args.slice(1)).toEqual([-480, -270, 960, 540]);
+  });
+});
+
+describe('effectPassAt with a lut', () => {
+  const fx = (grade: EffectClip['grade']): EffectClip => ({ id: 'g1', type: 'effect', trackId: 't', start: 0, duration: 5, name: 'fx', fadeIn: 0, fadeOut: 0, effect: 'grade', amount: 1, params: {}, seed: 1, grade });
+  const table = { key: 'k', title: '', size3: 2, data3: new Float32Array(24), min3: [0, 0, 0], max3: [1, 1, 1], size1: 0, data1: new Float32Array(0), min1: [0, 0, 0], max1: [1, 1, 1], identity: false } as LutTable;
+  const lookup = (id: string) => (id === 'm' ? table : null);
+
+  it('effectPassAt uses grade-lut only with a live lut', () => {
+    const lut = { media: 'm' };
+    expect(effectPassAt(fx({ liftR: 0.2 }), 1)!.def.id).toBe('grade');
+    expect(effectPassAt(fx({ liftR: 0.2, lut }), 1)!.def.id).toBe('grade');
+    expect(effectPassAt(fx({ lut }), 1)).toBeNull();
+    const live = withLuts(lookup, () => effectPassAt(fx({ liftR: 0.2, lut }), 1))!;
+    expect(live.def.id).toBe('grade-lut');
+    expect(live.grade!.lut!.table).toBe(table);
+    expect(withLuts(lookup, () => effectPassAt(fx({ lut }), 1))!.def.id).toBe('grade-lut');
+    expect(withLuts(lookup, () => effectPassAt(fx({ liftR: 0.2, lut: { media: 'm', mix: 0 } }), 1))!.def.id).toBe('grade');
+    expect(withLuts(lookup, () => effectPassAt(fx({ liftR: 0.2 }), 1))!.def.id).toBe('grade');
   });
 });

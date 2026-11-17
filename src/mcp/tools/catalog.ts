@@ -16,7 +16,8 @@ import { TEXT_PRESETS } from '../../features/media/textPresets';
 import { EASINGS } from '../../lib/anim';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { listFonts } from '../../lib/fonts';
-import { BLEND_MODES, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D } from '../../types';
+import { SHAPE_NAME } from '../../lib/audioCross';
+import { BLEND_MODES, FADE_SHAPES, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D } from '../../types';
 import type { FaceFit, LookAt, TextAlign } from '../../types';
 import { ok, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
@@ -101,7 +102,8 @@ function enums(): unknown {
   return {
     blendModes: [...BLEND_MODES],
     maskShapes: [...MASK_SHAPES],
-    easings: EASINGS.map((e) => ({ id: e.id, label: e.label })),
+    easings: [...EASINGS.map((e) => ({ id: e.id, label: e.label })), { id: 'bezier', label: 'custom (handles)' }],
+    fadeShapes: FADE_SHAPES.map((id) => ({ id, label: SHAPE_NAME[id] })),
     lookAt: Object.entries(LOOK_AT).map(([id, meaning]) => ({ id, meaning })),
     faceFits: Object.entries(FACE_FITS).map(([id, meaning]) => ({ id, meaning })),
     canvasPresets: CANVAS_PRESETS.map((p) => ({ id: p.id, width: p.width, height: p.height })),
@@ -174,7 +176,7 @@ export const catalogTools: ToolDef[] = [
       'what the editor offers, read from its own lists, so ids are always right. kind: ' +
       'effects (id, name, category, params with min / max / default / options, for add_effect), transitions, text_presets, shape_presets, ' +
       'shapes (flat kinds, 3d solids and the side names of each, for set_sides), motions (clip in / out / loop and text in / out / loop), fonts (the bundled ones), ' +
-      'enums (blend modes, mask shapes, easings, look at, side fits, canvas presets, fps, motion blur styles, text align) and ' +
+      'enums (blend modes, mask shapes, easings, fade shapes, look at, side fits, canvas presets, fps, motion blur styles, text align) and ' +
       'fields (every field update_clip takes per clip type, with units and ranges). ' +
       'category narrows effects (motion, blur, color, distort, stylize, overlay) or transitions (fade, move, wipe, stylize, 3d). effects is the long answer: filter it.',
     inputSchema: {

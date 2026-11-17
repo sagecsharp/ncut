@@ -179,3 +179,17 @@ describe('stillClipFrom grade', () => {
     expect(stillClipFrom(video('b', 't1', 0, 4, { grade: null }), tf, 'img', 0, 1)).not.toHaveProperty('grade');
   });
 });
+
+describe('freezing a clip with a matte', () => {
+  it('a matte clip is never the topmost freeze target', () => {
+    const a = video('a', 't1', 0, 10);
+    const b = video('b', 't2', 0, 10, { matte: { clip: 'a', mode: 'alpha' } });
+    expect(pickFreezeTarget(project([a, b]), [], 5)?.id).toBe('b');
+  });
+  it('the still keeps the matte', () => {
+    const v = video('b', 't2', 0, 4, { matte: { clip: 'a', mode: 'luma-inv' } });
+    const s = stillClipFrom(v, { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }, 'img', 0, 1);
+    expect(s.matte).toEqual({ clip: 'a', mode: 'luma-inv' });
+    expect(s.matte).not.toBe(v.matte);
+  });
+});
