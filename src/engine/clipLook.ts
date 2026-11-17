@@ -12,6 +12,9 @@
  */
 import type { ChromaKey, ClipAdjust, VisualClip } from '../types';
 import { createCanvas } from '../lib/canvas';
+import { isGradeActive } from '../lib/gradeData';
+import { GRADE_GLSL, gradeData, gradeSignature } from './grade';
+import type { GradeData } from './grade';
 
 export const DEFAULT_ADJUST: ClipAdjust = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 };
 export const DEFAULT_CHROMA_KEY: ChromaKey = { color: '#00d000', tolerance: 0.3, softness: 0.1, spill: 0.5 };
@@ -75,20 +78,22 @@ export function isKeyActive(key: ChromaKey | null | undefined): boolean {
 
 /** true when the clip's picture has to go through clipLookTexture */
 export function hasClipLook(clip: VisualClip): boolean {
-  return isAdjustActive(clip.adjust) || isKeyActive(clip.chromaKey);
+  return isAdjustActive(clip.adjust) || isKeyActive(clip.chromaKey) || isGradeActive(clip.grade);
 }
 
 /** a string that changes whenever the result of clipLookTexture would (for texture caches) */
 export function clipLookSignature(clip: VisualClip): string {
   const a = isAdjustActive(clip.adjust) ? clip.adjust! : null;
   const k = isKeyActive(clip.chromaKey) ? clip.chromaKey! : null;
-  if (!a && !k) return '';
+  const g = gradeSignature(clip.grade);
+  if (!a && !k && !g) return '';
   let s = '';
   if (a) s += `a${num(a.brightness)},${num(a.contrast)},${num(a.saturation)},${num(a.hue)},${num(a.temperature)}`;
   if (k) {
     const c = keyRgb(k)!;
     s += `|k${c[0].toFixed(4)},${c[1].toFixed(4)},${c[2].toFixed(4)},${num(k.tolerance)},${num(k.softness)},${num(k.spill)}`;
   }
+  if (g) s += '|' + g;
   return s;
 }
 
@@ -158,6 +163,22 @@ void main() {
   c = clamp(hueRot(c, u_hue.x, u_hue.y), 0.0, 1.0);
   o = vec4(c * a, a);
 }`;
+
+const OUT_ANCHOR = 'out vec4 o;\n';
+const END_ANCHOR = '  o = vec4(c * a, a);';
+const once = (src: string, anchor: string): boolean => src.split(anchor).length === 2;
+if (!once(FRAGMENT_SRC, OUT_ANCHOR) || !once(FRAGMENT_SRC, END_ANCHOR)) throw new Error('clipLook: the grade anchors do not match the look shader');
+
+/** the look shader with the grade after hue and before the premultiply. the dither counts pixels from the top left */
+const GRADE_FRAGMENT_SRC = FRAGMENT_SRC.replace(OUT_ANCHOR, () => `${OUT_ANCHOR}${GRADE_GLSL}uniform vec2 u_gRes;\n`).replace(
+  END_ANCHOR,
+  () => `  c = gDither(gradeApply(c), floor(v_uv * u_gRes));\n${END_ANCHOR}`,
+);
+
+/** the look fragment shader: the plain one, or with the grade built in */
+export function lookShaderSource(grade: boolean): string {
+  return grade ? GRADE_FRAGMENT_SRC : FRAGMENT_SRC;
+}
 
 // ---------------------------------------------------------------------------------------------
 // the same math in typescript (keep in sync with the glsl above)
@@ -260,22 +281,63 @@ export function despill(rgb: Rgb, key: ChromaKey): Rgb {
 
 type GLCanvas = OffscreenCanvas | HTMLCanvasElement;
 
+type Loc = WebGLUniformLocation | null;
+
+/** the uniforms of a look program. the grade ones are null on the plain program */
+interface LookLoc {
+  tex: Loc;
+  adj: Loc;
+  hue: Loc;
+  keyOn: Loc;
+  keyCbCr: Loc;
+  key: Loc;
+  mask: Loc;
+  gLift: Loc;
+  gGain: Loc;
+  gGamma: Loc;
+  gOff: Loc;
+  gOn: Loc;
+  gTone: Loc;
+  gCurves: Loc;
+  gRes: Loc;
+}
+
 interface Looker {
   canvas: GLCanvas;
   gl: WebGL2RenderingContext;
   program: WebGLProgram;
   tex: WebGLTexture;
-  loc: {
-    tex: WebGLUniformLocation | null;
-    adj: WebGLUniformLocation | null;
-    hue: WebGLUniformLocation | null;
-    keyOn: WebGLUniformLocation | null;
-    keyCbCr: WebGLUniformLocation | null;
-    key: WebGLUniformLocation | null;
-    mask: WebGLUniformLocation | null;
-  };
+  loc: LookLoc;
+  /** the program with the grade, built on the first graded clip. undefined = not built, null = failed */
+  grade?: { program: WebGLProgram; loc: LookLoc } | null;
+  /** the grade curve table (unit 1) and the key of what it holds */
+  curveTex: WebGLTexture | null;
+  curveKey: string;
   dead: boolean;
 }
+
+function locsOf(gl: WebGL2RenderingContext, program: WebGLProgram, grade: boolean): LookLoc {
+  const at = (name: string): Loc => (grade ? gl.getUniformLocation(program, name) : null);
+  return {
+    tex: gl.getUniformLocation(program, 'u_tex'),
+    adj: gl.getUniformLocation(program, 'u_adj'),
+    hue: gl.getUniformLocation(program, 'u_hue'),
+    keyOn: gl.getUniformLocation(program, 'u_keyOn'),
+    keyCbCr: gl.getUniformLocation(program, 'u_keyCbCr'),
+    key: gl.getUniformLocation(program, 'u_key'),
+    mask: gl.getUniformLocation(program, 'u_mask'),
+    gLift: at('u_gLift'),
+    gGain: at('u_gGain'),
+    gGamma: at('u_gGamma'),
+    gOff: at('u_gOff'),
+    gOn: at('u_gOn'),
+    gTone: at('u_gTone'),
+    gCurves: at('u_gCurves'),
+    gRes: at('u_gRes'),
+  };
+}
+
+let warnedGrade = false;
 
 const lookers = new Map<string, Looker>();
 
@@ -347,15 +409,9 @@ function createLooker(): Looker | null {
     gl,
     program,
     tex,
-    loc: {
-      tex: gl.getUniformLocation(program, 'u_tex'),
-      adj: gl.getUniformLocation(program, 'u_adj'),
-      hue: gl.getUniformLocation(program, 'u_hue'),
-      keyOn: gl.getUniformLocation(program, 'u_keyOn'),
-      keyCbCr: gl.getUniformLocation(program, 'u_keyCbCr'),
-      key: gl.getUniformLocation(program, 'u_key'),
-      mask: gl.getUniformLocation(program, 'u_mask'),
-    },
+    loc: locsOf(gl, program, false),
+    curveTex: null,
+    curveKey: '',
     dead: false,
   };
   canvas.addEventListener('webglcontextlost', (e) => {
@@ -394,6 +450,8 @@ export function releaseClipLook(channel: 'preview' | 'export'): void {
     const gl = l.gl;
     gl.deleteTexture(l.tex);
     gl.deleteProgram(l.program);
+    if (l.grade) gl.deleteProgram(l.grade.program);
+    if (l.curveTex) gl.deleteTexture(l.curveTex);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
     // give the drawing buffer back too
     l.canvas.width = 1;
@@ -401,6 +459,61 @@ export function releaseClipLook(channel: 'preview' | 'export'): void {
   } catch {
     // already gone
   }
+}
+
+/** the look program with the grade in it. null when it does not build: clips then draw without their grade (warned once) */
+function buildGrade(gl: WebGL2RenderingContext): Looker['grade'] {
+  const vs = compile(gl, gl.VERTEX_SHADER, VERTEX_SRC);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, lookShaderSource(true));
+  const program = gl.createProgram();
+  let ok = !!vs && !!fs && !!program;
+  if (ok) {
+    gl.attachShader(program, vs!);
+    gl.attachShader(program, fs!);
+    gl.linkProgram(program);
+    ok = !!gl.getProgramParameter(program, gl.LINK_STATUS);
+  }
+  if (vs) gl.deleteShader(vs);
+  if (fs) gl.deleteShader(fs);
+  if (!ok) {
+    if (program) gl.deleteProgram(program);
+    if (!warnedGrade) {
+      warnedGrade = true;
+      console.warn('the grade shader did not compile, clips draw without their grade');
+    }
+    return null;
+  }
+  return { program, loc: locsOf(gl, program, true) };
+}
+
+/** the grade uniforms and its curve table (unit 1, nearest: R32F is not filterable) */
+function bindGrade(l: Looker, loc: LookLoc, g: GradeData, w: number, h: number): void {
+  const gl = l.gl;
+  gl.uniform3f(loc.gLift, g.lift[0], g.lift[1], g.lift[2]);
+  gl.uniform3f(loc.gGain, g.gain[0], g.gain[1], g.gain[2]);
+  gl.uniform3f(loc.gGamma, g.gamma[0], g.gamma[1], g.gamma[2]);
+  gl.uniform3f(loc.gOff, g.offset[0], g.offset[1], g.offset[2]);
+  gl.uniform4f(loc.gOn, g.on[0], g.on[1], g.on[2], g.on[3]);
+  gl.uniform4f(loc.gTone, g.tone[0], g.tone[1], g.tone[2], g.tone[3]);
+  gl.uniform2f(loc.gRes, w, h);
+  if (!g.table) return;
+  gl.activeTexture(gl.TEXTURE1);
+  if (!l.curveTex) {
+    l.curveTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, l.curveTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  } else {
+    gl.bindTexture(gl.TEXTURE_2D, l.curveTex);
+  }
+  if (g.key !== l.curveKey) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 7, 0, gl.RED, gl.FLOAT, g.table);
+    l.curveKey = g.key;
+  }
+  gl.uniform1i(loc.gCurves, 1);
+  gl.activeTexture(gl.TEXTURE0);
 }
 
 /** the size clipLookTexture renders at: at least 1, larger side capped at 4096 */
@@ -437,33 +550,38 @@ export function clipLookTexture(
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
     if (gl.isContextLost()) return source;
     gl.viewport(0, 0, size.w, size.h);
-    gl.useProgram(l.program);
-    gl.uniform1i(l.loc.tex, 0);
+    const g = gradeData(clip.grade);
+    if (g && l.grade === undefined) l.grade = buildGrade(gl);
+    const gp = g ? l.grade : null;
+    const loc = gp ? gp.loc : l.loc;
+    gl.useProgram(gp ? gp.program : l.program);
+    gl.uniform1i(loc.tex, 0);
 
     const a = clip.adjust;
     const act = isAdjustActive(a);
     gl.uniform4f(
-      l.loc.adj,
+      loc.adj,
       act ? clamp(num(a!.brightness), -1, 1) : 0,
       act ? clamp(num(a!.contrast), -1, 1) : 0,
       act ? clamp(num(a!.saturation), -1, 1) : 0,
       act ? clamp(num(a!.temperature), -1, 1) : 0,
     );
     const rad = act ? (num(a!.hue) * Math.PI) / 180 : 0;
-    gl.uniform2f(l.loc.hue, Math.cos(rad), Math.sin(rad));
+    gl.uniform2f(loc.hue, Math.cos(rad), Math.sin(rad));
 
     const key = clip.chromaKey;
     const kc = keyRgb(key);
     if (key && kc) {
       const cc = chromaOf(kc[0], kc[1], kc[2]);
       const m = despillMask(kc) ?? NO_MASK;
-      gl.uniform1f(l.loc.keyOn, 1);
-      gl.uniform2f(l.loc.keyCbCr, cc[0], cc[1]);
-      gl.uniform3f(l.loc.key, num(key.tolerance), num(key.softness), clamp01(num(key.spill)));
-      gl.uniform3f(l.loc.mask, m[0], m[1], m[2]);
+      gl.uniform1f(loc.keyOn, 1);
+      gl.uniform2f(loc.keyCbCr, cc[0], cc[1]);
+      gl.uniform3f(loc.key, num(key.tolerance), num(key.softness), clamp01(num(key.spill)));
+      gl.uniform3f(loc.mask, m[0], m[1], m[2]);
     } else {
-      gl.uniform1f(l.loc.keyOn, 0);
+      gl.uniform1f(loc.keyOn, 0);
     }
+    if (g && gp) bindGrade(l, loc, g, size.w, size.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return canvas;
   } catch {

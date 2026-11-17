@@ -5,6 +5,7 @@ import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { useUi } from '../../store/ui';
 import { resetLayout } from '../editor/layoutReset';
 import { useSceneControls } from '../preview/sceneControls';
+import { useSoundApart } from '../timeline/soundSetting';
 import { Switch } from '../../components/ui/Switch';
 import './shell.css';
 
@@ -12,6 +13,8 @@ import './shell.css';
 export function AppSettings() {
   const sceneScheme = useSceneControls((s) => s.scheme);
   const setSceneScheme = useSceneControls((s) => s.setScheme);
+  const apart = useSoundApart((s) => s.apart);
+  const setApart = useSoundApart((s) => s.setApart);
 
   return (
     <>
@@ -37,6 +40,14 @@ export function AppSettings() {
           checked={sceneScheme === 'unity'}
           title="drive the 3d scene view like unity: left drag orbits, w e r pick the tool. off: like blender (middle drag orbits, g r s move, rotate and scale)"
           onChange={(on) => setSceneScheme(on ? 'unity' : 'blender')}
+        />
+      </div>
+      <div className="field">
+        <span className="field-label">separate sound on drop</span>
+        <Switch
+          checked={apart}
+          title="a video with sound you put on the timeline arrives as two grouped clips: the picture on a video track, the sound on an audio track. off: one clip with its sound"
+          onChange={setApart}
         />
       </div>
 

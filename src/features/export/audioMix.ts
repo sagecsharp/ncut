@@ -9,21 +9,23 @@ import type { Clip, Project } from '../../types';
 import { isTimedClip } from '../../types';
 import { fadeFactor } from '../../lib/timelineOps';
 import { isAnimated, keyTimes, valueAt } from '../../lib/anim';
+import { clipPanAt, needsPan, outputGain, panGains, trackPan, trackVolume } from '../../lib/mix';
 import { getAssetBlob } from '../../media/registry';
 
 export const MIX_SAMPLE_RATE = 48000;
 export const MIX_CHANNELS = 2;
 
-type TimedAudible = Extract<Clip, { type: 'video' | 'audio' }>;
+export type TimedAudible = Extract<Clip, { type: 'video' | 'audio' }>;
 
 /** clips that contribute sound: audio clips and video clips with an audio track, not muted */
 export function getAudibleClips(project: Project): TimedAudible[] {
+  if (outputGain(project) <= 0) return [];
   const out: TimedAudible[] = [];
   for (const clip of project.clips) {
     if (!isTimedClip(clip) || clip.muted || clip.duration <= 0) continue;
     if (clip.volume <= 0 && !isAnimated(clip, 'volume')) continue;
     const track = project.tracks.find((t) => t.id === clip.trackId);
-    if (!track || track.muted) continue;
+    if (!track || track.muted || trackVolume(track) <= 0) continue;
     const asset = project.assets.find((a) => a.id === clip.assetId);
     if (!asset || !asset.hasAudio) continue;
     if (!getAssetBlob(asset.id)) continue;
@@ -38,7 +40,7 @@ const GAIN_STEP = 0.01;
 const KEY_SNAP = 0.0005;
 
 /** gain breakpoints (local clip time -> gain) following volume and the fades */
-function gainPoints(clip: TimedAudible): Array<[number, number]> {
+export function gainPoints(clip: TimedAudible): Array<[number, number]> {
   const d = clip.duration;
   const times = new Set<number>([0, d]);
   if (clip.fadeIn > 0) times.add(Math.min(clip.fadeIn, d));
@@ -66,6 +68,46 @@ function gainPoints(clip: TimedAudible): Array<[number, number]> {
     });
 }
 
+/** the envelope times a fader factor. the same array when the factor is 1, so a neutral mix stays bit identical */
+export function scaleGain(pts: Array<[number, number]>, k: number): Array<[number, number]> {
+  return k === 1 ? pts : pts.map(([t, g]) => [t, g * k] as [number, number]);
+}
+
+/** the left and right gain of a clip's pan block (clip-local time -> gain) */
+export interface PanPoints {
+  l: Array<[number, number]>;
+  r: Array<[number, number]>;
+}
+
+/**
+ * clip-local [time, gain] of the left and right side: clip pan times track pan. null when the clip needs no pan block.
+ * the times are 0 and the duration, and for a keyed pan the key times with the snap around them and the grid
+ */
+export function panPoints(clip: TimedAudible, trackPanValue: number): PanPoints | null {
+  if (!needsPan(trackPanValue, clip)) return null;
+  const d = clip.duration;
+  const times = new Set<number>([0, d]);
+  if (isAnimated(clip, 'pan')) {
+    for (const k of keyTimes(clip.keyframes, 'pan')) {
+      if (k <= 0 || k >= d) continue;
+      times.add(k);
+      times.add(Math.max(0, k - KEY_SNAP));
+      times.add(Math.min(d, k + KEY_SNAP));
+    }
+    const n = Math.ceil(d / GAIN_STEP);
+    for (let i = 1; i < n; i++) times.add((d * i) / n);
+  }
+  const [tl, tr] = panGains(trackPanValue);
+  const l: Array<[number, number]> = [];
+  const r: Array<[number, number]> = [];
+  for (const t of [...times].sort((a, b) => a - b)) {
+    const [cl, cr] = panGains(clipPanAt(clip, clip.start + t));
+    l.push([t, cl * tl]);
+    r.push([t, cr * tr]);
+  }
+  return { l, r };
+}
+
 /** where a clip lands in a mix that covers [offset, offset + length) of the timeline */
 export interface ClipWindow {
   /** seconds from the start of the mix when the clip's first audible sample plays */
@@ -87,6 +129,37 @@ export function clipWindow(clipStart: number, clipDuration: number, speed: numbe
   const localFrom = from - clipStart;
   const localTo = to - clipStart;
   return { when: from - offset, localFrom, localTo, skip: localFrom * speed, span: (localTo - localFrom) * speed };
+}
+
+/** what one clip plays inside a mix window. mixChunk schedules exactly this; pure, so tests compare two mixes */
+export interface ClipSchedule {
+  assetId: string;
+  /** source seconds where the played part starts */
+  from: number;
+  /** source seconds that play */
+  span: number;
+  /** seconds from the window start of the first sample */
+  when: number;
+  rate: number;
+  /** [seconds from the window start, gain]: the first is set, the rest ramp */
+  gain: Array<[number, number]>;
+  /** the mixer's pan block trims its points with win.localFrom / localTo */
+  win: ClipWindow;
+}
+
+export function clipSchedule(clip: TimedAudible, offset: number, length: number): ClipSchedule | null {
+  const win = clipWindow(clip.start, clip.duration, clip.speed, offset, length);
+  if (!win) return null;
+  const pts = trimGainPoints(gainPoints(clip), win.localFrom, win.localTo);
+  return {
+    assetId: clip.assetId,
+    from: Math.max(0, clip.trimStart) + win.skip,
+    span: win.span,
+    when: win.when,
+    rate: clip.speed,
+    gain: pts.map(([t, g]) => [win.when + t, g] as [number, number]),
+    win,
+  };
 }
 
 /**
@@ -205,6 +278,9 @@ export function createAudioMixer(
   const clips = duration > 0 ? getAudibleClips(project) : [];
   const totalFrames = Math.max(1, Math.ceil(duration * MIX_SAMPLE_RATE));
   const chunks = planMixChunks(totalFrames, MIX_CHUNK_SECONDS * MIX_SAMPLE_RATE);
+  const mixOut = outputGain(project);
+  const trackOf = new Map(project.tracks.map((t) => [t.id, t]));
+  const pans = new Map<string, PanPoints | null>();
   const hasAudio = clips.some((c) => clipWindow(c.start, c.duration, c.speed, offset, duration) !== null);
 
   const inputs = new Map<string, Input>();
@@ -233,10 +309,13 @@ export function createAudioMixer(
         warn(clip.assetId, clip.name);
         continue;
       }
-      const win = clipWindow(clip.start, clip.duration, clip.speed, chunkOffset, chunkLength)!;
+      const sch = clipSchedule(clip, chunkOffset, chunkLength)!;
+      const trackOfClip = trackOf.get(clip.trackId)!;
+      // the fader and the output level multiply the envelope (the same array at 1)
+      const pts = scaleGain(sch.gain, trackVolume(trackOfClip) * mixOut);
       // the part of the source this clip plays inside the chunk
-      const from = Math.max(0, clip.trimStart) + win.skip;
-      const span = win.span;
+      const from = sch.from;
+      const span = sch.span;
 
       // streaming path: decode just the used range
       if (!tracks.has(clip.assetId)) {
@@ -284,18 +363,36 @@ export function createAudioMixer(
       const src = ctx.createBufferSource();
       src.buffer = buf;
       // pitch follows speed here (resampling), same as no time-stretch
-      src.playbackRate.value = clip.speed;
+      src.playbackRate.value = sch.rate;
       const gain = ctx.createGain();
-      const pts = trimGainPoints(gainPoints(clip), win.localFrom, win.localTo);
-      const first = pts[0]!;
-      gain.gain.setValueAtTime(first[1], win.when + first[0]);
+      gain.gain.setValueAtTime(pts[0]![1], pts[0]![0]);
       for (let i = 1; i < pts.length; i++) {
         const p = pts[i]!;
-        gain.gain.linearRampToValueAtTime(p[1], win.when + p[0]);
+        gain.gain.linearRampToValueAtTime(p[1], p[0]);
       }
+      if (!pans.has(clip.id)) pans.set(clip.id, panPoints(clip, trackPan(trackOfClip)));
+      const pan = pans.get(clip.id)!;
       src.connect(gain);
-      gain.connect(ctx.destination);
-      src.start(win.when, bufferOffset, span);
+      if (pan) {
+        // mono becomes left = right first, then one gain per side
+        gain.channelCount = 2;
+        gain.channelCountMode = 'explicit';
+        gain.channelInterpretation = 'speakers';
+        const win = sch.win;
+        const split = ctx.createChannelSplitter(2);
+        const merge = ctx.createChannelMerger(2);
+        [pan.l, pan.r].forEach((side, ch) => {
+          const g = ctx.createGain();
+          const p = trimGainPoints(side, win.localFrom, win.localTo);
+          g.gain.setValueAtTime(p[0]![1], sch.when + p[0]![0]);
+          for (let i = 1; i < p.length; i++) g.gain.linearRampToValueAtTime(p[i]![1], sch.when + p[i]![0]);
+          split.connect(g, ch);
+          g.connect(merge, 0, ch);
+        });
+        gain.connect(split);
+        merge.connect(ctx.destination);
+      } else gain.connect(ctx.destination);
+      src.start(sch.when, bufferOffset, span);
       scheduled++;
     }
     if (scheduled === 0) return null;

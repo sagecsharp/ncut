@@ -41,6 +41,8 @@
  *     plain build those helpers are identities, so the same code is the old maths on an opaque frame.
  */
 
+import type { GradeData } from '../grade';
+
 export type EffectCategory = 'motion' | 'blur' | 'color' | 'distort' | 'stylize' | 'overlay';
 
 export const EFFECT_CATEGORIES: { id: EffectCategory; label: string }[] = [
@@ -138,4 +140,6 @@ export interface EffectPass {
   seed: number;
   /** param values. missing keys fall back to the def's default. */
   params: Record<string, number>;
+  /** the grade effect only: its wheels and curves as uniforms (engine/grade.ts) */
+  grade?: GradeData;
 }

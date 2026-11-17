@@ -25,6 +25,7 @@ export function ownsKey(target: EventTarget | null, key: string): boolean {
   if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'range') {
     return key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(key);
   }
+  if (target.getAttribute('role') === 'slider') return key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(key);
   // a control reached with the keyboard (tab) is pressed with space / enter. one that only has focus because it
   // was clicked does not take them: space after a click still plays. (:focus-visible cannot tell the two apart,
   // the browser turns it on with the first key press: see lib/pressKey.ts)
@@ -67,6 +68,8 @@ function armContextMenuSwallow(win: Window, ms = 1000): void {
   win.addEventListener('contextmenu', eat, true);
 }
 
+const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
 /** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
 const modalOpen = () => usePalette.getState().open || useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
 /** registers the global keyboard shortcuts of the editor. call once from EditorLayout. */
@@ -74,10 +77,12 @@ export function useShortcuts(): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
+      // alt+left / alt+right are the browser's back and forward: in the editor they nudge, they never leave the page (also in a text field, not on a mac: option+arrow moves by word there)
+      if (!isMac() && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) e.preventDefault();
       if (isTypingTarget(e.target)) return;
       // a focused menu owns its keys: an arrow never steps a frame under it, s never splits under it
       if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
-      if (!e.ctrlKey && !e.metaKey && ownsKey(e.target, e.key)) return;
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && ownsKey(e.target, e.key)) return;
       // dialogs own the keyboard (they handle escape themselves)
       if (modalOpen()) return;
       if (!useEditor.getState().project) return;
@@ -93,7 +98,8 @@ export function useShortcuts(): void {
         return;
       }
       e.preventDefault();
-      shortcut.run();
+      if (shortcut.runKey) shortcut.runKey(e);
+      else shortcut.run();
       if (shortcut.id === 'clip-menu') armContextMenuSwallow(window);
     };
 

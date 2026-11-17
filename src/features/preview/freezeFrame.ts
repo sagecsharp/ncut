@@ -9,6 +9,7 @@ import { seekFrame } from '../../media/seekFrame';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { withFollowerMoves } from '../timeline/followMoves';
+import { freezeSound } from '../timeline/soundPlan';
 import {
   effectShiftMoves,
   freezeEffectCopies,
@@ -116,23 +117,41 @@ export async function freezeFrame(): Promise<string | null> {
   if (!still || still.kind !== 'image') return null;
 
   // the project may have changed during the async work: plan again from the live state
-  const live = useEditor.getState();
-  const liveClip = live.project?.clips.find((c) => c.id === target.id);
-  if (!live.project || !liveClip || liveClip.type !== 'video') {
+  const newId = placeFreeze(target.id, time, still.id);
+  if (!newId) {
     void deleteAsset(still.id);
     return null;
   }
+  return newId;
+}
+
+/**
+ * the sync part of a freeze: cut, make room, put the still in, all in one undo step. null (and nothing changed)
+ * when the clip is gone, a cut is refused or there is no room. the sound clips of a picture whose sound is apart are cut
+ * and shifted with it, so picture and sound keep the gap they had.
+ */
+export function placeFreeze(targetId: string, time: number, stillId: string): string | null {
+  const live = useEditor.getState();
+  const liveClip = live.project?.clips.find((c) => c.id === targetId);
+  if (!live.project || !liveClip || liveClip.type !== 'video') return null;
   const before = live.project;
   const plan = planFreeze(liveClip, time, before.fps);
+  const fs = freezeSound(before, liveClip.id, plan.shiftFrom);
   const skip = { skipHistory: true };
   let newId: string | null = null;
   live.pushHistory();
   // a cut the store refuses (too close to an edge, a lock) would leave the video whole under the still
-  const cut = plan.split ? useEditor.getState().splitClips(time, [liveClip.id], skip) : [];
-  const splitOk = !plan.split || cut.length > 0;
+  if (plan.split) useEditor.getState().splitClips(time, [liveClip.id, ...fs.cut], skip);
+  else if (fs.cut.length > 0) useEditor.getState().splitClips(plan.shiftFrom, fs.cut, skip);
   const afterSplit = useEditor.getState().project!;
+  const picture = afterSplit.clips.find((c) => c.id === liveClip.id);
+  const splitOk = !plan.split || (!!picture && picture.duration < liveClip.duration - 1e-9);
   // the clips that make room for the still take the effects put on them along
-  const moves = withFollowerMoves(afterSplit.clips, afterSplit.tracks, shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION));
+  const shifts = [
+    ...shiftMoves(afterSplit.clips, liveClip.trackId, plan.shiftFrom, FREEZE_DURATION),
+    ...fs.tracks.flatMap((t) => shiftMoves(afterSplit.clips, t, plan.shiftFrom, FREEZE_DURATION)),
+  ];
+  const moves = withFollowerMoves(afterSplit.clips, afterSplit.tracks, shifts);
   // also the effects that do not cover their clip exactly (the usual rule only moves the ones that do)
   const extra = effectShiftMoves(afterSplit.clips, afterSplit.tracks, moves, plan.shiftFrom, FREEZE_DURATION);
   let moved = splitOk && (moves.length === 0 || useEditor.getState().moveClips([...moves, ...extra], skip));
@@ -142,7 +161,7 @@ export async function freezeFrame(): Promise<string | null> {
     const handover = freezeHandover(liveClip, plan);
     // the look values too (crop, color, mask ...) are read at the freeze time: they may be keyed
     const shown = resolveClip(liveClip, time);
-    const clip = stillClipFrom(shown, shown.transform, still.id, plan.stillStart, FREEZE_DURATION, handover);
+    const clip = stillClipFrom(shown, shown.transform, stillId, plan.stillStart, FREEZE_DURATION, handover);
     const ids = useEditor.getState().addClips([clip], { ...skip, newTrack: false });
     newId = ids[0] ?? null;
     if (newId) {
@@ -156,7 +175,6 @@ export async function freezeFrame(): Promise<string | null> {
   if (!newId) {
     // put everything back: the history step pushed above holds the project as it was
     if (useEditor.getState().project !== before) useEditor.getState().rollback();
-    void deleteAsset(still.id);
     return null;
   }
   useEditor.getState().select([newId], 'replace');

@@ -206,4 +206,19 @@ describe('the fields reference states the ranges the store and update_clip enfor
     expect(row(PICTURE_FIELDS, 'mask').note).toContain('height 0..3');
     expect(row(PICTURE_FIELDS, 'transform').note).toContain('opacity 0..1');
   });
+  it('writes the grade and pan rows', () => {
+    const grade = row(PICTURE_FIELDS, 'grade');
+    expect(grade.type).toContain('liftR..offsetY');
+    expect(grade.note).toContain('-1..1');
+    expect(grade.note).toContain('at most 16');
+    expect(PICTURE_FIELDS.map((r) => r.field).indexOf('grade')).toBe(PICTURE_FIELDS.map((r) => r.field).indexOf('adjust') + 1);
+    const effect = EFFECT_FIELDS[EFFECT_FIELDS.length - 1]!;
+    expect(effect.field).toBe('grade');
+    expect(effect.type).toBe(grade.type);
+    expect(effect.example).toEqual(grade.example);
+    expect(effect.note.startsWith('grade effect only. ')).toBe(true);
+    expect(effect.note).toContain(grade.note);
+    expect(row(VIDEO_FIELDS, 'pan').type).toBe('number -1..1');
+    expect(row(AUDIO_FIELDS, 'pan').note).toContain('set_keyframe prop pan');
+  });
 });

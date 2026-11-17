@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpRight, Camera, Focus, Grid3x3, ImageDown, PictureInPicture2, Scan } from 'lucide-react';
+import { ArrowUpRight, Camera, Columns2, Focus, Grid3x3, ImageDown, PictureInPicture2, Scan } from 'lucide-react';
 import { DND_MIME, getDragPayload, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useSource } from '../../store/source';
 import { useUi } from '../../store/ui';
+import { clipTypeFor } from '../../lib/factory';
 import { resolveClip } from '../../lib/anim';
 import type { SourceResolver } from '../../engine/draw';
 import { useSceneCamera } from './sceneCamera';
@@ -25,10 +27,19 @@ import { setPan, stepView, usePreviewView, viewMetrics } from './previewView';
 import { REASON_TEXT } from '../shell/reasons';
 import { tip } from '../shell/tip';
 import { Transport } from './Transport';
+import { ScopesStrip } from './ScopesStrip';
+import { PixelProbe } from './PixelProbe';
+import { TrimView } from './TrimView';
+import { insertMedia } from '../timeline/insertMedia';
+import { takeOf } from '../timeline/dropPayload';
+import { SourceView } from './SourceView';
+import { SPLIT_MIN_W, paneLayout, splitBlock } from './sourceLayout';
+import { useSourcePrefs } from './sourcePrefs';
 import { TransformOverlay } from './TransformOverlay';
 import { ZoomControl } from './ZoomControl';
 import { accumulateWheel, clampPan, fitScale, percentLabel, resolveScale, wheelPixels } from './zoomMath';
 import './preview.css';
+import './source.css';
 
 const VIEW_BUTTONS: ReadonlyArray<{ label: string; name: string; does: string; pick?: number; run: () => void }> = [
   { label: 'front', name: 'front view', does: 'the scene from the front', pick: 0, run: () => setViewPreset('front') },
@@ -51,6 +62,9 @@ function readPayload(e: DragEvent): DragPayload | null {
 export function Preview() {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const viewsRef = useRef<HTMLDivElement>(null);
+  const sourcePaneRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<PreviewEngine | null>(null);
   const skyListeners = useRef(new Set<() => void>());
@@ -60,7 +74,16 @@ export function Preview() {
   const panRaf = useRef(0);
   const [fullscreen, setFullscreen] = useState(false);
   const mode = useUi((s) => s.previewMode);
+  const programMode = useUi((s) => s.programMode);
   const setMode = useUi((s) => s.setPreviewMode);
+  const sideBySide = useSourcePrefs((s) => s.sideBySide);
+  const toggleSideBySide = useSourcePrefs((s) => s.toggleSideBySide);
+  const sourceId = useSource((s) => s.assetId);
+  // the width of the views row, changed only when it crosses SPLIT_MIN_W (anything else would render again for nothing)
+  const [viewsW, setViewsW] = useState(0);
+  const layoutIn = { mode, programMode, sideBySide, hasMedia: sourceId !== null, width: viewsW };
+  const panes = paneLayout(layoutIn);
+  const splitWhy = splitBlock(layoutIn);
   const quality = usePreviewQuality((s) => s.quality);
   const setQuality = usePreviewQuality((s) => s.setQuality);
   const guidesOn = useGuides((s) => s.on);
@@ -95,7 +118,7 @@ export function Preview() {
       viewMetrics.stageH = stageH;
       viewMetrics.fit = fit;
       const view = usePreviewView.getState();
-      const zoom = useUi.getState().previewMode === 'output' ? view.zoom : 'fit';
+      const zoom = useUi.getState().previewMode === 'scene' ? 'fit' : view.zoom;
       const k = resolveScale(zoom, fit);
       const w = Math.max(1, Math.floor(project.width * k));
       const h = Math.max(1, Math.floor(project.height * k));
@@ -156,7 +179,7 @@ export function Preview() {
     let acc = 0;
     let lastWheel = 0;
     const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || useUi.getState().previewMode !== 'output') return;
+      if (!(e.ctrlKey || e.metaKey) || useUi.getState().previewMode === 'scene') return;
       const frame = frameRef.current;
       if (!frame) return;
       // also stops the browser from zooming the whole page
@@ -214,6 +237,44 @@ export function Preview() {
     };
   }, []);
 
+  // the width of the views row, for side by side
+  useEffect(() => {
+    const el = viewsRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      setViewsW((prev) => ((prev >= SPLIT_MIN_W) === (w >= SPLIT_MIN_W) ? prev : w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // the source store knows when both views show (its clock and the timeline's pause each other by it)
+  useEffect(() => {
+    useSource.getState().setSplit(panes.split);
+  }, [panes.split]);
+
+  // while the source view is active, a press on the timeline ruler or the lanes gives the keys back to the output
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      if (useUi.getState().previewMode !== 'source') return;
+      if (e.target instanceof Element && e.target.closest('.timeline-ruler, .timeline-lane-area')) useUi.getState().activateProgram();
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    return () => window.removeEventListener('pointerdown', onDown, true);
+  }, []);
+
+  // the view going back to the timeline takes the focus out of the source pane (it stays mounted side by side), so its widgets stop taking keys
+  useEffect(
+    () =>
+      useUi.subscribe((s, p) => {
+        if (p.previewMode !== 'source' || s.previewMode === 'source') return;
+        const a = document.activeElement;
+        if (a instanceof HTMLElement && sourcePaneRef.current?.contains(a)) a.blur();
+      }),
+    [],
+  );
+
   useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement === stageRef.current);
     document.addEventListener('fullscreenchange', onChange);
@@ -222,6 +283,8 @@ export function Preview() {
 
   // the inset draws with the engine's media sources (read when needed: the engine is made after the first render)
   const getResolve = useCallback((): SourceResolver | null => engineRef.current?.resolve ?? null, []);
+  // the scopes read the exact frame through the engine (null without an engine, during an export or when it cannot be made)
+  const exactFrame = useCallback(() => engineRef.current?.exactFrame(true, true) ?? Promise.resolve(null), []);
 
   // listeners live here, not on the engine: the engine is made after the inset subscribes
   const onSkyReady = useCallback((f: () => void): (() => void) => {
@@ -312,6 +375,7 @@ export function Preview() {
   // arrows nudge the selected visual clips by 1 px (shift = 10) through setClipValue, so keyframes are honoured.
   // left / right fall through to the global frame stepping when nothing can be nudged.
   const onStageKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (useUi.getState().previewMode === 'source') return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // scene view tools: w e r pick the tool (unity controls), f frames the selection. only while the scene view has the focus
     // (e and r are global shortcuts: stop them here so they do not also fire)
@@ -372,7 +436,7 @@ export function Preview() {
     if (payload.kind === 'transition') return;
     const id =
       payload.kind === 'asset'
-        ? store.insertAsset(payload.assetId, { start })
+        ? insertMedia(payload.assetId, { start, ...takeOf(payload) })
         : payload.kind === 'effect'
           ? store.addEffect(payload.effect, { start })
           : payload.kind === 'camera'
@@ -380,8 +444,29 @@ export function Preview() {
             : payload.kind === 'shape'
               ? store.addShape({ start, preset: payload.preset })
               : store.addText({ start, preset: payload.preset });
-    if (id) store.select([id], 'replace');
+    if (id === null && payload.kind === 'asset') {
+      // a half the media does not have says so, any other refusal is silent
+      const asset = store.project?.assets.find((a) => a.id === payload.assetId);
+      if (asset && clipTypeFor(asset, payload.parts) === null) useUi.getState().toast(payload.parts === 'sound' ? REASON_TEXT.noSound : REASON_TEXT.noPicture);
+    }
+    if (id && payload.kind !== 'asset') store.select([id], 'replace');
   };
+
+  // a press or the focus in a pane makes it the active view
+  const activateSourcePane = () => {
+    if (useUi.getState().previewMode !== 'source') useUi.getState().activateSource();
+  };
+  const activateMainPane = () => {
+    if (useUi.getState().previewMode === 'source') useUi.getState().activateProgram();
+  };
+  // a press that focused nothing puts the focus on the pane itself, so the keys of the source view reach it
+  const onSourcePointerDown = () => {
+    window.setTimeout(() => {
+      const pane = sourcePaneRef.current;
+      if (pane && !pane.contains(document.activeElement)) pane.focus({ preventScroll: true });
+    }, 0);
+  };
+  const splitText = splitWhy === 'narrow' ? REASON_TEXT.previewNarrow : splitWhy === 'scene' ? REASON_TEXT.splitScene : splitWhy === 'empty' ? REASON_TEXT.sourceEmpty : null;
 
   return (
     <div className="panel preview">
@@ -423,79 +508,123 @@ export function Preview() {
             </button>
           </>
         )}
+        {panes.main && (
+          <button
+            className={`icon-btn${guidesOn ? ' is-active' : ''}`}
+            {...tip('guides', { does: 'thirds, center and title safe lines. never exported', on: guidesOn })}
+            aria-label="guides"
+            aria-pressed={guidesOn}
+            onClick={toggleGuides}
+          >
+            <Grid3x3 size={14} />
+          </button>
+        )}
+        {programMode === 'output' && panes.main && <ZoomControl />}
+        {panes.main && (
+          <button
+            className="icon-btn"
+            {...tip('save frame', { does: 'this frame as a png file', off: empty ? REASON_TEXT.addClip : null })}
+            aria-label="save frame"
+            disabled={empty}
+            onClick={saveFrame}
+          >
+            <ImageDown size={14} />
+          </button>
+        )}
+        {panes.main && (
+          <select
+            className="select input-sm preview-quality"
+            value={quality}
+            {...tip('preview quality', { does: 'lower is faster. the export is not affected' })}
+            aria-label="preview quality"
+            onChange={(e) => setQuality(parseQuality(e.target.value))}
+          >
+            {QUALITIES.map((q) => (
+              <option key={q.id} value={q.id} title={q.title}>
+                {q.id}
+              </option>
+            ))}
+          </select>
+        )}
         <button
-          className={`icon-btn${guidesOn ? ' is-active' : ''}`}
-          {...tip('guides', { does: 'thirds, center and title safe lines. never exported', on: guidesOn })}
-          aria-label="guides"
-          aria-pressed={guidesOn}
-          onClick={toggleGuides}
+          className={`icon-btn${sideBySide ? ' is-active' : ''}`}
+          {...tip('side by side', { does: 'the source view and the output next to each other, when the preview is wide enough', on: sideBySide, off: sideBySide ? splitText : null })}
+          aria-label="side by side"
+          aria-pressed={sideBySide}
+          onClick={toggleSideBySide}
         >
-          <Grid3x3 size={14} />
+          <Columns2 size={14} />
         </button>
-        {mode === 'output' && <ZoomControl />}
-        <button
-          className="icon-btn"
-          {...tip('save frame', { does: 'this frame as a png file', off: empty ? REASON_TEXT.addClip : null })}
-          aria-label="save frame"
-          disabled={empty}
-          onClick={saveFrame}
-        >
-          <ImageDown size={14} />
-        </button>
-        <select
-          className="select input-sm preview-quality"
-          value={quality}
-          {...tip('preview quality', { does: 'lower is faster. the export is not affected' })}
-          aria-label="preview quality"
-          onChange={(e) => setQuality(parseQuality(e.target.value))}
-        >
-          {QUALITIES.map((q) => (
-            <option key={q.id} value={q.id} title={q.title}>
-              {q.id}
-            </option>
-          ))}
-        </select>
         <div className="preview-seg" role="group" aria-label="preview mode">
-          {(['output', 'scene'] as const).map((m) => (
+          {(['output', 'scene', 'source'] as const).map((m) => (
             <button
               key={m}
               type="button"
               className={`preview-seg-btn${mode === m ? ' is-active' : ''}`}
               aria-pressed={mode === m}
-              {...tip(m, { does: m === 'output' ? 'what gets exported' : 'the 3d world from a free camera', keys: 'toggle-scene' })}
-              onClick={() => setMode(m)}
+              {...(m === 'source'
+                ? tip(m, { does: 'the media you clicked, with its own playhead, in and out', keys: 'toggle-source' })
+                : tip(m, { does: m === 'output' ? 'what gets exported' : 'the 3d world from a free camera', keys: 'toggle-scene' }))}
+              onClick={() => (m === 'source' ? useUi.getState().activateSource() : setMode(m))}
             >
               {m}
             </button>
           ))}
         </div>
       </div>
-      <div
-        ref={stageRef}
-        className="preview-stage"
-        tabIndex={0}
-        onPointerDown={onStagePointerDown}
-        onPointerDownCapture={onStagePanDown}
-        onPointerMove={onStagePanMove}
-        onPointerUp={onStagePanEnd}
-        onPointerCancel={onStagePanEnd}
-        onPointerEnter={() => {
-          spaceRef.current.hover = true;
-        }}
-        onPointerLeave={() => {
-          spaceRef.current.hover = false;
-        }}
-        onKeyDown={onStageKeyDown}
-        onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
-        <div ref={frameRef} className="preview-frame">
-          <canvas ref={canvasRef} className="preview-canvas" />
-          <GuidesOverlay />
-          <TransformOverlay />
-          <CameraInset getResolve={getResolve} onSkyReady={onSkyReady} />
-          {empty && <div className="preview-hint">import media to get started</div>}
+      <div ref={bodyRef} className="preview-body">
+        <div ref={viewsRef} className={`preview-views${panes.split ? ' is-split' : ''}`}>
+          {panes.source && (
+            <div
+              ref={sourcePaneRef}
+              className={`preview-pane is-source${mode === 'source' ? ' is-active' : ''}`}
+              role="region"
+              aria-label="source view"
+              tabIndex={-1}
+              onPointerDownCapture={activateSourcePane}
+              onFocusCapture={activateSourcePane}
+              onPointerDown={onSourcePointerDown}
+            >
+              <SourceView />
+            </div>
+          )}
+          <div
+            className={`preview-pane is-main${mode !== 'source' ? ' is-active' : ''}${panes.main ? '' : ' is-hidden'}`}
+            onPointerDownCapture={activateMainPane}
+            onFocusCapture={activateMainPane}
+          >
+            <div
+              ref={stageRef}
+              className="preview-stage"
+              tabIndex={0}
+              onPointerDown={onStagePointerDown}
+              onPointerDownCapture={onStagePanDown}
+              onPointerMove={onStagePanMove}
+              onPointerUp={onStagePanEnd}
+              onPointerCancel={onStagePanEnd}
+              onPointerEnter={() => {
+                spaceRef.current.hover = true;
+              }}
+              onPointerLeave={() => {
+                spaceRef.current.hover = false;
+              }}
+              onKeyDown={onStageKeyDown}
+              onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+              <div ref={frameRef} className="preview-frame">
+                <canvas ref={canvasRef} className="preview-canvas" />
+                <GuidesOverlay />
+                <TransformOverlay />
+                <CameraInset getResolve={getResolve} onSkyReady={onSkyReady} />
+                {empty && <div className="preview-hint">import media to get started</div>}
+              </div>
+              <TrimView />
+              <PixelProbe canvasRef={canvasRef} stageRef={stageRef} />
+            </div>
+            <Transport fullscreen={fullscreen} onToggleFullscreen={toggleFullscreen} />
+          </div>
         </div>
+        <ScopesStrip bodyRef={bodyRef} exactFrame={exactFrame} />
       </div>
-      <Transport fullscreen={fullscreen} onToggleFullscreen={toggleFullscreen} />
     </div>
   );
 }

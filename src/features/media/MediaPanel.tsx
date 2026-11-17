@@ -1,10 +1,16 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent, KeyboardEvent } from 'react';
-import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Palette, Plus, Replace, Search, Shapes, Sparkles, Trash2, Type, Upload } from 'lucide-react';
+import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
+import { ArrowLeftRight, Film, Image as ImageIcon, Layers, Music, Palette, Plus, Replace, Search, Shapes, SlidersVertical, Sparkles, Trash2, Type, Upload } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import type { MediaTabId } from '../../store/ui';
+import { addMedia, openInSource } from '../preview/sourceKeys';
+import { useSource } from '../../store/source';
+import { useSourcePrefs } from '../preview/sourcePrefs';
+import { frameAt } from '../../lib/inOut';
+import { marksOf } from '../../lib/marks';
 import { Dialog } from '../../components/ui/Dialog';
 import { ACCEPTED_TYPES, deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { getThumbnail } from '../../media/derived';
@@ -15,6 +21,7 @@ import type { MediaAsset, MediaKind } from '../../types';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { EffectsTab } from './EffectsTab';
 import { TransitionsTab } from './TransitionsTab';
+import { MixerPanel } from './MixerPanel';
 import { ShapesTab } from './ShapesTab';
 import { LayersTab } from './LayersTab';
 import { CaptionTools } from './captions/CaptionTools';
@@ -24,9 +31,11 @@ import { PLAIN_COLOR_NAME, plainColorPreset, showsPlainColor, usePlainColor } fr
 import { tip } from '../shell/tip';
 import { TEXT_PRESETS } from './textPresets';
 import type { TextPreset } from './textPresets';
+import { CardSkim } from './CardSkim';
+import { FLIP_DELAY_MS, marksBar, marksTitle, restoreModeFor } from './cardMath';
+import type { CardPress } from './cardMath';
 import './media.css';
 
-type Tab = 'media' | 'layers' | 'text' | 'shapes' | 'effects' | 'transitions';
 type Filter = MediaFilter;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -44,8 +53,22 @@ function KindIcon({ kind, size = 12 }: { kind: MediaKind; size?: number }) {
 
 /* ---------- asset card ---------- */
 
+/** the last press on a card, and the timer that flips the preview to the source view after it (a double click cancels it) */
+let cardPress: CardPress | null = null;
+let flipTimer: ReturnType<typeof setTimeout> | null = null;
+
+const cancelFlip = () => {
+  if (flipTimer !== null) clearTimeout(flipTimer);
+  flipTimer = null;
+};
+
 interface AssetCardProps {
   asset: MediaAsset;
+  /** this media is the one in the source view */
+  inSource: boolean;
+  /** the mouse over a video card shows its frames */
+  skim: boolean;
+  fps: number;
   onInsert: (id: string) => void;
   onRemove: (id: string) => void;
   /** set when exactly one clip of a swappable kind is selected: that clip's media kind and current asset */
@@ -54,7 +77,7 @@ interface AssetCardProps {
   onSwap: (id: string) => void;
 }
 
-const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind: selKind, swapCurrent, onSwap }: AssetCardProps) {
+const AssetCard = memo(function AssetCard({ asset, inSource, skim, fps, onInsert, onRemove, swapKind: selKind, swapCurrent, onSwap }: AssetCardProps) {
   const { id, kind } = asset;
   const canSwap = selKind === kind && swapCurrent !== id;
   const cardRef = useRef<HTMLDivElement>(null);
@@ -62,6 +85,9 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
   const [thumb, setThumb] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(asset.name);
+  // the time under the mouse on a skimmed card, and what it was when the button went down (the skim clears it by then)
+  const skimRef = useRef<number | null>(null);
+  const pressTime = useRef<number | null>(null);
 
   // only start loading the thumbnail once the card is close to the viewport
   useEffect(() => {
@@ -110,40 +136,78 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
       startEdit();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      onInsert(id);
+      if (e.shiftKey) openInSource(id);
+      else onInsert(id);
     }
   };
 
+  // a click shows the media in the source view: at once when both views show, else after FLIP_DELAY_MS (a double click adds it instead)
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || e.detail !== 1 || editing) return;
+    if (e.target instanceof Element && e.target.closest('.media-actions, .media-name, .media-rename')) return;
+    const time = pressTime.current === null ? undefined : frameAt(pressTime.current, fps);
+    cancelFlip();
+    if (useSource.getState().split) {
+      cardPress = null;
+      openInSource(id, time);
+      return;
+    }
+    const prevMode = useUi.getState().previewMode;
+    cardPress = { id, at: performance.now(), prevMode, flipped: false };
+    flipTimer = setTimeout(() => {
+      flipTimer = null;
+      openInSource(id, time);
+      cardPress = { id, at: performance.now(), prevMode, flipped: true };
+    }, FLIP_DELAY_MS);
+  };
+
+  // a double click adds the media. one that came after the flip puts the old view back
+  const onDoubleClick = () => {
+    cancelFlip();
+    onInsert(id);
+    const back = restoreModeFor(cardPress, id, performance.now());
+    if (back) useUi.getState().setPreviewMode(back);
+    cardPress = null;
+  };
+
+  const marks = marksOf(asset);
   const onDragStart = (e: DragEvent<HTMLDivElement>) => {
-    beginDrag(e, { kind: 'asset', assetId: id });
+    beginDrag(e, { kind: 'asset', assetId: id, ...(marks ? { range: marks } : {}) });
   };
 
   const dims = asset.width && asset.height ? ` - ${asset.width}x${asset.height}` : '';
   const info = `${asset.name} - ${formatBytes(asset.size)}${dims}`;
+  const bar = marksBar(marks, asset.duration);
 
   return (
     <div
       ref={cardRef}
-      className="media-card"
+      className={`media-card${inSource ? ' is-source' : ''}`}
       data-asset-id={id}
       draggable={!editing}
       tabIndex={0}
-      title={info}
+      title={marks ? marksTitle(info, marks, asset.duration, fps) : info}
+      onPointerDownCapture={() => {
+        pressTime.current = skimRef.current;
+      }}
+      onClick={onClick}
       onDragStart={onDragStart}
       onDragEnd={endDrag}
-      onDoubleClick={() => onInsert(id)}
+      onDoubleClick={onDoubleClick}
       onKeyDown={onKeyDown}
     >
       <div className={`media-thumb is-${kind}`}>
         {thumb ? <img className="media-thumb-img" src={thumb} alt="" draggable={false} /> : <KindIcon kind={kind} size={22} />}
+        {kind === 'video' && skim ? <CardSkim asset={asset} timeRef={skimRef} /> : null}
         <span className="media-badge media-badge-kind">
           <KindIcon kind={kind} />
         </span>
         {kind !== 'image' ? <span className="media-badge media-badge-dur mono">{formatDuration(asset.duration)}</span> : null}
+        {bar ? <span className="media-marks" aria-hidden="true" style={{ left: `${bar.left}%`, width: `${bar.width}%` }} /> : null}
         <div className="media-actions">
           <button
             className="icon-btn icon-btn-sm"
-            {...tip('add to timeline', { does: 'at the playhead' })}
+            {...tip('add to timeline', { does: 'at the playhead. the marked part when the media has an in or out point' })}
             aria-label="add to timeline"
             onClick={(e) => {
               e.stopPropagation();
@@ -301,8 +365,14 @@ function MediaTab() {
   const [sort, setSort] = useState<MediaSort>('added');
   const [pending, setPending] = useState<PendingRemove | null>(null);
 
+  // the media in the source view gets an outline, the skim and the project's fps reach every card as plain props
+  const sourceId = useSource((s) => s.assetId);
+  const skim = useSourcePrefs((s) => s.skim);
+  const fps = useEditor((s) => s.project?.fps ?? 30);
+
+  // addMedia takes the marked part and calls insertMedia, so separate sound still works
   const onInsert = useCallback((id: string) => {
-    useEditor.getState().insertAsset(id, { start: usePlayback.getState().time });
+    addMedia(id, { start: usePlayback.getState().time });
   }, []);
 
   // one selected clip that holds media: its kind and asset (a string, so the selector stays stable)
@@ -467,6 +537,9 @@ function MediaTab() {
                   <AssetCard
                     key={a.id}
                     asset={a}
+                    inSource={sourceId === a.id}
+                    skim={skim}
+                    fps={fps}
                     onInsert={onInsert}
                     onRemove={onRemove}
                     swapKind={selKind}
@@ -578,17 +651,19 @@ function TextTab() {
 
 /* ---------- panel ---------- */
 
-const TABS: { id: Tab; label: string; tip: string; icon: LucideIcon }[] = [
+const TABS: { id: MediaTabId; label: string; tip: string; icon: LucideIcon; keys?: string }[] = [
   { id: 'media', label: 'media', tip: 'the files you imported', icon: Film },
   { id: 'layers', label: 'layers', tip: 'every clip on screen now, attached clips under their clip', icon: Layers },
   { id: 'text', label: 'text', tip: 'text presets and captions', icon: Type },
   { id: 'shapes', label: 'shapes', tip: 'shapes and backgrounds', icon: Shapes },
   { id: 'effects', label: 'effects', tip: 'drop one on a track to change everything below, or alt drop it on a clip for that clip only', icon: Sparkles },
   { id: 'transitions', label: 'transitions', tip: 'drop one on a cut or on selected clips', icon: ArrowLeftRight },
+  { id: 'mixer', label: 'mixer', tip: 'one strip per track with sound: level, pan, mute, solo and meters, plus the output', icon: SlidersVertical, keys: 'open-mixer' },
 ];
 
 export function MediaPanel() {
-  const [tab, setTab] = useState<Tab>('media');
+  const tab = useUi((s) => s.mediaTab);
+  const setTab = useUi((s) => s.setMediaTab);
   return (
     <div className="panel media-panel">
       <div className="tabs" role="tablist">
@@ -599,7 +674,7 @@ export function MediaPanel() {
             role="tab"
             aria-selected={tab === t.id}
             aria-label={t.label}
-            {...tip(t.label, { does: t.tip })}
+            {...tip(t.label, { does: t.tip, keys: t.keys })}
             onClick={() => setTab(t.id)}
           >
             <t.icon className="media-tab-icon" size={14} />
@@ -617,6 +692,8 @@ export function MediaPanel() {
         <ShapesTab />
       ) : tab === 'effects' ? (
         <EffectsTab />
+      ) : tab === 'mixer' ? (
+        <MixerPanel />
       ) : (
         <TransitionsTab />
       )}

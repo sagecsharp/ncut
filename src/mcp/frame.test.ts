@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, fontWarning, frameSize, frameTimeFor, LIMIT_MAX_SIZE } from './frame';
+import { bytesToBase64, clampFrameTime, DEFAULT_MAX_SIZE, fontWarning, frameSize, frameTimeFor, levelsAnswer, LIMIT_MAX_SIZE, SCOPE_IMAGE_SIZE } from './frame';
+import { lumaLevels } from '../features/preview/scopes';
+import { SCOPE_KINDS } from '../features/preview/scopesState';
 import { skyUsable } from '../engine/scene3d/sky';
 import type { Project } from '../types';
 
@@ -65,5 +67,25 @@ describe('frameTimeFor', () => {
     const p = { ...base, sky, assets } as unknown as Project;
     expect(skyUsable(p)).toBe(true);
     expect(frameTimeFor(p, 5)).toBe(0);
+  });
+});
+
+describe('levelsAnswer', () => {
+  const histOf = (rgba: number[]) => lumaLevels(new Uint8ClampedArray(rgba), rgba.length / 4);
+  it('rounds and names the fields, null for no pixels', () => {
+    const gray = levelsAnswer(histOf([128, 128, 128, 255, 128, 128, 128, 255]), 2)!;
+    expect(gray).toEqual({ luma_min: 50.2, luma_max: 50.2, luma_mean: 50.2, black: 0, white: 0, rgb_mean: { r: 50.2, g: 50.2, b: 50.2 } });
+    const two = levelsAnswer(histOf([0, 0, 0, 255, 255, 255, 255, 255]), 2)!;
+    expect(two).toMatchObject({ luma_min: 0, luma_max: 100, luma_mean: 50, black: 0.5, white: 0.5 });
+    expect(levelsAnswer(new Uint32Array(1024), 0)).toBeNull();
+    expect(levelsAnswer(new Uint32Array(1024), 4)).toBeNull();
+  });
+});
+
+describe('SCOPE_IMAGE_SIZE', () => {
+  it('has every kind', () => {
+    expect(Object.keys(SCOPE_IMAGE_SIZE).sort()).toEqual([...SCOPE_KINDS].sort());
+    expect(SCOPE_IMAGE_SIZE.waveform).toEqual({ width: 640, height: 360 });
+    expect(SCOPE_IMAGE_SIZE.vectorscope).toEqual({ width: 480, height: 480 });
   });
 });

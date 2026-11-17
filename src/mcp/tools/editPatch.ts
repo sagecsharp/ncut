@@ -7,6 +7,7 @@ import { applyAttachPlan } from '../../features/properties/attachActions';
 import { attachPlan } from '../../features/properties/attachPlan';
 import { applyPivotPlan } from '../../features/properties/pivotActions';
 import { pivotPlan } from '../../features/properties/pivotPlan';
+import { hasSoundApart, mateOf, soundsOf } from '../../lib/soundPair';
 import { useEditor, type ActionOpts, type ClipPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import type { Clip, Pivot, Transform } from '../../types';
@@ -115,6 +116,10 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   const before = needClip(id);
   needUnlocked(before);
   const st = useEditor.getState();
+  // a picture whose sound is a clip of its own: its mute and tempo live on the sound clip
+  const clips = needProject().clips;
+  const apart = before.type === 'video' && hasSoundApart(clips, id);
+  const soundId = apart ? (mateOf(clips, id)?.id ?? soundsOf(clips, before)[0]?.id) : undefined;
 
   const rest: Record<string, unknown> = {};
   let transform: Record<string, unknown> | undefined;
@@ -125,6 +130,12 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
     if (key in OTHER_TOOL) throw new ToolError(`${key} cannot be set here: use ${OTHER_TOOL[key]}`);
+    if (apart && key === 'muted' && value === false) throw new ToolError(`the sound of ${id} is the clip ${soundId}: unmute that one (or join_sound)`);
+    if (apart && (key === 'bpm' || key === 'beatOffset')) throw new ToolError(`the tempo of ${id} is on the clip ${soundId}: set it there (or join_sound)`);
+    // the picture is muted: a level or pan set here is never heard, and join_sound would write the sound clip's over it
+    if (apart && (key === 'volume' || key === 'pan') && value !== ((before as unknown as Record<string, unknown>)[key] ?? (key === 'pan' ? 0 : undefined))) {
+      throw new ToolError(`the sound of ${id} is the clip ${soundId}: set ${key} there (or join_sound)`);
+    }
     if (key === 'transform') {
       if (!isVisualClip(before)) throw new ToolError(`a ${before.type} clip has no transform (only video, image, text and shape clips do)`);
       if (!isObject(value)) throw new ToolError('transform must be an object like { "x": 100, "scale": 1.5 }');
@@ -221,6 +232,8 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   // updateClip ignores a key the clip type does not have (it is not stored, so it is not in the clip afterwards)
   const ignored = Object.keys(rest).filter((k) => {
     if (k in after) return false;
+    // the store drops these keys when the value is the default (pan 0, no grade): the clip type still has the field
+    if ((k === 'grade' || k === 'pan') && knowsField(before.type, k)) return false;
     const v = rest[k];
     // an empty value on a clip that never had the field is the same as nothing, not a mistake
     if (k === 'faces' || k === 'beat' || k === 'pivot' || k === 'bend') return !(v === null || (isObject(v) && Object.keys(v).length === 0));

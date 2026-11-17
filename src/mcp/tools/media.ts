@@ -1,14 +1,22 @@
 /** media tools (docs/MCP.md): bring files into the project, put media on the timeline, swap media */
 import { skyCandidates, skyUses } from '../../engine/scene3d/sky';
 import { usedAssetIds } from '../../features/media/mediaList';
+import { applyMatch } from '../../features/preview/sourceKeys';
+import { runEdit } from '../../features/timeline/editActions';
 import { busyFor } from '../../lib/busy';
+import { editSpan, inOutSpan } from '../../lib/inOut';
+import { marksOf } from '../../lib/marks';
+import { matchFrameAt, planMatchFrame } from '../../lib/matchFrame';
 import { deleteAsset, importFiles, useImporting } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
+import { usePlayback } from '../../store/playback';
 import { importProjectFile } from '../../store/session';
 import { useUi } from '../../store/ui';
-import type { MediaAsset } from '../../types';
+import type { ClipParts, InOutRange, MediaAsset } from '../../types';
+import { isMediaClip, MIN_CLIP_DURATION } from '../../types';
 import { clipBrief, needAsset, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
+import { MAX_TIME } from './editPatch';
 
 const DESKTOP_ONLY = 'this tool only works in the ncut desktop app: the app reads the files from disk. in a browser there is no way to hand it a path';
 
@@ -17,6 +25,49 @@ const BAD_FILE = ['not an ncut project file', 'the project file is damaged', 'th
 
 function assetBrief(a: MediaAsset): Record<string, unknown> {
   return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio };
+}
+
+const PART_MIN = MIN_CLIP_DURATION - 1e-9;
+
+/** the in and out of a part, as the answers show them: only the keys that are set */
+function marksOut(m: InOutRange | null): Record<string, number> | null {
+  if (!m) return null;
+  return { ...(m.in !== undefined ? { in: round(m.in) } : {}), ...(m.out !== undefined ? { out: round(m.out) } : {}) };
+}
+
+function pictureText(a: MediaAsset): string {
+  return `the media ${a.id} is a picture: pictures have no in or out, their length is set on the timeline`;
+}
+
+/**
+ * the one check of a part of a file: set_media_marks, add_media_clip and edit_media. next = the marks as they would be (before cleanRange,
+ * which drops a crossed out). kept names a side that comes from the media's own marks: it is not checked against the end, and the error says it
+ */
+function checkPart(a: MediaAsset, next: InOutRange, kept?: 'in' | 'out'): void {
+  for (const key of ['in', 'out'] as const) {
+    const v = next[key];
+    if (v !== undefined && kept !== key && v > a.duration + 1e-6) throw new ToolError(`${key} ${round(v)} is after the end of the media (${round(a.duration)} s)`);
+  }
+  if (next.in !== undefined && next.out !== undefined && next.out <= next.in) {
+    const side = kept === 'out' ? ` (the kept out is ${round(next.out)} s)` : kept === 'in' ? ` (the kept in is ${round(next.in)} s)` : '';
+    throw new ToolError(`in has to be before out${side}`);
+  }
+  const d = a.duration;
+  const len = Math.min(next.out ?? d, d) - Math.min(next.in ?? 0, d);
+  if (len < PART_MIN) throw new ToolError('the marked part has to be at least 0.05 s long');
+}
+
+/** the in and out of the arguments, only the given keys */
+function givenPart(args: Record<string, unknown>): InOutRange {
+  const i = optNumber(args.in);
+  const o = optNumber(args.out);
+  return { ...(i !== undefined ? { in: i } : {}), ...(o !== undefined ? { out: o } : {}) };
+}
+
+/** parts of the media that it does not have */
+function checkParts(a: MediaAsset, parts: unknown): void {
+  if (parts === 'picture' && a.kind === 'audio') throw new ToolError(`the media ${a.id} is audio: it has no picture`);
+  if (parts === 'sound' && (a.kind === 'image' || (a.kind === 'video' && !a.hasAudio))) throw new ToolError(`the media ${a.id} has no sound`);
 }
 
 export const mediaTools: ToolDef[] = [
@@ -86,44 +137,250 @@ export const mediaTools: ToolDef[] = [
     },
   },
   {
+    name: 'set_media_marks',
+    title: 'mark a part of media',
+    description:
+      'marks the part of a video or audio media that a drag, a double click or add_media_clip takes, like i and o in the source view. ' +
+      'seconds into the file, out is where the part ends. one alone keeps the other mark. clear: true takes both away. not an undo step. ' +
+      'answers { asset, marks (in, out) or null, length (the marked part, else the whole media, in seconds) }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        asset: { type: 'string', description: 'media id' },
+        in: { type: 'number', minimum: 0, description: 'where the part starts, seconds into the file' },
+        out: { type: 'number', minimum: 0, description: 'where the part ends, seconds into the file' },
+        clear: { type: 'boolean', description: 'true: take both marks away' },
+      },
+      required: ['asset'],
+    },
+    run(args) {
+      const asset = needAsset(args.asset);
+      if (asset.kind === 'image') throw new ToolError(pictureText(asset));
+      const given = givenPart(args);
+      const clear = args.clear === true;
+      const has = given.in !== undefined || given.out !== undefined;
+      if (clear && has) throw new ToolError('clear does not go with in or out');
+      if (!clear && !has) throw new ToolError('nothing to set: give in, out or clear: true');
+      let next: InOutRange | null = null;
+      if (!clear) {
+        const cur = marksOf(asset);
+        const inT = given.in ?? cur?.in;
+        const outT = given.out ?? cur?.out;
+        next = { ...(inT !== undefined ? { in: inT } : {}), ...(outT !== undefined ? { out: outT } : {}) };
+        const kept = given.in === undefined && cur?.in !== undefined ? 'in' : given.out === undefined && cur?.out !== undefined ? 'out' : undefined;
+        checkPart(asset, next, kept);
+      }
+      if (!useEditor.getState().setMediaMarks(asset.id, next)) throw new ToolError('the media already has these marks, nothing changed');
+      const marks = marksOf(needAsset(asset.id));
+      const span = marks ? inOutSpan(marks, asset.duration) : null;
+      return ok({ asset: asset.id, marks: marksOut(marks), length: round(span ? span.end - span.start : asset.duration) });
+    },
+  },
+  {
     name: 'add_media_clip',
     title: 'put media on the timeline',
     description:
       'makes a clip of a media item (id from get_project or import_media) on the timeline, as one undo step. video and images go on a video track, audio on an audio track. ' +
       'track: the track to use (it has to be the right kind and unlocked); without it the first fitting track is used, and a new one is made when none fits at start. ' +
       'start: timeline seconds; without it the clip goes after the last clip of the track. a clip never overlaps another, so it can land later than start: the answer shows where it went. ' +
-      'a video clip is as long as the media, an image 5 s, change it with trim_clip.',
+      'a video clip is as long as the media, an image 5 s, change it with trim_clip. ' +
+      'in / out: only that part of the file (seconds); one alone takes the start or the end for the other. without both, the media\'s marks are used (usedMarks: true). ' +
+      'parts: picture leaves the sound out (muted), sound is an audio clip of the file\'s sound on an audio track. ' +
+      'answers the clip, source (in and out in the file, video and audio) and usedMarks.',
     inputSchema: {
       type: 'object',
       properties: {
         asset: { type: 'string', description: 'media id' },
         track: { type: 'string', description: 'track id' },
         start: { type: 'number', minimum: 0, description: 'timeline seconds' },
+        in: { type: 'number', minimum: 0, description: 'where the part starts, seconds into the file' },
+        out: { type: 'number', minimum: 0, description: 'where the part ends, seconds into the file' },
+        parts: { type: 'string', enum: ['both', 'picture', 'sound'], description: 'both (default), picture only or sound only' },
       },
       required: ['asset'],
     },
     run(args) {
       const asset = needAsset(args.asset);
+      const given = givenPart(args);
+      const hasPart = given.in !== undefined || given.out !== undefined;
+      if (hasPart) {
+        if (asset.kind === 'image') throw new ToolError(pictureText(asset));
+        checkPart(asset, given);
+      }
+      checkParts(asset, args.parts);
+      const parts = args.parts as ClipParts | undefined;
       if (args.track !== undefined) {
         const track = needTrack(args.track);
-        const want = asset.kind === 'audio' ? 'audio' : 'video';
-        if (track.kind !== want) throw new ToolError(`the track ${track.id} is an ${track.kind} track, ${asset.kind} media goes on ${want === 'audio' ? 'an audio' : 'a video'} track`);
+        const want = parts === 'sound' || asset.kind === 'audio' ? 'audio' : 'video';
+        const words = parts === 'sound' && asset.kind === 'video' ? 'the sound of a video' : `${asset.kind} media`;
+        if (track.kind !== want) throw new ToolError(`the track ${track.id} is ${track.kind === 'audio' ? 'an' : 'a'} ${track.kind} track, ${words} goes on ${want === 'audio' ? 'an audio' : 'a video'} track`);
         if (track.locked) throw new ToolError(`the track ${track.id} (${track.name}) is locked. unlock it with update_track first`);
       }
+      const marks = hasPart ? null : marksOf(asset);
+      const range = hasPart ? given : marks;
       const start = optNumber(args.start);
       const id = useEditor.getState().insertAsset(asset.id, {
         ...(typeof args.track === 'string' ? { trackId: args.track } : {}),
         ...(start !== undefined ? { start } : {}),
+        ...(range ? { range } : {}),
+        ...(parts && parts !== 'both' ? { parts } : {}),
       });
       if (!id) throw new ToolError(`the media ${asset.id} could not be put on the timeline`);
-      return ok(clipBrief(needClip(id)));
+      const clip = needClip(id);
+      const source = clip.type === 'video' || clip.type === 'audio' ? { source: { in: round(clip.trimStart), out: round(clip.trimStart + clip.duration * clip.speed) } } : {};
+      return ok({ ...clipBrief(clip), ...source, usedMarks: marks !== null });
+    },
+  },
+  {
+    name: 'match_frame',
+    title: 'match frame',
+    description:
+      'shows the media of a clip in the source view at the frame the clip shows at time (timeline seconds, default the playhead), marks the part the clip uses (replacing its marks). ' +
+      'without clip: the clip under time, picked like the f key. the playhead does not move, but playback pauses. not an undo step. ' +
+      'answers { clip, asset, sourceTime (seconds into the file), marks (in, out) or null, replaced (other marks were overwritten) }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        clip: { type: 'string', description: 'clip id. default: the clip under time' },
+        time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline seconds. default: the playhead' },
+      },
+    },
+    run(args) {
+      const p = needProject();
+      const t = optNumber(args.time) ?? usePlayback.getState().time;
+      let target;
+      if (args.clip !== undefined) {
+        const clip = needClip(args.clip);
+        if (!isMediaClip(clip)) throw new ToolError(`the clip ${clip.id} is a ${clip.type} clip: only video, audio and image clips have media`);
+        const asset = needAsset(clip.assetId);
+        const end = clip.start + clip.duration;
+        if (!(clip.start <= t + 1e-6 && t < end - 1e-6)) throw new ToolError(`time ${round(t)} s is outside the clip ${clip.id} (${round(clip.start)} s to ${round(end)} s)`);
+        target = planMatchFrame(clip, asset, t);
+      } else {
+        target = matchFrameAt(p, t, useEditor.getState().selection);
+        if (!target) throw new ToolError(`no video, audio or image clip at ${round(t)} s`);
+      }
+      const r = applyMatch(target);
+      return ok({ clip: target.clip.id, asset: target.asset.id, sourceTime: round(target.time), marks: marksOut(target.marks), replaced: r.replaced });
+    },
+  },
+  {
+    name: 'edit_media',
+    title: 'three point edit',
+    description:
+      'edits media into the timeline like f9 / f10, one undo step. insert: the clips after the edit point move later on every unlocked track (a clip over it is split). ' +
+      'overwrite: covers the target tracks, nothing moves. fit: overwrite at the speed that fills at to until. replace: the clip under at shows the media, frame matched (source_time lands at at), same length. ' +
+      'append: after the last clip of the target tracks. place: at / until (timeline s), else the project in and out (cleared after use), else the playhead. ' +
+      'part: in / out (media s), else its marks, else all. track / sound_track: default the lowest unlocked video and top unlocked audio track. parts picture / sound: one half. ' +
+      'sound_apart: a video with sound arrives as a grouped pair, else its sound stays in the video clip. the playhead goes to the end of the new clip. ' +
+      'answers { mode, clips, start, length, sourceIn, speed, split, moved, removed, trimmed, playhead } and, when they apply, slivers, kept, soundsKept, lockedTracks, newTracks, rangeCleared.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        asset: { type: 'string', description: 'media id' },
+        mode: { type: 'string', enum: ['insert', 'overwrite', 'replace', 'fit', 'append'], description: 'insert, overwrite, replace, fit or append' },
+        track: { type: 'string', description: 'video track id for the picture' },
+        sound_track: { type: 'string', description: 'audio track id for the sound' },
+        at: { type: 'number', minimum: 0, description: 'where it goes on the timeline, seconds. default: the project in point, else the playhead' },
+        until: { type: 'number', minimum: 0, description: 'where it ends on the timeline, seconds. default: the project out point' },
+        in: { type: 'number', minimum: 0, description: 'where the part starts, seconds into the file' },
+        out: { type: 'number', minimum: 0, description: 'where the part ends, seconds into the file' },
+        parts: { type: 'string', enum: ['both', 'picture', 'sound'], description: 'both (default), picture only or sound only' },
+        sound_apart: { type: 'boolean', description: 'a video with sound arrives as a grouped pair of clips' },
+        clip: { type: 'string', description: 'replace: the clip to change. default: the clip under at' },
+        source_time: { type: 'number', minimum: 0, description: 'replace: the moment of the media that lands at at, seconds into the file' },
+      },
+      required: ['asset', 'mode'],
+    },
+    run(args) {
+      const p = needProject();
+      const asset = needAsset(args.asset);
+      const mode = args.mode as 'insert' | 'overwrite' | 'replace' | 'fit' | 'append';
+      const parts = args.parts as ClipParts | undefined;
+      const checkTrack = (key: 'track' | 'sound_track'): void => {
+        if (args[key] === undefined) return;
+        const track = needTrack(args[key]);
+        if (key === 'track' && track.kind === 'audio') throw new ToolError(`the track ${track.id} is an audio track: track is the video track for the picture, sound_track the audio track`);
+        if (key === 'sound_track' && track.kind === 'video') throw new ToolError(`the track ${track.id} is a video track: sound_track is the audio track for the sound, track the video track`);
+        if (track.locked) throw new ToolError(`the track ${track.id} (${track.name}) is locked. unlock it with update_track first`);
+        if (key === 'track' && (asset.kind === 'audio' || parts === 'sound')) throw new ToolError('track is for the picture: give the audio track as sound_track');
+      };
+      checkTrack('track');
+      checkTrack('sound_track');
+      checkParts(asset, parts);
+      const marks = givenPart(args);
+      const hasMarks = marks.in !== undefined || marks.out !== undefined;
+      if (hasMarks) {
+        if (asset.kind === 'image') throw new ToolError(pictureText(asset));
+        checkPart(asset, marks);
+      }
+      const at = optNumber(args.at);
+      const until = optNumber(args.until);
+      if (until !== undefined) {
+        if (at === undefined && until <= 0) throw new ToolError('until has to be after 0');
+        if (at !== undefined && until <= at) throw new ToolError('until has to be after at');
+        if (at !== undefined && until - at < PART_MIN) throw new ToolError('the range has to be at least 0.05 s long');
+      }
+      if (mode === 'append' && (at !== undefined || until !== undefined)) throw new ToolError('append goes after the last clip of the target tracks: leave at and until out');
+      if (mode === 'replace' && until !== undefined) throw new ToolError('replace keeps the clip length: leave until out');
+      if (mode !== 'replace') {
+        for (const key of ['clip', 'source_time'] as const) if (args[key] !== undefined) throw new ToolError(`${key} only goes with mode replace`);
+      }
+      if (args.clip !== undefined) needClip(args.clip);
+      const sourceTime = optNumber(args.source_time);
+      if (sourceTime !== undefined && asset.kind !== 'image' && sourceTime > asset.duration + 1e-6) {
+        throw new ToolError(`source_time ${round(sourceTime)} is after the end of the media (${round(asset.duration)} s)`);
+      }
+      if (mode === 'fit' && !((at !== undefined && until !== undefined) || (at === undefined && until === undefined && editSpan(p.range)))) {
+        throw new ToolError('fit needs at and until, or both in and out points of the project (set_range)');
+      }
+      const r = runEdit({
+        mode,
+        assetId: asset.id,
+        ...(hasMarks ? { marks } : {}),
+        ...(at !== undefined || until !== undefined ? { range: { ...(at !== undefined ? { in: at } : {}), ...(until !== undefined ? { out: until } : {}) } } : {}),
+        playhead: at ?? usePlayback.getState().time,
+        ...(sourceTime !== undefined ? { sourceTime } : {}),
+        targets: {
+          picture: parts === 'sound' ? false : typeof args.track === 'string' ? args.track : null,
+          sound: parts === 'picture' ? false : typeof args.sound_track === 'string' ? args.sound_track : null,
+        },
+        apart: args.sound_apart === true,
+        selection: [],
+        ...(typeof args.clip === 'string' ? { clipId: args.clip } : {}),
+      });
+      if (!r.ok) throw new ToolError(r.reason ?? 'the edit could not be done');
+      const now = needProject();
+      const briefs = r.clips.flatMap((id) => {
+        const c = now.clips.find((x) => x.id === id);
+        return c ? [clipBrief(c)] : [];
+      });
+      return ok({
+        mode: r.mode,
+        clips: briefs,
+        start: round(r.start),
+        length: round(r.length),
+        sourceIn: round(r.from),
+        speed: round(r.speed),
+        split: r.split,
+        moved: r.moved,
+        removed: r.removed,
+        trimmed: r.trimmed,
+        playhead: round(usePlayback.getState().time),
+        ...(r.slivers > 0 ? { slivers: r.slivers } : {}),
+        ...(r.kept > 0 ? { kept: r.kept } : {}),
+        ...(r.soundsKept > 0 ? { soundsKept: r.soundsKept } : {}),
+        ...(r.lockedTracks.length > 0 ? { lockedTracks: r.lockedTracks } : {}),
+        ...(r.newTracks.length > 0 ? { newTracks: r.newTracks } : {}),
+        ...(r.rangeCleared ? { rangeCleared: marksOut(r.rangeCleared) } : {}),
+      });
     },
   },
   {
     name: 'replace_media',
     title: 'swap the media of a clip',
     description:
-      'a video, image or audio clip shows other media instead, keeping its place, look and animation (one undo step). the media has to be of the same kind as the clip. ' +
+      'a video, image or audio clip shows other media instead, keeping its place, look and animation (one undo step). the media has to be of the same kind as the clip (an audio clip also takes a video with sound). a picture whose sound is a clip of its own swaps that sound clip too. ' +
       'a video or audio clip keeps its trim when the new media is long enough, otherwise the trim moves back and then the clip gets shorter. answers the clip.',
     inputSchema: {
       type: 'object',
@@ -139,7 +396,9 @@ export const mediaTools: ToolDef[] = [
       if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'audio') {
         throw new ToolError(`the clip ${clip.id} is a ${clip.type} clip: only video, image and audio clips have media to replace`);
       }
-      if (asset.kind !== clip.type) throw new ToolError(`the clip ${clip.id} is a ${clip.type} clip but the media ${asset.id} is ${asset.kind}. pick media of the same kind`);
+      if (asset.kind !== clip.type && !(clip.type === 'audio' && asset.kind === 'video' && asset.hasAudio)) {
+        throw new ToolError(`the clip ${clip.id} is a ${clip.type} clip but the media ${asset.id} is ${asset.kind}. pick media of the same kind (an audio clip also takes a video with sound)`);
+      }
       if (clip.assetId === asset.id) throw new ToolError(`the clip ${clip.id} already shows the media ${asset.id}`);
       needUnlocked(clip);
       if (!useEditor.getState().replaceClipAsset(clip.id, asset.id)) {

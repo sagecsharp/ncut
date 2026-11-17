@@ -191,7 +191,7 @@ export function freezeEffectCopies(clips: readonly Clip[], videoId: string, time
 /**
  * the still: the video clip's look (static, already resolved at the time) as a fresh image clip.
  * copied: everything that changes how the frame looks (threeD, lookAt + lookTarget, shape, shapeDepth, lit, faces, crop, radius,
- * mask, blend, adjust, chromaKey, parent, pivot, motionBlur, bend) and, from `handover`, the entrance / exit.
+ * mask, blend, adjust, grade, chromaKey, parent, pivot, motionBlur, bend) and, from `handover`, the entrance / exit.
  * deliberately NOT copied:
  * - id, trackId (same track), name, start, duration: the still has its own.
  * - keyframes: the still holds the pose of that moment (transform is resolved by the caller), it does not animate.
@@ -239,6 +239,7 @@ export function stillClipFrom(
   if (video.parent) still.parent = video.parent;
   if (video.pivot) still.pivot = { ...video.pivot };
   if (video.adjust) still.adjust = structuredClone(video.adjust);
+  if (video.grade) still.grade = structuredClone(video.grade);
   if (video.chromaKey) still.chromaKey = structuredClone(video.chromaKey);
   if (video.motionBlur) still.motionBlur = structuredClone(video.motionBlur);
   return still;

@@ -15,6 +15,8 @@ import { createStillCache } from './stillCache';
 import { observeNear } from './nearViewport';
 import { effectsSupported, renderEffects } from '../../engine/effects/runner';
 import { drawTestPattern } from '../../engine/effects/testPattern';
+import { DEMO_GRADE, gradeData } from '../../engine/grade';
+import { GRADE_EFFECT } from '../../lib/gradeData';
 
 /** thumbnails are the real effect running on the test card */
 const SRC_W = 320;
@@ -56,7 +58,7 @@ function drawFrame(def: EffectDef, canvas: HTMLCanvasElement, time: number): voi
     source,
     THUMB_W,
     THUMB_H,
-    [{ def, time, duration: CLIP_SECONDS, amount: 1, seed: 7, params: {} }],
+    [{ def, time, duration: CLIP_SECONDS, amount: 1, seed: 7, params: {}, ...(def.id === GRADE_EFFECT ? { grade: gradeData(DEMO_GRADE) ?? undefined } : {}) }],
     { channel: CHANNEL, projectWidth: 1920, projectHeight: 1080 },
   );
   ctx.drawImage(out ?? source, 0, 0, canvas.width, canvas.height);

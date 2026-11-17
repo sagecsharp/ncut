@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mcpExportJob } from '../exportJob';
 import { callTool } from '../registry';
+import { addVideoClip, call, fresh, refused } from './editKit';
 import { outputTools, statusResult } from './output';
 
 function text(r: { content: Array<{ type: string; text?: string }> }): string {
@@ -24,6 +25,28 @@ describe('the output tools', () => {
     expect('isError' in bad && bad.isError).toBe(true);
     const typo = await callTool('render_frame', { size: 100 });
     expect('isError' in typo && typo.isError).toBe(true);
+  });
+
+  it('render_frame refuses an unknown scope and a non boolean levels', async () => {
+    const scope = await callTool('render_frame', { scope: 'rgbparade' });
+    expect('isError' in scope && scope.isError).toBe(true);
+    expect(text(scope as { content: Array<{ type: string; text?: string }> })).toMatch(/waveform, parade, vectorscope, histogram/);
+    const levels = await callTool('render_frame', { levels: 'yes' });
+    expect('isError' in levels && levels.isError).toBe(true);
+    expect(text(levels as { content: Array<{ type: string; text?: string }> })).toMatch(/levels/);
+  });
+
+  it('export_video refuses an unknown range', async () => {
+    const r = await callTool('export_video', { range: 'selection' });
+    expect('isError' in r && r.isError).toBe(true);
+    expect(text(r as { content: Array<{ type: string; text?: string }> })).toMatch(/all, inout/);
+  });
+
+  it('a picture of an in point past the end names the in point', async () => {
+    const { video } = fresh();
+    addVideoClip(video, 0);
+    await call('set_range', { in: 20 });
+    await refused('export_video', { range: 'inout', format: 'png' }, /the in point 20 s is not inside the project .*set_range an earlier in point/);
   });
 
   it('export_cancel says it is too late while the file is saved', async () => {

@@ -1,0 +1,39 @@
+/* the two frame view over the stage while a trim is dragged or just keyed */
+.preview-trimview {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  padding: var(--space-3);
+  background: var(--solid-2);
+  pointer-events: none;
+}
+.preview-trimview-half {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preview-trimview-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  background: var(--surface-0);
+}
+.preview-trimview-blank {
+  flex: 1;
+  min-height: 0;
+  background: var(--surface-0);
+}
+.preview-trimview-label {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -2,14 +2,15 @@
  * which part of the timeline an export renders. pure math, shared by the dialog (estimates) and the exporter.
  * times are absolute timeline seconds; the exported file always starts at 0.
  */
-import type { Marker } from '../../types';
+import type { InOutRange, Marker } from '../../types';
+import { inOutSpan } from '../../lib/inOut';
 
 export interface TimeRange {
   start: number;
   end: number;
 }
 
-export type RangeMode = 'all' | 'markers' | 'custom';
+export type RangeMode = 'all' | 'markers' | 'custom' | 'inout';
 
 const EPS = 1e-6;
 
@@ -43,10 +44,15 @@ export function resolveRange(
   duration: number,
   markers: readonly Marker[] | undefined,
   custom: TimeRange,
+  inOut?: InOutRange,
 ): TimeRange | null {
   if (mode === 'markers') {
     const r = markerRange(markers);
     return r ? clampRange(r, duration) : null;
+  }
+  if (mode === 'inout') {
+    const s = inOutSpan(inOut, duration);
+    return s ? clampRange(s, duration) : null;
   }
   if (mode === 'custom') return clampRange(custom, duration);
   return clampRange(undefined, duration);

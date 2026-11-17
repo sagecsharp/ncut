@@ -1,0 +1,27 @@
+/* a picture whose sound is apart: it is muted on purpose, so it keeps its picture and shows no mute icon */
+.timeline-clip.is-muted:has(.timeline-sound-apart) .timeline-clip-canvas {
+  opacity: 1;
+}
+.timeline-clip:has(.timeline-sound-apart) .timeline-clip-mute {
+  display: none;
+}
+.timeline-sync-badge {
+  flex: none;
+  height: 12px;
+  padding: 0 3px;
+  border: none;
+  border-radius: 3px;
+  background: var(--warn);
+  color: #1a1a1a;
+  font-size: 9px;
+  line-height: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.timeline-sync-badge.is-dot {
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border-radius: 50%;
+}

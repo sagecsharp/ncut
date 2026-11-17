@@ -23,6 +23,21 @@ describe('swap candidates', () => {
   });
 });
 
+describe('swap candidates of a sound clip', () => {
+  const withSound = (id: string, kind: MediaAsset['kind'], createdAt: number, hasAudio: boolean) => ({ id, kind, name: id, createdAt, hasAudio }) as unknown as MediaAsset;
+  const assets = [withSound('av', 'video', 1, true), withSound('song', 'audio', 2, true), withSound('talk', 'video', 3, true), withSound('mute', 'video', 4, false), withSound('pic', 'image', 5, false)];
+  it('a sound clip lists videos with sound', () => {
+    // the sound clip plays the video 'av': audio files and videos with sound, newest first, never the silent one
+    expect(swapCandidates(assets, clip('x', 'audio', 't', 0, 1, 'av')).map((a) => a.id)).toEqual(['talk', 'song']);
+  });
+  it('an audio clip of an audio file lists audio only', () => {
+    expect(swapCandidates(assets, clip('x', 'audio', 't', 0, 1, 'song')).map((a) => a.id)).toEqual([]);
+  });
+  it('a video clip still lists videos only', () => {
+    expect(swapCandidates(assets, clip('x', 'video', 't', 0, 1, 'av')).map((a) => a.id)).toEqual(['mute', 'talk']);
+  });
+});
+
 describe('swap target', () => {
   const project = {
     tracks: [track('t1'), track('t2', true)],

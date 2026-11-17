@@ -9,6 +9,7 @@ import { keyTools } from './tools/keys';
 import { mediaTools } from './tools/media';
 import { outputTools } from './tools/output';
 import { projectTools } from './tools/project';
+import { soundTools } from './tools/sound';
 import type { ToolCtx, ToolDef, ToolInfo, ToolResult } from './types';
 import { validate } from './validate';
 
@@ -19,6 +20,7 @@ export const TOOLS: readonly ToolDef[] = [
   ...mediaTools,
   ...addTools,
   ...editTools,
+  ...soundTools,
   ...keyTools,
   ...outputTools,
   ...cursorTools,

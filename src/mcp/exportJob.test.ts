@@ -165,6 +165,48 @@ function fake(): Fake {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+describe('planMcpExport range inout', () => {
+  const marked = (range: Project['range']) => project({ range });
+  it('inout gives the same options and frames as start / end', () => {
+    const a = planMcpExport(marked({ in: 2, out: 4 }), { range: 'inout' });
+    const b = planMcpExport(project(), { start: 2, end: 4 });
+    expect(a.range).toEqual({ start: 2, end: 4 });
+    expect(a.options).toEqual(b.options);
+    expect(a.frames).toBe(b.frames);
+    expect(a.notes).toEqual([]);
+    // only an in point runs to the end, only an out point from the start
+    expect(planMcpExport(marked({ in: 3 }), { range: 'inout' }).range).toEqual({ start: 3, end: 10 });
+    expect(planMcpExport(marked({ out: 5 }), { range: 'inout' }).range).toEqual({ start: 0, end: 5 });
+  });
+  it('inout refuses start or end', () => {
+    expect(() => planMcpExport(marked({ in: 2, out: 4 }), { range: 'inout', start: 1 })).toThrow('range "inout" takes no start / end: give one or the other');
+    expect(() => planMcpExport(marked({ in: 2, out: 4 }), { range: 'inout', end: 3 })).toThrow('range "inout" takes no start / end');
+  });
+  it('a picture takes the frame at the in point and needs an in', () => {
+    const p = planMcpExport(marked({ in: 2, out: 4 }), { range: 'inout', format: 'png' });
+    expect(p.range.start).toBe(2);
+    expect(p.frames).toBe(1);
+    expect(() => planMcpExport(marked({ out: 4 }), { range: 'inout', format: 'jpg' })).toThrow('a picture is the frame at the in point: set_range an in point first');
+    expect(() => planMcpExport(project(), { range: 'inout', format: 'png' })).toThrow('set_range an in point first');
+  });
+  it('inout without a span inside the project is refused', () => {
+    expect(() => planMcpExport(project(), { range: 'inout' })).toThrow('there is no in or out point inside the project. set_range marks them');
+    expect(() => planMcpExport(marked({ in: 12 }), { range: 'inout' })).toThrow('there is no in or out point inside the project');
+  });
+  it('a range and no range argument adds the note', () => {
+    const note = 'the project has in and out points: range "inout" exports only that part';
+    expect(planMcpExport(marked({ in: 2, out: 4 }), {}).notes).toContain(note);
+    expect(planMcpExport(marked({ in: 2 }), { format: 'png' }).notes).toContain(note);
+    expect(planMcpExport(project(), {}).notes).not.toContain(note);
+  });
+  it('all and start / end add no note', () => {
+    expect(planMcpExport(marked({ in: 2, out: 4 }), { range: 'all' }).notes).toEqual([]);
+    expect(planMcpExport(marked({ in: 2, out: 4 }), { range: 'all' }).range).toEqual({ start: 0, end: 10 });
+    expect(planMcpExport(marked({ in: 2, out: 4 }), { start: 1 }).notes).toEqual([]);
+    expect(planMcpExport(marked({ in: 2, out: 4 }), { end: 5 }).notes).toEqual([]);
+  });
+});
+
 describe('the export job', () => {
   it('starts at once and reports progress', async () => {
     const f = fake();

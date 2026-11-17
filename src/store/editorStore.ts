@@ -19,9 +19,12 @@ import type {
   CameraClip,
   Clip,
   ClipBend,
+  ClipGrade,
+  ClipParts,
   Easing,
   EffectClip,
   ImageClip,
+  InOutRange,
   Keyframe,
   Keyframes,
   MediaAsset,
@@ -47,7 +50,12 @@ import {
   createShapeClip,
   createTextClip,
   createTrack,
+  clipTypeFor,
 } from '../lib/factory';
+import { cleanRange, sameRange } from '../lib/inOut';
+import { normalizeGrade, sameGrade, withoutGradeKeys } from '../lib/gradeData';
+import { patchOutput, patchTrack, planMixerReset } from '../lib/mix';
+import { keepsSoundGroup, ownSoundsOf } from '../lib/soundPair';
 import { getEffect } from '../engine/effects/registry';
 import { hasKeyedPose, reparentTransform } from '../engine/parent';
 import { normalizePivot, samePivot } from '../engine/pivot';
@@ -145,10 +153,11 @@ const SPATIAL_KEYS = [
   'lookTarget',
   'bend',
   'pivot',
+  'grade',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
-  video: [...SPATIAL_KEYS, 'bpm', 'beatOffset'],
-  audio: ['bpm', 'beatOffset'],
+  video: [...SPATIAL_KEYS, 'bpm', 'beatOffset', 'pan'],
+  audio: ['bpm', 'beatOffset', 'pan'],
   image: SPATIAL_KEYS,
   text: [
     ...SPATIAL_KEYS,
@@ -176,7 +185,7 @@ const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   ],
   shape: [...SPATIAL_KEYS, 'color2', 'gradientAngle', 'gradientRadial', 'filled', 'stroke', 'points', 'inner', 'drawStart', 'drawEnd'],
   camera: ['target', 'focusStrength', 'focusDistance', 'focusRange', 'focusOnTarget'],
-  effect: ['timeOffset', 'target', 'fullDuration', 'beat'],
+  effect: ['timeOffset', 'target', 'fullDuration', 'beat', 'grade'],
 };
 
 export interface ClipMove {
@@ -185,8 +194,15 @@ export interface ClipMove {
   start: number;
 }
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light' | 'sky'>>;
-export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>>;
+/** one step of a trim plan, run by runTrimOps. a slip's trimStart is absolute, so a replan never adds up */
+export type TrimOp =
+  | { kind: 'trim'; id: string; edge: 'start' | 'end'; time: number }
+  | { kind: 'move'; moves: ClipMove[] }
+  | { kind: 'speed'; id: string; speed: number }
+  | { kind: 'slip'; id: string; trimStart: number };
+
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light' | 'sky' | 'output'>>;
+export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked'>> & { volume?: number | null; pan?: number | null };
 
 export interface EditorState {
   project: Project | null;
@@ -226,6 +242,8 @@ export interface EditorState {
   /** removes the asset and every clip that uses it. clears history. */
   removeAsset(assetId: string): void;
   renameAsset(assetId: string, name: string): void;
+  /** set or clear (null) the marked part of a video or audio media. not an undo step. false when nothing changed */
+  setMediaMarks(assetId: string, marks: InOutRange | null): boolean;
 
   // tracks
   /** video tracks are added on top by default, audio tracks at the bottom. returns the new track id. */
@@ -233,6 +251,8 @@ export interface EditorState {
   /** removes the track and its clips */
   removeTrack(trackId: string, opts?: ActionOpts): void;
   updateTrack(trackId: string, patch: TrackPatch, opts?: ActionOpts): void;
+  /** every fader to 0 db, every pan to the middle, the output too. mute and solo stay */
+  resetMixer(opts?: ActionOpts): void;
   /** reorder a track. index is in project.tracks. tracks stay grouped video-first. */
   moveTrack(trackId: string, toIndex: number, opts?: ActionOpts): void;
 
@@ -244,7 +264,7 @@ export interface EditorState {
    * - start only: first track of the right kind with room at start, else a new track
    * - neither: appended after the last clip of the first usable track
    */
-  insertAsset(assetId: string, opts?: ActionOpts & { trackId?: string; start?: number }): string | null;
+  insertAsset(assetId: string, opts?: ActionOpts & { trackId?: string; start?: number; range?: InOutRange | null; parts?: ClipParts }): string | null;
   /** add a text clip. same placement rules as insertAsset. returns the new clip id. */
   addText(opts?: ActionOpts & { trackId?: string; start?: number; duration?: number; preset?: Partial<TextClip> }): string;
   /** add a shape clip. same placement rules as insertAsset. returns the new clip id. */
@@ -253,6 +273,8 @@ export interface EditorState {
   addMarker(time: number, name?: string, opts?: ActionOpts): string;
   updateMarker(id: string, patch: { time?: number; name?: string }, opts?: ActionOpts): void;
   removeMarker(id: string, opts?: ActionOpts): void;
+  /** set or clear the timeline in / out (null clears). cleaned through lib/inOut. not an undo step. */
+  setRange(range: InOutRange | null): void;
   /**
    * add an effect clip (an adjustment layer that changes everything below its track).
    * - trackId + start: placed on that video track at the nearest free spot to start
@@ -325,6 +347,10 @@ export interface EditorState {
   replaceClipAsset(id: string, assetId: string, opts?: ActionOpts): boolean;
   /** change playback rate of a video/audio clip. duration follows (clamped to the next clip). */
   setClipSpeed(id: string, speed: number, opts?: ActionOpts): void;
+  /** slip a video / audio clip: its place and length stay, trimStart moves by sourceDelta media seconds (+ = later media). false = nothing changed */
+  slipClip(id: string, sourceDelta: number, opts?: ActionOpts): boolean;
+  /** with from, ops run on { ...project, clips: from }: assets, markers, tracks stay current. false only when refused */
+  applyTrimPlan(ops: readonly TrimOp[], opts?: ActionOpts & { from?: readonly Clip[] }): boolean;
   /**
    * split at a timeline time. ids defaults to the selection, or every clip under the time when
    * nothing is selected. clips on locked tracks are skipped. returns ids of the new right-hand parts.
@@ -351,10 +377,16 @@ export interface EditorState {
    * selects and returns the new ids.
    */
   addClips(clips: Clip[], opts?: ActionOpts & { newTrack?: boolean; trackName?: string }): string[];
+  /** ready-made clips exactly where they say (track, start, id), each right after the clip `after` names, else at the end.
+   * all or nothing: false when a track is missing, locked or of the wrong kind, an id is taken, a start is below 0, a clip
+   * is shorter than MIN_CLIP_DURATION or its span is not free (clips of the same call count). selection stays. */
+  insertClips(entries: readonly { clip: Clip; after?: string }[], opts?: ActionOpts): boolean;
   /** put two or more clips into a new group (they leave their old groups). returns the group id, or null. */
   groupClips(ids: string[], opts?: ActionOpts): string | null;
   /** dissolve every group that one of these clips belongs to */
   ungroupClips(ids: string[], opts?: ActionOpts): void;
+  /** set the group of these clips (null takes it off). locked tracks are skipped. false = nothing changed */
+  setClipGroup(ids: readonly string[], group: string | null, opts?: ActionOpts): boolean;
 
   // clipboard
   copySelection(): void;
@@ -539,6 +571,162 @@ function hasOverlapOnTracks(project: Project, trackIds: Iterable<string>): boole
   return false;
 }
 
+/**
+ * the trim cores: pure Project -> Project | null (null = no change or refused). the store actions and runTrimOps
+ * (so every trim plan) go through them.
+ */
+export function moveClipsIn(p: Project, moves: readonly ClipMove[]): Project | null {
+  if (moves.length === 0) return null;
+  const byId = new Map(moves.map((m) => [m.id, m]));
+  const touched = new Set<string>();
+  let valid = true;
+  let changed = false;
+  const clips = p.clips.map((c) => {
+    const m = byId.get(c.id);
+    if (!m) return c;
+    const target = p.tracks.find((t) => t.id === m.trackId);
+    if (!target || target.locked || target.kind !== trackKindForClip(c.type) || isLocked(p, c.trackId)) {
+      valid = false;
+      return c;
+    }
+    if (!(m.start >= 0) || !Number.isFinite(m.start)) {
+      valid = false;
+      return c;
+    }
+    touched.add(m.trackId);
+    if (m.trackId === c.trackId && m.start === c.start) return c;
+    changed = true;
+    return { ...c, trackId: m.trackId, start: m.start };
+  });
+  if (!valid || !changed) return null;
+  const next = { ...p, clips };
+  if (hasOverlapOnTracks(next, touched)) return null;
+  return next;
+}
+
+export function trimClipIn(p: Project, id: string, edge: 'start' | 'end', time: number): Project | null {
+  const clip = p.clips.find((c) => c.id === id);
+  if (!clip || isLocked(p, clip.trackId)) return null;
+  const siblings = getTrackClips(p, clip.trackId).filter((c) => c.id !== id);
+  const end = clipEnd(clip);
+  if (edge === 'start') {
+    let lower = 0;
+    for (const s of siblings) if (clipEnd(s) <= clip.start + 1e-6) lower = Math.max(lower, clipEnd(s));
+    if (isTimedClip(clip)) lower = Math.max(lower, clip.start - clip.trimStart / clip.speed);
+    const upper = end - MIN_CLIP_DURATION;
+    const newStart = clamp(time, lower, Math.max(lower, upper));
+    if (Math.abs(newStart - clip.start) < 1e-9) return null;
+    const delta = newStart - clip.start;
+    // keys stay where they are on the timeline when the head is trimmed
+    const next = { ...clip, start: newStart, duration: end - newStart, keyframes: shiftKeyframes(clip.keyframes, -delta) } as Clip;
+    if (isTimedClip(next) && isTimedClip(clip)) {
+      next.trimStart = Math.max(0, clip.trimStart + delta * clip.speed);
+    }
+    // an effect runs on time - start + timeOffset: keep what it shows at every frame that is left
+    if (next.type === 'effect' && clip.type === 'effect') {
+      next.timeOffset = (clip.timeOffset ?? 0) + delta;
+      next.fullDuration = clip.fullDuration ?? clip.duration;
+    }
+    // a running number carries on from where the cut is (see TextCounter.offset)
+    if (next.type === 'text' && clip.type === 'text' && clip.counter) {
+      next.counter = { ...clip.counter, offset: (clip.counter.offset ?? 0) + delta, fullDuration: clip.counter.fullDuration ?? clip.duration };
+    }
+    // lit words too (see TextHighlight.offset)
+    if (next.type === 'text' && clip.type === 'text' && clip.highlight) {
+      next.highlight = { ...clip.highlight, offset: (clip.highlight.offset ?? 0) + delta, fullDuration: clip.highlight.fullDuration ?? clip.duration };
+    }
+    return replaceClip(p, clampFades(next));
+  }
+  let upper = Infinity;
+  for (const s of siblings) if (s.start >= end - 1e-6) upper = Math.min(upper, s.start);
+  if (isTimedClip(clip)) {
+    const asset = p.assets.find((a) => a.id === clip.assetId);
+    upper = Math.min(upper, clip.start + maxClipDuration(clip, asset?.duration));
+  }
+  const lower = clip.start + MIN_CLIP_DURATION;
+  const newEnd = clamp(time, lower, Math.max(lower, upper));
+  if (Math.abs(newEnd - end) < 1e-9) return null;
+  return replaceClip(p, clampFades({ ...clip, duration: newEnd - clip.start }));
+}
+
+export function setClipSpeedIn(p: Project, id: string, speed: number): Project | null {
+  const clip = p.clips.find((c) => c.id === id);
+  if (!clip || !isTimedClip(clip) || isLocked(p, clip.trackId)) return null;
+  const s = clamp(speed, MIN_SPEED, MAX_SPEED);
+  if (!Number.isFinite(s) || s === clip.speed) return null;
+  const sourceSpan = clip.duration * clip.speed;
+  let duration = sourceSpan / s;
+  let nextStart = Infinity;
+  for (const o of p.clips) {
+    if (o.trackId === clip.trackId && o.id !== clip.id && o.start >= clip.start) {
+      nextStart = Math.min(nextStart, o.start);
+    }
+  }
+  duration = Math.max(MIN_CLIP_DURATION, Math.min(duration, nextStart - clip.start));
+  return replaceClip(p, clampFades({ ...clip, speed: s, duration }));
+}
+
+export function slipClipIn(p: Project, id: string, sourceDelta: number): Project | null {
+  const clip = p.clips.find((c) => c.id === id);
+  if (!clip || !isTimedClip(clip) || isLocked(p, clip.trackId) || !Number.isFinite(sourceDelta)) return null;
+  const asset = p.assets.find((a) => a.id === clip.assetId);
+  const hi = asset && asset.duration > 0 ? Math.max(0, asset.duration - clip.duration * clip.speed) : Infinity;
+  const trimStart = clamp(clip.trimStart + sourceDelta, 0, Math.max(hi, clip.trimStart));
+  if (Math.abs(trimStart - clip.trimStart) < 1e-9) return null;
+  return replaceClip(p, { ...clip, trimStart }); // start, length, keys, fades stay
+}
+
+/**
+ * run the ops of a trim plan in order. null when an op is refused or does not land, p when nothing changed.
+ * an op that is already done is skipped, so a plan can be run on a project it was partly applied to.
+ */
+export function runTrimOps(p: Project, ops: readonly TrimOp[]): Project | null {
+  let cur = p;
+  for (const op of ops) {
+    if (op.kind === 'move') {
+      const holds = op.moves.every((m) => {
+        const c = cur.clips.find((x) => x.id === m.id);
+        return !!c && c.trackId === m.trackId && c.start === m.start;
+      });
+      if (holds) continue;
+      const next = moveClipsIn(cur, op.moves);
+      if (!next) return null;
+      cur = next;
+      continue;
+    }
+    const c = cur.clips.find((x) => x.id === op.id);
+    if (!c) return null;
+    if (op.kind === 'trim') {
+      const edgeAt = (x: Clip) => (op.edge === 'end' ? clipEnd(x) : x.start);
+      if (Math.abs(edgeAt(c) - op.time) < 1e-9) continue;
+      const next = trimClipIn(cur, op.id, op.edge, op.time);
+      if (!next) return null;
+      const after = next.clips.find((x) => x.id === op.id);
+      if (!after || Math.abs(edgeAt(after) - op.time) > 1e-6) return null;
+      cur = next;
+      continue;
+    }
+    if (!isTimedClip(c)) return null;
+    if (op.kind === 'speed') {
+      const want = clamp(op.speed, MIN_SPEED, MAX_SPEED);
+      if (want === c.speed) continue;
+      const next = setClipSpeedIn(cur, op.id, op.speed);
+      if (!next) return null;
+      const after = next.clips.find((x) => x.id === op.id);
+      if (!after || !isTimedClip(after) || after.speed !== want || Math.abs(after.duration - (c.duration * c.speed) / want) > 1e-6) return null;
+      cur = next;
+      continue;
+    }
+    if (Math.abs(op.trimStart - c.trimStart) < 1e-9) continue;
+    const next = slipClipIn(cur, op.id, op.trimStart - c.trimStart);
+    if (!next) return null;
+    const after = next.clips.find((x) => x.id === op.id);
+    if (!after || !isTimedClip(after) || Math.abs(after.trimStart - op.trimStart) > 1e-9) return null;
+    cur = next;
+  }
+  return cur;
+}
+
 /** the crop edge across from each crop edge */
 const CROP_ACROSS: Record<string, string> = { 'crop.left': 'crop.right', 'crop.right': 'crop.left', 'crop.top': 'crop.bottom', 'crop.bottom': 'crop.top' };
 /** the most two opposite crop edges cut together (the renderer squeezes a bigger pair, the numbers would lie) */
@@ -686,6 +874,14 @@ export function cleanKeyframes(clip: Clip, input: Keyframes): Keyframes | undefi
 
 /* ---------- store ---------- */
 
+/** what history does not hold: the media list and the timeline in / out stay as they are now */
+function keepLive(snap: Project, now: Project): Project {
+  const out: Project = { ...snap, assets: now.assets };
+  if (now.range) out.range = now.range;
+  else delete out.range;
+  return out;
+}
+
 export const useEditor = create<EditorState>()((set, get) => {
   /** the project pushHistory() was called on, until the first change of that gesture lands (or something else changes the project) */
   let pending: Project | null = null;
@@ -748,7 +944,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       const past = [...get().past];
       const prev = past.pop();
       if (!prev) return;
-      const restored: Project = prev === project ? project : { ...prev, assets: project.assets };
+      const restored: Project = prev === project ? project : keepLive(prev, project);
       set({ project: restored, past, selection: pruneSelection(restored, selectionAt.get(prev) ?? get().selection) });
     },
     undo() {
@@ -763,8 +959,8 @@ export const useEditor = create<EditorState>()((set, get) => {
         set({ past });
         return;
       }
-      // assets are not part of history: keep the current list
-      const restored: Project = { ...prev, assets: project.assets };
+      // assets are not part of history: keep the current list (and the timeline in / out)
+      const restored: Project = keepLive(prev, project);
       selectionAt.set(project, get().selection);
       set({
         project: restored,
@@ -778,7 +974,7 @@ export const useEditor = create<EditorState>()((set, get) => {
       if (!project || future.length === 0) return;
       pending = null;
       const [next, ...rest] = future;
-      const restored: Project = { ...next!, assets: project.assets };
+      const restored: Project = keepLive(next!, project);
       selectionAt.set(project, get().selection);
       set({
         project: restored,
@@ -795,6 +991,7 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (patch.height !== undefined) next.height = clamp(Math.round(patch.height), 16, 7680);
         if (patch.fps !== undefined) next.fps = clamp(patch.fps, 1, MAX_FPS);
         if (patch.name !== undefined) next.name = patch.name.trim() || 'untitled project';
+        if (patch.output !== undefined) next.output = patchOutput(p.output, patch.output);
         const before = p as unknown as Record<string, unknown>;
         const after = next as unknown as Record<string, unknown>;
         // a missing optional field and null mean the same thing
@@ -840,6 +1037,21 @@ export const useEditor = create<EditorState>()((set, get) => {
         project: { ...project, assets: project.assets.map((a) => (a.id === assetId ? { ...a, name: clean } : a)) },
       });
     },
+    setMediaMarks(assetId, marks) {
+      const { project } = get();
+      if (!project) return false;
+      const a = project.assets.find((x) => x.id === assetId);
+      if (!a || a.kind === 'image') return false;
+      const clean = cleanRange(marks);
+      if (sameRange(cleanRange(a.marks), clean)) return false;
+      const { marks: _old, ...rest } = a;
+      void _old;
+      const nextAsset: MediaAsset = clean ? { ...rest, marks: clean } : rest;
+      const next = { ...project, assets: project.assets.map((x) => (x.id === assetId ? nextAsset : x)) };
+      if (pending === project) pending = next; // a gesture's undo step stays open
+      set({ project: next });
+      return true;
+    },
 
     addTrack(kind, opts) {
       let id = '';
@@ -863,8 +1075,11 @@ export const useEditor = create<EditorState>()((set, get) => {
     },
     updateTrack(trackId, patch, opts) {
       mutate((p) => {
-        if (!p.tracks.some((t) => t.id === trackId)) return null;
-        return { ...p, tracks: p.tracks.map((t) => (t.id === trackId ? { ...t, ...patch } : t)) };
+        const t = p.tracks.find((x) => x.id === trackId);
+        if (!t) return null;
+        const n = patchTrack(t, patch);
+        if (!n) return null;
+        return { ...p, tracks: p.tracks.map((x) => (x === t ? n : x)) };
       }, opts);
       if (patch.locked === true) {
         const p = get().project;
@@ -872,6 +1087,9 @@ export const useEditor = create<EditorState>()((set, get) => {
         const kept = sel.filter((id) => p?.clips.find((c) => c.id === id)?.trackId !== trackId);
         if (kept.length !== sel.length) set({ selection: kept });
       }
+    },
+    resetMixer(opts) {
+      mutate((p) => planMixerReset(p), opts);
     },
     moveTrack(trackId, toIndex, opts) {
       mutate((p) => {
@@ -895,7 +1113,8 @@ export const useEditor = create<EditorState>()((set, get) => {
       mutate((p) => {
         const asset = p.assets.find((a) => a.id === assetId);
         if (!asset) return null;
-        const draft = createClipFromAsset(asset, '', 0);
+        if (clipTypeFor(asset, opts?.parts) === null) return null;
+        const draft = createClipFromAsset(asset, '', 0, { range: opts?.range, parts: opts?.parts });
         const kind = trackKindForClip(draft.type);
         const placed = resolvePlacement(p, kind, draft.duration, opts?.trackId, opts?.start);
         const clip = { ...draft, trackId: placed.trackId, start: placed.start };
@@ -971,6 +1190,22 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (!p.markers?.some((m) => m.id === id)) return null;
         return { ...p, markers: p.markers.filter((m) => m.id !== id) };
       }, opts);
+    },
+    setRange(range) {
+      const { project } = get();
+      if (!project) return;
+      const clean = cleanRange(range);
+      if (sameRange(cleanRange(project.range), clean)) return;
+      const next: Project = { ...project };
+      if (clean) next.range = clean;
+      else delete next.range;
+      // not an undo step. an open gesture keeps its step whole (like addAsset), and a history entry that is this
+      // very project stays "nothing changed" for undo
+      if (pending === project) pending = next;
+      const sel = selectionAt.get(project);
+      if (sel) selectionAt.set(next, sel);
+      const past = get().past;
+      set(past.includes(project) ? { project: next, past: past.map((p) => (p === project ? next : p)) } : { project: next });
     },
 
     addEffect(effect, opts) {
@@ -1200,6 +1435,30 @@ export const useEditor = create<EditorState>()((set, get) => {
             if (sameClipBend(next.bend as ClipBend | null | undefined, clean)) continue;
             value = clean;
           }
+          // a grade is cleaned and compared by value. null takes it and its keys off. one that cleans to nothing is no field
+          if (key === 'grade') {
+            if (value === null) {
+              if ('grade' in next) {
+                delete next.grade;
+                changed = true;
+              }
+              const kf = withoutGradeKeys(next.keyframes as Keyframes | undefined);
+              if (kf !== next.keyframes) {
+                if (kf) next.keyframes = kf;
+                else delete next.keyframes;
+                changed = true;
+              }
+              continue;
+            }
+            const clean = normalizeGrade(value) ?? {};
+            if (sameGrade(next.grade as ClipGrade | undefined, clean)) continue;
+            if (Object.keys(clean).length === 0) {
+              delete next.grade;
+              changed = true;
+              continue;
+            }
+            value = clean;
+          }
           // the sides of a solid: no fill left = no field (the saved project stays as it was before the feature)
           if (key === 'faces' && (value === null || typeof value !== 'object' || Object.keys(value as object).length === 0)) {
             if (key in next) {
@@ -1207,6 +1466,19 @@ export const useEditor = create<EditorState>()((set, get) => {
               changed = true;
             }
             continue;
+          }
+          // a sound's pan is -1..1 and the middle = no field (a saved project stays as it was). a camera's pan is degrees, untouched
+          if (key === 'pan' && (clip.type === 'video' || clip.type === 'audio')) {
+            const v = value === null ? 0 : typeof value === 'number' && Number.isFinite(value) ? clamp(value, -1, 1) : NaN;
+            if (Number.isNaN(v)) continue;
+            if (Math.abs(v) < 1e-4) {
+              if ('pan' in next) {
+                delete next.pan;
+                changed = true;
+              }
+              continue;
+            }
+            value = v;
           }
           if (key === 'keyframes') continue; // use the keyframe actions
           if (['id', 'type', 'trackId', 'start', 'duration', 'trimStart', 'speed'].includes(key)) continue;
@@ -1259,21 +1531,33 @@ export const useEditor = create<EditorState>()((set, get) => {
         const asset = p.assets.find((a) => a.id === assetId);
         if (!clip || !asset || isLocked(p, clip.trackId)) return null;
         if (clip.type !== 'video' && clip.type !== 'image' && clip.type !== 'audio') return null;
-        if (asset.kind !== clip.type || clip.assetId === assetId) return null;
-        // a name the user gave the clip stays: the new asset's name only replaces the old asset's name or none
-        const oldAsset = p.assets.find((a) => a.id === clip.assetId);
-        const name = !clip.name || clip.name === oldAsset?.name ? asset.name : clip.name;
-        if (clip.type === 'image') return replaceClip(p, { ...clip, assetId, name });
-        const speed = clip.speed > 0 ? clip.speed : 1;
-        const length = asset.duration > 0 ? asset.duration : clip.duration * speed;
-        const want = clip.duration * speed;
-        const trimStart = Math.max(0, Math.min(clip.trimStart, length - want));
-        const duration = Math.max(MIN_CLIP_DURATION, Math.min(clip.duration, (length - trimStart) / speed));
-        // another sound has another tempo
-        const swapped = { ...clip, assetId, name, trimStart, duration };
-        delete swapped.bpm;
-        delete swapped.beatOffset;
-        return replaceClip(p, clampFades(swapped));
+        // an audio clip takes any media with sound. a picture whose sound is apart swaps its sound clips too when the new video has sound
+        const fits = asset.kind === clip.type || (clip.type === 'audio' && asset.kind === 'video' && asset.hasAudio);
+        if (!fits || clip.assetId === assetId) return null;
+        const swap = (c: VideoClip | ImageClip | AudioClip): Clip => {
+          // a name the user gave the clip stays: the new asset's name only replaces the old asset's name or none
+          const oldAsset = p.assets.find((a) => a.id === c.assetId);
+          const name = !c.name || c.name === oldAsset?.name ? asset.name : c.name;
+          if (c.type === 'image') return { ...c, assetId, name };
+          const speed = c.speed > 0 ? c.speed : 1;
+          const length = asset.duration > 0 ? asset.duration : c.duration * speed;
+          const want = c.duration * speed;
+          const trimStart = Math.max(0, Math.min(c.trimStart, length - want));
+          const duration = Math.max(MIN_CLIP_DURATION, Math.min(c.duration, (length - trimStart) / speed));
+          // another sound has another tempo
+          const swapped = { ...c, assetId, name, trimStart, duration };
+          delete swapped.bpm;
+          delete swapped.beatOffset;
+          return clampFades(swapped);
+        };
+        let next = replaceClip(p, swap(clip));
+        if (clip.type === 'video' && asset.hasAudio) {
+          for (const s of ownSoundsOf(p.clips, clip)) {
+            if (isLocked(p, s.trackId) || s.assetId === assetId) continue;
+            next = replaceClip(next, swap(s));
+          }
+        }
+        return next;
       }, opts);
     },
     updateTransform(id, patch, opts) {
@@ -1308,100 +1592,33 @@ export const useEditor = create<EditorState>()((set, get) => {
     },
 
     moveClips(moves, opts) {
-      return mutate((p) => {
-        if (moves.length === 0) return null;
-        const byId = new Map(moves.map((m) => [m.id, m]));
-        const touched = new Set<string>();
-        let valid = true;
-        let changed = false;
-        const clips = p.clips.map((c) => {
-          const m = byId.get(c.id);
-          if (!m) return c;
-          const target = p.tracks.find((t) => t.id === m.trackId);
-          if (!target || target.locked || target.kind !== trackKindForClip(c.type) || isLocked(p, c.trackId)) {
-            valid = false;
-            return c;
-          }
-          if (!(m.start >= 0) || !Number.isFinite(m.start)) {
-            valid = false;
-            return c;
-          }
-          touched.add(m.trackId);
-          if (m.trackId === c.trackId && m.start === c.start) return c;
-          changed = true;
-          return { ...c, trackId: m.trackId, start: m.start };
-        });
-        if (!valid || !changed) return null;
-        const next = { ...p, clips };
-        if (hasOverlapOnTracks(next, touched)) return null;
-        return next;
-      }, opts);
+      return mutate((p) => moveClipsIn(p, moves), opts);
     },
 
     trimClip(id, edge, time, opts) {
-      mutate((p) => {
-        const clip = p.clips.find((c) => c.id === id);
-        if (!clip || isLocked(p, clip.trackId)) return null;
-        const siblings = getTrackClips(p, clip.trackId).filter((c) => c.id !== id);
-        const end = clipEnd(clip);
-        if (edge === 'start') {
-          let lower = 0;
-          for (const s of siblings) if (clipEnd(s) <= clip.start + 1e-6) lower = Math.max(lower, clipEnd(s));
-          if (isTimedClip(clip)) lower = Math.max(lower, clip.start - clip.trimStart / clip.speed);
-          const upper = end - MIN_CLIP_DURATION;
-          const newStart = clamp(time, lower, Math.max(lower, upper));
-          if (Math.abs(newStart - clip.start) < 1e-9) return null;
-          const delta = newStart - clip.start;
-          // keys stay where they are on the timeline when the head is trimmed
-          const next = { ...clip, start: newStart, duration: end - newStart, keyframes: shiftKeyframes(clip.keyframes, -delta) } as Clip;
-          if (isTimedClip(next) && isTimedClip(clip)) {
-            next.trimStart = Math.max(0, clip.trimStart + delta * clip.speed);
-          }
-          // an effect runs on time - start + timeOffset: keep what it shows at every frame that is left
-          if (next.type === 'effect' && clip.type === 'effect') {
-            next.timeOffset = (clip.timeOffset ?? 0) + delta;
-            next.fullDuration = clip.fullDuration ?? clip.duration;
-          }
-          // a running number carries on from where the cut is (see TextCounter.offset)
-          if (next.type === 'text' && clip.type === 'text' && clip.counter) {
-            next.counter = { ...clip.counter, offset: (clip.counter.offset ?? 0) + delta, fullDuration: clip.counter.fullDuration ?? clip.duration };
-          }
-          // lit words too (see TextHighlight.offset)
-          if (next.type === 'text' && clip.type === 'text' && clip.highlight) {
-            next.highlight = { ...clip.highlight, offset: (clip.highlight.offset ?? 0) + delta, fullDuration: clip.highlight.fullDuration ?? clip.duration };
-          }
-          return replaceClip(p, clampFades(next));
-        }
-        let upper = Infinity;
-        for (const s of siblings) if (s.start >= end - 1e-6) upper = Math.min(upper, s.start);
-        if (isTimedClip(clip)) {
-          const asset = p.assets.find((a) => a.id === clip.assetId);
-          upper = Math.min(upper, clip.start + maxClipDuration(clip, asset?.duration));
-        }
-        const lower = clip.start + MIN_CLIP_DURATION;
-        const newEnd = clamp(time, lower, Math.max(lower, upper));
-        if (Math.abs(newEnd - end) < 1e-9) return null;
-        return replaceClip(p, clampFades({ ...clip, duration: newEnd - clip.start }));
-      }, opts);
+      mutate((p) => trimClipIn(p, id, edge, time), opts);
     },
 
     setClipSpeed(id, speed, opts) {
+      mutate((p) => setClipSpeedIn(p, id, speed), opts);
+    },
+    slipClip(id, sourceDelta, opts) {
+      return mutate((p) => slipClipIn(p, id, sourceDelta), opts);
+    },
+    /** with from, ops run on { ...project, clips: from }: assets, markers, tracks stay current. false only when refused */
+    applyTrimPlan(ops, opts) {
+      let refused = false;
+      const from = opts?.from;
       mutate((p) => {
-        const clip = p.clips.find((c) => c.id === id);
-        if (!clip || !isTimedClip(clip) || isLocked(p, clip.trackId)) return null;
-        const s = clamp(speed, MIN_SPEED, MAX_SPEED);
-        if (!Number.isFinite(s) || s === clip.speed) return null;
-        const sourceSpan = clip.duration * clip.speed;
-        let duration = sourceSpan / s;
-        let nextStart = Infinity;
-        for (const o of p.clips) {
-          if (o.trackId === clip.trackId && o.id !== clip.id && o.start >= clip.start) {
-            nextStart = Math.min(nextStart, o.start);
-          }
+        const base = from && from !== p.clips ? { ...p, clips: from as Clip[] } : p;
+        const next = runTrimOps(base, ops);
+        if (!next) {
+          refused = true;
+          return null;
         }
-        duration = Math.max(MIN_CLIP_DURATION, Math.min(duration, nextStart - clip.start));
-        return replaceClip(p, clampFades({ ...clip, speed: s, duration }));
+        return next === p ? null : next; // no ops with from: the from clips come back
       }, opts);
+      return !refused && get().project !== null;
     },
 
     splitClips(time, ids, opts) {
@@ -1489,8 +1706,12 @@ export const useEditor = create<EditorState>()((set, get) => {
           }
           if (isVisualClip(right) && isVisualClip(c)) right.transform = { ...c.transform };
           if (c.group) {
-            if (!rightGroups.has(c.group)) rightGroups.set(c.group, uid('grp'));
-            right.group = rightGroups.get(c.group)!;
+            // one side of a separated sound cut alone: its right half stays with the side that plays on over the cut
+            if (keepsSoundGroup(p.clips, c, time, (o) => targets.has(o.id) && cuts(o))) right.group = c.group;
+            else {
+              if (!rightGroups.has(c.group)) rightGroups.set(c.group, uid('grp'));
+              right.group = rightGroups.get(c.group)!;
+            }
           }
           rightOf.set(c.id, right.id);
           if (asked.has(c.id)) created.push(right.id);
@@ -1768,6 +1989,25 @@ export const useEditor = create<EditorState>()((set, get) => {
       return created;
     },
 
+    insertClips(entries, opts) {
+      return mutate((p) => {
+        if (entries.length === 0) return null;
+        const clips = [...p.clips];
+        const taken = new Set(clips.map((c) => c.id));
+        for (const { clip, after } of entries) {
+          const track = p.tracks.find((t) => t.id === clip.trackId);
+          if (!track || track.locked || track.kind !== trackKindForClip(clip.type)) return null;
+          if (taken.has(clip.id) || !(clip.start >= 0) || !(clip.duration >= MIN_CLIP_DURATION - 1e-9)) return null;
+          if (!isRangeFree({ clips }, clip.trackId, clip.start, clip.duration)) return null;
+          taken.add(clip.id);
+          const at = after ? clips.findIndex((c) => c.id === after) : -1;
+          if (at >= 0) clips.splice(at + 1, 0, clip);
+          else clips.push(clip);
+        }
+        return { ...p, clips };
+      }, opts);
+    },
+
     groupClips(ids, opts) {
       let group: string | null = null;
       mutate((p) => {
@@ -1799,6 +2039,21 @@ export const useEditor = create<EditorState>()((set, get) => {
             return rest as Clip;
           }),
         };
+      }, opts);
+    },
+    setClipGroup(ids, group, opts) {
+      return mutate((p) => {
+        const want = new Set(ids);
+        let changed = false;
+        const clips = p.clips.map((c) => {
+          if (!want.has(c.id) || isLocked(p, c.trackId) || (c.group ?? null) === group) return c;
+          changed = true;
+          const next = { ...c };
+          if (group === null) delete next.group;
+          else next.group = group;
+          return next;
+        });
+        return changed ? { ...p, clips } : null;
       }, opts);
     },
 

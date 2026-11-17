@@ -21,6 +21,23 @@
   background: var(--surface-0);
   padding: 0;
 }
+/* the picture views and the scopes strip side by side (the strip makes it a column when it sits below) */
+.preview-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.preview-views {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.preview-views > .preview-stage {
+  min-width: 0;
+}
 
 .preview-frame {
   position: relative;

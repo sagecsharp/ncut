@@ -555,3 +555,29 @@
   flex: 0 0 auto;
   width: 84px;
 }
+
+/* the media in the source view */
+.media-card.is-source {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* the marked part of a media: a bar at the bottom of the thumbnail */
+.media-marks {
+  position: absolute;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent);
+  pointer-events: none;
+}
+/* the skim: the frame under the mouse, over the thumbnail and under the buttons */
+.media-skim {
+  position: absolute;
+  inset: 0;
+  display: none;
+  width: 100%;
+  height: 100%;
+  color: var(--accent);
+  pointer-events: none;
+}
+.media-skim.is-on {
+  display: block;
+}

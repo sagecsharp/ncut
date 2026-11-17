@@ -67,3 +67,20 @@ describe('drop inbetween', () => {
     expect(r).toEqual({ start: 2, shift: 0, moves: [], insert: true });
   });
 });
+
+describe('drop inbetween with group mates', () => {
+  it('the sound of a pair on another track moves with its picture', () => {
+    const g = (c: Clip): Clip => ({ ...c, group: 'g' }) as Clip;
+    const r = planDropInsert(P([g(clip('x', 'a', 0, 4)), g(clip('s', 'b', 0, 4))]), 'a', 0.5, 3)!;
+    expect(r.shift).toBe(3);
+    expect(r.moves).toEqual([
+      { id: 'x', trackId: 'a', start: 3 },
+      { id: 's', trackId: 'b', start: 3 },
+    ]);
+  });
+  it('a mate on a locked track is still planned, the store refuses the whole move', () => {
+    const g = (c: Clip): Clip => ({ ...c, group: 'g' }) as Clip;
+    const r = planDropInsert(P([g(clip('x', 'a', 0, 4)), g(clip('s', 'l', 0, 4))]), 'a', 0.5, 3)!;
+    expect(r.moves.map((m) => m.id)).toEqual(['x', 's']);
+  });
+});

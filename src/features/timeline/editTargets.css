@@ -1,0 +1,14 @@
+/* the bar of a track header that marks where a clip of the source view will land (.timeline-head is sticky, so it holds the bar) */
+.timeline-head-target-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+/* the edit will stop: the track is locked */
+.timeline-head-target-bar.is-locked {
+  background: var(--danger);
+}

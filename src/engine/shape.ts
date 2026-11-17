@@ -1,5 +1,6 @@
 /** drawing of shape clips (types.ts ShapeClip). pure canvas 2d, shared by the flat and the 3d path. */
-import type { ShapeClip, VisualClip } from '../types';
+import type { ClipGrade, ShapeClip, VisualClip } from '../types';
+import { isGradeActive } from '../lib/gradeData';
 import { hasClipLook } from './clipLook';
 import { knownShape } from './scene3d/meshes';
 import { drawRange, flatten, fromPoints, trimPolyline } from './shapeTrim';
@@ -139,11 +140,11 @@ export function shapeSpill(clip: ShapeClip): number {
  * true when the outline of this shape clip is a line around a 3d solid instead of a stroke in the picture: a plain rect
  * (no rounded corners) wrapped on a solid, with an outline. every other figure (ellipse, star, a rounded rect ...)
  * keeps its outline in the picture, because there the line belongs to the figure that is drawn on the faces.
- * so does a clip with a mask, a color correction or a color key: those act on the picture, and a line that is not in
+ * so does a clip with a mask, a color correction, a grade or a color key: those act on the picture, and a line that is not in
  * the picture would stay unmasked and uncorrected.
  * the answer has to be the same on every frame of a clip (the two kinds of line look different, a switch in the middle
- * of an animation would pop), so keys on the corners, the color correction or the color key count like a value that is
- * set: the line stays in the picture for the whole clip, also on the frames where the keyed value is neutral.
+ * of an animation would pop), so keys on the corners, the color correction, the grade or the color key count like a value that is
+ * set (a grade that is switched off too): the line stays in the picture for the whole clip, also on the frames where the keyed value is neutral.
  */
 export function lineOnSolid(clip: {
   type?: string;
@@ -154,6 +155,7 @@ export function lineOnSolid(clip: {
   radius?: number | null;
   mask?: unknown;
   adjust?: unknown;
+  grade?: unknown;
   chromaKey?: unknown;
   keyframes?: Record<string, unknown[] | undefined> | null;
 }): boolean {
@@ -161,7 +163,7 @@ export function lineOnSolid(clip: {
   if (kf) {
     for (const prop in kf) {
       if (!kf[prop]?.length) continue;
-      if (prop === 'radius' || prop.startsWith('adjust.') || prop.startsWith('chromaKey.')) return false;
+      if (prop === 'radius' || prop.startsWith('adjust.') || prop.startsWith('grade.') || prop.startsWith('chromaKey.')) return false;
     }
   }
   return (
@@ -174,7 +176,9 @@ export function lineOnSolid(clip: {
     clip.kind === 'rect' &&
     !(clip.radius !== undefined && clip.radius !== null && clip.radius > 0) &&
     !clip.mask &&
-    !hasClipLook(clip as unknown as VisualClip)
+    // a grade counts whatever its off switch says: the bypass only changes color, not how the line is drawn
+    !hasClipLook({ ...(clip as unknown as VisualClip), grade: undefined }) &&
+    !isGradeActive({ ...(clip.grade as ClipGrade | null | undefined), off: false })
   );
 }
 

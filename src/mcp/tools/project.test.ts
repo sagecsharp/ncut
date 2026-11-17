@@ -5,7 +5,10 @@ import { autoLightAt, skyLightOf } from '../../engine/scene3d/light';
 import { defaultLight } from '../../features/properties/lightLogic';
 import { CANVAS_PRESETS, createProject } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
+import { editEndReason } from '../../features/shell/reasons';
 import { usePlayback } from '../../store/playback';
+import { useSource } from '../../store/source';
+import { useTimeDisplay } from '../../store/timeDisplay';
 import { useUi } from '../../store/ui';
 import type { CanvasPreset } from '../../lib/factory';
 import { SkyError, skyFromAssets } from '../../media/skyImport';
@@ -262,7 +265,7 @@ describe('fog', () => {
   });
 
   it('an empty call names fog', async () => {
-    expect((await call('update_project', {})).text).toMatch(/fps, background, fog, light or sky/);
+    expect((await call('update_project', {})).text).toMatch(/fps, background, fog, light, sky or output/);
   });
 
   it('get_project shows the fog, or null', async () => {
@@ -341,7 +344,7 @@ describe('light', () => {
   });
 
   it('an empty call names light', async () => {
-    expect((await call('update_project', {})).text).toMatch(/background, fog, light or sky/);
+    expect((await call('update_project', {})).text).toMatch(/background, fog, light, sky or output/);
   });
 
   it('get_project has light null and the light the scene gives', async () => {
@@ -762,5 +765,340 @@ describe('the schema', () => {
     expect(tools.get('delete_project')!.annotations?.destructiveHint).toBe(true);
     expect(tools.get('delete_project')!.description).toMatch(/when it is the open project, it is closed first/);
     expect(tools.get('get_project')!.annotations?.readOnlyHint).toBe(true);
+  });
+});
+
+describe('set_range', () => {
+  const addClips = () => {
+    const ed = useEditor.getState();
+    ed.addText();
+    ed.addText();
+    return project().clips;
+  };
+
+  it('in and out snap to frames, no undo step', async () => {
+    const json = JSON.stringify(project());
+    // an empty project has nothing to play: no span
+    expect((await call('set_range', { in: 1.02, out: 3.2 })).json).toEqual({ range: { in: 1.0333, out: 3.2 }, span: null });
+    await call('set_range', { clear: 'both' });
+    useEditor.getState().addText();
+    const id = project().clips[0]!.id;
+    useEditor.getState().trimClip(id, 'end', 10);
+    const json2 = JSON.stringify(project());
+    const before = past();
+    const r = await call('set_range', { in: 1.02, out: 3.2 });
+    expect(r.json).toEqual({ range: { in: 1.0333, out: 3.2 }, span: { start: 1.0333, end: 3.2 } });
+    expect(past()).toBe(before);
+    expect(project().range).toEqual({ in: 31 / 30, out: 3.2 });
+    expect((await call('set_range', { clear: 'both' })).json).toEqual({ range: null, span: null });
+    expect(JSON.stringify(project())).toBe(json2);
+    expect(past()).toBe(before);
+    expect(json).not.toBe(json2);
+  });
+
+  it('clip marks its edges exactly', async () => {
+    const [c] = addClips();
+    useEditor.getState().moveClips([{ id: c!.id, trackId: c!.trackId, start: 1.011 }]);
+    const clip = project().clips.find((x) => x.id === c!.id)!;
+    const r = await call('set_range', { clip: c!.id });
+    expect(r.json!.range).toEqual({ in: Math.round(clip.start * 10000) / 10000, out: Math.round((clip.start + clip.duration) * 10000) / 10000 });
+    expect(project().range).toEqual({ in: clip.start, out: clip.start + clip.duration });
+  });
+
+  it('clear goes first', async () => {
+    await call('set_range', { in: 1, out: 3 });
+    expect((await call('set_range', { clear: 'in' })).json!.range).toEqual({ out: 3 });
+    expect((await call('set_range', { clear: 'out', in: 2 })).json!.range).toEqual({ in: 2 });
+    await call('set_range', { in: 1, out: 3 });
+    expect((await call('set_range', { clear: 'both', in: 2 })).json!.range).toEqual({ in: 2 });
+    expect((await call('set_range', { clear: 'in', out: 5 })).json!.range).toEqual({ out: 5 });
+  });
+
+  it('a dropped mark is noted', async () => {
+    await call('set_range', { in: 1, out: 3 });
+    const a = await call('set_range', { in: 4 });
+    expect(a.json!.range).toEqual({ in: 4 });
+    expect(a.json!.notes).toEqual(['the out point before the new in point was cleared']);
+    const b = await call('set_range', { out: 2 });
+    expect(b.json!.range).toEqual({ out: 2 });
+    expect(b.json!.notes).toEqual(['the in point after the new out point was cleared']);
+    // both given: nothing to note
+    const c = await call('set_range', { in: 5, out: 6 });
+    expect(c.json!.notes).toBeUndefined();
+    expect(c.json!.range).toEqual({ in: 5, out: 6 });
+  });
+
+  it('every refusal', async () => {
+    const [c] = addClips();
+    expect((await call('set_range', {})).text).toMatch(/nothing to set: give in, out, clip or clear/);
+    expect((await call('set_range', { clip: c!.id, in: 1 })).text).toMatch(/give clip or in \/ out, not both/);
+    expect((await call('set_range', { in: 3, out: 2 })).text).toMatch(/in has to be before out/);
+    expect((await call('set_range', { in: 3, out: 3.01 })).text).toMatch(/in has to be before out/);
+    expect((await call('set_range', { clip: 'ghost' })).text).toMatch(/no clip with the id ghost/);
+    expect((await call('set_range', { out: 0 })).text).toMatch(/out has to be after 0/);
+    expect((await call('set_range', { out: 0.01 })).text).toMatch(/out has to be after 0/);
+    expect((await call('set_range', { in: -1 })).error).toBe(true);
+    expect((await call('set_range', { clear: 'some' })).error).toBe(true);
+    expect((await call('set_range', { clear: 'both' })).text).toMatch(/already like that, nothing changed/);
+    await call('set_range', { in: 1, out: 2 });
+    expect((await call('set_range', { in: 1, out: 2 })).text).toMatch(/already like that, nothing changed/);
+    useEditor.getState().closeProject();
+    expect((await call('set_range', { in: 1 })).text).toMatch(/no project is open/);
+  });
+
+  it('get_project shows the range', async () => {
+    expect((await call('get_project')).json!.range).toBeNull();
+    await call('set_range', { in: 1, out: 2.5 });
+    expect((await call('get_project')).json!.range).toEqual({ in: 1, out: 2.5 });
+    await call('set_range', { clear: 'out' });
+    expect((await call('get_project')).json!.range).toEqual({ in: 1 });
+  });
+});
+
+describe('undo names set_range', () => {
+  it('the description says the range is not history', async () => {
+    const { listTools } = await import('../registry');
+    const undo = listTools().tools.find((t) => t.name === 'undo')!;
+    expect(undo.description).toMatch(/in and out points \(set_range\) are not part of history/);
+  });
+});
+
+describe('mixer fields', () => {
+  it('update_track volume, volumeDb and pan in one step', async () => {
+    const a = project().tracks[1]!;
+    const before = past();
+    const r = await call('update_track', { id: a.id, volume: 0.5, pan: -0.25 });
+    expect(r.json).toMatchObject({ id: a.id, volume: 0.5, volumeDb: -6, pan: -0.25 });
+    expect(past()).toBe(before + 1);
+    expect(project().tracks[1]).toMatchObject({ volume: 0.5, pan: -0.25 });
+    const db = await call('update_track', { id: a.id, volumeDb: -12 });
+    expect(db.json!.volumeDb).toBe(-12);
+    expect(db.json!.volume).toBeCloseTo(0.2512, 4);
+    expect(past()).toBe(before + 2);
+    const off = await call('update_track', { id: a.id, volumeDb: -90 });
+    expect(off.json).toMatchObject({ volume: 0, volumeDb: '-inf' });
+    const loud = await call('update_track', { id: a.id, volumeDb: 12, pan: 1 });
+    expect(loud.json).toMatchObject({ volumeDb: 12, pan: 1 });
+    // 0 db and a middle pan take the fields away
+    const flat = await call('update_track', { id: a.id, volume: 1, pan: 0 });
+    expect(flat.json!.volume).toBeUndefined();
+    expect(flat.json!.pan).toBeUndefined();
+    expect('volume' in project().tracks[1]!).toBe(false);
+    // one undo takes the last step back
+    useEditor.getState().undo();
+    expect(project().tracks[1]).toMatchObject({ pan: 1 });
+  });
+
+  it('update_track refusals and an equal level', async () => {
+    const a = project().tracks[1]!;
+    expect((await call('update_track', { id: a.id, volume: 0.5, volumeDb: -6 })).text).toMatch(/send volume or volumeDb, not both/);
+    expect((await call('update_track', { id: a.id, volume: 4 })).text).toMatch(/volume must be/);
+    expect((await call('update_track', { id: a.id, volume: -1 })).text).toMatch(/volume must be/);
+    expect((await call('update_track', { id: a.id, volumeDb: 13 })).text).toMatch(/volumeDb must be/);
+    expect((await call('update_track', { id: a.id, pan: 2 })).text).toMatch(/pan must be/);
+    expect((await call('update_track', { id: a.id })).text).toMatch(/nothing to change: send name, muted, hidden, locked, volume, volumeDb or pan/);
+    const before = past();
+    // 1 and 0 are what a track has without them
+    expect((await call('update_track', { id: a.id, volume: 1 })).text).toMatch(/already has those settings, nothing changed/);
+    expect((await call('update_track', { id: a.id, pan: 0 })).text).toMatch(/already has those settings, nothing changed/);
+    expect(past()).toBe(before);
+    await call('update_track', { id: a.id, volume: 0.5 });
+    expect((await call('update_track', { id: a.id, volume: 0.5 })).text).toMatch(/already has those settings/);
+    expect(past()).toBe(before + 1);
+  });
+
+  it('update_project output and null', async () => {
+    const before = past();
+    const r = await call('update_project', { output: { volumeDb: -6 } });
+    expect(r.json!.output).toMatchObject({ volumeDb: -6 });
+    expect(past()).toBe(before + 1);
+    expect(project().output!.volume).toBeCloseTo(0.5012, 4);
+    expect((await call('update_project', { output: { volume: 0.5 } })).json!.output).toMatchObject({ volume: 0.5, volumeDb: -6 });
+    expect((await call('update_project', { output: { volume: 0.5 } })).text).toMatch(/already has those settings/);
+    expect((await call('update_project', { output: { volume: 0.5, volumeDb: -6 } })).text).toMatch(/send volume or volumeDb, not both/);
+    expect((await call('update_project', { output: {} })).text).toMatch(/output needs volume or volumeDb, or null for 0 db/);
+    expect((await call('update_project', { output: 'loud' })).text).toMatch(/output must be \{ volume \} or \{ volumeDb \}, or null/);
+    expect((await call('update_project', { output: { volume: 9 } })).text).toMatch(/volume must be/);
+    expect((await call('update_project', { output: { volumeDb: 20 } })).text).toMatch(/volumeDb must be/);
+    const steps = past();
+    const off = await call('update_project', { output: null });
+    expect(off.json!.output).toBeUndefined();
+    expect(project().output ?? null).toBeNull();
+    expect(past()).toBe(steps + 1);
+    // null again: nothing changed
+    expect((await call('update_project', { output: null })).text).toMatch(/already has those settings/);
+    expect(past()).toBe(steps + 1);
+  });
+
+  it('get_project lists them only when set', async () => {
+    const plain = (await call('get_project')).json!;
+    expect(plain.output).toBeUndefined();
+    for (const t of plain.trackList) {
+      expect(t.volume).toBeUndefined();
+      expect(t.volumeDb).toBeUndefined();
+      expect(t.pan).toBeUndefined();
+    }
+    const a = project().tracks[1]!;
+    await call('update_track', { id: a.id, volumeDb: -3, pan: 0.5 });
+    await call('update_project', { output: { volumeDb: -90 } });
+    const r = (await call('get_project')).json!;
+    expect(r.trackList[1]).toMatchObject({ volume: 0.7079, volumeDb: -3, pan: 0.5 });
+    expect(r.trackList[0].volume).toBeUndefined();
+    expect(r.output).toEqual({ volume: 0, volumeDb: '-inf' });
+  });
+});
+
+describe('get_clip pair', () => {
+  const asset: MediaAsset = { id: 'av', name: 'av', kind: 'video', mime: 'video/mp4', size: 1, duration: 20, width: 1920, height: 1080, hasAudio: true, createdAt: 0 };
+
+  it('a pair, speeds that differ, a plain clip', async () => {
+    const ed = useEditor.getState();
+    ed.addAsset(asset);
+    const v = project().tracks.find((t) => t.kind === 'video')!;
+    const pic = ed.insertAsset('av', { trackId: v.id, start: 0 })!;
+    expect((await call('get_clip', { id: pic })).json!.pair).toBeUndefined();
+    const sep = await call('separate_sound', { ids: [pic] });
+    expect(sep.error, sep.text).toBe(false);
+    const sound = sep.json!.pairs[0].sound as string;
+    expect((await call('get_clip', { id: pic })).json!.pair).toEqual({ other: sound, offset: 0 });
+    expect((await call('get_clip', { id: sound })).json!.pair).toEqual({ other: pic, offset: 0 });
+    // the sound later by 0.5 s
+    const track = project().clips.find((c) => c.id === sound)!.trackId;
+    useEditor.getState().moveClips([{ id: sound, trackId: track, start: 0.5 }]);
+    expect((await call('get_clip', { id: sound })).json!.pair).toEqual({ other: pic, offset: 0.5 });
+    expect((await call('get_clip', { id: pic })).json!.pair).toEqual({ other: sound, offset: -0.5 });
+    // another speed on one side
+    useEditor.getState().setClipSpeed(sound, 2);
+    expect((await call('get_clip', { id: pic })).json!.pair).toEqual({ other: sound, speeds: 'differ' });
+    // a text clip has none
+    useEditor.getState().addText();
+    const t = project().clips.find((c) => c.type === 'text')!;
+    expect((await call('get_clip', { id: t.id })).json!.pair).toBeUndefined();
+  });
+});
+
+function mediaAsset(id: string, kind: MediaAsset['kind'], duration: number): MediaAsset {
+  return { id, name: id, kind, mime: '', size: 1, duration, width: 640, height: 360, hasAudio: kind !== 'image', createdAt: 0 };
+}
+
+describe('get_state source and timeDisplay', () => {
+  it('get_state source and timeDisplay', async () => {
+    const idle = await call('get_state');
+    expect(idle.json!.source).toBeNull();
+    expect(idle.json!.timeDisplay).toBe('timecode');
+    useEditor.getState().addAsset(mediaAsset('v1', 'video', 10));
+    useSource.getState().open('v1', 2.5);
+    const open = await call('get_state');
+    expect(open.json!.source).toEqual({ media: 'v1', time: 2.5, playing: false, active: false });
+    useUi.getState().activateSource();
+    expect((await call('get_state')).json!.source).toMatchObject({ active: true });
+    useTimeDisplay.getState().setMode('frames');
+    const frames = await call('get_state');
+    expect(frames.json!.timeDisplay).toBe('frames');
+    expect(frames.text.length).toBeLessThan(800);
+    // no tool sets it
+    expect((await call('get_state', { timeDisplay: 'seconds' })).error).toBe(true);
+    useTimeDisplay.getState().setMode('timecode');
+    useUi.getState().activateProgram();
+    useSource.getState().close();
+    expect((await call('get_state')).json!.source).toBeNull();
+    const desc = (await import('../registry')).TOOLS.find((t) => t.name === 'get_state')!.description;
+    expect(desc).toMatch(/source view/);
+    expect(desc).toMatch(/timeDisplay/);
+  });
+});
+
+describe('get_project media marks', () => {
+  it('mediaList marks only when set', async () => {
+    useEditor.getState().addAsset(mediaAsset('v1', 'video', 10));
+    useEditor.getState().addAsset(mediaAsset('a1', 'audio', 30));
+    useEditor.getState().addAsset({ ...mediaAsset('i1', 'image', 0) });
+    useEditor.getState().setMediaMarks('v1', { in: 2.123456, out: 6 });
+    useEditor.getState().setMediaMarks('a1', { out: 5 });
+    const list = (await call('get_project')).json!.mediaList as Record<string, any>[];
+    expect(list.find((m) => m.id === 'v1')!.marks).toEqual({ in: 2.1235, out: 6 });
+    expect(list.find((m) => m.id === 'a1')!.marks).toEqual({ out: 5 });
+    expect('marks' in list.find((m) => m.id === 'i1')!).toBe(false);
+    useEditor.getState().setMediaMarks('v1', null);
+    const after = (await call('get_project')).json!.mediaList as Record<string, any>[];
+    expect('marks' in after.find((m) => m.id === 'v1')!).toBe(false);
+  });
+});
+
+describe('seek by frame and by edit', () => {
+  const clipsAt = () => {
+    const s = useEditor.getState();
+    const a = s.addText({ start: 0, duration: 2 });
+    const b = s.addText({ start: 5, duration: 2 });
+    s.select([]);
+    return { a, b };
+  };
+
+  it('by frame', async () => {
+    clipsAt();
+    const r = await call('seek', { frame: 45 });
+    expect(r.json).toMatchObject({ time: 1.5, frame: 45, duration: 7 });
+    expect(usePlayback.getState().time).toBe(1.5);
+    // time answers its frame too
+    expect((await call('seek', { time: 2.5 })).json).toMatchObject({ time: 2.5, frame: 75 });
+    expect((await call('seek', { frame: 0 })).json).toMatchObject({ time: 0, frame: 0 });
+    const far = await call('seek', { frame: 9000 });
+    expect(far.json).toMatchObject({ time: 7, frame: 210, clamped: true });
+    expect((await call('seek', { frame: -1 })).error).toBe(true);
+    expect((await call('seek', { frame: 1.5 })).error).toBe(true);
+    expect((await call('seek', { frame: 2592001 })).text).toBe('frame is more than a day');
+    expect((await call('seek', { frame: 2592000 })).error).toBe(false);
+  });
+
+  it('previous and next edit, still playing', async () => {
+    clipsAt();
+    usePlayback.setState({ playing: true });
+    usePlayback.getState().seek(3);
+    expect((await call('seek', { edit: 'next' })).json).toMatchObject({ time: 5, frame: 150 });
+    expect((await call('seek', { edit: 'previous' })).json).toMatchObject({ time: 2, frame: 60 });
+    expect((await call('seek', { edit: 'previous' })).json).toMatchObject({ time: 0 });
+    expect(usePlayback.getState().playing).toBe(true);
+    // the tracks of the selected clips only
+    const other = useEditor.getState().addTrack('video');
+    const c = useEditor.getState().addText({ start: 3, duration: 1, trackId: other });
+    useEditor.getState().select([c]);
+    usePlayback.getState().seek(0);
+    expect((await call('seek', { edit: 'next' })).json).toMatchObject({ time: 3 });
+    expect((await call('seek', { edit: 'next' })).json).toMatchObject({ time: 4 });
+    expect((await call('seek', { edit: 'next' })).text).toBe(editEndReason('selection', 1));
+    usePlayback.setState({ playing: false });
+  });
+
+  it('exactly one of time, frame or edit', async () => {
+    clipsAt();
+    const text = 'give one of time, frame or edit';
+    expect((await call('seek')).text).toBe(text);
+    expect((await call('seek', { time: 1, frame: 3 })).text).toBe(text);
+    expect((await call('seek', { frame: 3, edit: 'next' })).text).toBe(text);
+    expect((await call('seek', { time: 1, edit: 'next' })).text).toBe(text);
+    expect((await call('seek', { edit: 'later' })).error).toBe(true);
+    expect((await call('seek', { time: 0 })).error).toBe(false);
+    const listed = (await import('../registry')).TOOLS.find((t) => t.name === 'seek')!;
+    expect(listed.inputSchema.required ?? []).toEqual([]);
+    expect(listed.description).toMatch(/exactly one/);
+  });
+
+  it('no edit that way says why', async () => {
+    clipsAt();
+    usePlayback.getState().seek(7);
+    const end = await call('seek', { edit: 'next' });
+    expect(end.error).toBe(true);
+    expect(end.text).toBe(editEndReason('all', 1));
+    usePlayback.getState().seek(0);
+    expect((await call('seek', { edit: 'previous' })).text).toBe(editEndReason('all', -1));
+    const other = useEditor.getState().addTrack('video');
+    const c = useEditor.getState().addText({ start: 0, duration: 1, trackId: other });
+    useEditor.getState().select([c]);
+    usePlayback.getState().seek(1);
+    expect((await call('seek', { edit: 'next' })).text).toBe(editEndReason('selection', 1));
+    expect((await call('seek', { edit: 'previous' })).json).toMatchObject({ time: 0 });
+    usePlayback.getState().seek(0);
+    expect((await call('seek', { edit: 'previous' })).text).toBe(editEndReason('selection', -1));
+    expect(usePlayback.getState().time).toBe(0);
   });
 });

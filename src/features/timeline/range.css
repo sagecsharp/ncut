@@ -1,0 +1,59 @@
+/* the in / out range down through the lanes. positioned with transforms by RangeLines */
+.timeline-range-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.timeline-range-line.is-snapped {
+  width: 2px;
+  opacity: 1;
+}
+.timeline-range-shade {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  /* the text color is far from the lanes in both themes (accent-muted was not: the shade could not be seen) */
+  background: var(--text);
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+/* the range readout in the corner of the ruler and the headers */
+.timeline-range-corner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 8px;
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.timeline-range-corner-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.timeline-range-corner-clear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.timeline-range-corner-clear:hover {
+  color: var(--text);
+}

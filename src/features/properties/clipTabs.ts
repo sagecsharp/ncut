@@ -5,7 +5,7 @@ export type InspectorTab = 'basic' | 'look' | 'animate' | 'sound' | 'all';
 
 export const INSPECTOR_TABS: { id: InspectorTab; label: string; title: string }[] = [
   { id: 'basic', label: 'basic', title: 'name, timing, the main settings, transform, attach, speed, fades' },
-  { id: 'look', label: 'look', title: 'style, color, mask, effects, 3d, bend' },
+  { id: 'look', label: 'look', title: 'style, color, grade, mask, effects, 3d, bend' },
   { id: 'animate', label: 'animate', title: 'keyframes, motion, path, repeat, transition' },
   { id: 'sound', label: 'sound', title: 'volume and tempo' },
   { id: 'all', label: 'all', title: 'every section in one list' },
@@ -32,6 +32,7 @@ export const SECTION_ORDER = [
   'attach',
   'look',
   'color',
+  'grade',
   'mask',
   'clip-effects',
   'motion',
@@ -59,6 +60,7 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
   'text-style': 'look',
   look: 'look',
   color: 'look',
+  grade: 'look',
   mask: 'look',
   'clip-effects': 'look',
   threed: 'look',
@@ -78,8 +80,9 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
 /**
  * the sections a clip has, in the order of the "all" tab. one place for the rule, the inspector uses it too.
  * linked: the clip has something in "attach" (a visual clip always has, see hasLinks in lib/links).
+ * gradeEffect: the clip is a grade effect, the one non picture clip with a grade.
  */
-export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true): SectionId[] {
+export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true, gradeEffect = false): SectionId[] {
   const visual = type === 'video' || type === 'image' || type === 'text' || type === 'shape';
   const sound = hasAudio && (type === 'video' || type === 'audio');
   return SECTION_ORDER.filter((id) => {
@@ -100,6 +103,8 @@ export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true): Se
         return type !== 'audio' && type !== 'effect' && type !== 'camera';
       case 'attach':
         return visual || linked;
+      case 'grade':
+        return visual || gradeEffect;
       case 'threed':
       case 'bend':
       case 'path':
@@ -147,4 +152,11 @@ export function arrowTab(tabs: readonly InspectorTab[], from: InspectorTab, key:
   if (key === 'Home') return tabs[0]!;
   if (key === 'End') return tabs[tabs.length - 1]!;
   return null;
+}
+
+/** the tab to switch to so a revealed section shows: null for an unknown id, on "all" and when it is on that tab already */
+export function revealTab(current: InspectorTab, sectionId: string): Exclude<InspectorTab, 'all'> | null {
+  if (!(SECTION_ORDER as readonly string[]).includes(sectionId)) return null;
+  const tab = TAB_OF[sectionId as SectionId];
+  return current === 'all' || current === tab ? null : tab;
 }

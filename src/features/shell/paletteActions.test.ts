@@ -4,7 +4,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { rankItem } from './paletteSearch';
 import { paletteActions } from './paletteActions';
-import { REASON_TEXT, reasonSnapshot } from './reasons';
+import { REASON_IDS, REASON_TEXT, reasonSnapshot } from './reasons';
 import { SHORTCUTS } from './shortcuts';
 
 vi.mock('../../store/session', () => ({ closeProject: vi.fn(), exportProjectFile: vi.fn() }));
@@ -14,6 +14,15 @@ const NEW_IDS = [
   'show-sky', 'show-fog', 'show-light', 'project-panel', 'guides', 'floor-grid', 'output-inset',
   'quality-full', 'quality-half', 'quality-quarter', 'tool-move', 'tool-rotate', 'tool-scale',
   'speed-quarter', 'speed-one-half', 'reset-layout',
+  'scopes-waveform', 'scopes-parade', 'scopes-vectorscope', 'scopes-histogram', 'scopes-exact',
+  'slip-earlier', 'slip-later', 'slide-left', 'slide-right',
+  'side-by-side', 'media-skim', 'source-empty', 'source-add',
+  'mark-selection', 'clear-in', 'clear-out',
+  'join-sound', 'move-into-sync', 'slip-into-sync', 'select-sound', 'select-picture',
+  'solo-selection', 'solo-off', 'mixer-reset',
+  'time-display-timecode', 'time-display-frames', 'time-display-seconds',
+  'grade-show', 'grade-on-off', 'grade-reset', 'grade-copy', 'grade-paste', 'grade-add',
+  'replace-edit', 'fit-edit', 'append-edit', 'edit-targets-auto', 'edit-targets-selected',
 ];
 
 const find = (id: string) => paletteActions().find((a) => a.id === id)!;
@@ -72,6 +81,31 @@ describe('palette actions', () => {
     const last = all.slice(-4);
     expect(last.map((a) => a.id)).toEqual(['bend-together', 'bend-flat', 'move-pivot', 'pivot-middle']);
     for (const a of last) expect(a.why).toBeUndefined();
+  });
+  it('the new rows come in the plan order, the scopes after the output inset', () => {
+    const ids = paletteActions().map((a) => a.id);
+    const inset = ids.indexOf('output-inset');
+    expect(ids.slice(inset + 1, inset + 6)).toEqual(NEW_IDS.slice(25, 30));
+    const bend = ids.indexOf('bend-together');
+    expect(ids.slice(bend - 33, bend)).toEqual(NEW_IDS.slice(30));
+    expect(NEW_IDS.length).toBe(25 + 5 + 33);
+  });
+  it('the new search rows with a reason id have a why', () => {
+    let withReason = 0;
+    for (const id of NEW_IDS.slice(25)) {
+      const a = find(id);
+      expect(a.keys, id).toEqual([]);
+      if (!REASON_IDS.has(id) && !id.startsWith('time-display-')) {
+        expect(a.why, id).toBeUndefined();
+        continue;
+      }
+      expect(typeof a.why, id).toBe('function');
+      withReason++;
+    }
+    expect(withReason).toBe(28);
+    for (const id of ['slip-earlier', 'slip-later', 'slide-left', 'slide-right', 'source-add', 'mark-selection', 'clear-in', 'clear-out', 'join-sound', 'solo-selection', 'solo-off', 'mixer-reset', 'grade-show', 'grade-copy', 'grade-paste', 'replace-edit', 'fit-edit', 'append-edit']) {
+      expect(REASON_IDS.has(id), id).toBe(true);
+    }
   });
   it('bend together on a keyed leader only fits: no new key at the playhead', () => {
     const base = createProject('bend');

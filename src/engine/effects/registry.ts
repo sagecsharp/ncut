@@ -1,6 +1,7 @@
 import { BLUR_EFFECTS } from './defs/blur';
 import { COLOR_EFFECTS } from './defs/color';
 import { DISTORT_EFFECTS } from './defs/distort';
+import { GRADE_DEFS } from './defs/grade';
 import { MOTION_EFFECTS } from './defs/motion';
 import { PACK2_BLUR_EFFECTS } from './defs/pack2-blur';
 import { PACK2_COLOR_EFFECTS } from './defs/pack2-color';
@@ -30,6 +31,7 @@ export const EFFECTS: EffectDef[] = [
   ...PACK2_STYLIZE_EFFECTS,
   ...PACK4_STYLIZE_EFFECTS,
   ...PACK3_OVERLAY_EFFECTS,
+  ...GRADE_DEFS,
 ];
 
 const byId = new Map(EFFECTS.map((e) => [e.id, e]));

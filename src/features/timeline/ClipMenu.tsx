@@ -1,6 +1,7 @@
 import { useRef } from 'react';
-import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, CopyPlus, Diamond, Flag, Group, Layers, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Type, Trash2, Ungroup, Unlink, Volume2, VolumeX } from 'lucide-react';
+import { AlignHorizontalJustifyStart, ArrowLeftRight, AudioLines, Blend, Box, CopyPlus, Diamond, Film, Flag, Gauge, Group, Layers, ListEnd, Merge, MousePointer2, MoveHorizontal, Paperclip, Replace, Scissors, Snowflake, Sparkles, Split, Square, Target, Type, Trash2, Ungroup, Unlink, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
+import { muteTargets } from '../../lib/soundPair';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
 import { childrenOf, parentOf } from '../../lib/links';
@@ -19,6 +20,8 @@ import { effectsOn } from './effectTarget';
 import { useFloatingMenu } from './menuBehavior';
 import { cutAtMarkers, fitToMarkers, makeRow, canCutAtMarkers, sequenceableIds } from './sequenceActions';
 import { swapCandidates } from './swap';
+import { soundMenu } from './soundPlan';
+import { joinSoundNow, selectSideNow, separateSoundNow, syncSoundNow } from './soundActions';
 
 interface Props {
   x: number;
@@ -44,8 +47,12 @@ export function ClipMenu({ x, y, clipId, focusFirst, onClose }: Props) {
     .getState()
     .project?.clips.some((c) => ids.includes(c.id) && time > c.start + 0.05 && time < clipEnd(c) - 0.05);
   const timed = clip.type === 'video' || clip.type === 'audio';
-  const muted = (clip.type === 'video' || clip.type === 'audio') && clip.muted;
   const project = useEditor.getState().project;
+  // a picture with its sound apart shows the mute of its sound clip
+  const muted = project ? (muteTargets(project.clips, [clip.id])[0]?.muted ?? false) : (clip.type === 'video' || clip.type === 'audio') && clip.muted;
+  const sm = project ? soundMenu(project, ids, clip.id) : null;
+  const showSound = !!sm && (sm.canSeparate || sm.join !== null || sm.sound || sm.picture || sm.offset !== null);
+  const joinOff = sm && sm.join !== null && sm.join !== 'yes' ? sm.join : null;
   const picked = (project?.clips ?? []).filter((c) => ids.includes(c.id));
   const withTransition = picked.filter((c) => isVisualClip(c) && c.transition);
   const withKeys = picked.filter((c) => hasKeyframes(c));
@@ -222,6 +229,91 @@ export function ClipMenu({ x, y, clipId, focusFirst, onClose }: Props) {
           freeze frame
           <MenuKeys id="freeze-frame" />
         </button>
+      ) : null}
+      {sm && showSound ? (
+        <>
+          <div className="menu-sep" />
+          {sm.canSeparate ? (
+            <button
+              className="menu-item"
+              role="menuitem"
+              {...tip('separate sound', { does: 'put the sound on an audio track as a clip of its own, grouped with the picture', side: 'right', keys: 'separate-sound' })}
+              onClick={run(() => separateSoundNow(ids))}
+            >
+              <Split size={14} />
+              separate sound
+              <MenuKeys id="separate-sound" />
+            </button>
+          ) : null}
+          {sm.join !== null ? (
+            <button
+              className="menu-item"
+              role="menuitem"
+              disabled={joinOff !== null}
+              {...tip('join sound back', { does: 'remove the sound clip: the picture plays its own sound again', side: 'right', keys: 'separate-sound', off: joinOff })}
+              onClick={run(() => joinSoundNow(ids))}
+            >
+              <Merge size={14} />
+              join sound back
+              <MenuKeys id="separate-sound" />
+            </button>
+          ) : null}
+          {sm.sound ? (
+            <button
+              className="menu-item"
+              role="menuitem"
+              {...tip('select only the sound', { does: 'select the sound clip alone, to trim it on its own (a j or l cut)', side: 'right' })}
+              onClick={run(() => selectSideNow(ids, 'sound'))}
+            >
+              <AudioLines size={14} />
+              select only the sound
+            </button>
+          ) : null}
+          {sm.picture ? (
+            <button
+              className="menu-item"
+              role="menuitem"
+              {...tip('select only the picture', { does: 'select the picture alone, to trim it on its own', side: 'right' })}
+              onClick={run(() => selectSideNow(ids, 'picture'))}
+            >
+              <Film size={14} />
+              select only the picture
+            </button>
+          ) : null}
+          {sm.offset !== null && sm.offset !== 'speed' ? (
+            <>
+              <button
+                className="menu-item"
+                role="menuitem"
+                {...tip('move into sync', { does: 'move this clip so it lines up with its picture or sound again', side: 'right' })}
+                onClick={run(() => syncSoundNow([clip.id], 'move'))}
+              >
+                <MoveHorizontal size={14} />
+                move into sync
+              </button>
+              <button
+                className="menu-item"
+                role="menuitem"
+                {...tip('slip into sync', { does: 'keep this clip where it is and slide its media so it lines up', side: 'right' })}
+                onClick={run(() => syncSoundNow([clip.id], 'slip'))}
+              >
+                <ArrowLeftRight size={14} />
+                slip into sync
+              </button>
+            </>
+          ) : null}
+          {sm.offset === 'speed' ? (
+            <button
+              className="menu-item"
+              role="menuitem"
+              {...tip('match the speed', { does: 'give this clip the speed of its picture or sound and line it up', side: 'right' })}
+              onClick={run(() => syncSoundNow([clip.id], 'speed'))}
+            >
+              <Gauge size={14} />
+              match the speed
+            </button>
+          ) : null}
+        </>
       ) : null}
       {clip.type === 'text' && splitModes.length > 0 ? (
         <>
@@ -402,11 +494,8 @@ export function ClipMenu({ x, y, clipId, focusFirst, onClose }: Props) {
               const st = useEditor.getState();
               const next = !muted;
               st.pushHistory();
-              for (const id of ids) {
-                const c = st.project?.clips.find((x) => x.id === id);
-                if (c && (c.type === 'video' || c.type === 'audio')) {
-                  useEditor.getState().updateClip(id, { muted: next }, { skipHistory: true });
-                }
+              for (const c of muteTargets(st.project?.clips ?? [], ids)) {
+                useEditor.getState().updateClip(c.id, { muted: next }, { skipHistory: true });
               }
             })}
           >

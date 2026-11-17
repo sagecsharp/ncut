@@ -40,10 +40,11 @@ describe('overlay category', () => {
     expect(effectsInCategory('overlay').map((e) => e.id)).toEqual(OVERLAY_IDS);
   });
 
-  it('comes after every other effect in the registry order', () => {
+  it('comes after every other effect in the registry order, the grade effect stays last', () => {
     const firstOverlay = EFFECTS.findIndex((e) => e.category === 'overlay');
     expect(firstOverlay).toBeGreaterThan(0);
-    expect(EFFECTS.slice(firstOverlay).every((e) => e.category === 'overlay')).toBe(true);
+    expect(EFFECTS.slice(firstOverlay, -1).every((e) => e.category === 'overlay')).toBe(true);
+    expect(EFFECTS[EFFECTS.length - 1]!.id).toBe('grade');
   });
 });
 

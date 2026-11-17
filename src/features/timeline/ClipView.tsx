@@ -9,6 +9,7 @@ import { ClipCanvas } from './ClipCanvas';
 import { effectOnLabel, targetNameById } from './effectTarget';
 import { KeyMarks } from './KeyMarks';
 import { CLIP_INSET } from './layout';
+import { SyncBadge } from './SyncBadge';
 
 interface Props {
   clip: Clip;
@@ -74,8 +75,9 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
             <title>in a group</title>
           </Group>
         ) : null}
+        <SyncBadge clip={clip} w={w} />
         {isVisualClip(clip) && clip.parent ? <AttachMark parentId={clip.parent} /> : null}
-        {muted ? <VolumeX size={11} aria-label="muted" /> : null}
+        {muted ? <VolumeX size={11} aria-label="muted" className="timeline-clip-mute" /> : null}
         {isEffect && w >= 40 ? <Sparkles size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'shape' && w >= 40 ? <Shapes size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}
         {clip.type === 'camera' && w >= 40 ? <Camera size={11} aria-hidden="true" className="timeline-clip-icon" /> : null}

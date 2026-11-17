@@ -89,6 +89,8 @@ export interface CursorLookup {
   markerTime(id: string): number | undefined;
   /** where a clip sits on the canvas now (its transform x / y) */
   clipPos(id: string): { x: number; y: number } | undefined;
+  /** the in point of the timeline range, when there is one */
+  rangeIn?(): number | undefined;
 }
 
 export const NO_LOOKUP: CursorLookup = { markerTime: () => undefined, clipPos: () => undefined };
@@ -204,7 +206,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
   get_project: lookup('reads the project'),
   get_clip: { label: 'reads a clip', before: () => INSPECTOR },
   select_clips: onClips('selects clips'),
-  seek: { label: 'moves the playhead', before: (a) => time(a.time) },
+  seek: { label: 'moves the playhead', before: (a) => time(a.time), after: (_a, res) => time(res?.time) },
   undo: { label: 'undoes', before: () => button('undo') },
   redo: { label: 'redoes', before: () => button('redo') },
   add_track: { label: 'adds a track', before: () => NOWHERE, after: (_a, res) => track(res?.id) },
@@ -212,12 +214,16 @@ export const CURSOR_RULES: Record<string, Rule> = {
   remove_track: { label: 'removes a track', before: (a) => track(a.id) },
   add_marker: { label: 'adds a marker', before: (a) => time(a.time) },
   remove_marker: { label: 'removes a marker', before: (a, look) => time(look.markerTime(str(a.id) ?? '')) },
+  set_range: { label: 'marks in and out', before: (a, look) => (str(a.clip) ? clip(a.clip) : time(num(a.in) ?? num(a.out) ?? look.rangeIn?.())) },
   // choices
   list_options: lookup('looks up options'),
   // media
   import_media: { label: 'imports media', before: () => media(), after: (_a, res) => media(briefIds(res?.media)[0]) },
   import_project: { label: 'imports a project', before: () => ({ kind: 'projects' }) },
+  set_media_marks: { label: 'marks media', before: (a) => media(a.asset) },
   add_media_clip: { label: 'puts media on the timeline', before: (a) => media(a.asset), after: (_a, res) => clip(res?.id) },
+  match_frame: { label: 'opens a clip\'s media in the source view', before: (a) => (str(a.clip) ? clip(a.clip) : PREVIEW), after: () => PREVIEW },
+  edit_media: { label: 'edits media into the timeline', before: (a) => media(a.asset), after: (_a, res) => clips(briefIds(res?.clips)) },
   replace_media: { label: 'swaps the media of a clip', before: (a) => media(a.asset), after: (a) => clip(a.id) },
   remove_media: { label: 'removes media', before: (a) => (a.unused === true ? media() : media(strs(a.ids)[0])), after: () => media() },
   // new clips
@@ -243,13 +249,18 @@ export const CURSOR_RULES: Record<string, Rule> = {
   },
   set_sides: onClip('puts pictures on a solid'),
   move_clip: onClip('moves a clip'),
+  nudge_clips: onClips('nudges clips'),
   trim_clip: onClip('trims a clip'),
+  slip_clip: onClip('slips a clip'),
+  slide_clip: onClip('slides a clip'),
   split_clips: {
     label: 'splits clips',
     before: (a) => time(a.time),
     after: (_a, res) => clips(strs(res?.created)),
   },
   delete_clips: onClips('deletes clips'),
+  lift_range: { label: 'lifts in to out', before: (_a, look) => time(look.rangeIn?.()) },
+  extract_range: { label: 'extracts in to out', before: (_a, look) => time(look.rangeIn?.()) },
   duplicate_clips: {
     label: 'duplicates clips',
     before: (a) => clips(strs(a.ids)),
@@ -258,6 +269,10 @@ export const CURSOR_RULES: Record<string, Rule> = {
   group_clips: onClips('groups clips'),
   bend_clips: onClips('bends clips'),
   ungroup_clips: onClips('ungroups clips'),
+  // picture and sound
+  separate_sound: onClips('separates sound'),
+  join_sound: onClips('joins sound back'),
+  sync_sound: onClips('lines up picture and sound'),
   // keyframes
   set_keyframe: {
     label: 'sets a keyframe',

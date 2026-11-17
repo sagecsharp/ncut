@@ -21,11 +21,12 @@
 ## features
 
 - **timeline** with video, image, text, shape and audio tracks, drop clips inbetween others, drop a clip on the border between two tracks and a new track opens there
+- **editing like the pros**: ripple / slip / slide / stretch trims, in and out with lift and extract, a source view with insert and overwrite, separate sound with j and l cuts, scopes, color wheels and curves, a track mixer
 - **real time preview**, move / scale / rotate right on the picture
 - **keyframes** on nearly every number, each one with its own keys
 - **bpm**: ncut finds the tempo of a song (or type it, or tap it), then keyframes loop and snap on the beat, and effects can pulse and lock their rhythm to it
 - **3d**: clips become planes or solids in one scene, unlit or lit by the scene around them or by an imported skybox, with cameras and a scene view driven like blender (or like unity, one switch in the settings)
-- **94 effects, 87 transitions**, motion blur, masks, green screen
+- **95 effects, 87 transitions**, motion blur, masks, green screen
 - **text** with 29 fonts plus your own, letter animations, captions
 - **a plain color card** in every project, ready to drop in
 - **export** to mp4, webm, gif, audio or a picture (png / jpg of a frame), up to 240 fps, no watermark
@@ -102,6 +103,9 @@ press `?` in the editor for the full list. the main ones:
 - `ctrl+g` / `ctrl+shift+g` group / ungroup
 - `left` / `right` step one frame
 - `m` add a marker
+- `i` / `o` mark in / out, `x` mark the clip, `shift+x` clear, `shift+space` play in to out
+- `;` lift, `'` extract, `shift+k` key position, scale, rotation and opacity
+- `f9` / `f10` insert / overwrite the marked part of the source view
 - `ctrl+wheel` zoom the timeline
 - `ctrl+k` search every action
 - `ctrl+e` export

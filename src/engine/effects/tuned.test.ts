@@ -140,8 +140,8 @@ describe('the effects they grew out of are as they were', () => {
     expect(param('light-leak', 'drift').default).toBeCloseTo(0.4, 6);
   });
 
-  it('there are 94 effects, every id once', () => {
-    expect(EFFECTS.length).toBe(94);
-    expect(new Set(EFFECTS.map((e) => e.id)).size).toBe(94);
+  it('there are 95 effects, every id once', () => {
+    expect(EFFECTS.length).toBe(95);
+    expect(new Set(EFFECTS.map((e) => e.id)).size).toBe(95);
   });
 });

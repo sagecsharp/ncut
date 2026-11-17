@@ -363,8 +363,8 @@ describe('animProps', () => {
     expect(names(text()).slice(0, 11)).toEqual(names(image()).slice(0, 11));
     expect(names(image())).not.toContain('volume');
   });
-  it('audio: volume only', () => {
-    expect(names(audio())).toEqual(['volume']);
+  it('audio: volume and pan', () => {
+    expect(names(audio())).toEqual(['volume', 'pan']);
   });
   it('effect: amount only (params come from the effect def)', () => {
     expect(names(effect())).toEqual(['amount']);

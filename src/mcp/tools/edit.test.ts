@@ -476,3 +476,297 @@ describe('update_clip pivot and parent keep the place', () => {
     await refused('update_clip', { id: a, patch: { pivot: null } }, /nothing changed/);
   });
 });
+
+/** two video clips that touch: a is 0 to 4, b is 4 to 9, both on the video track */
+async function touching(): Promise<{ a: string; b: string }> {
+  const a = addVideoClip(video, 0);
+  await call('trim_clip', { id: a, edge: 'end', time: 4 });
+  const b = addVideoClip(video, 4);
+  await call('trim_clip', { id: b, edge: 'end', time: 9 });
+  return { a, b };
+}
+
+describe('trim_clip modes', () => {
+  it('no mode answers as before', async () => {
+    const { a, b } = await touching();
+    const plain = await call('trim_clip', { id: a, edge: 'end', time: 3 });
+    expect(plain.ok, plain.text).toBe(true);
+    expect(plain.data.mode).toBeUndefined();
+    expect(plain.data.end).toBe(3);
+    // a gap stays, b does not move
+    expect(clipOf(b).start).toBe(4);
+    // mode trim is the same code, alone changes nothing
+    const same = await call('trim_clip', { id: a, edge: 'end', time: 2, mode: 'trim', alone: true });
+    expect(same.data.mode).toBeUndefined();
+    expect(same.data.end).toBe(2);
+    expect(clipOf(b).start).toBe(4);
+  });
+
+  it('ripple, move-edit and stretch are one step each', async () => {
+    const { a, b } = await touching();
+    const r = await oneStepOf(() => call('trim_clip', { id: a, edge: 'end', time: 3, mode: 'ripple' }));
+    expect(r.data).toMatchObject({ id: a, mode: 'ripple', end: 3 });
+    expect(r.data.moved).toContain(b);
+    expect(clipOf(b).start).toBe(3);
+    expect(r.data.note).toBeUndefined();
+    const m = await oneStepOf(() => call('trim_clip', { id: a, edge: 'end', time: 3.5, mode: 'move-edit' }));
+    expect(m.data.mode).toBe('move-edit');
+    expect(clipOf(a).start + clipOf(a).duration).toBeCloseTo(3.5, 6);
+    expect(clipOf(b).start).toBeCloseTo(3.5, 6);
+    expect(clipOf(b).start + clipOf(b).duration).toBeCloseTo(8, 6);
+    // from the start side of b: the same edit, back to 3
+    const m2 = await oneStepOf(() => call('trim_clip', { id: b, edge: 'start', time: 3, mode: 'move-edit' }));
+    expect(m2.data.mode).toBe('move-edit');
+    expect(clipOf(a).duration).toBeCloseTo(3, 6);
+    const s = await oneStepOf(() => call('trim_clip', { id: b, edge: 'end', time: 13, mode: 'stretch' }));
+    expect(s.data).toMatchObject({ mode: 'stretch', speed: 0.5 });
+    expect((clipOf(b) as any).speed).toBe(0.5);
+    expect(clipOf(b).duration).toBe(10);
+  });
+
+  it('alone leaves the group mates', async () => {
+    const { a } = await touching();
+    const top = ed().addTrack('video');
+    const c = addVideoClip(top, 0);
+    await call('trim_clip', { id: c, edge: 'end', time: 4 });
+    await call('group_clips', { ids: [a, c] });
+    const r = await call('trim_clip', { id: a, edge: 'end', time: 3, mode: 'ripple' });
+    expect(r.ok, r.text).toBe(true);
+    expect(clipOf(c).duration).toBe(3);
+    const r2 = await call('trim_clip', { id: a, edge: 'end', time: 2, mode: 'ripple', alone: true });
+    expect(r2.ok, r2.text).toBe(true);
+    expect(clipOf(a).duration).toBe(2);
+    expect(clipOf(c).duration).toBe(3);
+  });
+
+  it('a stop notes where the edge ended', async () => {
+    const { a, b } = await touching();
+    // a clip stays at least 0.05 s long
+    const r = await call('trim_clip', { id: a, edge: 'end', time: 0, mode: 'ripple' });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.end).toBe(0.05);
+    expect(r.data.note).toMatch(/^the end edge stopped at 0\.05 s, not 0 s: .*0\.05 s/);
+    expect(clipOf(b).start).toBeCloseTo(0.05, 6);
+  });
+
+  it('a start stop notes where the edge ended', async () => {
+    const { b } = await touching();
+    const r = await call('trim_clip', { id: b, edge: 'start', time: 10, mode: 'ripple' });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.note).toMatch(/^the start edge stopped at 8.95 s, not 10 s: /);
+  });
+
+  it('nothing possible is an error with no step', async () => {
+    const { a, b } = await touching();
+    await refused('trim_clip', { id: a, edge: 'end', time: 4, mode: 'ripple' }, /nothing changed: the edge is already there/);
+    // a clip that shows all its media cannot grow
+    const full = addVideoClip(video, 20);
+    await refused('trim_clip', { id: full, edge: 'end', time: 45, mode: 'ripple' }, /nothing changed: .*no more media after its last frame/);
+    ed().updateTrack(video, { locked: true });
+    await refused('trim_clip', { id: b, edge: 'end', time: 8, mode: 'ripple' }, /locked track/);
+  });
+
+  it('move-edit needs a touching clip', async () => {
+    const { a, b } = await touching();
+    await call('trim_clip', { id: a, edge: 'end', time: 3 });
+    await refused('trim_clip', { id: a, edge: 'end', time: 2, mode: 'move-edit' }, /the end of .* does not touch another clip: use mode "ripple" or "trim"/);
+    await refused('trim_clip', { id: b, edge: 'start', time: 5, mode: 'move-edit' }, /the start of .* does not touch another clip/);
+    await refused('trim_clip', { id: a, edge: 'start', time: 1, mode: 'move-edit' }, /does not touch another clip/);
+    await refused('trim_clip', { id: a, edge: 'end', time: 2, mode: 'sideways' }, /mode must be one of/);
+    void audio;
+  });
+});
+
+describe('slip_clip and slide_clip', () => {
+  it('slip by and by trim_start', async () => {
+    const a = addVideoClip(video, 0);
+    await call('trim_clip', { id: a, edge: 'end', time: 5 });
+    const r = await oneStepOf(() => call('slip_clip', { id: a, by: 2 }));
+    expect(r.data).toMatchObject({ id: a, start: 0, end: 5, trim_start: 2 });
+    expect((clipOf(a) as any).trimStart).toBe(2);
+    expect(clipOf(a).duration).toBe(5);
+    const r2 = await oneStepOf(() => call('slip_clip', { id: a, trim_start: 1 }));
+    expect(r2.data.trim_start).toBe(1);
+    expect((clipOf(a) as any).trimStart).toBe(1);
+    // limited by the media: 20 s long, the clip shows 5 s
+    const r3 = await call('slip_clip', { id: a, by: 100 });
+    expect(r3.ok, r3.text).toBe(true);
+    expect(r3.data.trim_start).toBe(15);
+    expect(r3.data.note).toMatch(/^slipped 14 s of media, not 100 s: /);
+  });
+
+  it('a separated sound slips along unless alone', async () => {
+    const a = addVideoClip(video, 0);
+    await call('trim_clip', { id: a, edge: 'end', time: 5 });
+    const sep = await call('separate_sound', { ids: [a] });
+    const sound = sep.data.pairs[0].sound as string;
+    const r = await call('slip_clip', { id: a, by: 1 });
+    expect(r.ok, r.text).toBe(true);
+    expect((clipOf(a) as any).trimStart).toBe(1);
+    expect((clipOf(sound) as any).trimStart).toBe(1);
+    const r2 = await call('slip_clip', { id: a, by: 1, alone: true });
+    expect(r2.ok, r2.text).toBe(true);
+    expect((clipOf(a) as any).trimStart).toBe(2);
+    expect((clipOf(sound) as any).trimStart).toBe(1);
+  });
+
+  it('slide by and to start, the neighbours trim', async () => {
+    const { a, b } = await touching();
+    const c = addVideoClip(video, 9);
+    await call('trim_clip', { id: c, edge: 'end', time: 14 });
+    const r = await oneStepOf(() => call('slide_clip', { id: b, by: 1 }));
+    expect(r.data).toMatchObject({ id: b, start: 5, end: 10 });
+    expect([...r.data.trimmed].sort()).toEqual([a, c].sort());
+    expect(clipOf(a).duration).toBe(5);
+    expect(clipOf(c).start).toBe(10);
+    const r2 = await oneStepOf(() => call('slide_clip', { id: b, start: 4.5 }));
+    expect(r2.data).toMatchObject({ start: 4.5, end: 9.5 });
+    expect(clipOf(a).duration).toBe(4.5);
+    // a stop notes how far it slid
+    const r3 = await call('slide_clip', { id: b, by: 50 });
+    expect(r3.ok, r3.text).toBe(true);
+    expect(r3.data.note).toMatch(/^slid .* s, not 50 s: /);
+  });
+
+  it('every refusal', async () => {
+    const { a, b } = await touching();
+    await refused('slip_clip', { id: a }, /give by or trim_start$/);
+    await refused('slip_clip', { id: a, by: 1, trim_start: 1 }, /give by or trim_start, not both/);
+    await refused('slide_clip', { id: b }, /give by or start$/);
+    await refused('slide_clip', { id: b, by: 1, start: 5 }, /give by or start, not both/);
+    const t = await text();
+    await refused('slip_clip', { id: t, by: 1 }, /slip needs a video or audio clip/);
+    await refused('slip_clip', { id: a, by: 0 }, /nothing changed: the clip already shows that part of its media/);
+    await refused('slip_clip', { id: a, by: -1 }, /nothing changed: .*first frame/);
+    await refused('slide_clip', { id: b, by: 0 }, /nothing changed: the clip is already there/);
+    await refused('slide_clip', { id: b, start: 4 }, /nothing changed: the clip is already there/);
+    await refused('slip_clip', { id: 'ghost', by: 1 }, /no clip with the id ghost/);
+    await refused('slip_clip', { id: a, trim_start: -1 }, /trim_start must be at least 0/);
+    ed().updateTrack(video, { locked: true });
+    await refused('slip_clip', { id: a, by: 1 }, /locked track/);
+    await refused('slide_clip', { id: b, by: 1 }, /locked track/);
+  });
+});
+
+describe('lift_range and extract_range', () => {
+  it('lift is one step and keeps the range', async () => {
+    const a = addVideoClip(video, 0);
+    const track2 = ed().addTrack('video');
+    const o = addVideoClip(track2, 12);
+    await call('set_range', { in: 5, out: 8 });
+    const r = await oneStepOf(() => call('lift_range'));
+    // the middle piece is a clip of its own, so nothing that was there is gone: one split, no removed
+    expect(r.data).toEqual({ in: 5, out: 8, removed: 0, split: 1, trimmed: 0 });
+    expect(proj().range).toEqual({ in: 5, out: 8 });
+    expect(proj().clips.filter((c) => c.trackId === video)).toHaveLength(2);
+    // the gap stays: nothing after it moved
+    expect(clipOf(o).start).toBe(12);
+    expect(clipOf(a).duration).toBe(5);
+  });
+
+  it('extract closes up and keeps only the in', async () => {
+    const a = addVideoClip(video, 0);
+    const o = addVideoClip(ed().addTrack('video'), 12);
+    await call('set_range', { in: 5, out: 8 });
+    const r = await oneStepOf(() => call('extract_range'));
+    expect(r.data).toEqual({ in: 5, out: 8, seconds: 3, removed: 0, split: 1, trimmed: 0, moved: 2, range: { in: 5 } });
+    expect(proj().range).toEqual({ in: 5 });
+    expect(clipOf(o).start).toBe(9);
+    expect(clipOf(a).duration).toBe(5);
+  });
+
+  it('extract answers the range rounded like set_range', async () => {
+    addVideoClip(video, 0);
+    await call('set_range', { in: 1.0333, out: 2 });
+    const r = await call('extract_range');
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.in).toBe(1.0333);
+    expect(r.data.range).toEqual({ in: 1.0333 });
+  });
+
+  it('without both marks the error names set_range', async () => {
+    addVideoClip(video, 0);
+    await refused('lift_range', {}, /set_range marks the range, get_project shows it/);
+    await refused('extract_range', {}, /set_range marks the range/);
+    await call('set_range', { in: 2 });
+    await refused('lift_range', {}, /set_range marks the range/);
+    await call('set_range', { in: 30, out: 40 });
+    await refused('extract_range', {}, /set_range marks the range/);
+  });
+
+  it('both are destructive', async () => {
+    const { listTools } = await import('../registry');
+    const tools = new Map(listTools().tools.map((t) => [t.name, t]));
+    expect(tools.get('lift_range')!.annotations?.destructiveHint).toBe(true);
+    expect(tools.get('extract_range')!.annotations?.destructiveHint).toBe(true);
+    expect(tools.get('slip_clip')!.annotations?.destructiveHint).toBeUndefined();
+  });
+});
+
+describe('nudge_clips', () => {
+  const track = () => proj().tracks.find((t) => t.kind === 'video')!.id;
+
+  it('one undo step, effects come along', async () => {
+    const a = await text('a', 1);
+    const b = await text('b', 6);
+    const fx = (await call('add_effect', { effect: 'echo', target: a })).data.id as string;
+    const startA = clipOf(a).start;
+    const startFx = clipOf(fx).start;
+    const r = await oneStepOf(() => call('nudge_clips', { ids: [a, b], frames: 3 }));
+    expect(r.data).toMatchObject({ moved: [a, b], frames: 3, seconds: 0.1 });
+    expect(r.data.followers).toEqual([fx]);
+    expect(r.data.clips.map((c: any) => c.id)).toEqual([a, b]);
+    expect(clipOf(a).start).toBeCloseTo(startA + 0.1, 6);
+    expect(clipOf(b).start).toBeCloseTo(6.1, 6);
+    expect(clipOf(fx).start).toBeCloseTo(startFx + 0.1, 6);
+    expect(r.data.clips[0].start).toBeCloseTo(startA + 0.1, 4);
+    const back = await call('nudge_clips', { ids: [a], frames: -3 });
+    expect(back.ok, back.text).toBe(true);
+    expect(back.data.seconds).toBe(-0.1);
+    expect(clipOf(a).start).toBeCloseTo(startA, 6);
+  });
+
+  it('all or nothing names the clip', async () => {
+    const a = await text('a', 0);
+    const b = await text('b', 2);
+    await refused('nudge_clips', { ids: [a], frames: 15 }, /^nothing moved: /);
+    const r = await call('nudge_clips', { ids: [a], frames: 15 });
+    expect(r.text).toBe('nothing moved: "a" would run into "b"');
+    await refused('nudge_clips', { ids: [a, b], frames: -1 }, /^nothing moved: /);
+    expect(clipOf(a).start).toBe(0);
+    expect(clipOf(b).start).toBe(2);
+  });
+
+  it('refuses unknown and locked clips, 0 and over a day', async () => {
+    const a = await text('a', 3);
+    const b = await text('b', 8);
+    await refused('nudge_clips', { ids: ['ghost'], frames: 1 }, /no clip with the id ghost/);
+    await refused('nudge_clips', { ids: [a, 'ghost'], frames: 1 }, /no clip with the id ghost/);
+    await refused('nudge_clips', { ids: [a], frames: 0 }, /^nothing changed: frames is 0$/);
+    await refused('nudge_clips', { ids: [a], frames: 2592001 }, /^frames is more than a day$/);
+    await refused('nudge_clips', { ids: [a], frames: -2592001 }, /^frames is more than a day$/);
+    await refused('nudge_clips', { ids: [a], frames: 1.5 }, /must be an integer/);
+    await refused('nudge_clips', { ids: [], frames: 1 }, /at least 1 item/);
+    await refused('nudge_clips', { ids: [a] }, /frames is missing/);
+    ed().updateTrack(clipOf(b).trackId, { locked: true });
+    await refused('nudge_clips', { ids: [a], frames: 1 }, /locked track/);
+    expect(clipOf(a).start).toBe(3);
+    void track;
+  });
+
+  it('group mates are not added', async () => {
+    const a = await text('a', 1);
+    const other = ed().addTrack('video');
+    const m = (await call('add_text', { text: 'm', start: 1, duration: 2, track: other })).data.id as string;
+    await call('group_clips', { ids: [a, m] });
+    expect(clipOf(a).group).toBeTruthy();
+    const r = await oneStepOf(() => call('nudge_clips', { ids: [a], frames: 3 }));
+    expect(r.data.moved).toEqual([a]);
+    expect(r.data.followers).toEqual([]);
+    expect(clipOf(a).start).toBeCloseTo(1.1, 6);
+    expect(clipOf(m).start).toBe(1);
+    // the same ids twice count once
+    const twice = await call('nudge_clips', { ids: [a, a], frames: 1 });
+    expect(twice.data.moved).toEqual([a]);
+  });
+});

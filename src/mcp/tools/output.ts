@@ -2,6 +2,7 @@ import { isExporting } from '../../engine/exportState';
 import { usePlayback } from '../../store/playback';
 import { mcpExportJob } from '../exportJob';
 import type { ExportArgs, JobState } from '../exportJob';
+import type { ScopeKind } from '../../features/preview/scopesState';
 import { DEFAULT_MAX_SIZE, LIMIT_MAX_SIZE, renderFramePng } from '../frame';
 import { needProject, ok, ToolError, optNumber, optString } from '../helpers';
 import type { ToolDef, ToolResult } from '../types';
@@ -50,12 +51,15 @@ export const outputTools: ToolDef[] = [
     description:
       'the picture of the open project at a timeline time as a png image (what an export would show at that moment, not what the preview shows). ' +
       `time is in seconds, default the playhead. max_size is the longest side in pixels, default ${DEFAULT_MAX_SIZE}, at most ${LIMIT_MAX_SIZE}; a smaller project is not blown up. ` +
-      'answers the image and a text line with the time and the size. not possible while an export runs. use it to check your work after edits.',
+      'answers the image and a text line with the time and the size. not possible while an export runs. use it to check your work after edits. ' +
+      'levels: true adds the levels to the text, scope adds a second image with that scope (both measured on the answered picture: max_size 1920 is closest to the export).',
     inputSchema: {
       type: 'object',
       properties: {
         time: { type: 'number', description: 'timeline time in seconds, default the playhead. clamped into the project, a time at or after the end shows the last frame', minimum: 0 },
         max_size: { type: 'integer', description: `longest side in pixels, default ${DEFAULT_MAX_SIZE}`, minimum: 16, maximum: LIMIT_MAX_SIZE },
+        levels: { type: 'boolean', description: 'also answer the levels of the picture: luma min, max and mean on 0..100, the share of pixels at 0 (black) and at 100 (white), and the mean of r, g and b' },
+        scope: { type: 'string', enum: ['waveform', 'parade', 'vectorscope', 'histogram'], description: 'also answer a second image: that scope of the picture, as the scopes next to the preview draw it' },
       },
     },
     annotations: { readOnlyHint: true, idempotentHint: true },
@@ -65,12 +69,16 @@ export const outputTools: ToolDef[] = [
         throw new ToolError('an export is running, a frame cannot be drawn until it ends. export_status tells how far it is, export_cancel stops it');
       }
       const time = optNumber(args.time) ?? usePlayback.getState().time;
-      const png = await renderFramePng(project, time, optNumber(args.max_size) ?? DEFAULT_MAX_SIZE);
+      const scope = optString(args.scope) as ScopeKind | undefined;
+      const png = await renderFramePng(project, time, optNumber(args.max_size) ?? DEFAULT_MAX_SIZE, { levels: args.levels === true, scope });
       const info: Record<string, unknown> = { time: round3(png.time), width: png.width, height: png.height };
+      if (png.levels) info.levels = png.levels;
+      if (png.scope) info.scope = png.scope.kind;
       if (png.warnings.length > 0) info.warnings = png.warnings;
       return {
         content: [
           { type: 'image', data: png.data, mimeType: 'image/png' },
+          ...(png.scope ? [{ type: 'image' as const, data: png.scope.data, mimeType: 'image/png' }] : []),
           { type: 'text', text: JSON.stringify(info) },
         ],
       };
@@ -85,6 +93,7 @@ export const outputTools: ToolDef[] = [
       'format mp4 (default), webm, gif (no sound, at most 50 fps), wav or ogg (sound only), png or jpg (one picture at the project size times scale: the frame at start, ' +
       'default the first frame; end, fps and audio do not apply). quality low | medium | high (default high; a png has no loss). ' +
       'scale 1 | 0.75 | 0.5 of the project size (default 1). fps defaults to the project fps. start / end in timeline seconds pick a part (default the whole project). ' +
+      'range "inout" exports only in to out (set_range marks them), not with start / end; a png / jpg takes the frame at the in point. ' +
       'audio false leaves the sound out of a video. name is the file name without the extension (default the project name).',
     inputSchema: {
       type: 'object',
@@ -95,6 +104,7 @@ export const outputTools: ToolDef[] = [
         fps: { type: 'number', description: 'frames per second, default the project fps', minimum: 1, maximum: 240 },
         start: { type: 'number', description: 'timeline second to start at, default 0. png / jpg: the frame that is saved', minimum: 0 },
         end: { type: 'number', description: 'timeline second to stop at, default the end of the project', minimum: 0 },
+        range: { type: 'string', enum: ['all', 'inout'], description: 'which part: "all" (default) or "inout" = in point to out point (set_range). not with start / end. a png / jpg takes the frame at the in point' },
         audio: { type: 'boolean', description: 'false = no sound in a video, default true' },
         name: { type: 'string', description: 'file name without the extension', maxLength: 120 },
       },
@@ -109,6 +119,7 @@ export const outputTools: ToolDef[] = [
         fps: optNumber(args.fps),
         start: optNumber(args.start),
         end: optNumber(args.end),
+        range: optString(args.range) as ExportArgs['range'],
         audio: typeof args.audio === 'boolean' ? args.audio : undefined,
         name: optString(args.name),
       };

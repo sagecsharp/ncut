@@ -44,6 +44,19 @@ const BANNED = [
   /\banchors?\b/,
   /\bwarp/,
   /\bdeform/,
+  /\broll(ing)? edit\b/,
+  /\broll the edit\b/,
+  /\bmonitor\b/,
+  /\blinked\b/,
+  /\bunlink/,
+  /\bdetach (the )?(audio|sound)\b/,
+  /\bsplit (the )?(audio|sound)\b/,
+  /\bextract (the )?(audio|sound)\b/,
+  /\bclip light\b/,
+  /\bmaster (strip|fader|bus|meter)\b/,
+  /\bire\b/,
+  /\bcurve editor\b/,
+  /\bfit to fill\b/,
 ];
 
 /** the ui strings of one file: title, aria-label, placeholder and label values, the first string of tip( and does: */
@@ -84,6 +97,19 @@ describe('word list', () => {
         const t = m[1].trim().toLowerCase();
         if (!t || allowed(file, m[1].trim())) continue;
         for (const re of BANNED) if (re.test(t)) bad.push(`${file}: "${t}" matches ${re}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it('grade files say curves, never curve or graph', () => {
+    const bad: string[] = [];
+    for (const { file, src } of files) {
+      const name = file.split('/').pop() ?? '';
+      if (!name.startsWith('Grade') && !name.startsWith('MultiGrade')) continue;
+      const texts = [...uiStrings(src), ...[...src.matchAll(/>([^<>{}()=;]+)</g)].map((m) => m[1].trim())];
+      for (const text of texts) {
+        if (/\bcurve\b/.test(text.toLowerCase()) || /\bgraph\b/.test(text.toLowerCase())) bad.push(`${file}: "${text}"`);
       }
     }
     expect(bad).toEqual([]);

@@ -17,8 +17,8 @@ const MAX_PARENT_DEPTH = 16;
 /** fields on every clip that do not depend on time (keyframes, fades and the like are checked separately) */
 const COMMON = ['type', 'id', 'trackId', 'start', 'duration', 'name', 'fadeIn', 'fadeOut', 'group'];
 /** fields of the visual clips (Spatial) that do not depend on time as plain values */
-const SPATIAL = ['transform', 'lookTarget', 'shape', 'shapeDepth', 'lit', 'transition', 'blend', 'crop', 'radius', 'bend', 'parent', 'pivot', 'adjust', 'chromaKey', 'mask'];
-const VIDEO = ['assetId', 'trimStart', 'speed', 'volume', 'muted', 'bpm', 'beatOffset'];
+const SPATIAL = ['transform', 'lookTarget', 'shape', 'shapeDepth', 'lit', 'transition', 'blend', 'crop', 'radius', 'bend', 'parent', 'pivot', 'adjust', 'chromaKey', 'mask', 'grade'];
+const VIDEO = ['assetId', 'trimStart', 'speed', 'volume', 'muted', 'bpm', 'beatOffset', 'pan'];
 const IMAGE = ['assetId'];
 const TEXT = [
   'text', 'fontFamily', 'fontSize', 'fontWeight', 'italic', 'color', 'background', 'align', 'letterSpacing', 'lineHeight',

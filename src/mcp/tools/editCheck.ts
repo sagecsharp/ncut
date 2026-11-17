@@ -8,6 +8,7 @@ import { DEFAULT_TEXT_ANIM_IN, DEFAULT_TEXT_ANIM_LOOP, TEXT_ANIMS_IN, TEXT_ANIMS
 import { DEFAULT_TRANSITION_DURATION, getTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
 import { normalizePivot, PIVOT_MAX, PIVOT_SPOTS } from '../../engine/pivot';
 import { BPM_MAX, BPM_MIN } from '../../lib/tempo';
+import { CURVE_KINDS, GRADE_EFFECT, GRADE_KEYS, MAX_CURVE_POINTS } from '../../lib/gradeData';
 import { BEND_ANGLE_MAX, BEND_CENTER_MAX, BEND_SPAN_MAX, BEND_SPAN_MIN } from '../../engine/scene3d/bend';
 import { BEND_ALONG, BLEND_MODES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
 import { needProject, ToolError } from '../helpers';
@@ -135,6 +136,23 @@ const pivot: Check = (v, path, cur, clip) => {
   return normalizePivot(obj({ x: num(-PIVOT_MAX, PIVOT_MAX), y: num(-PIVOT_MAX, PIVOT_MAX) }, ['x', 'y'], { x: 0, y: 0 })(v, path, cur, clip));
 };
 
+/** a curve: at most 16 points, each [x, y] with both numbers from 0 to 1. the store cleans the list (sorts, spaces, pins the ends) */
+const points: Check = (v, path) => {
+  const bad = () => new ToolError(`${path} must be a list of [x, y] points, x and y from 0 to 1, at most ${MAX_CURVE_POINTS}`);
+  if (!Array.isArray(v) || v.length > MAX_CURVE_POINTS) throw bad();
+  return v.map((p) => {
+    if (!Array.isArray(p) || p.length !== 2) throw bad();
+    for (const n of p) if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) throw bad();
+    return [p[0], p[1]];
+  });
+};
+
+/** the seven curves, each a list or null (that list goes). a partial object lies over the current curves */
+const curvesCheck: Check = orNull(obj(Object.fromEntries(CURVE_KINDS.map((k) => [k, orNull(points)])), [], {}));
+
+/** the color grade: a partial one lies over the current. what lands is cleaned by the store */
+const gradeCheck: Check = orNull(obj({ ...Object.fromEntries(GRADE_KEYS.map((k) => [k, num(-1, 1)])), curves: curvesCheck, off: bool }, [], {}));
+
 /** every picture clip (video, image, text, shape) */
 const PICTURE: Record<string, Check> = {
   threeD: bool,
@@ -160,6 +178,7 @@ const PICTURE: Record<string, Check> = {
       { brightness: 0, contrast: 0, saturation: 0, temperature: 0, hue: 0 },
     ),
   ),
+  grade: gradeCheck,
   chromaKey: orNull(obj({ color, tolerance: num(0, 1), softness: num(0, 1), spill: num(0, 1) }, ['color', 'tolerance', 'softness', 'spill'])),
   mask: orNull(
     obj(
@@ -185,6 +204,7 @@ const BASE: Record<string, Check> = {
 
 const SOUND: Record<string, Check> = {
   volume: num(0, 2),
+  pan: num(-1, 1),
   muted: bool,
   // null takes the tempo away
   bpm: orNull(num(BPM_MIN, BPM_MAX)),
@@ -261,6 +281,10 @@ const EFFECT: Record<string, Check> = {
   timeOffset: num(),
   fullDuration: num(0),
   target: orNull(pictureClip),
+  grade: (v, path, cur, clip) => {
+    if (!('effect' in clip) || clip.effect !== GRADE_EFFECT) throw new ToolError('grade is only for the grade effect. a picture clip has its own grade (update_clip with grade on that clip)');
+    return gradeCheck(v, path, cur, clip);
+  },
 };
 
 const CAMERA: Record<string, Check> = {

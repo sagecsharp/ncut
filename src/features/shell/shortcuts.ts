@@ -2,9 +2,10 @@
  * the single table of keyboard shortcuts. useShortcuts() dispatches from it and ShortcutsDialog
  * renders it, so the two can never drift.
  */
-import { isTimedClip, isVisualClip, stretchX, stretchY, stretchZ } from '../../types';
-import type { TimedClip, VisualClip } from '../../types';
+import { isVisualClip, stretchX, stretchY, stretchZ } from '../../types';
+import type { VisualClip } from '../../types';
 import { animProps, keyTimes } from '../../lib/anim';
+import { muteTargets } from '../../lib/soundPair';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
@@ -16,16 +17,25 @@ import { collectSnapPoints, projectDuration } from '../../lib/timelineOps';
 import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, trimToPlayhead, ungroupIdsNow } from '../timeline/actions';
 import { reasonFor, reasonSnapshot, REASON_TEXT } from './reasons';
 import { timelineCommands } from '../timeline/commands';
+import { clearTrimEdge, hasTrimEdge, nudgeTrimEdge, rippleToPlayhead, selectEditAtPlayhead, toggleTrimMode } from '../timeline/trimActions';
+import { onView, runMatchFrame, toggleSource } from '../preview/sourceKeys';
+import { clearInOut, extract, goIn, goOut, lift, markClip, markIn, markOut, playInOut } from '../timeline/rangeActions';
+import { toggleSoundNow } from '../timeline/soundActions';
+import { keysOnTimeline, nudgeBy, nudgeKey, stepEdit } from '../timeline/nudgeActions';
+import { goToTime, goToTimeKey } from '../preview/timeEntry';
+import { useScopes } from '../preview/scopesState';
+import { editNow } from '../timeline/editActions';
 
-export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'mouse' | 'fields' | 'app';
+export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'inout' | 'timeline' | 'preview' | 'mouse' | 'fields' | 'app';
 
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'preview', 'mouse', 'fields', 'app'];
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'inout', 'timeline', 'preview', 'mouse', 'fields', 'app'];
 
 export const GROUP_LABEL: Readonly<Record<ShortcutGroup, string>> = {
   playback: 'playback',
   editing: 'editing',
   animation: 'keyframes and 3d',
   markers: 'markers',
+  inout: 'in and out',
   timeline: 'timeline',
   preview: 'preview and scene view',
   mouse: 'mouse',
@@ -54,6 +64,8 @@ export interface Shortcut {
   info?: boolean;
   match(e: KeyboardEvent): boolean;
   run(): void;
+  /** the key handler's own run: it gets the event (focus target, repeat). search actions keep run() */
+  runKey?(e: KeyboardEvent): void;
 }
 
 /* ---------- matching helpers ---------- */
@@ -78,6 +90,11 @@ function modsOk(e: KeyboardEvent, { mod = false, shift = false }: Mods): boolean
 const byKey = (key: string, mods: Mods = {}) => (e: KeyboardEvent) => modsOk(e, mods) && keyIs(e, key);
 /** alt + a physical key, no other modifier (alt+letter types symbols on some layouts, so only punctuation uses it) */
 const byAltCode = (code: string) => (e: KeyboardEvent) => e.altKey && !isMod(e) && !e.shiftKey && e.code === code;
+/** alt + an arrow, shift as given. alt+left is the browser's back key: useShortcuts prevents it anyway */
+const altArrow = (key: 'ArrowLeft' | 'ArrowRight', shift: boolean) => (e: KeyboardEvent) =>
+  e.altKey && !isMod(e) && e.shiftKey === shift && e.key === key;
+/** up / down only while the timeline has the keys: in the preview stage the arrows stay the preview's */
+const timelineArrow = (key: 'ArrowUp' | 'ArrowDown') => (e: KeyboardEvent) => byKey(key)(e) && keysOnTimeline(e.target);
 /** key matched on the physical position (punctuation that moves around between layouts) */
 /** keys whose character is owned by another shortcut (zoom, help) on layouts where they share a physical key */
 const notMapped = (e: KeyboardEvent) => !['+', '-', '=', '_', '?'].includes(e.key);
@@ -127,7 +144,7 @@ function seekEnd(): void {
 function toggleMute(): void {
   const { project, selection, updateClip } = useEditor.getState();
   if (!project) return;
-  const targets = project.clips.filter((c): c is TimedClip => selection.includes(c.id) && isTimedClip(c));
+  const targets = muteTargets(project.clips, selection);
   if (targets.length === 0) {
     toast(REASON_TEXT.timedFirst);
     return;
@@ -276,7 +293,16 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'play / pause',
     match: (e) => modsOk(e, {}) && (e.code === 'Space' || e.key === ' '),
-    run: () => usePlayback.getState().toggle(),
+    run: () => onView('play-pause', () => usePlayback.getState().toggle()),
+  },
+  {
+    id: 'play-in-out',
+    keys: [['shift', 'space']],
+    group: 'playback',
+    description: 'play from the in point to the out point (again = pause)',
+    also: ['play in to out', 'play range', 'play the range', 'work area'],
+    match: (e) => modsOk(e, { shift: true }) && (e.code === 'Space' || e.key === ' '),
+    run: () => onView('play-in-out', playInOut),
   },
   {
     id: 'shuttle-back',
@@ -284,7 +310,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'play backwards, again = faster',
     match: byKey('j'),
-    run: () => usePlayback.getState().shuttle(-1),
+    run: () => onView('shuttle-back', () => usePlayback.getState().shuttle(-1)),
   },
   {
     id: 'pause',
@@ -292,7 +318,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'pause',
     match: byKey('k'),
-    run: () => usePlayback.getState().pause(),
+    run: () => onView('pause', () => usePlayback.getState().pause()),
   },
   {
     id: 'shuttle-forward',
@@ -300,7 +326,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'play forward, again = faster',
     match: byKey('l'),
-    run: () => usePlayback.getState().shuttle(1),
+    run: () => onView('shuttle-forward', () => usePlayback.getState().shuttle(1)),
   },
   {
     id: 'frame-back',
@@ -309,7 +335,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'back 1 frame',
     repeat: true,
     match: byKey('ArrowLeft'),
-    run: () => usePlayback.getState().stepFrames(-1),
+    run: () => onView('frame-back', () => usePlayback.getState().stepFrames(-1)),
   },
   {
     id: 'frame-forward',
@@ -318,7 +344,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'forward 1 frame',
     repeat: true,
     match: byKey('ArrowRight'),
-    run: () => usePlayback.getState().stepFrames(1),
+    run: () => onView('frame-forward', () => usePlayback.getState().stepFrames(1)),
   },
   {
     id: 'frames-back',
@@ -327,7 +353,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'back 10 frames',
     repeat: true,
     match: byKey('ArrowLeft', { shift: true }),
-    run: () => usePlayback.getState().stepFrames(-10),
+    run: () => onView('frames-back', () => usePlayback.getState().stepFrames(-10)),
   },
   {
     id: 'frames-forward',
@@ -336,7 +362,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'forward 10 frames',
     repeat: true,
     match: byKey('ArrowRight', { shift: true }),
-    run: () => usePlayback.getState().stepFrames(10),
+    run: () => onView('frames-forward', () => usePlayback.getState().stepFrames(10)),
   },
   {
     id: 'seek-start',
@@ -344,7 +370,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'go to start',
     match: byKey('Home'),
-    run: () => usePlayback.getState().seek(0),
+    run: () => onView('seek-start', () => usePlayback.getState().seek(0)),
   },
   {
     id: 'seek-end',
@@ -352,25 +378,55 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'playback',
     description: 'go to end',
     match: byKey('End'),
-    run: seekEnd,
+    run: () => onView('seek-end', seekEnd),
+  },
+  {
+    id: 'go-to-time',
+    keys: [['g']],
+    group: 'playback',
+    description: 'type a time: 1:30:00, 90f or 12.5s goes there, + or - moves by it (15 is 15 frames). from the timeline the + or - moves the selected clips, or trims the selected edge',
+    also: ['go to timecode', 'go to time', 'go to frame', 'enter timecode', 'type a timecode', 'jump to time', 'move playhead to time', 'timecode entry'],
+    match: byKey('g'),
+    run: () => goToTime('timeline'),
+    runKey: goToTimeKey,
   },
   {
     id: 'edge-prev',
     keys: [[',']],
     group: 'playback',
-    description: 'previous clip edge',
+    description: 'previous clip edge (with an edge selected: trim it 1 frame left)',
     repeat: true,
     match: byCode('Comma'),
-    run: () => seekEdge(-1),
+    run: () => (hasTrimEdge() ? nudgeTrimEdge(-1) : seekEdge(-1)),
   },
   {
     id: 'edge-next',
     keys: [['.']],
     group: 'playback',
-    description: 'next clip edge',
+    description: 'next clip edge (with an edge selected: trim it 1 frame right)',
     repeat: true,
     match: byCode('Period'),
-    run: () => seekEdge(1),
+    run: () => (hasTrimEdge() ? nudgeTrimEdge(1) : seekEdge(1)),
+  },
+  {
+    id: 'edit-prev',
+    keys: [['↑']],
+    group: 'playback',
+    description: 'previous edit: the clip start or end before the playhead on the tracks of the selected clips (every track when none is selected). with an edge selected: select the edit before it on its track',
+    also: ['go to previous edit point', 'previous edit point', 'previous edit', 'jump to previous edit', 'previous cut'],
+    repeat: true,
+    match: timelineArrow('ArrowUp'),
+    run: () => stepEdit(-1),
+  },
+  {
+    id: 'edit-next',
+    keys: [['↓']],
+    group: 'playback',
+    description: 'next edit: the clip start or end after the playhead on the tracks of the selected clips (every track when none is selected). with an edge selected: select the edit after it on its track',
+    also: ['go to next edit point', 'next edit point', 'next edit', 'jump to next edit', 'next cut'],
+    repeat: true,
+    match: timelineArrow('ArrowDown'),
+    run: () => stepEdit(1),
   },
 
   // editing
@@ -407,6 +463,46 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: 'ripple delete (close the gap)',
     match: anyOf(byKey('Delete', { shift: true }), byKey('Backspace', { shift: true })),
     run: () => deleteSelection(true),
+  },
+  {
+    id: 'lift',
+    mutates: true,
+    keys: [[';']],
+    group: 'editing',
+    description: 'lift: take out what is between in and out on unlocked tracks, the gap stays',
+    also: ['lift', 'delete in to out', 'remove range', 'lift edit'],
+    match: (e) => byCode('Semicolon')(e) && notMapped(e) && !/^[a-z]$/i.test(e.key),
+    run: lift,
+  },
+  {
+    id: 'extract',
+    mutates: true,
+    keys: [["'"]],
+    group: 'editing',
+    description: 'extract: take out what is between in and out and close up every unlocked track',
+    also: ['extract', 'ripple delete in to out', 'ripple delete range', 'extract edit'],
+    match: (e) => byCode('Quote')(e) && notMapped(e) && !/^[a-z]$/i.test(e.key),
+    run: extract,
+  },
+  {
+    id: 'insert-edit',
+    mutates: true,
+    keys: [['f9']],
+    group: 'editing',
+    description: 'insert: the marked part of the source view at the in point or the playhead, the clips after it move later',
+    also: ['insert edit', 'insert', 'splice in', 'three point edit', 'source insert', 'insert from source'],
+    match: byKey('F9'),
+    run: () => editNow('insert'),
+  },
+  {
+    id: 'overwrite-edit',
+    mutates: true,
+    keys: [['f10']],
+    group: 'editing',
+    description: 'overwrite: the marked part of the source view over what is on the target tracks',
+    also: ['overwrite edit', 'overwrite', 'overlay edit', 'overlay', 'three point edit', 'source overwrite'],
+    match: byKey('F10'),
+    run: () => editNow('overwrite'),
   },
   {
     id: 'undo',
@@ -501,6 +597,20 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => ungroupIdsNow(useEditor.getState().selection),
   },
   {
+    id: 'separate-sound',
+    mutates: true,
+    keys: [['ctrl', 'l']],
+    group: 'editing',
+    description: 'separate sound / join sound back',
+    also: ['unlink', 'link', 'detach audio', 'split audio', 'extract audio', 'audio from video', 'linked selection', 'break apart', 'j cut', 'l cut'],
+    match: byKey('l', { mod: true }),
+    run: () => {
+      const r = reasonFor('separate-sound', reasonSnapshot());
+      if (r) toast(r);
+      else toggleSoundNow(useEditor.getState().selection);
+    },
+  },
+  {
     id: 'freeze-frame',
     mutates: true,
     keys: [['shift', 'f']],
@@ -513,9 +623,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'deselect',
     keys: [['esc']],
     group: 'editing',
-    description: 'clear selection',
+    description: 'clear the selected edge, then the selection',
     match: byKey('Escape'),
-    run: () => useEditor.getState().clearSelection(),
+    run: () => {
+      if (!clearTrimEdge()) useEditor.getState().clearSelection();
+    },
   },
   {
     id: 'add-text',
@@ -581,6 +693,92 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => trimToPlayhead('end'),
   },
   {
+    id: 'trim-mode',
+    keys: [['y']],
+    group: 'editing',
+    description: 'trim mode on / off: edges ripple trim, where two clips touch the edit moves, the middle of a clip slips (alt: slides), shift on an edge stretches',
+    also: ['ripple tool', 'ripple edit tool', 'rolling edit tool', 'rolling edit', 'roll edit', 'slip tool', 'slide tool', 'rate stretch tool', 'trim tool', 'trim edit mode'],
+    match: byKey('y'),
+    run: () => toggleTrimMode(),
+  },
+  {
+    id: 'ripple-start',
+    mutates: true,
+    keys: [['q']],
+    group: 'editing',
+    description: 'ripple trim start: the clip under the playhead loses the part before it and what follows moves left, no gap',
+    also: ['ripple trim previous edit to playhead', 'trim and close up'],
+    match: byKey('q'),
+    run: () => rippleToPlayhead('start'),
+  },
+  {
+    id: 'ripple-end',
+    mutates: true,
+    keys: [['w']],
+    group: 'editing',
+    description: 'ripple trim end: the clip under the playhead loses the part after it and what follows moves left, no gap (in the scene view w stays the move tool)',
+    also: ['ripple trim next edit to playhead'],
+    match: byKey('w'),
+    run: () => rippleToPlayhead('end'),
+  },
+  {
+    id: 'edit-select',
+    keys: [['u']],
+    group: 'editing',
+    description: 'select the edit at the playhead and turn trim mode on (again: one side, the other side, both)',
+    also: ['select nearest edit point', 'edit point type', 'toggle trim side', 'select edit point'],
+    match: byKey('u'),
+    run: () => selectEditAtPlayhead(),
+  },
+  {
+    id: 'nudge-left',
+    mutates: true,
+    keys: [['alt', '←']],
+    group: 'editing',
+    description: 'nudge the selected clips 1 frame left (with an edge selected: trim it 1 frame left)',
+    also: ['nudge clip selection left one frame', 'nudge left', 'nudge', 'move clip one frame left'],
+    repeat: true,
+    match: altArrow('ArrowLeft', false),
+    run: () => nudgeBy(-1),
+    runKey: (e) => nudgeKey(-1, e),
+  },
+  {
+    id: 'nudge-right',
+    mutates: true,
+    keys: [['alt', '→']],
+    group: 'editing',
+    description: 'nudge the selected clips 1 frame right (with an edge selected: trim it 1 frame right)',
+    also: ['nudge clip selection right one frame', 'nudge right', 'move clip one frame right'],
+    repeat: true,
+    match: altArrow('ArrowRight', false),
+    run: () => nudgeBy(1),
+    runKey: (e) => nudgeKey(1, e),
+  },
+  {
+    id: 'nudge-left-big',
+    mutates: true,
+    keys: [['alt', 'shift', '←']],
+    group: 'editing',
+    description: 'nudge the selected clips 10 frames left (with an edge selected: trim it 10 frames left)',
+    also: ['nudge clip selection left five frames', 'nudge left ten frames', 'move clip ten frames left'],
+    repeat: true,
+    match: altArrow('ArrowLeft', true),
+    run: () => nudgeBy(-10),
+    runKey: (e) => nudgeKey(-10, e),
+  },
+  {
+    id: 'nudge-right-big',
+    mutates: true,
+    keys: [['alt', 'shift', '→']],
+    group: 'editing',
+    description: 'nudge the selected clips 10 frames right (with an edge selected: trim it 10 frames right)',
+    also: ['nudge clip selection right five frames', 'nudge right ten frames', 'move clip ten frames right'],
+    repeat: true,
+    match: altArrow('ArrowRight', true),
+    run: () => nudgeBy(10),
+    runKey: (e) => nudgeKey(10, e),
+  },
+  {
     id: 'clip-menu',
     keys: [['shift', 'f10'], ['menu']],
     group: 'editing',
@@ -598,27 +796,28 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'key-prev',
     keys: [['shift', ',']],
     group: 'animation',
-    description: 'previous keyframe of the selection',
+    description: 'previous keyframe of the selection (with an edge selected: trim it 10 frames left)',
     repeat: true,
     match: byCode('Comma', { shift: true }),
-    run: () => seekKeyframe(-1),
+    run: () => (hasTrimEdge() ? nudgeTrimEdge(-10) : seekKeyframe(-1)),
   },
   {
     id: 'key-next',
     keys: [['shift', '.']],
     group: 'animation',
-    description: 'next keyframe of the selection',
+    description: 'next keyframe of the selection (with an edge selected: trim it 10 frames right)',
     repeat: true,
     match: byCode('Period', { shift: true }),
-    run: () => seekKeyframe(1),
+    run: () => (hasTrimEdge() ? nudgeTrimEdge(10) : seekKeyframe(1)),
   },
   {
     id: 'key-add',
     mutates: true,
-    keys: [['i']],
+    keys: [['shift', 'k']],
     group: 'animation',
     description: 'keyframe position, scale, rotation and opacity (all of a camera) at playhead',
-    match: byKey('i'),
+    also: ['add keyframes', 'key everything', 'was i'],
+    match: byKey('k', { shift: true }),
     run: addKeyframes,
   },
   {
@@ -677,6 +876,66 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => seekMarker(1),
   },
 
+  // in and out
+  {
+    id: 'mark-in',
+    mutates: true,
+    keys: [['i']],
+    group: 'inout',
+    description: 'mark the in point: the frame under the playhead is the first one inside',
+    also: ['in point', 'set in', 'mark in', 'set range start'],
+    match: byKey('i'),
+    run: () => onView('mark-in', markIn),
+  },
+  {
+    id: 'mark-out',
+    mutates: true,
+    keys: [['o']],
+    group: 'inout',
+    description: 'mark the out point: the frame under the playhead is the last one inside',
+    also: ['out point', 'set out', 'mark out', 'set range end'],
+    match: byKey('o'),
+    run: () => onView('mark-out', markOut),
+  },
+  {
+    id: 'mark-clip',
+    mutates: true,
+    keys: [['x']],
+    group: 'inout',
+    description: 'mark in and out around the clip under the playhead (or the gap there)',
+    also: ['mark clip', 'mark the clip', 'select clip range'],
+    match: byKey('x'),
+    run: () => onView('mark-clip', markClip),
+  },
+  {
+    id: 'clear-in-out',
+    mutates: true,
+    keys: [['shift', 'x']],
+    group: 'inout',
+    description: 'clear the in and out points',
+    also: ['clear in and out', 'clear marks', 'clear both marks', 'clear range', 'work area'],
+    match: byKey('x', { shift: true }),
+    run: () => onView('clear-in-out', clearInOut),
+  },
+  {
+    id: 'go-in',
+    keys: [['shift', 'i']],
+    group: 'inout',
+    description: 'go to the in point',
+    also: ['go to in', 'jump to the in point'],
+    match: byKey('i', { shift: true }),
+    run: () => onView('go-in', goIn),
+  },
+  {
+    id: 'go-out',
+    keys: [['shift', 'o']],
+    group: 'inout',
+    description: 'go to the out point (the last frame inside)',
+    also: ['go to out', 'jump to the out point'],
+    match: byKey('o', { shift: true }),
+    run: () => onView('go-out', goOut),
+  },
+
   // timeline
   {
     id: 'zoom-in',
@@ -719,6 +978,46 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => timelineCommands.fit?.(),
   },
 
+  {
+    id: 'toggle-source',
+    keys: [['shift', 'v']],
+    group: 'preview',
+    description: 'switch the preview to the source view and back',
+    also: ['source monitor', 'source viewer', 'viewer', 'clip viewer', 'program monitor'],
+    match: byKey('v', { shift: true }),
+    run: toggleSource,
+  },
+  {
+    id: 'match-frame',
+    mutates: true,
+    keys: [['f']],
+    group: 'preview',
+    description: 'match frame: show the media of the clip under the playhead at the same frame. in the source view: find this frame on the timeline',
+    also: ['match frame', 'reveal in source', 'find source frame', 'reverse match frame', 'load clip into source'],
+    match: byKey('f'),
+    run: runMatchFrame,
+  },
+  {
+    id: 'source-view-keys',
+    keys: [['space'], ['j'], ['k'], ['l'], ['←'], ['→'], ['i'], ['o'], ['x']],
+    group: 'preview',
+    description: 'with the source view active, the playback and in and out keys work on its media',
+    info: true,
+    match: () => false,
+    run: () => undefined,
+  },
+
+  // preview: the scopes
+  {
+    id: 'toggle-scopes',
+    also: ['video scopes', 'lumetri scopes', 'waveform monitor', 'rgb parade', 'vectorscope', 'histogram', 'levels', 'ire', 'color scopes'],
+    keys: [['shift', 'w']],
+    group: 'preview',
+    description: 'show or hide the scopes (waveform, parade, vectorscope, histogram)',
+    match: byKey('w', { shift: true }),
+    run: () => useScopes.getState().toggleOpen(),
+  },
+
   // preview (handled by the preview itself; listed here so the dialog shows them)
   {
     id: 'preview-nudge',
@@ -752,6 +1051,15 @@ export const SHORTCUTS: readonly Shortcut[] = [
     keys: [['esc']],
     group: 'preview',
     description: 'move pivot: done',
+    info: true,
+    match: () => false,
+    run: () => undefined,
+  },
+  {
+    id: 'preview-probe',
+    keys: [['alt', 'hover']],
+    group: 'preview',
+    description: 'output view: hold over the picture to read the color of the pixel under the pointer',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -851,17 +1159,31 @@ export const SHORTCUTS: readonly Shortcut[] = [
   ...infoRows('mouse', [
     ['mouse-move', [['drag']], 'a clip: move it. onto the line between two tracks: a new track there'],
     ['mouse-trim', [['drag']], 'the edge of a clip: trim it (selected clips trim together)'],
+    ['mouse-ripple', [['ctrl', 'drag']], 'the edge of a clip: ripple trim it (what follows moves with it, no gap). in trim mode no ctrl is needed'],
+    ['mouse-move-edit', [['drag']], 'in trim mode, where two clips touch: move the edit (one gets longer, the other shorter, nothing else moves)'],
+    ['mouse-slip', [['drag']], 'in trim mode, the middle of a video or audio clip: slip it (same place and length, another part of its media)'],
+    ['mouse-slide', [['alt', 'drag']], 'in trim mode, the middle of a clip: slide it (its neighbours trim to stay touching)'],
+    ['mouse-stretch', [['shift', 'drag']], 'in trim mode, the edge of a video or audio clip: stretch it (the speed follows the length, 0.25x to 4x)'],
+    ['mouse-edge-pick', [['click']], 'in trim mode, a clip edge: select it, then , and . trim it 1 frame (shift: 10)'],
+    ['mouse-edge-alone', [['alt', 'drag']], 'in trim mode, a clip edge: trim only that clip, not its group or the other selected clips'],
+    ['mouse-trim-cancel', [['esc']], 'while dragging in trim mode: put everything back'],
     ['mouse-marquee', [['drag']], 'an empty spot of a track: draw a box to select clips'],
     ['mouse-add', [['shift', 'click']], 'a clip: add it to the selection'],
     ['mouse-toggle', [['ctrl', 'click']], 'a clip: add it to the selection or take it out'],
-    ['mouse-one', [['alt', 'click']], 'a clip in a group: select only that clip'],
+    ['mouse-one', [['alt', 'click']], 'a clip in a group: select only that clip (one side of a separated sound: trim it alone for a j or l cut)'],
     ['mouse-key', [['drag']], 'a keyframe diamond on a clip: move the keyframe'],
     ['mouse-transition', [['drag']], 'the edge of a transition on a clip: change its length'],
     ['mouse-menus', [['right click']], 'a clip, a track or the ruler: its menu (the clip menu button in the properties and the track icon open them too)'],
     ['mouse-ruler', [['click'], ['drag']], 'the ruler: move the playhead'],
+    ['mouse-range', [['drag']], 'an in or out bracket on the ruler: move it (it snaps like a marker)'],
     ['mouse-marker-rename', [['double click']], 'a marker on the ruler: rename it'],
     ['mouse-track-rename', [['double click']], 'a track name: rename it'],
-    ['mouse-media', [['double click'], ['enter']], 'a media card: add it at the playhead (f2 renames it)'],
+    ['mouse-media', [['double click'], ['enter']], 'a media card: add it at the playhead, the marked part when it has an in or out point (f2 renames it)'],
+    ['mouse-media-open', [['click'], ['shift', 'enter']], 'a media card: show it in the source view'],
+    ['mouse-media-skim', [['hover']], 'a video card: skim through its frames (search actions turns it off)'],
+    ['mouse-source-drag', [['drag']], 'the source view picture: put the marked part on the timeline. picture only and sound only take one half'],
+    ['mouse-source-scrub', [['drag']], 'the bar under the source view: move its playhead. an in or out grip: move it (double click clears it)'],
+    ['mouse-edit-target', [['click']], 'the target button of a track header: where insert and overwrite put the picture or the sound (shown while the source view has media)'],
     ['mouse-effect-on', [['alt', 'drop']], 'drop an effect on a clip: put it on that clip only'],
     ['mouse-tl-zoom', [['ctrl', 'wheel']], 'over the timeline: zoom in or out'],
     ['mouse-tl-scroll', [['shift', 'wheel']], 'over the timeline: scroll sideways'],
@@ -875,6 +1197,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
       'the pivot mark of the selected clip in the preview: drag it to move the pivot, the clip stays where it is. alt: no snapping. double click: back to the middle',
     ],
     ['mouse-splitter', [['double click']], 'the line between two panels: back to its default size'],
+    ['mouse-fader', [['drag'], ['double click']], 'a fader in the mixer: drag up or down to change the level (shift: finer, ctrl: whole db). double click: 0 db'],
+    ['mouse-solo-only', [['alt', 'click']], 'the solo button of a track: solo only that track'],
+    ['mouse-meter-clear', [['click']], 'the over light of a meter: clear it'],
   ]),
   ...infoRows('fields', [
     ['field-drag', [['drag']], 'a number in the properties: drag it sideways to change it, click it to type (maths like 1920/2 works)'],
@@ -882,12 +1207,31 @@ export const SHORTCUTS: readonly Shortcut[] = [
     ['field-snap', [['ctrl', 'drag']], 'a number in the properties: round steps while dragging'],
     ['field-reset', [['double click']], 'a number in the properties: back to its rest value'],
     ['field-cancel', [['esc']], 'while dragging a number in the properties: put it back'],
+    ['grade-wheel-drag', [['drag']], 'a grade wheel: drag the dot toward a color. it moves from where it is'],
+    ['grade-wheel-fine', [['shift', 'drag']], 'a grade wheel: finer while dragging'],
+    ['grade-wheel-hue', [['ctrl', 'drag']], 'a grade wheel: round hue steps while dragging'],
+    ['grade-wheel-reset', [['double click']], 'a grade wheel: the color back to the middle, the level stays'],
+    ['grade-wheel-keys', [['←'], ['→'], ['↑'], ['↓']], 'a focused grade wheel: move the dot. shift: more. delete: back to the middle'],
+    ['grade-curve-add', [['click']], 'the grade curves: add a point and drag it'],
+    ['grade-curve-remove', [['double click'], ['delete']], 'the grade curves: take the point off'],
+    ['grade-curve-fine', [['shift', 'drag']], 'the grade curves: finer while dragging. ctrl: up and down only'],
+    ['grade-curve-keys', [['['], [']'], ['←'], ['→'], ['↑'], ['↓']], 'the focused grade curves: the point before or after, move it. shift: more. enter: add a point'],
     ['field-arrows', [['↑'], ['↓']], 'a number in the properties: one step up or down (shift: 10 steps)'],
     ['field-enter', [['enter'], ['esc']], 'while typing a number in the properties: keep the typed value, or go back'],
     ['field-tabs', [['←'], ['→']], 'on the property tabs: next or previous tab (home, end: first, last)'],
+    ['field-fader-keys', [['↑'], ['↓'], ['home'], ['end']], 'a fader in the mixer: half a db up or down (shift: 5 db). home: 0 db. end: off'],
   ]),
 
   // app
+  {
+    id: 'open-mixer',
+    keys: [['shift', '6']],
+    group: 'app',
+    description: 'mixer: track levels, pan, solo and meters',
+    also: ['audio track mixer', 'audio mixer', 'master', 'master volume', 'faders', 'audio levels', 'track volume', 'balance'],
+    match: byCode('Digit6', { shift: true }),
+    run: () => useUi.getState().showMixer(),
+  },
   {
     id: 'export',
     keys: [['ctrl', 'e']],

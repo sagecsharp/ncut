@@ -1,0 +1,399 @@
+/* the mixer tab, the track header badge and the transport meter. rows of a strip have fixed heights from these
+   variables, so the scale column lines up with every strip. the fader track and the meter share the 5 px inset */
+
+.mixer-tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.mixer-toolbar {
+  flex-shrink: 0;
+}
+.mixer-toolbar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mixer-row {
+  --mx-inset: 5px;
+  --mx-name-h: 22px;
+  --mx-pan-h: 26px;
+  --mx-level-h: 22px;
+  --mx-btn-h: 26px;
+  --mx-min: calc(var(--mx-name-h) + var(--mx-pan-h) + var(--mx-level-h) + var(--mx-btn-h) + 120px);
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-height: 0;
+  overflow: auto;
+  /* the sticky scale column (24 px) and output strip (66 px) cover the edges: scrollIntoView keeps clear of them */
+  scroll-padding-inline: 24px 66px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- scale column ---------- */
+
+.mixer-scale {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 24px;
+  min-height: var(--mx-min);
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+}
+.mixer-scale-pan {
+  justify-content: flex-end;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.mixer-scale-marks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--mx-inset);
+  bottom: var(--mx-inset);
+}
+.mixer-scale-mark {
+  position: absolute;
+  right: 3px;
+  transform: translateY(50%);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+}
+
+/* ---------- strip ---------- */
+
+.mixer-strip {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 58px;
+  min-height: var(--mx-min);
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+}
+.mixer-strip.is-output {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  width: 66px;
+  margin-left: auto;
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+.mixer-strip.is-current {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.mixer-strip.is-unheard {
+  opacity: 0.45;
+}
+.mixer-strip.is-flash {
+  animation: mixer-flash 600ms ease-out;
+}
+@keyframes mixer-flash {
+  from {
+    background: var(--accent-muted);
+  }
+  to {
+    background: var(--surface-2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mixer-strip.is-flash {
+    animation: none;
+    background: var(--accent-muted);
+  }
+}
+.mixer-none {
+  flex: 1;
+  min-width: 160px;
+  padding: var(--space-3);
+}
+
+.mixer-name-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: var(--mx-name-h);
+  padding: 0 4px;
+  color: var(--text-dim);
+}
+.mixer-name-row svg {
+  flex: none;
+}
+.mixer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mixer-pan-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--mx-pan-h);
+  padding: 0 3px;
+}
+.mixer-pan {
+  width: 100%;
+  min-width: 0;
+}
+.mixer-fader-row {
+  position: relative;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  gap: 6px;
+  min-height: 120px;
+}
+.mixer-level-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: var(--mx-level-h);
+  padding: 0 2px;
+}
+.mixer-btn-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: var(--mx-btn-h);
+}
+
+/* ---------- level box ---------- */
+
+.mixer-db {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
+  white-space: nowrap;
+  cursor: text;
+}
+.mixer-db:hover {
+  background: var(--surface-4);
+}
+.mixer-db-input {
+  width: 100%;
+  height: 18px;
+  padding: 0 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* ---------- fader ---------- */
+
+.mixer-fader {
+  position: relative;
+  width: 28px;
+  height: 100%;
+  cursor: ns-resize;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+}
+.mixer-fader-track {
+  position: absolute;
+  left: 50%;
+  top: var(--mx-inset);
+  bottom: var(--mx-inset);
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--surface-4);
+}
+.mixer-fader-cap {
+  position: absolute;
+  left: 50%;
+  width: 22px;
+  height: 10px;
+  margin-left: -11px;
+  margin-bottom: -5px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-5);
+}
+.mixer-fader-cap::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 4px;
+  height: 1px;
+  background: var(--text-dim);
+}
+.mixer-fader:hover .mixer-fader-cap {
+  border-color: var(--text-faint);
+}
+.mixer-fader:focus-visible .mixer-fader-cap {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
+
+/* ---------- meter ---------- */
+
+.mixer-meter {
+  position: relative;
+  flex: none;
+  width: 9px;
+  height: 100%;
+}
+.mixer-meter-canvas {
+  position: absolute;
+  left: 0;
+  top: var(--mx-inset, 5px);
+  width: 100%;
+  height: calc(100% - 2 * var(--mx-inset, 5px));
+}
+.mixer-over {
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.35;
+  cursor: pointer;
+}
+.mixer-over::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.mixer-over.is-over {
+  background: var(--danger);
+  opacity: 1;
+}
+.mixer-meter.is-horizontal {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: 10px;
+}
+.mixer-meter.is-horizontal .mixer-meter-canvas {
+  position: static;
+  width: 64px;
+  height: 10px;
+}
+.mixer-meter.is-horizontal .mixer-over {
+  position: static;
+  margin: 0;
+}
+
+/* ---------- solo ---------- */
+
+.icon-btn.is-solo {
+  background: color-mix(in oklch, var(--warn) 24%, transparent);
+  color: var(--warn);
+}
+
+/* ---------- track header ---------- */
+
+.timeline-head-toggles .icon-btn {
+  flex: none;
+}
+.timeline-head-mix {
+  min-width: 0;
+  margin-left: auto;
+  padding: 0 2px;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.timeline-head-mix:hover {
+  color: var(--text);
+}
+/* the toggles of a head leave no room for a badge like "-12.5 db" or "pan r100" (137 px inside, five toggles take 118): the badge goes to the top row, between the name and the remove button (6 padding + 22 remove + 4 gap). the sticky head holds it. 8 characters are 45 px wide, a 7 character name like "audio 1" keeps 46 */
+.timeline-head:has(.timeline-head-mix) .timeline-head-mix {
+  position: absolute;
+  right: 32px;
+  top: calc(50% - 23px);
+  box-sizing: border-box;
+  height: 22px;
+  max-width: 49px;
+  padding: 0;
+  text-align: right;
+}
+.timeline-head:has(.timeline-head-mix) .timeline-head-name,
+.timeline-head:has(.timeline-head-mix) .timeline-head-input {
+  margin-right: 48px;
+}
+.timeline-head.is-unheard .timeline-head-top {
+  opacity: 0.5;
+}
+
+/* ---------- transport ---------- */
+
+.transport-mix {
+  display: contents;
+}
+.transport-solo {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--warn);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.transport-solo:hover {
+  background: color-mix(in oklch, var(--warn) 18%, transparent);
+}
+.transport-meter {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.transport-meter:hover {
+  background: var(--surface-4);
+}
+
+/* ---------- sound tab row ---------- */
+
+.mixer-track-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

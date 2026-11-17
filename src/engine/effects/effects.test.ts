@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ALPHA_BLOCK, CUT_BLOCK, MAIN, MAIN_ALPHA, MAIN_CUT, PLAIN_BLOCK, PRELUDE } from './glsl';
+import { GRADE_GLSL } from '../grade';
 import { EFFECTS, effectParamValue, effectsInCategory, getEffect } from './registry';
 import { checkEffects, effectsSupported, fragmentSource, renderEffects, renderEffectsAlpha } from './runner';
 import { EFFECT_CATEGORIES } from './types';
@@ -384,5 +385,30 @@ describe('fragmentSource variants', () => {
         expect(src, `${def.id} ${variant}`).toContain(def.glsl);
       }
     }
+  });
+});
+
+describe('the grade effect', () => {
+  const def = getEffect('grade')!;
+  it('is last, in color, with no params', () => {
+    expect(EFFECTS[EFFECTS.length - 1]).toBe(def);
+    expect(def.category).toBe('color');
+    expect(def.params).toEqual([]);
+    expect(def.alpha).toBeUndefined();
+    expect(def.temporal).toBeUndefined();
+  });
+  it('keeps the outline and reads only tex(uv) and u_amount', () => {
+    const code = stripComments(def.glsl);
+    expect(code).toContain('u_amount');
+    expect(code).not.toMatch(/\bp_/);
+    expect(code).not.toMatch(/\bunpm\(|\brepm\(|\bpick3\(/);
+    const args = [...code.matchAll(/\btex\s*\(([^)]*)\)/g)].map((m) => m[1]!.trim());
+    expect(args).toEqual(['uv']);
+  });
+  it('carries the grade chunk', () => {
+    expect(def.glsl.startsWith(GRADE_GLSL)).toBe(true);
+    expect(def.glsl).toContain('gradeApply(');
+    expect(def.glsl).toContain('gDither(');
+    expect(fragmentSource(def)).toContain('uniform highp sampler2D u_gCurves;');
   });
 });

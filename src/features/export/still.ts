@@ -52,6 +52,8 @@ export interface StillHooks {
   /** things that left something out of the picture (a missing file, a font that did not load), each once */
   onWarning?: (message: string) => void;
   signal?: AbortSignal;
+  /** the drawn canvas, once, right before it is encoded (read it now: it is cleared after). mcp reads levels and scopes from it */
+  onCanvas?: (canvas: OffscreenCanvas) => void;
 }
 
 function abortError(): DOMException {
@@ -110,6 +112,7 @@ export async function renderStill(project: Project, options: StillOptions, hooks
       renderFrame(ctx, project, at, sources.resolver);
     });
     if (signal?.aborted) throw abortError();
+    hooks.onCanvas?.(canvas);
     const blob = await canvas.convertToBlob(
       options.mime === 'image/jpeg' ? { type: 'image/jpeg', quality: options.quality ?? jpegQuality('high') } : { type: 'image/png' },
     );

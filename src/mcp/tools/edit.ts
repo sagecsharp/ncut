@@ -1,14 +1,21 @@
 import { BEND_ANGLE_MAX } from '../../engine/scene3d/bend';
 import { faceClipId, faceFill, faceNames, hasSides, withFace, FACE_ALL } from '../../engine/scene3d/faces';
 import { bendEach, bendTargets, skippedOf, bendTogether, flattenBends } from '../../features/properties/bendActions';
+import { runRangeEdit } from '../../features/timeline/rangeActions';
+import type { RangeEditKind } from '../../features/timeline/rangeActions';
+import { groupPool, planMoveEdit, planRipple, planSlide, planSlip, planStretch, touchingAfter, touchingBefore } from '../../features/timeline/trimModes';
+import type { TrimPlan } from '../../features/timeline/trimModes';
+import { planNudge } from '../../features/timeline/timeNudge';
+import { trimStopText } from '../../features/timeline/trimText';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { clipEnd, rangesOverlap } from '../../lib/timelineOps';
 import type { Clip, FaceFill, FaceFit, Project, VisualClip } from '../../types';
-import { isVisualClip, trackKindForClip } from '../../types';
+import { isTimedClip, isVisualClip, trackKindForClip } from '../../types';
 import { changedSince, clipBrief, idList, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
-import type { ToolDef } from '../types';
+import type { ToolDef, ToolResult } from '../types';
 import { applyPatch, MAX_TIME, step, type KeepPlace } from './editPatch';
+import { rangeOf } from './project';
 
 const ids = (what: string): { type: 'array'; items: { type: 'string' }; minItems: number; maxItems: number; description: string } => ({
   type: 'array',
@@ -213,19 +220,85 @@ const moveClip: ToolDef = {
   },
 };
 
+const nudgeClips: ToolDef = {
+  name: 'nudge_clips',
+  title: 'nudge clips by frames',
+  description:
+    'move clips by a whole number of frames, like alt+left / alt+right: all by the same amount, effects on them come along when they have room. ' +
+    'all or nothing: a clip that would start before 0 or run into another stops the move and the error says which. locked tracks are refused. one undo step. ' +
+    'group mates are not added: list every clip. answers { moved, followers (effects that came along), frames, seconds, clips }.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: ids('the clips to move'),
+      frames: { type: 'integer', description: 'how many frames, + = later, - = earlier' },
+    },
+    required: ['ids', 'frames'],
+  },
+  run(args) {
+    const list = [...new Set(idList(args.ids))];
+    for (const id of list) needUnlocked(needClip(id));
+    const frames = args.frames as number;
+    if (frames === 0) throw new ToolError('nothing changed: frames is 0');
+    const p = needProject();
+    if (Math.abs(frames) / p.fps > MAX_TIME) throw new ToolError('frames is more than a day');
+    const plan = planNudge(p, list, frames);
+    if (plan.stop) throw new ToolError(`nothing moved: ${trimStopText(plan.stop, p)}`);
+    if (plan.moves.length === 0) throw new ToolError('nothing moved: no clip can move');
+    const moved = step((opts) => useEditor.getState().moveClips(plan.moves, opts));
+    if (!moved) {
+      useEditor.getState().rollback();
+      throw new ToolError('the clips could not be moved');
+    }
+    const mine = new Set(plan.ids);
+    const now = needProject();
+    return ok({
+      moved: plan.ids,
+      followers: plan.moves.filter((m) => !mine.has(m.id)).map((m) => m.id),
+      frames,
+      seconds: round(frames / p.fps),
+      clips: plan.ids.map((id) => clipBrief(now.clips.find((c) => c.id === id)!)),
+    });
+  },
+};
+
+/** the names of tracks, in the order given */
+function trackNames(p: Project, trackIds: readonly string[]): string[] {
+  return trackIds.map((id) => p.tracks.find((t) => t.id === id)?.name).filter((n): n is string => n !== undefined);
+}
+
+/** runs a trim plan as one undo step. a plan with no ops is an error (the stop, or `idle`), and so is a refused one: nothing is left behind */
+function applyPlan(plan: TrimPlan, p: Project, idle: string): void {
+  if (plan.ops.length === 0) throw new ToolError(`nothing changed: ${plan.stop ? trimStopText(plan.stop, p) : idle}`);
+  const before = needProject();
+  const done = step((opts) => useEditor.getState().applyTrimPlan(plan.ops, opts));
+  if (!done || !changedSince(before)) {
+    useEditor.getState().rollback();
+    throw new ToolError('nothing changed: something is in the way');
+  }
+}
+
 const trimClip: ToolDef = {
   name: 'trim_clip',
   title: 'trim a clip edge',
   description:
     'drag one edge of a clip to a timeline time (seconds), in one undo step. edge "start" cuts or extends the head (the picture of a video / audio clip stays in sync with the timeline), edge "end" the tail. ' +
     'the edge is limited like a drag in the editor: the clip stays at least 0.05 s long, does not run into its neighbours on the track, does not start before 0 and a video / audio clip cannot run past its media. ' +
-    'answers the clip brief; when the edge stopped short of the time asked for, "note" says where it ended. to move the whole clip use move_clip, to cut it in two use split_clips.',
+    'answers the clip brief; when the edge stopped short of the time asked for, "note" says where it ended. to move the whole clip use move_clip, to cut it in two use split_clips. ' +
+    'with a mode, grouped clips with the same edge, edit, or span and speed come along unless alone. locked tracks never move. answers then also have mode, moved, speed, locked_tracks and note.',
   inputSchema: {
     type: 'object',
     properties: {
       id: { type: 'string', description: 'the clip id' },
       edge: { type: 'string', enum: ['start', 'end'], description: 'which edge to move' },
       time: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'timeline time in seconds the edge should go to' },
+      mode: {
+        type: 'string',
+        enum: ['trim', 'ripple', 'move-edit', 'stretch'],
+        description:
+          '"trim" (default) moves only this edge, a gap stays. "ripple" also moves everything after the edit on unlocked tracks, so no gap opens. "move-edit" moves the edit between this clip and the one touching this edge: one gets longer, the other shorter. "stretch" changes the speed so the same media fills the new length (0.25x to 4x)',
+      },
+      alone: { type: 'boolean', description: 'only this clip (move-edit: the two clips at the edit), not its group mates. default false' },
     },
     required: ['id', 'edge', 'time'],
   },
@@ -234,6 +307,34 @@ const trimClip: ToolDef = {
     needUnlocked(clip);
     const edge = args.edge as 'start' | 'end';
     const time = args.time as number;
+    const mode = args.mode as 'trim' | 'ripple' | 'move-edit' | 'stretch' | undefined;
+    if (mode !== undefined && mode !== 'trim') {
+      const p = needProject();
+      const pool = args.alone === true ? [clip.id] : groupPool(p, clip.id);
+      const asked = time - (edge === 'start' ? clip.start : clipEnd(clip));
+      let plan: TrimPlan;
+      if (mode === 'move-edit') {
+        if (edge === 'end') {
+          const right = touchingAfter(p, clip);
+          if (!right) throw new ToolError(`the ${edge} of ${clip.id} does not touch another clip: use mode "ripple" or "trim"`);
+          plan = planMoveEdit(p, clip.id, right.id, time - right.start, pool);
+        } else {
+          const left = touchingBefore(p, clip);
+          if (!left) throw new ToolError(`the ${edge} of ${clip.id} does not touch another clip: use mode "ripple" or "trim"`);
+          plan = planMoveEdit(p, left.id, clip.id, time - clip.start, pool);
+        }
+      } else if (mode === 'ripple') plan = planRipple(p, clip.id, edge, asked, pool);
+      else plan = planStretch(p, clip.id, edge, asked, pool);
+      applyPlan(plan, p, 'the edge is already there');
+      const now = needClip(clip.id);
+      const got = (edge === 'start' ? clip.start : clipEnd(clip)) + plan.delta;
+      const out: Record<string, unknown> = { ...clipBrief(now), mode };
+      if (plan.moved.length > 0) out.moved = plan.moved;
+      if (mode === 'stretch' && plan.speed !== undefined) out.speed = round(plan.speed);
+      if (plan.lockedBehind.length > 0) out.locked_tracks = trackNames(p, plan.lockedBehind);
+      if (plan.stop) out.note = `the ${edge} edge stopped at ${round(got)} s, not ${round(time)} s: ${trimStopText(plan.stop, p)}`;
+      return ok(out);
+    }
     const before = needProject();
     step((opts) => useEditor.getState().trimClip(clip.id, edge, time, opts));
     if (!changedSince(before)) {
@@ -246,6 +347,78 @@ const trimClip: ToolDef = {
     const got = edge === 'start' ? now.start : clipEnd(now);
     const out: Record<string, unknown> = { ...clipBrief(now) };
     if (Math.abs(got - time) > 1e-3) out.note = `the ${edge} edge stopped at ${round(got)} s, not ${round(time)} s (the limits of the clip)`;
+    return ok(out);
+  },
+};
+
+const slipClip: ToolDef = {
+  name: 'slip_clip',
+  title: 'slip a clip',
+  description:
+    'slips a video or audio clip in one undo step: same place and length, another part of its media. by is media seconds (+ shows later media), trim_start is where in its media it starts; give exactly one. ' +
+    'a separated sound of the same media slips too unless alone. the slip is limited by the media (it cannot start before its first frame or run past its last). ' +
+    'answers the clip brief with trim_start, and "note" when it slipped less than asked.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'the clip id' },
+      by: { type: 'number', minimum: -MAX_TIME, maximum: MAX_TIME, description: 'media seconds to slip by: + shows later media, - earlier' },
+      trim_start: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'where in its media the clip should start, seconds' },
+      alone: { type: 'boolean', description: 'only this clip, not the sound or picture of the same media. default false' },
+    },
+    required: ['id'],
+  },
+  run(args) {
+    const clip = needClip(args.id);
+    const by = optNumber(args.by);
+    const to = optNumber(args.trim_start);
+    if (by !== undefined && to !== undefined) throw new ToolError('give by or trim_start, not both');
+    if (by === undefined && to === undefined) throw new ToolError('give by or trim_start');
+    if (!isTimedClip(clip)) throw new ToolError('slip needs a video or audio clip');
+    needUnlocked(clip);
+    const p = needProject();
+    const pool = args.alone === true ? [clip.id] : groupPool(p, clip.id);
+    const asked = by ?? to! - clip.trimStart;
+    const plan = planSlip(p, clip.id, asked, pool);
+    applyPlan(plan, p, 'the clip already shows that part of its media');
+    const out: Record<string, unknown> = { ...clipBrief(needClip(clip.id)), trim_start: round(plan.trimStart ?? clip.trimStart) };
+    if (plan.stop) out.note = `slipped ${round(plan.delta)} s of media, not ${round(asked)} s: ${trimStopText(plan.stop, p)}`;
+    return ok(out);
+  },
+};
+
+const slideClip: ToolDef = {
+  name: 'slide_clip',
+  title: 'slide a clip',
+  description:
+    'slides a clip in one undo step: it moves by "by" seconds or to start, and the clips touching it trim to stay touching. group mates with the same span slide too unless alone. ' +
+    'answers the clip brief with trimmed (the neighbours that were trimmed), and "note" when it slid less than asked.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'the clip id' },
+      by: { type: 'number', minimum: -MAX_TIME, maximum: MAX_TIME, description: 'seconds to slide by: + later, - earlier' },
+      start: { type: 'number', minimum: 0, maximum: MAX_TIME, description: 'the new start on the timeline, seconds' },
+      alone: { type: 'boolean', description: 'only this clip, not its group mates. default false' },
+    },
+    required: ['id'],
+  },
+  run(args) {
+    const clip = needClip(args.id);
+    const by = optNumber(args.by);
+    const to = optNumber(args.start);
+    if (by !== undefined && to !== undefined) throw new ToolError('give by or start, not both');
+    if (by === undefined && to === undefined) throw new ToolError('give by or start');
+    needUnlocked(clip);
+    const p = needProject();
+    const pool = args.alone === true ? [clip.id] : groupPool(p, clip.id);
+    const asked = by ?? to! - clip.start;
+    const plan = planSlide(p, clip.id, asked, pool);
+    applyPlan(plan, p, 'the clip is already there');
+    const trimmed: string[] = [];
+    for (const op of plan.ops) if (op.kind === 'trim' && !trimmed.includes(op.id)) trimmed.push(op.id);
+    const out: Record<string, unknown> = { ...clipBrief(needClip(clip.id)), trimmed };
+    if (plan.stop) out.note = `slid ${round(plan.delta)} s, not ${round(asked)} s: ${trimStopText(plan.stop, p)}`;
     return ok(out);
   },
 };
@@ -312,6 +485,45 @@ const deleteClips: ToolDef = {
     const skipped = wanted.filter((id) => left.has(id));
     return ok({ deleted: gone.length, ids: gone, ...(skipped.length ? { skipped } : {}) });
   },
+};
+
+/** lift_range and extract_range: runRangeEdit owns its undo step and its rollback */
+function rangeRun(kind: RangeEditKind): ToolResult {
+  needProject();
+  const r = runRangeEdit(kind);
+  if (!r.ok) throw new ToolError(`${r.reason ?? 'nothing changed'}. set_range marks the range, get_project shows it`);
+  const out: Record<string, unknown> = { in: round(r.in), out: round(r.out) };
+  if (kind === 'extract') out.seconds = round(r.out - r.in);
+  out.removed = r.removed;
+  out.split = r.splits;
+  out.trimmed = r.trimmed;
+  if (kind === 'extract') out.moved = r.moved;
+  if (r.slivers > 0) out.slivers = r.slivers;
+  if (r.lockedTracks > 0) out.lockedTracks = r.lockedTracks;
+  if (kind === 'extract') out.range = rangeOf(needProject().range);
+  return ok(out);
+}
+
+const liftRange: ToolDef = {
+  name: 'lift_range',
+  title: 'lift the range',
+  description:
+    'takes out what is between the in and out points on unlocked tracks in one undo step, the gap stays. clips over a mark are split there. both marks are needed (set_range). the playhead goes to the in point. ' +
+    'answers { in, out, removed, split, trimmed, slivers?, lockedTracks? }. an error says why nothing would change, or names the clip that stopped it.',
+  annotations: { destructiveHint: true },
+  inputSchema: { type: 'object', properties: {} },
+  run: () => rangeRun('lift'),
+};
+
+const extractRange: ToolDef = {
+  name: 'extract_range',
+  title: 'extract the range',
+  description:
+    'like lift_range, then every clip on every unlocked track after the out point moves left by out minus in, so the tracks stay in sync. locked tracks stay. the out point is cleared after it, the in point stays. the playhead goes to the in point. ' +
+    'answers { in, out, seconds, removed, split, trimmed, moved, slivers?, lockedTracks?, range }.',
+  annotations: { destructiveHint: true },
+  inputSchema: { type: 'object', properties: {} },
+  run: () => rangeRun('extract'),
 };
 
 const duplicateClips: ToolDef = {
@@ -460,4 +672,4 @@ const bendClips: ToolDef = {
   },
 };
 
-export const editTools: ToolDef[] = [updateClip, setSides, moveClip, trimClip, splitClips, deleteClips, duplicateClips, groupClips, ungroupClips, bendClips];
+export const editTools: ToolDef[] = [updateClip, setSides, moveClip, nudgeClips, trimClip, slipClip, slideClip, splitClips, deleteClips, liftRange, extractRange, duplicateClips, groupClips, ungroupClips, bendClips];

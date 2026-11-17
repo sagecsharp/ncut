@@ -1,0 +1,292 @@
+/* the grade section: four wheels, the lists of points and their tabs. fits 256 px of content, no sideways scroll */
+:root {
+  /* the middle of a wheel face, where the hue ring fades out */
+  --grade-mid: oklch(0.4 0 0);
+  --grade-r: #ff6a5f;
+  --grade-g: #4ddc7c;
+  --grade-b: #6a9bff;
+}
+:root[data-theme='light'] {
+  --grade-mid: oklch(0.78 0 0);
+  --grade-r: #d8281c;
+  --grade-g: #12963f;
+  --grade-b: #1f5ce0;
+}
+
+.grade-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.grade-body.is-locked .grade-wheels,
+.grade-body.is-locked .grade-numbers,
+.grade-body.is-locked .grade-curves,
+.grade-body.is-locked .grade-swatches {
+  opacity: 0.5;
+}
+
+/* ---------- wheels ---------- */
+.grade-wheels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+.grade-wheel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.grade-wheel-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.grade-wheel-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grade-wheel-word {
+  margin-left: 4px;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+.grade-mini {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+}
+.grade-face {
+  position: relative;
+  width: min(96px, 100%);
+  aspect-ratio: 1;
+  margin: 0 auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  box-sizing: border-box;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.grade-face:active {
+  cursor: grabbing;
+}
+.grade-face.is-disabled {
+  cursor: default;
+}
+.grade-face:focus-visible,
+.grade-area:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.grade-face-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.grade-cross {
+  stroke: var(--text);
+  stroke-width: 1;
+  opacity: 0.25;
+  vector-effect: non-scaling-stroke;
+}
+.grade-pull {
+  stroke: var(--text);
+  stroke-width: 1;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+.grade-tick {
+  stroke: var(--text);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.grade-dot {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px #000);
+}
+.grade-readout {
+  min-height: 1.4em;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+/* the level field fits a narrow cell: a short label, the keys under it */
+.grade-level {
+  min-width: 0;
+}
+.grade-level .props-label {
+  flex-basis: 34px;
+}
+.grade-level .props-anim-extra {
+  flex-wrap: wrap;
+  padding-left: 0;
+}
+.grade-level .props-ease {
+  min-width: 0;
+}
+.grade-numbers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---------- the lists of points ---------- */
+.grade-subhead {
+  margin-top: var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+}
+.grade-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.grade-tab {
+  padding: 0 6px;
+}
+.grade-tab.is-active {
+  background: var(--accent-muted);
+  color: var(--text);
+}
+.grade-tab-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: middle;
+}
+.grade-curves {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.grade-area {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-1);
+  box-sizing: border-box;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.grade-area.is-over {
+  cursor: grab;
+}
+.grade-area.is-drag {
+  cursor: grabbing;
+}
+.grade-area.is-disabled {
+  cursor: default;
+}
+.grade-sheet {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+.grade-gridline {
+  stroke: var(--border-soft);
+  stroke-width: 1;
+  opacity: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+.grade-base {
+  stroke: var(--text-faint);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.grade-line {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.grade-line-r {
+  stroke: var(--grade-r);
+}
+.grade-line-g {
+  stroke: var(--grade-g);
+}
+.grade-line-b {
+  stroke: var(--grade-b);
+}
+.grade-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--text-faint);
+  pointer-events: none;
+}
+.grade-point {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border: 1px solid var(--text);
+  border-radius: 50%;
+  background: var(--surface-1);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.grade-point.is-picked {
+  background: var(--text);
+}
+.grade-live {
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.grade-strip {
+  height: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.grade-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.grade-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.grade-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

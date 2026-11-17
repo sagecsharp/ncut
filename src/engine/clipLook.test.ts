@@ -10,6 +10,7 @@ import {
   hasClipLook,
   isAdjustActive,
   keyAlpha,
+  lookShaderSource,
   lookSize,
   parseHexColor,
   releaseClipLook,
@@ -30,6 +31,76 @@ const SAMPLES: Rgb[] = [
   [0.2, 0.6, 0.4],
   [0.1, 0.2, 0.9],
 ];
+
+describe('the plain look is pinned', () => {
+  it('the plain shader text', () => {
+    expect(lookShaderSource(false)).toMatchInlineSnapshot(`
+      "#version 300 es
+      precision highp float;
+      uniform sampler2D u_tex;
+      uniform vec4 u_adj;     // brightness, contrast, saturation, temperature
+      uniform vec2 u_hue;     // cos, sin of the hue angle
+      uniform float u_keyOn;  // 1 when keying
+      uniform vec2 u_keyCbCr; // chroma of the key color
+      uniform vec3 u_key;     // tolerance, softness, spill
+      uniform vec3 u_mask;    // one-hot dominant channel of the key color, 0 = no despill
+      in vec2 v_uv;
+      out vec4 o;
+
+      vec2 chromaOf(vec3 c) {
+        c /= max(max(c.r, max(c.g, c.b)), 0.25);
+        return vec2(
+          -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b,
+          0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b
+        );
+      }
+
+      vec3 hueRot(vec3 c, float cs, float sn) {
+        return vec3(
+          dot(c, vec3(0.213 + cs * 0.787 - sn * 0.213, 0.715 - cs * 0.715 - sn * 0.715, 0.072 - cs * 0.072 + sn * 0.928)),
+          dot(c, vec3(0.213 - cs * 0.213 + sn * 0.143, 0.715 + cs * 0.285 + sn * 0.140, 0.072 - cs * 0.072 - sn * 0.283)),
+          dot(c, vec3(0.213 - cs * 0.213 - sn * 0.787, 0.715 - cs * 0.715 + sn * 0.715, 0.072 + cs * 0.928 + sn * 0.072))
+        );
+      }
+
+      void main() {
+        vec4 s = texture(u_tex, v_uv);
+        vec3 c = s.rgb;
+        float a = s.a;
+        if (u_keyOn > 0.5) {
+          float d = distance(chromaOf(c), u_keyCbCr) * 1.50;
+          a *= smoothstep(u_key.x, max(u_key.x + u_key.y, u_key.x + 0.0001), d);
+          float dom = dot(c, u_mask);
+          float oth = max(max(c.r * (1.0 - u_mask.r), c.g * (1.0 - u_mask.g)), c.b * (1.0 - u_mask.b));
+          c -= u_mask * max(dom - oth, 0.0) * u_key.z;
+        }
+        // temperature (luma kept roughly constant)
+        c += vec3(0.1 * u_adj.w, -0.019631 * u_adj.w, -0.1 * u_adj.w);
+        c = clamp(c, 0.0, 1.0);
+        // brightness
+        if (u_adj.x < 0.0) c = c * (1.0 + u_adj.x); else c = c + (1.0 - c) * u_adj.x;
+        // contrast around mid gray
+        float f = u_adj.y < 0.0 ? 1.0 + u_adj.y : 1.0 + 2.0 * u_adj.y;
+        c = clamp((c - 0.5) * f + 0.5, 0.0, 1.0);
+        // saturation (rec. 709 luma)
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        c = clamp(vec3(l) + (c - vec3(l)) * (1.0 + u_adj.z), 0.0, 1.0);
+        // hue
+        c = clamp(hueRot(c, u_hue.x, u_hue.y), 0.0, 1.0);
+        o = vec4(c * a, a);
+      }"
+    `);
+  });
+  it('the signature of an adjust only clip', () => {
+    expect(clipLookSignature(clip({ adjust: adj({ brightness: 0.2, hue: 10 }) }))).toMatchInlineSnapshot(`"a0.2,0,0,10,0"`);
+  });
+  it('the signature of a key only clip', () => {
+    expect(clipLookSignature(clip({ chromaKey: key() }))).toMatchInlineSnapshot(`"|k0.0000,0.8157,0.0000,0.3,0.1,0.5"`);
+  });
+  it('the signature of an adjust plus key clip', () => {
+    expect(clipLookSignature(clip({ adjust: adj({ brightness: 0.2, hue: 10 }), chromaKey: key() }))).toMatchInlineSnapshot(`"a0.2,0,0,10,0|k0.0000,0.8157,0.0000,0.3,0.1,0.5"`);
+  });
+});
 
 describe('parseHexColor', () => {
   it('parses short and long hex', () => {
@@ -223,5 +294,52 @@ describe('texture entry point without webgl', () => {
     expect(lookSize(8192, 4096)).toEqual({ w: 4096, h: 2048 });
     expect(lookSize(100, 20000)).toEqual({ w: 20, h: 4096 });
     expect(lookSize(0, 5)).toBeNull();
+  });
+});
+
+describe('the grade in the look', () => {
+  const plain = lookShaderSource(false);
+  const graded = lookShaderSource(true);
+  const LINE = '  c = gDither(gradeApply(c), floor(v_uv * u_gRes));\n';
+
+  it('each anchor once', () => {
+    expect(plain.split('out vec4 o;\n')).toHaveLength(2);
+    expect(plain.split('  o = vec4(c * a, a);')).toHaveLength(2);
+    expect(graded.split('out vec4 o;\n')).toHaveLength(2);
+    expect(graded.split('  o = vec4(c * a, a);')).toHaveLength(2);
+    expect(graded.split(LINE)).toHaveLength(2);
+    expect(graded.split('uniform vec2 u_gRes;\n')).toHaveLength(2);
+    expect(graded.split('vec3 gradeApply(vec3 c)')).toHaveLength(2);
+  });
+  it('the grade line sits between hue and output', () => {
+    const hue = graded.indexOf('  c = clamp(hueRot(c, u_hue.x, u_hue.y), 0.0, 1.0);');
+    const line = graded.indexOf(LINE);
+    const out = graded.indexOf('  o = vec4(c * a, a);');
+    expect(hue).toBeGreaterThan(0);
+    expect(line).toBeGreaterThan(hue);
+    expect(out).toBeGreaterThan(line);
+    expect(graded.slice(line + LINE.length, out)).toBe('');
+  });
+  it('the chunk sits after the output declaration and before main', () => {
+    expect(graded.indexOf('out vec4 o;\n')).toBeLessThan(graded.indexOf('precision highp int;'));
+    expect(graded.indexOf('uniform vec2 u_gRes;')).toBeLessThan(graded.indexOf('void main()'));
+    expect(graded.replace(/out vec4 o;\n[\s\S]*?\nvec2 chromaOf/, 'out vec4 o;\n\nvec2 chromaOf').replace(LINE, '')).toBe(plain);
+  });
+  it('an active grade alone is a look', () => {
+    expect(hasClipLook(clip({ grade: { liftR: 0.2 } }))).toBe(true);
+    expect(hasClipLook(clip({ grade: { curves: { y: [[0, 0], [0.5, 0.7], [1, 1]] } } }))).toBe(true);
+    const sig = clipLookSignature(clip({ grade: { liftR: 0.2 } }));
+    expect(sig.startsWith('|g')).toBe(true);
+    expect(clipLookSignature(clip({ grade: { liftR: 0.3 } }))).not.toBe(sig);
+    expect(clipLookSignature(clip({ adjust: adj({ hue: 10 }), grade: { liftR: 0.2 } }))).toBe(`a0,0,0,10,0${sig}`);
+  });
+  it('a neutral or off grade keeps the old signature', () => {
+    const a = adj({ brightness: 0.2, hue: 10 });
+    for (const grade of [null, undefined, {}, { liftR: 0 }, { liftR: 0.5, off: true }, { curves: { y: [[0, 0], [1, 1]] } }] as (VisualClip['grade'])[]) {
+      expect(hasClipLook(clip({ grade }))).toBe(false);
+      expect(clipLookSignature(clip({ grade }))).toBe('');
+      expect(clipLookSignature(clip({ adjust: a, grade }))).toBe('a0.2,0,0,10,0');
+      expect(clipLookSignature(clip({ chromaKey: key(), grade }))).toBe('|k0.0000,0.8157,0.0000,0.3,0.1,0.5');
+    }
   });
 });

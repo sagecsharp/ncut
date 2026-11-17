@@ -27,6 +27,7 @@ vi.mock('../storage/idle', () => ({ whenIdle: () => () => {} }));
 vi.mock('../media/registry', () => ({ loadProjectMedia: async () => [], releaseAllAssets: () => {} }));
 vi.mock('../media/derived', () => ({ releaseAllDerived: () => {} }));
 vi.mock('./playback', () => ({ resetPlayback: () => {} }));
+vi.mock('./source', () => ({ useSource: { getState: () => ({ split: false }) } }));
 
 const { useEditor } = await import('../store/editorStore');
 const { openProjectById, startAutosave } = await import('./session');

@@ -14,10 +14,10 @@ import { type SkyPicture, skyAssetIds, skyFaceSize, skyKey, skyUsable, sourceFac
 import { loadSkyFaces } from '../../media/skyFaces';
 import { isExporting } from '../../engine/exportState';
 import type { DrawSource, SourceResolver } from '../../engine/draw';
-import { valueAt } from '../../lib/anim';
 import { onFontsChanged } from '../../lib/fonts';
 import { APPEARANCE_EVENT } from '../../lib/appearance';
-import { fadeFactor, sourceTimeAt } from '../../lib/timelineOps';
+import { sourceTimeAt } from '../../lib/timelineOps';
+import { clipMix, outputGain, soloSet } from '../../lib/mix';
 import { transitionHolds } from '../../lib/transitions';
 import { clamp } from '../../lib/time';
 import { getAssetBlob, getAssetUrl } from '../../media/registry';
@@ -26,6 +26,7 @@ import { mediaPlaybackRate, rateAudible, usePlayback } from '../../store/playbac
 import { blocksPaint, isScrubbing, onSeekedAction, staleScrubTarget } from './previewSync';
 import { ScrubFeed } from './scrubFeed';
 import { useUi } from '../../store/ui';
+import { useSolo } from '../../store/solo';
 import { neededImageAssets } from './imageWindow';
 import { ParkingLot } from './mediaPark';
 import { frameInfo } from './frameStatic';
@@ -33,6 +34,10 @@ import { SKIP_UNCHANGED_FRAMES, canSkipRepaint } from './repaintSkip';
 import type { FrameRecord } from './repaintSkip';
 import { backingSize, usePreviewQuality } from './quality';
 import { currentOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
+import { onTapWanted, tapFrame } from './scopeTap';
+import { METER_WINDOW, OUTPUT_TAP, blockLevels, clearMeterSource, setMeterSource } from './meterTaps';
+import type { MeterSource, TapLevels } from './meterTaps';
+import { fallbackVolume, mixDebug, soundOnlyChange } from './mixRoute';
 
 type LineColor = [number, number, number, number];
 const FALLBACK_LINE: LineColor = [1, 1, 1, 0.6];
@@ -81,6 +86,14 @@ interface MediaEntry {
   gain: GainNode | null;
   node: MediaElementAudioSourceNode | null;
   lastGain: number;
+  /** the pan chain, built when a clip first needs a pan and kept until the entry is unwired (no click from tearing it down) */
+  pan: { split: ChannelSplitterNode; l: GainNode; r: GainNode; merge: ChannelMergerNode } | null;
+  lastL: number;
+  lastR: number;
+  /** the track tap the tail of this entry feeds (null: none) */
+  tapKey: string | null;
+  /** the engine's tapGen when tapKey was last settled */
+  tapGen: number;
   createdAt: number;
   /** performance.now() when the last seek was issued (0 = none) */
   seekStart: number;
@@ -112,6 +125,14 @@ interface ParkedMedia {
   gain: GainNode | null;
 }
 
+/** a meter tap: a track's (or the output's) sound split into two analysers. no link onward, chromium pulls them */
+interface TapNodes {
+  input: GainNode;
+  split: ChannelSplitterNode;
+  aL: AnalyserNode;
+  aR: AnalyserNode;
+}
+
 interface ImageEntry {
   source: DrawSource | null;
   loading: boolean;
@@ -119,7 +140,7 @@ interface ImageEntry {
   lastUsed: number;
 }
 
-export class PreviewEngine {
+export class PreviewEngine implements MeterSource {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pool = new Map<string, MediaEntry>();
@@ -137,6 +158,15 @@ export class PreviewEngine {
   private readonly unsubs: Array<() => void> = [];
   private audioCtx: AudioContext | null = null;
   private audioFailed = false;
+  /** the output level node (what the export has as its factor) and the listening level node after it */
+  private mixIn: GainNode | null = null;
+  private monitor: GainNode | null = null;
+  /** meter taps by key: null = wanted but not built (no context yet) */
+  private readonly taps = new Map<string, TapNodes | null>();
+  /** counts up when a tap is built or goes: entries re-settle their link on their next setGain */
+  private tapGen = 0;
+  private readonly tapL = new Float32Array(METER_WINDOW);
+  private readonly tapR = new Float32Array(METER_WINDOW);
   private cssW = 0;
   private cssH = 0;
   private rafId = 0;
@@ -194,9 +224,15 @@ export class PreviewEngine {
     );
     this.unsubs.push(
       useEditor.subscribe((s, prev) => {
+        // a fader or pan drag, a mute or a typed clip volume: only the gains move, nothing syncs and nothing repaints
+        if (s.project && prev.project && s.project !== prev.project && s.selection === prev.selection && soundOnlyChange(prev.project, s.project)) {
+          this.applyGains();
+          return;
+        }
         // any change of the store (not only the project) is painted by the next tick, as before
         this.mustDraw = true;
         if (s.project === prev.project) return;
+        if (this.mixIn && s.project && s.project.output !== prev.project?.output) this.mixIn.gain.value = outputGain(s.project);
         if (this.skyEntry && !(s.project && skyUsable(s.project))) this.dropSky();
         if (s.project && prev.project && (s.project.width !== prev.project.width || s.project.height !== prev.project.height)) {
           this.applyBackingSize();
@@ -221,6 +257,8 @@ export class PreviewEngine {
         this.invalidate();
       }),
     );
+    // solo is listening only: gains move, nothing syncs, nothing draws
+    this.unsubs.push(useSolo.subscribe(() => this.applyGains()));
     // scene view: mode switch and the free camera redraw the canvas
     this.unsubs.push(
       useUi.subscribe((s, prev) => {
@@ -236,6 +274,11 @@ export class PreviewEngine {
         else this.drawSoon();
       }),
     );
+    // the scopes or the probe opened, or the measured view changed: paint once more so they get a picture
+    this.unsubs.push(onTapWanted(() => {
+      this.mustDraw = true;
+      this.invalidate();
+    }));
     // helper lines of the scene view use the theme's text color: read once per theme change
     if (typeof window !== 'undefined') {
       const onTheme = () => {
@@ -255,6 +298,7 @@ export class PreviewEngine {
       document.fonts.addEventListener('loadingdone', onFonts);
       this.unsubs.push(() => document.fonts.removeEventListener('loadingdone', onFonts));
     }
+    setMeterSource(this);
     this.sync();
   }
 
@@ -326,6 +370,7 @@ export class PreviewEngine {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    clearMeterSource(this);
     cancelAnimationFrame(this.rafId);
     this.rafId = 0;
     this.clearHoldTimer();
@@ -339,10 +384,14 @@ export class PreviewEngine {
     this.skyEntry?.pic?.close();
     this.skyEntry = null;
     this.skyReady.clear();
+    for (const key of Array.from(this.taps.keys())) this.dropTap(key);
+    this.taps.clear();
     if (this.audioCtx) {
       void this.audioCtx.close().catch(() => undefined);
       this.audioCtx = null;
     }
+    this.mixIn = null;
+    this.monitor = null;
     // give back the preview channel's gl contexts and scratch canvases (a remount rebuilds them on first use)
     releaseRenderResources('preview');
   }
@@ -350,10 +399,11 @@ export class PreviewEngine {
   /* ---------- drawing ---------- */
 
   /**
-   * the frame at the playhead as a png at the full project resolution: the same renderFrame and the same
-   * picture sources as the preview, at quality 1 (full motion blur). null when it cannot be made.
+   * the frame at the playhead at project size on the export channel, quality 1 (full motion blur). keep: the channel's
+   * canvases and gl contexts stay, the caller releases them. yieldToExport: null when an export or an mcp render_frame
+   * began during the seek wait (they share the channel's scratch canvases). null when it cannot be made.
    */
-  async frameBlob(): Promise<Blob | null> {
+  async exactFrame(keep = false, yieldToExport = false): Promise<OffscreenCanvas | null> {
     const project = useEditor.getState().project;
     if (this.disposed || !project || typeof OffscreenCanvas === 'undefined') return null;
     // a drag that the scrub feed served: the elements go to the playhead now instead of when the drag has rested
@@ -368,9 +418,11 @@ export class PreviewEngine {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 30));
       if (this.disposed) return null;
     }
+    if (yieldToExport && isExporting()) return null;
     const canvas = new OffscreenCanvas(project.width, project.height);
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return null;
+    let ok = false;
     try {
       this.elementsOnly = true;
       try {
@@ -378,10 +430,23 @@ export class PreviewEngine {
       } finally {
         this.elementsOnly = false;
       }
-      return await canvas.convertToBlob({ type: 'image/png' });
+      ok = true;
+      return canvas;
     } finally {
       // an OffscreenCanvas draws on the export channel: give back its full size canvases and gl contexts,
-      // unless an export is using them right now
+      // unless the caller keeps them or an export is using them right now
+      if ((!keep || !ok) && !isExporting()) releaseRenderResources('export');
+    }
+  }
+
+  /** the frame at the playhead as a png at the full project resolution. null when it cannot be made */
+  async frameBlob(): Promise<Blob | null> {
+    const canvas = await this.exactFrame(true);
+    if (!canvas) return null;
+    try {
+      return await canvas.convertToBlob({ type: 'image/png' });
+    } finally {
+      // give back the full size canvases and gl contexts, unless an export is using them right now
       if (!isExporting()) releaseRenderResources('export');
     }
   }
@@ -418,6 +483,8 @@ export class PreviewEngine {
     } else {
       // while playing, motion blur uses fewer samples so the preview stays smooth
       renderFrame(ctx, project, time, this.resolve, { quality: playing ? 0.5 : 1 });
+      // the scopes and the probe measure this picture (nothing listens while they are closed)
+      tapFrame(canvas, canvas.width, canvas.height, 'output', !playing);
     }
     this.hasDrawn = true;
     if (!playing) this.flushWants();
@@ -792,24 +859,38 @@ export class PreviewEngine {
           this.audioFailed = true;
           return;
         }
-        this.audioCtx = new Ctor();
+        const ac = new Ctor();
+        // element > gain > [pan chain] > mix in (the output level) > monitor (the preview volume) > speakers
+        const mixIn = ac.createGain();
+        const monitor = ac.createGain();
+        mixIn.connect(monitor);
+        monitor.connect(ac.destination);
+        this.audioCtx = ac;
+        this.mixIn = mixIn;
+        this.monitor = monitor;
       } catch {
         this.audioFailed = true;
         return;
       }
+      const project = useEditor.getState().project;
+      const { volume, muted } = usePlayback.getState();
+      this.mixIn!.gain.value = project ? outputGain(project) : 1;
+      this.monitor!.gain.value = muted ? 0 : volume;
       for (const entry of this.pool.values()) this.routeEntry(entry);
+      for (const [key, tap] of this.taps) if (!tap) this.buildTap(key);
+      this.tapGen++;
     }
     if (this.audioCtx.state === 'suspended') void this.audioCtx.resume().catch(() => undefined);
   }
 
   private routeEntry(entry: MediaEntry): void {
     const ac = this.audioCtx;
-    if (!ac || entry.node) return;
+    if (!ac || !this.mixIn || entry.node) return;
     try {
       const node = ac.createMediaElementSource(entry.el);
       const gain = ac.createGain();
       node.connect(gain);
-      gain.connect(ac.destination);
+      gain.connect(this.mixIn);
       entry.node = node;
       entry.gain = gain;
       entry.el.volume = 1;
@@ -821,26 +902,228 @@ export class PreviewEngine {
   }
 
   private applyGains(): void {
+    if (this.disposed) return;
     const project = useEditor.getState().project;
+    // the listening level moves even without a project
+    if (this.monitor) {
+      const { volume, muted } = usePlayback.getState();
+      this.monitor.gain.value = muted ? 0 : volume;
+    }
     if (!project) return;
+    if (this.mixIn) this.mixIn.gain.value = outputGain(project);
     const time = usePlayback.getState().time;
+    const solo = soloSet(project, useSolo.getState().solo);
     for (const clip of project.clips) {
       if (clip.type !== 'video' && clip.type !== 'audio') continue;
       const entry = this.pool.get(clip.id);
-      if (entry) this.setGain(entry, clip, project, time);
+      if (entry) this.setGain(entry, clip, project, time, solo);
     }
   }
 
-  private setGain(entry: MediaEntry, clip: VideoClip | AudioClip, project: Project, time: number): void {
-    const { volume, muted } = usePlayback.getState();
-    const track = project.tracks.find((t) => t.id === clip.trackId);
-    const silent = entry.rateMute || clip.muted || !track || track.muted || muted;
-    // volume may be keyframed
-    const g = silent ? 0 : (valueAt(clip, 'volume', time) ?? clip.volume) * fadeFactor(clip, time) * volume;
-    if (Math.abs(g - entry.lastGain) < 1e-4) return;
-    entry.lastGain = g;
-    if (entry.gain) entry.gain.gain.value = g;
-    else entry.el.volume = clamp(g, 0, 1);
+  private setGain(entry: MediaEntry, clip: VideoClip | AudioClip, project: Project, time: number, solo: ReadonlySet<string> | null): void {
+    const m = clipMix(project, clip, time, solo);
+    const g = entry.rateMute ? 0 : m.gain;
+    const gain = entry.gain;
+    if (!gain) {
+      // no web audio: the element's own volume is all there is (no pan, no meters)
+      const { volume, muted } = usePlayback.getState();
+      const v = fallbackVolume(g, outputGain(project), volume, muted);
+      if (Math.abs(v - entry.lastGain) < 1e-4) return;
+      entry.lastGain = v;
+      entry.el.volume = v;
+      return;
+    }
+    if (Math.abs(g - entry.lastGain) >= 1e-4) {
+      entry.lastGain = g;
+      gain.gain.value = g;
+    }
+    const ac = this.audioCtx;
+    if (m.pan && !entry.pan && ac && this.mixIn) {
+      try {
+        // mono becomes left = right first, then the chain: splitter, one gain per side, merger
+        gain.channelCount = 2;
+        gain.channelCountMode = 'explicit';
+        gain.channelInterpretation = 'speakers';
+        const split = ac.createChannelSplitter(2);
+        const l = ac.createGain();
+        const r = ac.createGain();
+        const merge = ac.createChannelMerger(2);
+        split.connect(l, 0);
+        split.connect(r, 1);
+        l.connect(merge, 0, 0);
+        r.connect(merge, 0, 1);
+        gain.disconnect();
+        gain.connect(split);
+        merge.connect(this.mixIn);
+        entry.pan = { split, l, r, merge };
+        entry.lastL = -1;
+        entry.lastR = -1;
+        // the disconnect above also dropped the link to a track tap: the rewire below joins the new tail
+        entry.tapKey = null;
+        mixDebug.panChains++;
+      } catch {
+        // the chain stays off, the clip plays without pan
+      }
+    }
+    if (entry.pan) {
+      if (Math.abs(m.l - entry.lastL) >= 1e-4) {
+        entry.lastL = m.l;
+        entry.pan.l.gain.value = m.l;
+      }
+      if (Math.abs(m.r - entry.lastR) >= 1e-4) {
+        entry.lastR = m.r;
+        entry.pan.r.gain.value = m.r;
+      }
+    }
+    // the track tap: the tail of the entry feeds it while it is built
+    const want = this.taps.get(clip.trackId) ? clip.trackId : null;
+    if (entry.tapGen !== this.tapGen || entry.tapKey !== want) {
+      const tail: AudioNode = entry.pan ? entry.pan.merge : gain;
+      const old = entry.tapKey ? this.taps.get(entry.tapKey) : null;
+      if (old) {
+        try {
+          tail.disconnect(old.input);
+        } catch {
+          // was not linked
+        }
+      }
+      const next = want ? this.taps.get(want) : null;
+      if (next) {
+        try {
+          tail.connect(next.input);
+        } catch {
+          // the tap goes without this clip
+        }
+      }
+      entry.tapKey = next ? want : null;
+      entry.tapGen = this.tapGen;
+    }
+  }
+
+  /** back to a plain gain > mix in: the pan chain and the tap link go, the channel settings are the defaults again */
+  private unwire(entry: MediaEntry): void {
+    const gain = entry.gain;
+    if (!gain || (!entry.pan && entry.tapKey === null)) return;
+    if (entry.pan) {
+      for (const n of [entry.pan.split, entry.pan.l, entry.pan.r, entry.pan.merge]) {
+        try {
+          n.disconnect();
+        } catch {
+          // already disconnected
+        }
+      }
+      entry.pan = null;
+      mixDebug.panChains--;
+    }
+    try {
+      gain.disconnect();
+    } catch {
+      // already disconnected
+    }
+    entry.tapKey = null;
+    entry.tapGen = -1;
+    entry.lastL = -1;
+    entry.lastR = -1;
+    gain.channelCount = 2;
+    gain.channelCountMode = 'max';
+    gain.channelInterpretation = 'speakers';
+    try {
+      if (this.mixIn) gain.connect(this.mixIn);
+    } catch {
+      // the context is gone
+    }
+  }
+
+  /* ---------- meter taps ---------- */
+
+  private buildTap(key: string): void {
+    const ac = this.audioCtx;
+    if (!ac || this.taps.get(key)) return;
+    try {
+      const input = ac.createGain();
+      input.channelCount = 2;
+      input.channelCountMode = 'explicit';
+      input.channelInterpretation = 'speakers';
+      const split = ac.createChannelSplitter(2);
+      const aL = ac.createAnalyser();
+      const aR = ac.createAnalyser();
+      aL.fftSize = METER_WINDOW;
+      aR.fftSize = METER_WINDOW;
+      input.connect(split);
+      split.connect(aL, 0);
+      split.connect(aR, 1);
+      if (key === OUTPUT_TAP) this.mixIn?.connect(input);
+      this.taps.set(key, { input, split, aL, aR });
+      mixDebug.taps++;
+    } catch {
+      // no tap: the meter reads nothing
+    }
+  }
+
+  /** take a built tap out of the graph and forget its nodes (the key stays in the map) */
+  private dropTap(key: string): void {
+    const tap = this.taps.get(key);
+    if (!tap) return;
+    if (key === OUTPUT_TAP && this.mixIn) {
+      try {
+        this.mixIn.disconnect(tap.input);
+      } catch {
+        // was not linked
+      }
+    }
+    for (const n of [tap.input, tap.split, tap.aL, tap.aR]) {
+      try {
+        n.disconnect();
+      } catch {
+        // already disconnected
+      }
+    }
+    this.taps.set(key, null);
+    mixDebug.taps--;
+  }
+
+  openTap(key: string): void {
+    if (this.disposed) return;
+    if (!this.taps.has(key)) this.taps.set(key, null);
+    if (!this.audioCtx || this.taps.get(key)) return;
+    this.buildTap(key);
+    this.tapGen++;
+    this.applyGains();
+  }
+
+  closeTap(key: string): void {
+    if (!this.taps.has(key)) return;
+    const tap = this.taps.get(key);
+    if (tap) {
+      for (const entry of this.pool.values()) {
+        if (entry.tapKey !== key) continue;
+        try {
+          (entry.pan ? entry.pan.merge : entry.gain)?.disconnect(tap.input);
+        } catch {
+          // was not linked
+        }
+        entry.tapKey = null;
+      }
+      this.dropTap(key);
+    }
+    this.taps.delete(key);
+    this.tapGen++;
+    this.applyGains();
+  }
+
+  readTap(key: string, out: TapLevels): boolean {
+    const tap = this.taps.get(key);
+    if (!tap) return false;
+    tap.aL.getFloatTimeDomainData(this.tapL);
+    tap.aR.getFloatTimeDomainData(this.tapR);
+    const l = blockLevels(this.tapL);
+    const r = blockLevels(this.tapR);
+    out.peakL = l.peak;
+    out.peakR = r.peak;
+    out.rmsL = l.rms;
+    out.rmsR = r.rms;
+    mixDebug.reads++;
+    return true;
   }
 
   /* ---------- media pool + clock sync ---------- */
@@ -854,6 +1137,7 @@ export class PreviewEngine {
     this.swept = false;
     if (project) {
       const holds = transitionHolds(project);
+      const solo = soloSet(project, useSolo.getState().solo);
       for (const clip of project.clips) {
         if (clip.type !== 'video' && clip.type !== 'audio') continue;
         if (!this.inWindow(clip, holds, time)) continue;
@@ -861,7 +1145,7 @@ export class PreviewEngine {
         if (!entry) continue;
         entry.gen = this.gen;
         this.syncEntry(entry, clip, project, time, playing, time >= clip.start && time < clip.start + clip.duration, rate);
-        this.setGain(entry, clip, project, time);
+        this.setGain(entry, clip, project, time, solo);
       }
       this.evictImages(project, time);
     }
@@ -1062,6 +1346,11 @@ export class PreviewEngine {
       gain: parked ? parked.gain : null,
       node: parked ? parked.node : null,
       lastGain: -1,
+      pan: null,
+      lastL: -1,
+      lastR: -1,
+      tapKey: null,
+      tapGen: -1,
       createdAt: performance.now(),
       seekStart: 0,
       seekCost: 0.1,
@@ -1164,6 +1453,7 @@ export class PreviewEngine {
       // MediaElementAudioSourceNode only once, so the nodes stay with the element)
       el.pause();
       el.muted = true;
+      this.unwire(entry);
       if (entry.gain) entry.gain.gain.value = 0;
       const out = this.parked.park(entry.url, { el, node: entry.node, gain: entry.gain });
       entry.node = null;
@@ -1173,6 +1463,7 @@ export class PreviewEngine {
     }
     // the url is gone or changed: parked elements of it cannot be reused either
     if (getAssetUrl(entry.assetId) !== entry.url) this.discardAll(this.parked.evictUrl(entry.url));
+    this.unwire(entry);
     this.unloadMedia({ el: entry.el, node: entry.node, gain: entry.gain });
     entry.node = null;
     entry.gain = null;

@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Maximize, Minimize, Pause, Play, Repeat, SkipBack, SkipForward, StepBack, StepForward, Volume1, Volume2, VolumeX } from 'lucide-react';
-import { formatTimecode } from '../../lib/time';
+import { Activity, Maximize, Minimize, Pause, Play, Repeat, SkipBack, SkipForward, StepBack, StepForward, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { projectDuration } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import { useFloatingMenu } from '../timeline/menuBehavior';
 import { REASON_TEXT } from '../shell/reasons';
 import { tip } from '../shell/tip';
 import { usePlayback } from '../../store/playback';
+import { TransportMix } from '../media/mixer/TransportMix';
+import { useScopes } from './scopesState';
+import { TimeField } from './TimeField';
 import './transport.css';
 
 const SPEEDS: readonly number[] = [0.25, 0.5, 1, 1.5, 2];
@@ -57,6 +59,8 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
   const volume = usePlayback((s) => s.volume);
   const muted = usePlayback((s) => s.muted);
   const speed = usePlayback((s) => s.speed);
+  const scopesOpen = useScopes((s) => s.open);
+  const toggleScopes = useScopes((s) => s.toggleOpen);
   // the live rate: only differs from the picked speed while a j / l shuttle runs
   const rate = usePlayback((s) => (s.playing ? s.rate : s.speed));
   const [speedMenu, setSpeedMenu] = useState<{ x: number; y: number } | null>(null);
@@ -64,25 +68,6 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
   const fps = useEditor((s) => s.project?.fps ?? 30);
   const total = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
   const hasClips = total > 0;
-
-  const timeRef = useRef<HTMLSpanElement>(null);
-  const totalText = formatTimecode(total, fps);
-
-  // the current time is written straight to the dom: it changes every frame while playing
-  useEffect(() => {
-    let last = '';
-    const write = (t: number) => {
-      const text = formatTimecode(t, fps);
-      if (text !== last && timeRef.current) {
-        timeRef.current.textContent = text;
-        last = text;
-      }
-    };
-    write(usePlayback.getState().time);
-    return usePlayback.subscribe((s, prev) => {
-      if (s.time !== prev.time) write(s.time);
-    });
-  }, [fps]);
 
   const pb = usePlayback.getState;
   const shownVolume = muted ? 0 : volume;
@@ -122,7 +107,7 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
       </button>
       <button
         className={`icon-btn${loop ? ' is-active' : ''}`}
-        {...tip('loop', { does: 'start again at the end', on: loop })}
+        {...tip('loop', { does: 'start again at the end. with an in or out point: only in to out', on: loop })}
         aria-label="toggle loop"
         aria-pressed={loop}
         onClick={() => pb().setLoop(!loop)}
@@ -146,14 +131,20 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
       </button>
       {speedMenu && <SpeedMenu x={speedMenu.x} y={speedMenu.y} onClose={closeSpeed} />}
 
-      <div className="preview-time mono" title="playhead position / project length">
-        <span ref={timeRef}>{formatTimecode(0, fps)}</span>
-        <span className="preview-time-sep">/</span>
-        <span className="preview-time-total">{totalText}</span>
-      </div>
+      <TimeField fps={fps} total={total} />
 
       <div className="preview-spacer" />
 
+      <button
+        className={`icon-btn${scopesOpen ? ' is-active' : ''}`}
+        {...tip('scopes', { does: 'waveform, parade, vectorscope and histogram of the picture, next to it. hold alt over the picture to read one pixel', keys: 'toggle-scopes', on: scopesOpen })}
+        aria-label="scopes"
+        aria-pressed={scopesOpen}
+        onClick={toggleScopes}
+      >
+        <Activity size={14} />
+      </button>
+      <TransportMix />
       <button
         className="icon-btn"
         {...tip('mute the preview', { does: 'only the preview. the export keeps its sound', on: muted })}

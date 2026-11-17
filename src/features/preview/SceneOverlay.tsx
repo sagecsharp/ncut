@@ -84,7 +84,7 @@ import {
 import { PivotLayer } from './PivotLayer';
 import { usePivotMode } from './pivotMode';
 import { snapAngle, snapDelta } from './sceneSnap';
-import { useSceneGrid, useSceneTool } from './sceneTool';
+import { TOOL_KEYS, useSceneGrid, useSceneTool } from './sceneTool';
 import { cameraToView, frameSelected, frameTarget, viewRig, viewThroughCamera } from './sceneViews';
 
 const GIZMO_PX = 84;
@@ -1800,9 +1800,24 @@ export function SceneOverlay() {
   // the keys of the blender controls belong to the scene view while the pointer is over it, like in blender
   useLayoutEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (useSceneControls.getState().scheme !== 'blender' || !inside.current || gestureRef.current) return;
+      const scheme = useSceneControls.getState().scheme;
+      if (!inside.current || gestureRef.current) return;
       if (isTypingTarget(ev.target as HTMLElement | null)) return;
       if (useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop')) return;
+      if (scheme === 'unity') {
+        // unity controls: f frames the selection and w e r pick the tool while the pointer is over the scene view, like the focused stage
+        if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+        const key = ev.key.toLowerCase();
+        const tool = TOOL_KEYS[key];
+        if (!tool && key !== 'f') return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (ev.repeat) return;
+        if (tool) useSceneTool.getState().setTool(tool);
+        else frameSelected();
+        return;
+      }
+      if (scheme !== 'blender') return;
       const cmd = blenderCommand({ key: ev.key, code: ev.code, shift: ev.shiftKey, ctrl: ev.ctrlKey, alt: ev.altKey, meta: ev.metaKey });
       if (!cmd) return;
       ev.preventDefault();

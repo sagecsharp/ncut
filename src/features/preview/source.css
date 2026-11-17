@@ -1,0 +1,202 @@
+/* ---------- the panes of the preview: the source view and the output ---------- */
+.preview-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+.preview-pane.is-hidden {
+  display: none;
+}
+.preview-pane.is-source {
+  container-type: inline-size;
+  outline: none;
+}
+/* side by side: a line between the two, the active view gets an outline */
+.preview-views.is-split .preview-pane + .preview-pane {
+  border-left: 1px solid var(--border);
+}
+.preview-views.is-split .preview-pane.is-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  pointer-events: none;
+}
+
+/* ---------- the source view ---------- */
+.source-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+.source-stage.has-media {
+  cursor: grab;
+}
+.source-stage.has-media:active {
+  cursor: grabbing;
+}
+.source-stage.is-drop {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.source-video,
+.source-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.source-feed,
+.source-still {
+  position: absolute;
+  inset: 0;
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.source-feed.is-on,
+.source-still.is-on {
+  display: block;
+}
+.source-wave {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+  opacity: 0.8;
+  pointer-events: none;
+}
+.source-name {
+  position: absolute;
+  left: var(--space-2);
+  top: var(--space-2);
+  max-width: 60%;
+  padding: 1px 6px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.source-drag-ghost {
+  position: fixed;
+  left: -1000px;
+  top: -1000px;
+  max-width: 220px;
+  padding: 4px 8px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the bar under the stage: sound, marked part, playhead */
+.source-scrub {
+  position: relative;
+  flex-shrink: 0;
+  height: 28px;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.source-scrub.is-grip,
+.source-scrub.is-gripping {
+  cursor: ew-resize;
+}
+.source-scrub[aria-disabled='true'] {
+  cursor: default;
+}
+.source-scrub-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.source-scrub-head {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text);
+  will-change: transform;
+  pointer-events: none;
+}
+.source-scrub-read {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  width: 56px;
+  padding: 1px 0;
+  background: var(--surface-0);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* the transport and the row under it */
+.source-time {
+  margin-left: var(--space-2);
+}
+.source-marked {
+  margin-left: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+.source-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: grab;
+}
+.source-handle:hover {
+  background: var(--surface-4);
+  color: var(--text);
+}
+.source-handle:active {
+  cursor: grabbing;
+}
+.source-edits {
+  flex-shrink: 0;
+}
+.source-edits:empty {
+  display: none;
+}
+
+/* a narrow source view keeps the buttons and the time */
+@container (max-width: 460px) {
+  .source-time .preview-time-sep,
+  .source-time .preview-time-total,
+  .source-marked,
+  .source-handle {
+    display: none;
+  }
+}

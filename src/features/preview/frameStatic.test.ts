@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Project, TextClip, VideoClip, ImageClip, ShapeClip, EffectClip, CameraClip } from '../../types';
 import { frameInfo, isStaticAt } from './frameStatic';
+import { GRADE_EFFECT } from '../../lib/gradeData';
 
 const base = { trackId: 't1', start: 0, duration: 10, fadeIn: 0, fadeOut: 0 };
 const tf = () => ({ x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 });
@@ -41,6 +42,12 @@ describe('isStaticAt: static clips', () => {
     const clips = [image('i'), text('t'), shape('s'), video('v')];
     const p = project(clips);
     for (const c of clips) expect(isStaticAt(p, c, 5)).toBe(true);
+  });
+  it('a panned video clip stays static', () => {
+    const c = video('v', { pan: 0.5 });
+    const p = project([c]);
+    expect(isStaticAt(p, c, 5)).toBe(true);
+    expect(frameInfo(p, 5).allStatic).toBe(true);
   });
   it('styled text (stroke, shadow, gradient, extrude) is static', () => {
     const c = text('t', {
@@ -231,5 +238,26 @@ describe('isStaticAt: bend and pivot', () => {
   it('a clip with a pivot and nothing moving is static', () => {
     const c = image('i', { pivot: { x: -0.5, y: 0 }, bend: { angle: 45 } });
     expect(isStaticAt(project([c]), c, 5)).toBe(true);
+  });
+});
+
+describe('isStaticAt: grade', () => {
+  it('a graded clip with no keys is static', () => {
+    const c = image('i', { grade: { liftR: 0.1, gammaY: -0.2, off: true, curves: { y: [[0, 0], [0.5, 0.6], [1, 1]] } } });
+    const n = image('n', { grade: null });
+    const p = project([c, n]);
+    expect(isStaticAt(p, c, 5)).toBe(true);
+    expect(isStaticAt(p, n, 5)).toBe(true);
+    expect(frameInfo(p, 5).allStatic).toBe(true);
+  });
+  it('a keyed grade wheel is not static', () => {
+    const c = image('i', { grade: { liftR: 0.1 }, keyframes: { 'grade.liftR': [{ t: 0, v: 0, ease: 'linear' }, { t: 1, v: 0.5, ease: 'linear' }] } });
+    expect(isStaticAt(project([c]), c, 5)).toBe(false);
+  });
+  it('a grade effect clip is never static', () => {
+    const g = effect('g', { effect: GRADE_EFFECT, grade: { gainY: 0.2 } });
+    const i = image('i');
+    expect(isStaticAt(project([g, i]), g, 5)).toBe(false);
+    expect(frameInfo(project([i, g]), 5).allStatic).toBe(false);
   });
 });

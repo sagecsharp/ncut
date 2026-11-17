@@ -224,6 +224,31 @@ describe('effectPassAt', () => {
     expect(effectPassAt(clip, 0)!.time).toBe(0);
     expect(effectPassAt(clip, 5)!.time).toBe(0);
   });
+  it('no, neutral or off grade gives no pass', () => {
+    expect(effectPassAt(effect('t', 0, 5, { effect: 'grade' }), 1)).toBeNull();
+    expect(effectPassAt(effect('t', 0, 5, { effect: 'grade', grade: null }), 1)).toBeNull();
+    expect(effectPassAt(effect('t', 0, 5, { effect: 'grade', grade: { liftR: 0, curves: { y: [[0, 0], [1, 1]] } } }), 1)).toBeNull();
+    expect(effectPassAt(effect('t', 0, 5, { effect: 'grade', grade: { gainY: 0.4, off: true } }), 1)).toBeNull();
+    expect(effectPassAt(effect('t', 0, 5, { effect: 'grade', grade: { gainY: 0.4 }, amount: 0 }), 1)).toBeNull();
+  });
+  it('an active grade effect carries its grade', () => {
+    const pass = effectPassAt(effect('t', 0, 5, { effect: 'grade', grade: { gainY: 0.5, liftB: 0.1 } }), 1)!;
+    expect(pass.def.id).toBe('grade');
+    expect(pass.grade).toBeDefined();
+    expect(pass.grade!.gain).toEqual([1.5, 1.5, 1.5]);
+    expect(pass.grade!.lift[2]).toBeCloseTo(0.05, 9);
+    expect(pass.grade!.on[0]).toBe(1);
+  });
+  it('keyed grade wheels resolve', () => {
+    const clip = effect('t', 0, 4, { effect: 'grade', keyframes: { 'grade.gainY': [{ t: 0, v: 0, ease: 'linear' }, { t: 4, v: 1, ease: 'linear' }] } });
+    expect(effectPassAt(clip, 0)).toBeNull();
+    expect(effectPassAt(clip, 2)!.grade!.gain[0]).toBeCloseTo(1.5, 9);
+    expect(effectPassAt(clip, 3)!.grade!.gain[1]).toBeCloseTo(1.75, 9);
+  });
+  it('other effects get no grade key', () => {
+    const pass = effectPassAt(effect('t', 0, 5, { grade: { gainY: 0.5 } }), 1)!;
+    expect('grade' in pass).toBe(false);
+  });
 });
 
 /* ---------- renderFrame with effect clips ---------- */

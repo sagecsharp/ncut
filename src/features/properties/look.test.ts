@@ -134,4 +134,22 @@ describe('look clipboard', () => {
     expect(look.values.motionBlur).toEqual({ shutter: 1, samples: 10, style: 'ghost' });
     expect(lookPatch(look, 'text').motionBlur).toEqual({ shutter: 1, samples: 10, style: 'ghost' });
   });
+  it('carries the grade', () => {
+    const graded: VisualClip = { ...image, grade: { liftR: 0.1, gainY: -0.2, curves: { y: [[0, 0], [0.5, 0.6], [1, 1]] }, off: true } };
+    const look = captureLook(graded);
+    expect(look.values.grade).toEqual(graded.grade);
+    expect(look.values.grade).not.toBe(graded.grade);
+    expect((look.values.grade as { curves: { y: unknown } }).curves.y).not.toBe(graded.grade!.curves!.y);
+    expect(lookPatch(look, 'video').grade).toEqual(graded.grade);
+    // text and shapes grade too
+    expect(lookPatch(look, 'text').grade).toEqual(graded.grade);
+    expect(lookPatch(look, 'shape').grade).toEqual(graded.grade);
+    expect(lookPatch(look, 'text').grade).not.toBe(look.values.grade);
+  });
+  it('clears the grade when the source had none', () => {
+    const look = captureLook(image);
+    expect(look.values.grade).toBeNull();
+    expect(lookPatch(look, 'image').grade).toBeNull();
+    expect(lookPatch(look, 'text').grade).toBeNull();
+  });
 });

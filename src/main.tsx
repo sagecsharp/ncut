@@ -17,10 +17,14 @@ import { pictureBox } from './engine/pivot';
 import { projectPoint } from './engine/scene3d/camera';
 import { preloadEditor } from './features/editor/loadEditor';
 import { worldClip } from './features/preview/attached';
+import { mixDebug } from './features/preview/mixRoute';
 import { projectRig } from './features/preview/overlayMath';
 import { clipSpots } from './features/preview/pivotMath';
+import { scopeDebug } from './features/preview/scopeTap';
+import { useScopes } from './features/preview/scopesState';
 import { meetSpot, pivotPlan } from './features/properties/pivotPlan';
 import { attachShellOpenFile } from './features/shell/openShellFile';
+import { useEditTargets } from './features/timeline/editTargets';
 import { initAppearance } from './lib/appearance';
 import { watchTips } from './components/ui/tips';
 import { watchFocusSource } from './lib/pressKey';
@@ -32,6 +36,8 @@ import { importFiles } from './media/importer';
 import { useEditor } from './store/editorStore';
 import { usePlayback } from './store/playback';
 import * as session from './store/session';
+import { useSolo } from './store/solo';
+import { useSource } from './store/source';
 import { useUi } from './store/ui';
 
 // a url that names a project: start loading the editor now, before indexeddb and the first render
@@ -75,11 +81,15 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
     useEditor,
     usePlayback,
     useUi,
+    useSource,
     session,
     importFiles,
     mcp: { listTools, callTool },
     rig: { getClipBox, pictureBox, worldClip, pivotPlan, clipSpots, meetSpot, projectRig, projectPoint },
     fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern, TRANSITIONS, checkTransitions, renderTransition },
+    mix: { useSolo, debug: mixDebug },
+    scopes: { debug: scopeDebug, useScopes },
+    editTargets: useEditTargets,
   };
 }
 

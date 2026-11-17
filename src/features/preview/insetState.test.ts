@@ -43,3 +43,16 @@ describe('parseInsetOn', () => {
     expect(parseInsetOn('0')).toBe(false);
   });
 });
+
+describe('insetBackingSize with minLong', () => {
+  it('minLong lifts a small inset to the project shape', () => {
+    expect(insetBackingSize(1920, 1080, 1, 'full', 384)).toEqual({ w: 384, h: 216 });
+    expect(insetBackingSize(320, 180, 1, 'full', 384)).toEqual({ w: 320, h: 180 });
+    // a tall inset already has a long side of 427
+    expect(insetBackingSize(1080, 1920, 1, 'full', 384)).toEqual({ w: 240, h: 427 });
+  });
+  it('no minLong, no change', () => {
+    expect(insetBackingSize(1920, 1080, 1, 'full', 0)).toEqual(insetBackingSize(1920, 1080, 1, 'full'));
+    expect(insetBackingSize(1920, 1080, 3, 'full', 384)).toEqual({ w: 480, h: 270 });
+  });
+});

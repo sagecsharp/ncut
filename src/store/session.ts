@@ -20,6 +20,7 @@ import { packProject, projectFileName, unpackProject } from '../storage/projectF
 import { remapSky } from '../engine/scene3d/sky';
 import { useEditor } from './editorStore';
 import { resetPlayback } from './playback';
+import { useSource } from './source';
 import { useUi } from './ui';
 
 const AUTOSAVE_MS = 600;
@@ -113,12 +114,14 @@ export async function createAndOpenProject(name?: string, preset?: CanvasPreset,
 }
 
 /**
- * keep a small picture of the preview for the project's card. only in the output view (the scene view
- * shows helper lines) and only when the preview canvas is on screen.
+ * keep a small picture of the preview for the project's card. only when the program output is shown (the output
+ * view, or side by side with the source view; the scene view shows helper lines) and only when the preview canvas is on screen.
  */
 function snapPoster(): void {
   const project = useEditor.getState().project;
-  if (!project || useUi.getState().previewMode !== 'output') return;
+  const ui = useUi.getState();
+  const outputShown = ui.previewMode === 'output' || (ui.previewMode === 'source' && ui.programMode === 'output' && useSource.getState().split);
+  if (!project || !outputShown) return;
   if (typeof document === 'undefined') return;
   const canvas = document.querySelector<HTMLCanvasElement>('canvas.preview-canvas');
   if (!canvas) return;

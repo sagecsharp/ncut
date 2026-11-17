@@ -11,12 +11,23 @@ lucide-react (icons). plain css with tokens. package manager is npm.
 
 ```
 types.ts                 data model. read this first.
-lib/time.ts              clamp, snapToFrame, formatTimecode, formatDuration, formatBytes
+lib/time.ts              clamp, snapToFrame, formatTimecode, formatDuration, formatBytes, formatTimeAs, formatAmount, rulerLabelFor, parseTimeEntry
 lib/timelineOps.ts       pure helpers: clipEnd, projectDuration, getTrackClips, isRangeFree, findFreeStart,
                          findTrackWithRoom, clipsAtTime, sourceTimeAt, fadeFactor, collectSnapPoints, snapTime
 lib/factory.ts           createProject, createClipFromAsset, createTextClip, CANVAS_PRESETS, FPS_OPTIONS, FONT_FAMILIES
 lib/dnd.ts               drag payloads between media panel and timeline/preview
 lib/anim.ts              keyframes: animProps, valueAt, resolveClip (bakes keys into a clip for one time), easings
+lib/inOut.ts             the timeline in / out range, [in, out): the one reader of it (cleanRange, frameAt / markOutTime / lastFrameStart,
+                         the spans, editableTrackIds). a bad value reads as no range. pure
+lib/marks.ts             the marks of one media file (MediaAsset.marks, the source view): markMediaIn / markMediaOut, frame steps and
+                         labels. the frame rules come from lib/inOut.ts. pure
+lib/matchFrame.ts        match frame: matchFrameAt (the clip under the playhead and the moment of its media), planReverseMatch (back)
+lib/soundPair.ts         separate sound: a pair is a video clip and an audio clip of one file in one group (group + file + kind), found on
+                         the fly (pairIndex, cached per clips array). nothing is saved. pure
+lib/mix.ts               the one folded mix rule: a track fader times each clip's gain, the output level times everything, pan is a left /
+                         right gain pair, no buses. the preview and the export both call it. neutral = no node, the same export calls. pure
+lib/gradeData.ts         the color grade's data: wheel and curve keys, normalizeGrade, isGradeActive, hasGrade. pure
+lib/gradeMath.ts         the grade's maths: rec 709 luma and hue, wheel puck positions, the curve sampler. pure
 lib/tempo.ts             the tempo of a clip's sound (bpm + where a beat falls) as a beat grid on the timeline that
                          follows the clip's start, trim and speed. tap tempo. which sound an effect clip follows (EffectClip.beat),
                          cycle lines, the pulse envelope. pure
@@ -35,9 +46,18 @@ lib/updateNotice.ts      the toast when an update of the desktop app is ready (o
 lib/wallpaper.ts         the ui wallpaper: the picture in its own indexeddb (ncut-wallpaper), the settings in localStorage,
                          one fixed layer behind the app, data-wallpaper="on" on <html> while a picture shows
 store/editorStore.ts     useEditor: project, selection, undo/redo, clipboard, zoom, snapping + every edit action
-store/playback.ts        usePlayback: the master clock (time, playing, loop, volume, speed, rate + shuttle)
+store/playback.ts        usePlayback: the master clock (time, playing, loop, volume, speed, rate + shuttle). clock bounds: shift+space
+                         plays in to out and stops on the last frame inside, loop with a range loops inside it (clockBounds,
+                         advanceClock's start bound). no range = the whole project, as before
+store/source.ts          useSource: the source view's clock with its own raf. one plays at a time: timeline play pauses it, a hidden pane
+                         or the export stops it. never in useUi, so a playing source never redraws the output
+store/solo.ts            useSolo: the tracks on solo, listening only. not saved, not undone, not exported, cleared when another project opens
+store/timeDisplay.ts     useTimeDisplay: timecode | frames | seconds, per machine (localStorage). drives the transport and the ruler;
+                         other readouts stay timecode
 store/mcpCursors.ts      useMcpCursors: the cursors of mcp clients (one per name, at most 8), no dom
-store/ui.ts              useUi: open dialog, toasts, preview mode (output | scene)
+store/ui.ts              useUi: open dialog, toasts, preview mode output | scene | source (previewMode = the active view, it takes the
+                         keys; programMode = the timeline side, output | scene; the engine only checks 'scene', so it draws the output
+                         unchanged), trimMode / trimEdge (trim mode and the picked edge), mediaTab (the media panel's tab)
 store/session.ts         open/create/close/duplicate/delete projects, url hash routing, autosave
 storage/db.ts            indexeddb: projects + media blobs
 storage/projectFile.ts   one .ncut file = project + media + imported font files of its text clips
@@ -59,7 +79,9 @@ engine/textDepth.ts      block text in 3d: how many side layers a text gets, whe
 engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), some only for 3d clips
 engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
 engine/pivot.ts          a clip's pivot: the nine spots, the pivot offset of a box, pictureBox (pure)
-engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel)
+engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel). a second look program
+                         for the grade is built lazily on the first graded clip; the plain one stays byte identical
+engine/grade.ts          the color grade: the glsl chunk (GRADE_GLSL), gradeData (wheels to uniforms, the curve table) and its js mirror
 engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
 engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target), cached per clips array
 engine/blurStyle.ts      sample times and weights of the per-clip motion blur kinds (even, trail, ghost)
@@ -72,12 +94,21 @@ features/editor/         EditorLayout (header, media | preview | properties, tim
 features/projects/       ProjectsScreen
 features/mcp/            McpCursors (the fixed layer that draws the cursors) + locate.ts (a target -> a point on the screen)
 features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k), tip() and reasons (why an action does nothing now)
-features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools,
+features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), the mixer tab (MixerPanel.tsx + mixer/), captions tools,
                          favorites.ts (starred effects / transitions, kept in localStorage), transitionBatch.ts
                          (a transition on every cut of a track, shuffle, same length) + transitionApply.ts
                          (a transition never longer than its cut allows, the last used one)
 features/fonts/          FontPicker
-features/timeline/       Timeline. effectFollow.ts / followMoves.ts / followApply.ts: effects put on a clip follow it
+features/timeline/       Timeline. trimModes.ts (pure plans: ripple trim, move the edit, slip, slide, stretch), syncShift.ts (which
+                         tracks a ripple moves), trimPress.ts (what a press means in trim mode), trimDrag.ts (drag delta, snap,
+                         readout) and the 'edit' gesture kind in gestures.ts. trimActions.ts runs the trim keys, trimLive.ts feeds the
+                         two frame view (preview/TrimView.tsx), trimCursors.ts has the pointer shapes.
+                         rangeEdit.ts (pure lift and extract plans; rangeActions.ts runRangeEdit applies one as one undo step).
+                         editPlan.ts plans three point edits, editActions.ts applies one as one undo step in stages. targets live in useEditTargets, out of useUi.
+                         (editTargets.ts. the preview engine redraws on every useUi change, a target must not cost one.)
+                         timeNudge.ts (pure nudge plans, the edits for up / down), nudgeActions.ts, rulerLabel.ts (the ruler's labels
+                         in the chosen time display).
+                         effectFollow.ts / followMoves.ts / followApply.ts: effects put on a clip follow it
                          through every way a clip can move (drag, trim, inspector fields, gaps, speed, freeze frame).
                          beats.ts + beatActions.ts (markers on the beats of a clip's sound, from its waveform peaks,
                          or from its tempo when one is set). tempoActions.ts (detect the bpm of a clip, which clips can
@@ -87,7 +118,15 @@ features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizm
                          sceneControls.ts (blender or unity controls: what a press, a key and a numpad key mean,
                          typed numbers, the selection box; the choice is kept in localStorage),
                          sceneHelpers.ts (focus plane, floor grid, readouts). scrubFeed.ts + scrubPlan.ts: decoded
-                         frames for the paused preview while the playhead is dragged forward through a video
+                         frames for the paused preview while the playhead is dragged forward through a video.
+                         SourceView.tsx + sourcePlayer.ts (the source view: one media file with its own player and playhead,
+                         clocked by store/source.ts; SourceScrub, SourceTransport, SourceEdits, sourceKeys.ts). TrimView.tsx (the two
+                         frame view of a trim). meterTaps.ts (the bridge: meters hold taps by key, a track id or 'output', the preview
+                         engine builds them; no react, no dom; a tap exists only while held).
+                         timeEntry.ts, timeEntryPlan.ts (pure), timeEntryApply.ts, TimeField.tsx (type a time to go there,
+                         or an amount to move by: the plan steps the playhead, moves clips or trims the selected edge).
+                         scopes: scopeTap.ts, scopesState.ts, scopes.ts, scopeRead.ts, scopeRunner.ts, scopePlot.ts, scopesLayout.ts,
+                         probe.ts, ScopesStrip.tsx, PixelProbe.tsx
 features/properties/     PropertiesPanel. fieldFeel.ts (the usual range, hard range, step, snap and rest of every number in the
                          panel; a test pins it to lib/anim.ts), multiEdit.ts + MultiField.tsx (one field for many clips),
                          pivotPlan.ts + attachPlan.ts (pivot and attach keep the clip in place), bendGroup.ts + bendActions.ts
@@ -100,7 +139,8 @@ features/properties/     PropertiesPanel. fieldFeel.ts (the usual range, hard ra
                          loop, ping pong. the loop is baked into ordinary keys, the engine knows nothing about it),
                          textSplit.ts + textSplitActions.ts (a text into one clip per letter, word or line),
                          cascade.ts + cascadeActions.ts (a selection staggered in time, fly in / out keys),
-                         pathMoves.ts + pathActions.ts (motion paths written as position keys)
+                         pathMoves.ts + pathActions.ts (motion paths written as position keys),
+                         GradeSection (color wheels and curves), gradePlan.ts + gradeActions.ts (the grade edits as plans, one undo step each)
 features/export/         ExportDialog + the offline renderer (exporter.ts) and what makes it fast: parallel.ts,
                          segment.ts, exportWorker.ts, sources.ts, mediaCheck.ts (parts in workers), encoderSetup.ts
                          (the gpu encoder above full hd), sink.ts (big files on disk), gifPlan.ts / gifPool.ts /
@@ -174,10 +214,15 @@ numbers at draw time (effects get a per-clip `seed`).
   no fog or light (`draw.ts` `drawBent2d`: bent 2d neighbours share one render, in track order). several clips bend as
   one when they have the same angle, keys and along, and a center and span fitted to the group
   (`features/properties/bendGroup.ts`). nothing is shared at draw time.
-- a clip's picture goes through, in this order: the clip look (`clip.adjust`, `clip.chromaKey`), the mask
+- a clip's picture goes through, in this order: the clip look (key, adjust, grade: `clip.chromaKey`, `clip.adjust`, `clip.grade`), the mask
   (`clip.mask`), then crop / corners / placement / blend. both helpers return a canvas that is only valid
   until the next call on the same channel ('preview' or 'export'), so cache keys for textures include
   `clipLookSignature` and `maskSignature`.
+- the grade (`clip.grade`, `engine/grade.ts`) runs inside the look pass after key and adjust, before the premultiply.
+  the curves are a 256 x 7 R32F table on texture unit 1 (texelFetch, a manual lerp, because R32F is not filterable),
+  uploaded only when its key changes. the dither hashes the pixel, never the time. the grade effect pass: a `grade`
+  effect def run by the effects runner, `effectPassAt` returns null for an inactive grade (no pass, no split 3d run).
+  no webgl2 or a failed build: no grade, in preview and export alike.
 - per-clip motion blur (`clip.motionBlur`): the clip is painted several times at sub-frame times and
   averaged. only its placement is sampled, the picture stays the one of the frame. a 3d clip is drawn as
   its own 3d run once per sample into the same accumulator (the camera is not sampled: a camera move is
@@ -236,11 +281,15 @@ numbers at draw time (effects get a per-clip `seed`).
   gesture that changes nothing leaves undo and redo exactly as they were. to take back a half done gesture
   (escape during a drag, a plan that failed) call `rollback()`, never `undo()`: it only removes what was
   written since the last `pushHistory()`. undo and redo bring back the selection the step was made with.
+- undo, redo and rollback keep what history does not hold (`keepLive` in editorStore.ts): the media list, marks included
+  (they are media data, `MediaAsset.marks`, not history), and the timeline in / out (`project.range`), as they are now.
 - ids that point at other clips (`parent`, `lookTarget`, a camera's target, `group`) are kept right by the
   store: delete unlinks, duplicate and paste relink to the copies, `updateClip` refuses a parent loop.
   read them through `lib/links.ts`, which also guards against loops in old data.
 - placement goes through `moveClips` / `trimClip` / `setClipSpeed` / `insertAsset` / `addText`.
   `updateClip` ignores `start`, `duration`, `trackId`, `trimStart`, `speed`.
+- trims are plans: applyTrimPlan runs shrink, move, grow through the pure cores in one mutate; a drag replans from its start clips with from.
+- a held nudge joins its first press's undo step (alt + arrows, `nudgeActions.ts`). a held , or . keeps one step per repeat, so the two frame view shows each step.
 - zustand v5: a selector must return a stable reference. `useEditor(s => s.project.clips.filter(...))`
   causes an infinite render loop. select the stable slice and derive with `useMemo`, or use
   `useShallow` from `zustand/react/shallow`, or the hooks exported at the bottom of editorStore.ts
@@ -292,6 +341,7 @@ scrubbing, dragging clips and zooming, with dozens of clips.
    playback starts.
 9. event listeners on `wheel`/`touch` that do not call preventDefault are passive. clean up every listener,
    observer, object url, raf and ImageBitmap you create.
+10. painters tap their picture (scopeTap.ts); nothing listens while the scopes and the probe are closed.
 
 ## visual rules (monochrome, high contrast, flat)
 
@@ -303,8 +353,10 @@ scrubbing, dragging clips and zooming, with dozens of clips.
   `--danger`, `--warn` (destructive actions, the fps health dot).
 - no glow of any kind: no `box-shadow`, `text-shadow`, `filter: blur/drop-shadow`, `backdrop-filter`.
 - no gradients. solid fills only. depth = surface tokens + 1px borders.
-- two stated exceptions: the wallpaper layer may blur its picture (`#ncut-wallpaper`, one static layer behind the app),
-  and the mcp cursors have 8 hues (`features/mcp/mcpCursors.css`), because several agents have to be told apart.
+- three stated exceptions: the wallpaper layer may blur its picture (`#ncut-wallpaper`, one static layer behind the app),
+  the mcp cursors have 8 hues (`features/mcp/mcpCursors.css`), because several agents have to be told apart, and
+  the scopes (features/preview/scopePlot.ts) and the probe swatch draw measured colors on black in both themes.
+- the trim cursors (`features/timeline/trimCursors.ts`) are 24 px svg data urls drawn black under white by color name, because a css cursor image cannot read tokens and black under white reads on both themes.
 - wallpaper: while `<html data-wallpaper="on">` the tokens `--surface-0..5` are the solid colors (`--solid-0..5`) at the
   user's panels percentage, so a surface is see-through without any selector knowing about it. anything that floats
   over other content or sits over scrolling content (menus, dialogs, toasts, sticky heads, inputs, media thumbs) must
@@ -364,6 +416,7 @@ slower way).
 - the dialog asks the browser what it can encode for the chosen size, frame rate and quality. the answers are
   kept for the session (`planMemo.ts`, only a yes) and the first question after a quiet moment is not debounced, so
   the export button is ready at once when the dialog opens.
+- the sound mix (`audioMix.ts`): clipSchedule is exactly what mixChunk schedules for one clip in a mix window, pure, so node tests compare two mixes bit for bit. the fader, pan and output level come from lib/mix.ts, the same rule as the preview.
 - rules for changes here: the picture must stay identical to one thread (the 3d renderer has a run to run noise
   of a level or two on a handful of pixels, nothing else may differ), the file must keep its frame count, key frame
   rhythm, codec string and duration, and every new path needs its fallback. reference frames are only comparable
@@ -436,9 +489,11 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 
 ## dev hook
 
-in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, mcp, rig, fx }` is available for testing.
+in dev builds `window.__ncut = { useEditor, usePlayback, useUi, useSource, session, importFiles, mcp, rig, fx, mix, scopes, editTargets }` is available for testing.
 `fx` has the effect and transition registries plus `checkEffects()` / `checkTransitions()`, which compile
 every shader in the browser and return the ones that fail (an empty list = all good).
+`useSource` is the source view's store, `mix` has `useSolo` and the sound routing counters (`debug`), `scopes` has the scope
+counters (`debug`) and `useScopes`, `editTargets` is the three point edit targets store.
 
 `window.__ncut.bench` (`src/dev/bench.ts`, dev builds and `vite build --mode bench --outDir dist-bench`) makes test
 footage and projects, exports them with the options of `exportProject` and reports frames per second, the workers

@@ -62,3 +62,22 @@ describe('frame math', () => {
     expect(frameTime(2.5, 30, 30)).toBe(3.5);
   });
 });
+
+describe('resolveRange inout', () => {
+  const none = { start: 0, end: 0 };
+  it('inout with both marks', () => {
+    expect(resolveRange('inout', 10, undefined, none, { in: 2, out: 6 })).toEqual({ start: 2, end: 6 });
+  });
+  it('inout with only an in or only an out', () => {
+    expect(resolveRange('inout', 10, undefined, none, { in: 3 })).toEqual({ start: 3, end: 10 });
+    expect(resolveRange('inout', 10, undefined, none, { out: 4 })).toEqual({ start: 0, end: 4 });
+  });
+  it('inout without a range gives nothing', () => {
+    expect(resolveRange('inout', 10, undefined, none)).toBeNull();
+    expect(resolveRange('inout', 10, undefined, none, {})).toBeNull();
+  });
+  it('inout past the end of the project', () => {
+    expect(resolveRange('inout', 10, undefined, none, { in: 12 })).toBeNull();
+    expect(resolveRange('inout', 10, undefined, none, { in: 8, out: 15 })).toEqual({ start: 8, end: 10 });
+  });
+});

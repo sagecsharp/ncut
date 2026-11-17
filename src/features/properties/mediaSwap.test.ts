@@ -26,4 +26,10 @@ describe('swapOptions', () => {
   it('is empty when there is nothing to swap to', () => {
     expect(swapOptions(assets, '3', 'image')).toEqual([]);
   });
+
+  it('a sound clip lists videos with sound', () => {
+    const list = [{ ...a('av', 'video', 'av.mp4'), hasAudio: true }, { ...a('s', 'audio', 'song.wav'), hasAudio: true }, { ...a('t', 'video', 'talk.mp4'), hasAudio: true }, { ...a('m', 'video', 'mute.mp4'), hasAudio: false }];
+    expect(swapOptions(list, 'av', 'audio').map((o) => o.id)).toEqual(['s', 't']);
+    expect(swapOptions(list, 's', 'audio').map((o) => o.id)).toEqual([]);
+  });
 });

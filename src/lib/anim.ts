@@ -9,15 +9,15 @@
  *
  * property names (animProps gives labels and ranges):
  *   visual clips (video, image, text, shape): x y scale scaleX scaleY scaleZ rotation opacity z rotX rotY
- *   video / audio clips:               volume
- *   effect clips:                      amount, and p.<key> for every effect param
+ *   video / audio clips:               volume pan
+ *   effect clips:                      amount, and p.<key> for every effect param. the grade effect also grade.<key>
  *   shape clips:                       drawStart drawEnd (draw on, 0..1)
  *   camera clips:                      x y z pan tilt roll fov focusDistance focusStrength
  *   the look of a visual clip is described by ONE table (LOOK_DEFS below), the same table answers animProps,
  *   baseValue, withBaseValue, valueAt, resolveClip and the store's clamping:
  *     every visual clip: radius, crop.left / top / right / bottom, adjust.brightness / contrast / saturation /
  *                        temperature / hue, chromaKey.tolerance / softness / spill, mask.x / y / width / height /
- *                        rotation / feather / radius, shapeDepth
+ *                        rotation / feather / radius, shapeDepth, grade.<key> (the 16 wheel numbers: liftR .. offsetY)
  *     text:  fontSize letterSpacing lineHeight stroke.width stroke2.width shadow.opacity / blur / distance / angle
  *            extrude.depth / angle gradient.angle curve wrapWidth backgroundRadius backgroundPadding
  *     shape: width height points inner gradientAngle stroke.width
@@ -31,6 +31,7 @@
  *   integer properties (points) are rounded wherever a value is read or written.
  */
 import type { Clip, Easing, Keyframe, Keyframes } from '../types';
+import { GRADE_EFFECT, GRADE_KEYS, GRADE_LABEL } from './gradeData';
 
 export type { Easing, Keyframe, Keyframes };
 
@@ -193,6 +194,7 @@ const VISUAL_PROPS: AnimPropInfo[] = [
   { prop: 'rotY', label: 'turn', unit: 'deg' },
 ];
 const VOLUME_PROP: AnimPropInfo = { prop: 'volume', label: 'volume', min: 0, max: 2 };
+const PAN_PROP: AnimPropInfo = { prop: 'pan', label: 'pan', min: -1, max: 1 };
 const CAMERA_PROPS: AnimPropInfo[] = [
   { prop: 'x', label: 'x', unit: 'px' },
   { prop: 'y', label: 'y', unit: 'px' },
@@ -221,7 +223,7 @@ const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focus
 /* ---------- the look table: every other number of a visual clip ---------- */
 
 type VisualType = 'video' | 'image' | 'text' | 'shape';
-type ParentKey = 'crop' | 'adjust' | 'mask' | 'chromaKey' | 'stroke' | 'stroke2' | 'shadow' | 'extrude' | 'gradient' | 'bend';
+type ParentKey = 'crop' | 'adjust' | 'mask' | 'chromaKey' | 'stroke' | 'stroke2' | 'shadow' | 'extrude' | 'gradient' | 'bend' | 'grade';
 
 interface LookDef extends AnimPropInfo {
   /** the object of the clip the value lives in. missing = a field of the clip itself */
@@ -243,6 +245,7 @@ interface LookDef extends AnimPropInfo {
 const CROP0 = { left: 0, top: 0, right: 0, bottom: 0 } as const;
 const BEND0 = { angle: 0 } as const;
 const ADJUST0 = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 } as const;
+const GRADE0 = {} as const;
 
 const row = (parent: ParentKey | undefined, key: string, label: string, o: Partial<LookDef> = {}): LookDef => ({
   prop: parent ? `${parent}.${key}` : key,
@@ -251,6 +254,9 @@ const row = (parent: ParentKey | undefined, key: string, label: string, o: Parti
   key,
   ...o,
 });
+
+/** the 16 wheel numbers of a grade (a picture clip's grade, or the grade effect's own). a missing grade or key reads 0 */
+const GRADE_DEFS: LookDef[] = GRADE_KEYS.map((k) => row('grade', k, GRADE_LABEL[k], { min: -1, max: 1, neutral: 0, create: GRADE0, pic: true }));
 
 /** every visual clip. ranges are the ones the inspector fields have. */
 const COMMON_DEFS: LookDef[] = [
@@ -279,6 +285,7 @@ const COMMON_DEFS: LookDef[] = [
   row(undefined, 'lit', 'lit', { min: 0, max: 1, neutral: 0 }),
   // planes only. no pic flag: a texture keeps its key while the bend moves
   row('bend', 'angle', 'bend', { min: -360, max: 360, unit: 'deg', create: BEND0 }),
+  ...GRADE_DEFS,
 ];
 
 const TEXT_STYLE = { pic: true, textStyle: true } as const;
@@ -342,7 +349,11 @@ const LOOK_INFOS: Record<VisualType, AnimPropInfo[]> = {
   shape: LOOK_DEFS.shape.map(infoOf),
 };
 
-const VIDEO_PROPS = [...VISUAL_PROPS, VOLUME_PROP, ...LOOK_INFOS.video];
+const GRADE_BY_PROP: ReadonlyMap<string, LookDef> = new Map(GRADE_DEFS.map((x) => [x.prop, x]));
+/** the grade effect: its amount and the 16 wheel numbers */
+const GRADE_EFFECT_PROPS: AnimPropInfo[] = [{ prop: 'amount', label: 'amount', min: 0, max: 1 }, ...GRADE_DEFS.map(infoOf)];
+
+const VIDEO_PROPS = [...VISUAL_PROPS, VOLUME_PROP, PAN_PROP, ...LOOK_INFOS.video];
 const IMAGE_PROPS = [...VISUAL_PROPS, ...LOOK_INFOS.image];
 const TEXT_PROPS = [...VISUAL_PROPS, ...LOOK_INFOS.text];
 const SHAPE_ALL_PROPS = [...SHAPE_PROPS, ...LOOK_INFOS.shape];
@@ -354,6 +365,8 @@ function lookDef(clip: Clip, prop: string): LookDef | undefined {
     case 'text':
     case 'shape':
       return LOOK_BY_PROP[clip.type].get(prop);
+    case 'effect':
+      return clip.effect === GRADE_EFFECT ? GRADE_BY_PROP.get(prop) : undefined;
     default:
       return undefined;
   }
@@ -399,8 +412,9 @@ export function animProps(clip: Clip): AnimPropInfo[] {
     case 'shape':
       return SHAPE_ALL_PROPS;
     case 'audio':
-      return [VOLUME_PROP];
+      return [VOLUME_PROP, PAN_PROP];
     case 'effect':
+      if (clip.effect === GRADE_EFFECT) return GRADE_EFFECT_PROPS;
       return [{ prop: 'amount', label: 'amount', min: 0, max: 1 }];
     case 'camera':
       return CAMERA_PROPS;
@@ -416,16 +430,21 @@ export function baseValue(clip: Clip, prop: string): number | undefined {
     case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return (clip.transform as unknown as Record<string, number | undefined>)[prop] ?? (TRANSFORM_ONES.has(prop) ? 1 : 0);
       if (prop === 'volume' && clip.type === 'video') return clip.volume;
+      if (prop === 'pan' && clip.type === 'video') return clip.pan ?? 0;
       if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return prop === 'drawStart' ? (clip.drawStart ?? 0) : (clip.drawEnd ?? 1);
       {
         const x = LOOK_BY_PROP[clip.type].get(prop);
         return x ? lookRead(clip, x) : undefined;
       }
     case 'audio':
-      return prop === 'volume' ? clip.volume : undefined;
+      return prop === 'volume' ? clip.volume : prop === 'pan' ? (clip.pan ?? 0) : undefined;
     case 'effect':
       if (prop === 'amount') return clip.amount;
       if (prop.startsWith('p.')) return clip.params[prop.slice(2)];
+      if (prop.startsWith('grade.') && clip.effect === GRADE_EFFECT) {
+        const x = GRADE_BY_PROP.get(prop);
+        return x ? lookRead(clip, x) : undefined;
+      }
       return undefined;
     case 'camera':
       if (!CAMERA_KEYS.has(prop)) return undefined;
@@ -445,16 +464,21 @@ export function withBaseValue<T extends Clip>(clip: T, prop: string, v: number):
     case 'shape':
       if (TRANSFORM_KEYS.has(prop)) return { ...clip, transform: { ...clip.transform, [prop]: v } };
       if (prop === 'volume' && clip.type === 'video') return { ...clip, volume: v };
+      if (prop === 'pan' && clip.type === 'video') return { ...clip, pan: v };
       if (clip.type === 'shape' && DRAW_KEYS.has(prop)) return { ...clip, [prop]: v };
       {
         const x = LOOK_BY_PROP[clip.type].get(prop);
         return x ? lookWrite(clip, x, v) : clip;
       }
     case 'audio':
-      return prop === 'volume' ? { ...clip, volume: v } : clip;
+      return prop === 'volume' ? { ...clip, volume: v } : prop === 'pan' ? { ...clip, pan: v } : clip;
     case 'effect':
       if (prop === 'amount') return { ...clip, amount: v };
       if (prop.startsWith('p.')) return { ...clip, params: { ...clip.params, [prop.slice(2)]: v } };
+      if (prop.startsWith('grade.') && clip.effect === GRADE_EFFECT) {
+        const x = GRADE_BY_PROP.get(prop);
+        return x ? lookWrite(clip, x, v) : clip;
+      }
       return clip;
     case 'camera':
       return CAMERA_KEYS.has(prop) ? { ...clip, [prop]: v } : clip;
@@ -545,6 +569,7 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
           transform[prop] = evalKeys(keys, local);
           own().transform = transform;
         } else if (prop === 'volume' && clip.type === 'video') own().volume = evalKeys(keys, local);
+        else if (prop === 'pan' && clip.type === 'video') own().pan = evalKeys(keys, local);
         else if (clip.type === 'shape' && DRAW_KEYS.has(prop)) own()[prop] = evalKeys(keys, local);
         else {
           const x = LOOK_BY_PROP[clip.type].get(prop);
@@ -568,6 +593,7 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
         break;
       case 'audio':
         if (prop === 'volume') own().volume = evalKeys(keys, local);
+        else if (prop === 'pan') own().pan = evalKeys(keys, local);
         break;
       case 'effect':
         if (prop === 'amount') own().amount = evalKeys(keys, local);
@@ -576,6 +602,18 @@ export function resolveClip<T extends Clip>(clip: T, time: number): T {
           // defineProperty: a param called __proto__ is an own key, as it is in an object literal
           Object.defineProperty(params, prop.slice(2), { value: evalKeys(keys, local), enumerable: true, writable: true, configurable: true });
           own().params = params;
+        } else if (prop.startsWith('grade.') && clip.effect === GRADE_EFFECT) {
+          const x = GRADE_BY_PROP.get(prop);
+          if (x) {
+            // one copy of the grade (the curves object inside stays shared), like a look value of a picture clip
+            nested ??= {};
+            let o = nested.grade;
+            if (!o) {
+              o = nested.grade = { ...((clip as unknown as Rec).grade as Rec | null | undefined ?? x.create) };
+              own().grade = o;
+            }
+            o[x.key] = evalKeys(keys, local);
+          }
         }
         break;
       case 'camera':

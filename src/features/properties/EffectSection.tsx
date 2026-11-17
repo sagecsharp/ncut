@@ -2,10 +2,14 @@ import { memo, useCallback } from 'react';
 import { RotateCcw, Shuffle } from 'lucide-react';
 import { EFFECT_CATEGORIES } from '../../engine/effects/types';
 import { EFFECTS, effectParamValue, getEffect } from '../../engine/effects/registry';
+import { GRADE_EFFECT } from '../../lib/gradeData';
 import { effectBeatGrid } from '../../lib/tempo';
 import { useClip, useEditor } from '../../store/editorStore';
+import type { ClipPatch } from '../../store/editorStore';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
+import { tip } from '../shell/tip';
+import { showGrade } from './gradeActions';
 import { ParentSelect } from './AttachSection';
 import { AnimField } from './AnimField';
 import { overlapsInTime } from './clipEffects';
@@ -82,7 +86,9 @@ function resetEffect(id: string): void {
   for (const prop of Object.keys(clip.keyframes ?? {})) {
     if (prop === 'amount' || prop.startsWith('p.')) st.clearKeyframes(id, clip.start, prop, { skipHistory: true });
   }
-  st.updateClip(id, { params: {}, amount: 1 }, { skipHistory: true });
+  // the grade effect keeps its wheels and curves in the grade field: null takes them and their keys off in the same step
+  const grade = clip.type === 'effect' && clip.effect === GRADE_EFFECT;
+  st.updateClip(id, grade ? { params: {}, amount: 1, grade: null } : { params: {}, amount: 1 }, { skipHistory: true });
 }
 
 export const EffectSection = memo(function EffectSection({ id, name, effect, params, target }: EffectSectionProps) {
@@ -106,7 +112,10 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
   const switchTo = (nextId: string) => {
     const next = getEffect(nextId);
     if (!next || next.id === effect) return;
-    actions().updateClip(id, name === def.name ? { effect: next.id, name: next.name } : { effect: next.id });
+    // away from the grade effect, its grade and the keys on it go with it
+    const patch: ClipPatch = name === def.name ? { effect: next.id, name: next.name } : { effect: next.id };
+    if (effect === GRADE_EFFECT) patch.grade = null;
+    actions().updateClip(id, patch);
   };
 
   return (
@@ -129,6 +138,16 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
         </select>
       </Row>
       <div className="props-hint">{def.description}</div>
+      {effect === GRADE_EFFECT ? (
+        <>
+          <div className="props-hint">the wheels and curves are in its look tab</div>
+          <div className="props-buttons">
+            <button type="button" className="btn btn-sm" {...tip('open grade', { does: 'shows the grade section in the look tab' })} onClick={() => showGrade([id])}>
+              open grade
+            </button>
+          </div>
+        </>
+      ) : null}
       <AppliesTo id={id} target={target ?? null} own={def?.alpha === 'own'} />
       <AnimField id={id} prop="amount" label="strength" title="overall strength of the effect (%)" feel="effectAmount" fallback={1} />
       {def.params.map((p) =>

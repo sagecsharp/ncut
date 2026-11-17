@@ -6,6 +6,9 @@ import { useUi } from '../../store/ui';
 import { useShallow } from 'zustand/react/shallow';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
+import { canGrade } from '../../lib/gradeData';
+import { hasSoundApart, muteTargets } from '../../lib/soundPair';
+import { PairSection } from './PairSection';
 import { tip } from '../shell/tip';
 import { openClipMenuAt } from '../timeline/commands';
 import { AlignButtons } from './AlignButtons';
@@ -14,6 +17,7 @@ import { CascadeSection } from './CascadeSection';
 import { SplitButtons } from './SplitButtons';
 import { LookButtons } from './LookSection';
 import { MultiBendSection } from './BendSection';
+import { MultiGradeSection } from './MultiGradeSection';
 import { MultiField } from './MultiField';
 import { PivotDots } from './PivotRow';
 import { setPivotMany } from './pivotActions';
@@ -71,6 +75,9 @@ function summarize(ids: string[]): Summary {
       out.visual += 1;
       if (!c.threeD) out.allThreeD = false;
     }
+  }
+  // a picture with its sound apart stands for its sound clips
+  for (const c of muteTargets(p.clips, ids)) {
     if (c.type === 'audio' || (c.type === 'video' && (p.assets.find((a) => a.id === c.assetId)?.hasAudio ?? true))) {
       out.audible += 1;
       if (!c.muted) out.allMuted = false;
@@ -87,6 +94,11 @@ function targets(ids: string[], pick: (c: ReturnType<typeof getClips>[number]) =
 }
 function getClips() {
   return useEditor.getState().project?.clips ?? [];
+}
+
+/** a clip with sound of its own: a picture whose sound is apart has none (its sound clip has it) */
+function hasOwnSound(c: Clip): boolean {
+  return (c.type === 'audio' || c.type === 'video') && !hasSoundApart(getClips(), c.id);
 }
 
 /** the spot id all selected picture clips sit on ('' = they differ or there is none) */
@@ -129,13 +141,14 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
   const toggleMute = (muted: boolean) => {
     const st = useEditor.getState();
     st.pushHistory();
-    for (const id of targets(ids, (c) => c.type === 'audio' || c.type === 'video')) {
-      st.updateClip(id, { muted }, { skipHistory: true });
+    for (const c of muteTargets(getClips(), ids)) {
+      st.updateClip(c.id, { muted }, { skipHistory: true });
     }
   };
 
   // the selected ids as a Set, built once per selection: filters below are O(clips) instead of O(clips * selected)
   const want = useMemo(() => new Set(ids), [ids]);
+  const gradable = useEditor((s) => (s.project?.clips ?? []).filter((c) => want.has(c.id) && canGrade(c)).length);
 
   // useShallow: the same list of ids keeps its identity, so the button groups below do not re-render on every drag frame
   const visualIds = useEditor(useShallow((s) => visualIdsOf(s.project?.clips, want)));
@@ -183,6 +196,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           {source ? <LookButtons source={source} ids={ids} /> : null}
         </Section>
       ) : null}
+      {gradable > 0 ? <MultiGradeSection ids={ids} want={want} /> : null}
       {sum.visual > 0 ? (
         <Section id="m-align" title="align">
           <AlignButtons ids={visualIds} />
@@ -201,7 +215,8 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
       ) : null}
       {sum.audible > 0 ? (
         <Section id="m-audio" title="audio">
-          <MultiField want={want} label="volume" title="volume of all selected audio clips (%)" feel="volume" prop="volume" pick={(c) => c.type === 'audio' || c.type === 'video'} />
+          <MultiField want={want} label="volume" title="volume of all selected audio clips (%)" feel="volume" prop="volume" pick={hasOwnSound} />
+          <MultiField want={want} label="pan" title="pan of all selected clips with sound: -100 left, 100 right, 0 the middle" feel="soundPan" prop="pan" pick={hasOwnSound} />
           <Row label="mute" title="mute all selected audio clips">
             <input
               type="checkbox"
@@ -213,6 +228,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
           </Row>
         </Section>
       ) : null}
+      {sum.video + sum.audio > 0 ? <PairSection ids={ids} /> : null}
       {sum.effect > 0 ? (
         <Section id="m-effects" title="effects">
           <MultiField want={want} label="strength" title="how strong every selected effect clip is (%)" feel="effectAmount" prop="amount" pick={(c) => c.type === 'effect'} />

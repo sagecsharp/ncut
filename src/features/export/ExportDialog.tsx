@@ -9,6 +9,7 @@ import { EXPORT_PRESETS, matchingPreset, presetChoices } from './presets';
 import type { ExportPreset } from './presets';
 import { formatBytes, formatDuration } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
+import { cleanRange, inOutSpan } from '../../lib/inOut';
 import { CODEC_LABEL, exportProject, isAudioContainer, isGifContainer, outputSize, planExport } from './exporter';
 import { createPlanMemo, probeDelay } from './planMemo';
 import type { ExportContainer, ExportPlan, ExportProgress, ExportQuality, VideoContainer } from './exporter';
@@ -29,6 +30,7 @@ import { isExporting } from '../../engine/exportState';
 import { mcpExportJob } from '../../mcp/exportJob';
 import { setBusy } from '../../lib/busy';
 import { useUi } from '../../store/ui';
+import { SoloNote } from '../media/mixer/SoloNote';
 import './export.css';
 
 export interface ExportDialogProps {
@@ -164,9 +166,17 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setProgress(null);
     setDone(null);
     setError('');
-    setRangeMode('all');
-    setRangeFrom('0');
-    setRangeTo('');
+    const p = useEditor.getState().project;
+    const span = p ? inOutSpan(p.range, projectDuration(p)) : null;
+    if (p && span) {
+      setRangeMode('inout');
+      setRangeFrom(String(Math.round(span.start * 1000) / 1000));
+      setRangeTo(cleanRange(p.range)?.out !== undefined ? String(Math.round(span.end * 1000) / 1000) : '');
+    } else {
+      setRangeMode('all');
+      setRangeFrom('0');
+      setRangeTo('');
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, projectId]);
 
@@ -290,14 +300,17 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const markers = project?.markers;
   const hasMarkerRange = markerRange(markers) !== null;
   // a marker choice that stopped being possible (a marker was removed) falls back to the whole project
-  const mode: RangeMode = rangeMode === 'markers' && !hasMarkerRange ? 'all' : rangeMode;
+  // an in to out choice that stopped being possible (the points were cleared) falls back the same way
   // a picture (png / jpg) is the first frame of the range: only where the range starts matters
   const isStill = isStillContainer(container);
+  const inOut = project ? inOutSpan(project.range, projectLength) : null;
+  const hasInOut = inOut !== null && (!isStill || cleanRange(project?.range)?.in !== undefined);
+  const mode: RangeMode = (rangeMode === 'markers' && !hasMarkerRange) || (rangeMode === 'inout' && !hasInOut) ? 'all' : rangeMode;
   const customStart = Number.parseFloat(rangeFrom);
   const customEnd = isStill || rangeTo.trim() === '' ? projectLength : Number.parseFloat(rangeTo);
   const range = useMemo(
-    () => resolveRange(mode, projectLength, markers, { start: customStart, end: customEnd }),
-    [mode, projectLength, markers, customStart, customEnd],
+    () => resolveRange(mode, projectLength, markers, { start: customStart, end: customEnd }, project?.range),
+    [mode, projectLength, markers, customStart, customEnd, project?.range],
   );
   const audioOnly = isAudioContainer(container);
   const empty = !project || projectLength <= 0;
@@ -475,6 +488,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
               onChange={(e) => setRangeMode(e.target.value as RangeMode)}
             >
               <option value="all">{isStill ? 'first frame' : 'whole project'}</option>
+              {hasInOut && <option value="inout">{isStill ? 'at the in point' : 'in to out'}</option>}
               {hasMarkerRange && <option value="markers">{isStill ? 'at the first marker' : 'first to last marker'}</option>}
               <option value="custom">{isStill ? 'at a time' : 'custom'}</option>
             </select>
@@ -607,6 +621,7 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
                     }`
                   : ''}
         </div>
+        <SoloNote sound={!isGif && !isStill && (includeAudio || audioOnly)} />
         {isGif && gifFpsNote(fps) ? <div className="export-note">{gifFpsNote(fps)}</div> : null}
         {gifWarn ? <div className="export-note">{gifWarn}</div> : null}
         {note ? <div className="export-note is-error">{note}</div> : null}

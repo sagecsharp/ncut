@@ -61,6 +61,11 @@ describe('lineOnSolid', () => {
     expect(lineOnSolid(shape({ kind: 'star' }))).toBe(false);
     expect(lineOnSolid(shape({ radius: 0.3 }))).toBe(false);
   });
+  it('a grade keeps the line in the picture, switched off or not', () => {
+    const grade = { liftY: 0.2 };
+    expect(lineOnSolid(shape({ grade } as never))).toBe(false);
+    expect(lineOnSolid(shape({ grade: { ...grade, off: true } } as never))).toBe(false);
+  });
 });
 
 describe('planeFor: the line around a solid', () => {
@@ -153,5 +158,18 @@ describe('planeFor: the line around a solid', () => {
     expect(lineOnSolid(shape({ keyframes: { radius: [] } } as unknown as Partial<ShapeClip>))).toBe(true);
     const c = keyed('radius');
     expect(planeFor(project([c]), layer(c), rig)!.outline).toBeUndefined();
+  });
+
+  it('a key on a grade wheel keeps the line in the picture on every frame', () => {
+    const keyed = (prop: string): ShapeClip => shape({ keyframes: { [prop]: [{ time: 0, value: 0 }, { time: 2, value: 0.5 }] } } as unknown as Partial<ShapeClip>);
+    expect(lineOnSolid(keyed('grade.liftY'))).toBe(false);
+    expect(lineOnSolid(shape({ keyframes: { 'grade.liftY': [] } } as unknown as Partial<ShapeClip>))).toBe(true);
+    const c = keyed('grade.liftY');
+    expect(planeFor(project([c]), layer(c), rig)!.outline).toBeUndefined();
+  });
+
+  it('a grade with nothing in it keeps the line on the solid', () => {
+    expect(lineOnSolid(shape({ grade: {} } as Partial<ShapeClip>))).toBe(true);
+    expect(lineOnSolid(shape({ grade: null } as Partial<ShapeClip>))).toBe(true);
   });
 });

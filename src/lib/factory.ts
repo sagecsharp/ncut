@@ -1,8 +1,11 @@
 import type {
   AudioClip,
   CameraClip,
+  ClipParts,
+  ClipTake,
   EffectClip,
   ImageClip,
+  InOutRange,
   MediaAsset,
   Project,
   ShapeClip,
@@ -11,8 +14,10 @@ import type {
   TrackKind,
   VideoClip,
 } from '../types';
-import { DEFAULT_TRANSFORM } from '../types';
+import { DEFAULT_TRANSFORM, MIN_CLIP_DURATION } from '../types';
 import { uid } from './id';
+import { cleanRange } from './inOut';
+import { clamp } from './time';
 
 export interface CanvasPreset {
   id: string;
@@ -75,32 +80,57 @@ export function createProject(name = 'untitled project', preset: CanvasPreset = 
   };
 }
 
+/** the clip type a media gives for what is taken of it: null when the media has none of that part */
+export function clipTypeFor(a: Pick<MediaAsset, 'kind' | 'hasAudio'>, parts: ClipParts = 'both'): 'video' | 'audio' | 'image' | null {
+  if (parts === 'sound') return a.kind === 'audio' || (a.kind === 'video' && a.hasAudio) ? 'audio' : null;
+  if (parts === 'picture') return a.kind === 'audio' ? null : a.kind;
+  return a.kind;
+}
+
+/** where in the file a new clip starts and how long it is: the marked range, widened to the smallest clip. no range = the whole file */
+export function clipRange(a: Pick<MediaAsset, 'kind' | 'duration'>, range?: InOutRange | null): { trimStart: number; duration: number } {
+  if (a.kind === 'image') return { trimStart: 0, duration: DEFAULT_IMAGE_DURATION };
+  const r = cleanRange(range);
+  if (!r || a.duration < MIN_CLIP_DURATION) return { trimStart: 0, duration: Math.max(a.duration, 0.1) };
+  let s = clamp(r.in ?? 0, 0, a.duration);
+  let e = clamp(r.out ?? a.duration, 0, a.duration);
+  if (e - s < MIN_CLIP_DURATION) {
+    e = Math.min(a.duration, s + MIN_CLIP_DURATION);
+    s = Math.max(0, e - MIN_CLIP_DURATION);
+  }
+  return { trimStart: s, duration: e - s };
+}
+
 export function createClipFromAsset(
   asset: MediaAsset,
   trackId: string,
   start: number,
+  take?: ClipTake,
 ): VideoClip | ImageClip | AudioClip {
   const base = { id: uid('clp'), trackId, start, name: asset.name, fadeIn: 0, fadeOut: 0 };
-  if (asset.kind === 'video') {
+  const type = clipTypeFor(asset, take?.parts) ?? asset.kind;
+  if (type === 'video') {
+    const { trimStart, duration } = clipRange(asset, take?.range);
     return {
       ...base,
       type: 'video',
       assetId: asset.id,
-      duration: Math.max(asset.duration, 0.1),
-      trimStart: 0,
+      duration,
+      trimStart,
       speed: 1,
       volume: 1,
-      muted: false,
+      muted: take?.parts === 'picture' && asset.hasAudio,
       transform: { ...DEFAULT_TRANSFORM },
     };
   }
-  if (asset.kind === 'audio') {
+  if (type === 'audio') {
+    const { trimStart, duration } = clipRange(asset, take?.range);
     return {
       ...base,
       type: 'audio',
       assetId: asset.id,
-      duration: Math.max(asset.duration, 0.1),
-      trimStart: 0,
+      duration,
+      trimStart,
       speed: 1,
       volume: 1,
       muted: false,

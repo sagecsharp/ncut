@@ -3,7 +3,7 @@ import type { VideoClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
 import { createProject } from '../lib/factory';
 import { useEditor } from './editorStore';
-import { advanceClock, mediaPlaybackRate, nextShuttleRate, rateAudible, resetPlayback, usePlayback } from './playback';
+import { advanceClock, clockBounds, mediaPlaybackRate, nextShuttleRate, rateAudible, resetPlayback, usePlayback } from './playback';
 
 const pb = () => usePlayback.getState();
 
@@ -203,5 +203,163 @@ describe('playback store', () => {
     expect(pb().playing).toBe(false);
     expect(pb().time).toBe(0);
     expect(pb().rate).toBe(pb().speed);
+  });
+});
+
+/** a copy of the clock as it was before the start bound */
+function oldAdvanceClock(time: number, dt: number, rate: number, end: number, loop: boolean): { time: number; ended: boolean } {
+  const t = time + dt * rate;
+  if (rate > 0 && t >= end) {
+    if (loop && end > 0) return { time: t % end, ended: false };
+    return { time: end, ended: true };
+  }
+  if (rate < 0 && t <= 0) {
+    if (loop && end > 0) return { time: end + (t % end), ended: false };
+    return { time: 0, ended: true };
+  }
+  return { time: t, ended: false };
+}
+
+describe('in and out clock', () => {
+  const range = (r: { in?: number; out?: number } | null) => useEditor.getState().setRange(r);
+
+  it('advanceClock without a start is the old function', () => {
+    for (let rate = -8; rate <= 8; rate += 0.5) {
+      for (const end of [0, 0.5, 10]) {
+        for (const loop of [false, true]) {
+          for (const time of [0, 0.2, 0.5, 4.9, 10]) {
+            for (const dt of [0, 0.016, 0.25, 3]) {
+              const a = oldAdvanceClock(time, dt, rate, end, loop);
+              for (const b of [advanceClock(time, dt, rate, end, loop), advanceClock(time, dt, rate, end, loop, 0)]) {
+                expect(Object.is(a.time, b.time)).toBe(true);
+                expect(a.ended).toBe(b.ended);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+  it('advanceClock with a start wraps both ways and stops without loop', () => {
+    expect(advanceClock(3.9, 0.2, 1, 4, true, 2).time).toBeCloseTo(2.1, 9);
+    expect(advanceClock(2.1, 0.2, -1, 4, true, 2).time).toBeCloseTo(3.9, 9);
+    expect(advanceClock(3.9, 0.2, 1, 4, true, 2).ended).toBe(false);
+    expect(advanceClock(3.9, 0.2, 1, 4, false, 2)).toEqual({ time: 4, ended: true });
+    expect(advanceClock(2.1, 0.2, -1, 4, false, 2)).toEqual({ time: 2, ended: true });
+    expect(advanceClock(2.5, 0.2, 1, 4, false, 2)).toEqual({ time: 2.7, ended: false });
+  });
+  it('clockBounds', () => {
+    const span = { start: 2, end: 4 };
+    expect(clockBounds(10, false, span, false, 30)).toEqual({ start: 0, end: 10, ranged: false, fps: 30 });
+    expect(clockBounds(10, true, span, false, 30)).toEqual({ start: 2, end: 4, ranged: true, fps: 30 });
+    expect(clockBounds(10, false, span, true, 24)).toEqual({ start: 2, end: 4, ranged: true, fps: 24 });
+    expect(clockBounds(10, true, null, true, 30)).toEqual({ start: 0, end: 10, ranged: false, fps: 30 });
+  });
+  it('loop with a range starts at in from outside and wraps', () => {
+    range({ in: 2, out: 4 });
+    pb().setLoop(true);
+    pb().seek(7);
+    pb().play();
+    expect(pb().time).toBe(2);
+    pb().seek(3.9);
+    frame();
+    frame(200);
+    expect(pb().playing).toBe(true);
+    expect(pb().time).toBeGreaterThanOrEqual(2);
+    expect(pb().time).toBeLessThan(2.3);
+  });
+  it('a seek past out while looping jumps to in', () => {
+    range({ in: 2, out: 4 });
+    pb().setLoop(true);
+    pb().seek(3);
+    pb().play();
+    pb().seek(8);
+    frame();
+    frame(16);
+    expect(pb().time).toBeGreaterThanOrEqual(2);
+    expect(pb().time).toBeLessThan(2.1);
+  });
+  it('playInToOut plays from in and stops on the last frame inside', () => {
+    range({ in: 2, out: 4 });
+    expect(pb().playInToOut()).toBe(true);
+    expect(pb().playing).toBe(true);
+    expect(pb().time).toBe(2);
+    frame();
+    for (let i = 0; i < 12; i++) frame(250);
+    expect(pb().time).toBeCloseTo(3.0 + 29 / 30, 9);
+    expect(pb().time).toBeLessThan(4);
+    expect(pb().playing).toBe(false);
+    expect(pb().rate).toBe(1);
+  });
+  it('playInToOut loops with loop on', () => {
+    range({ in: 2, out: 4 });
+    pb().setLoop(true);
+    expect(pb().playInToOut()).toBe(true);
+    frame();
+    for (let i = 0; i < 20; i++) frame(250);
+    expect(pb().playing).toBe(true);
+    expect(pb().time).toBeGreaterThanOrEqual(2);
+    expect(pb().time).toBeLessThan(4);
+  });
+  it('playInToOut again pauses', () => {
+    range({ in: 2, out: 4 });
+    pb().playInToOut();
+    frame();
+    expect(pb().playInToOut()).toBe(true);
+    expect(pb().playing).toBe(false);
+  });
+  it('playInToOut without a range is false', () => {
+    expect(pb().playInToOut()).toBe(false);
+    expect(pb().playing).toBe(false);
+    expect(pb().time).toBe(0);
+    range({ in: 20 });
+    expect(pb().playInToOut()).toBe(false);
+  });
+  it('a seek outside, j, l and play end an in to out play', () => {
+    range({ in: 2, out: 4 });
+    const ends = (act: () => void) => {
+      pb().pause();
+      pb().seek(0);
+      pb().playInToOut();
+      frame();
+      act();
+      for (let i = 0; i < 40; i++) frame(100);
+      return pb().time;
+    };
+    expect(ends(() => pb().seek(6))).toBeGreaterThan(4);
+    expect(ends(() => pb().shuttle(1))).toBeGreaterThan(4);
+    expect(ends(() => pb().play())).toBeGreaterThan(4);
+    pb().pause();
+    pb().seek(0);
+    pb().playInToOut();
+    frame();
+    pb().shuttle(-1);
+    for (let i = 0; i < 100; i++) frame(100);
+    expect(pb().time).toBe(0);
+  });
+  it('shuttle from outside: l at in, j at out', () => {
+    range({ in: 2, out: 4 });
+    pb().setLoop(true);
+    pb().seek(7);
+    pb().shuttle(1);
+    expect(pb().time).toBe(2);
+    pb().pause();
+    pb().seek(1);
+    pb().shuttle(-1);
+    expect(pb().time).toBe(4);
+    pb().pause();
+    pb().seek(3);
+    pb().shuttle(1);
+    expect(pb().time).toBe(3);
+  });
+  it('loop off: space plays past out', () => {
+    range({ in: 2, out: 4 });
+    pb().seek(3.9);
+    pb().play();
+    expect(pb().time).toBe(3.9);
+    frame();
+    frame(500);
+    expect(pb().time).toBeGreaterThan(4);
+    expect(pb().playing).toBe(true);
   });
 });

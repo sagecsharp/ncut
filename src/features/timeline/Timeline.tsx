@@ -5,6 +5,7 @@ import { clamp } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { ClipMenu } from './ClipMenu';
 import { PlayheadLine } from './Playhead';
 import { Ruler } from './Ruler';
@@ -12,6 +13,7 @@ import { TimelineToolbar } from './TimelineToolbar';
 import { TrackHeader } from './TrackHeader';
 import { TrackLane } from './TrackLane';
 import { TrackMenu } from './TrackMenu';
+import { TrimEdgeMark } from './TrimEdgeMark';
 import type { TrackMenuRequest } from './TrackMenu';
 import { createDnd } from './dnd';
 import { MarkerLines, MarkerMenu, MarkerRename } from './MarkerUi';
@@ -23,9 +25,11 @@ import { timelineCommands } from './commands';
 import type { ClipMenuOpen, TrackMenuOpen } from './commands';
 import { LinkMarks } from './LinkMarks';
 import { Overlays } from './overlays';
+import { RangeCorner } from './RangeUi';
 import { FIT_PAD, rangeOf, zoomForRange } from './zoomMath';
 import { markUserScroll, notifyView, resetView, view } from './view';
 import './timeline.css';
+import './trimModes.css';
 
 const EMPTY_TRACKS: Track[] = [];
 
@@ -101,6 +105,22 @@ function TimelineInner() {
     },
     [gestures, dnd],
   );
+
+  // trim mode shows on the scroller as data-trim-mode (the css reads it): written straight to the dom, no render
+  useEffect(() => {
+    const show = (on: boolean) => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      if (on) el.dataset.trimMode = '';
+      else delete el.dataset.trimMode;
+    };
+    show(useUi.getState().trimMode);
+    return useUi.subscribe((s, prev) => {
+      if (s.trimMode === prev.trimMode) return;
+      show(s.trimMode);
+      gestures.refreshHover();
+    });
+  }, [gestures]);
 
   const closeMenu = useCallback(() => setMenu(null), []);
   const closeTrackMenu = useCallback(() => setTrackMenu(null), []);
@@ -319,12 +339,14 @@ function TimelineInner() {
             onDrop={dnd.onDrop}
           >
             <div className="timeline-ruler-row" onDoubleClick={gestures.onRulerDoubleClick} onContextMenu={gestures.onRulerContextMenu}>
-              <div className="timeline-corner" />
+              <div className="timeline-corner"><RangeCorner /></div>
               <Ruler onPointerDown={gestures.onRulerPointerDown} />
             </div>
             <div
               className="timeline-lanes-wrap"
               onPointerDown={gestures.onLanesPointerDown}
+              onPointerMove={gestures.onLanesHover}
+              onPointerLeave={gestures.onLanesLeave}
               onContextMenu={onLanesContextMenu}
             >
               <div className="timeline-zone">
@@ -349,6 +371,7 @@ function TimelineInner() {
               <div className="timeline-overlay">
                 <MarkerLines />
                 <PlayheadLine scrollerRef={scrollerRef} />
+                <TrimEdgeMark />
                 <div ref={overlays.refSnap} className="timeline-snap" hidden />
                 <div ref={overlays.refGhost} className="timeline-ghost" hidden>
                   <span className="timeline-ghost-label" />

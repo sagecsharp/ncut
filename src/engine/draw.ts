@@ -22,6 +22,8 @@ import { StillCopies, keptStep } from './stillCopies';
 import { clipLookPoint, parentModelMatrix, worldTransformOf } from './parent';
 import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
+import { GRADE_EFFECT } from '../lib/gradeData';
+import { gradeData } from './grade';
 import { releaseEffectRunner, renderEffects, renderEffectsAlpha } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
 import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance, homeRig } from './scene3d/camera';
@@ -475,6 +477,8 @@ export function effectPassAt(raw: EffectClip, time: number, grid?: BeatGrid | nu
   const clip = resolveClip(raw, time);
   let amount = clip.amount * fadeFactor(clip, time);
   if (!(amount > 0.001)) return null;
+  const grade = def.id === GRADE_EFFECT ? gradeData(clip.grade) : undefined;
+  if (grade === null) return null;
   let passTime = Math.max(0, time - clip.start + (raw.timeOffset ?? 0));
   let params = clip.params;
   const beat = grid && raw.beat ? parseEffectBeat(raw.beat) : null;
@@ -488,7 +492,9 @@ export function effectPassAt(raw: EffectClip, time: number, grid?: BeatGrid | nu
       params = { ...params, [def.sync.param]: 1 / (cycle * def.sync.cycles) };
     }
   }
-  return { def, time: passTime, duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params };
+  const pass: EffectPass = { def, time: passTime, duration: raw.fullDuration ?? clip.duration, amount, seed: clip.seed, params };
+  if (grade) pass.grade = grade;
+  return pass;
 }
 
 /**

@@ -4,6 +4,7 @@
  * the state machine takes its exporter, saver and side effects as deps, so it tests without a browser.
  */
 import { clampRange, rangeFrameCount } from '../features/export/range';
+import { cleanRange, inOutSpan } from '../lib/inOut';
 import type { TimeRange } from '../features/export/range';
 import { exportProject, isAudioContainer, isGifContainer, outputSize } from '../features/export/exporter';
 import type { ExportContainer, ExportHooks, ExportOptions, ExportProgress, ExportQuality } from '../features/export/exporter';
@@ -31,6 +32,8 @@ export interface ExportArgs {
   fps?: number;
   start?: number;
   end?: number;
+  /** 'inout' = from the in point to the out point (set_range). default and 'all': the whole project or start / end */
+  range?: 'all' | 'inout';
   audio?: boolean;
   name?: string;
 }
@@ -67,8 +70,24 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
   if (!(duration > 0)) throw new ToolError('the project is empty, there is nothing to export. add clips first');
   // a picture is the frame at start: it has no end, no frame rate and no sound
   const still = isStillContainer(container);
-  const wanted: TimeRange = { start: args.start ?? 0, end: still ? duration : (args.end ?? duration) };
+  const inout = args.range === 'inout';
+  if (inout && (args.start !== undefined || args.end !== undefined)) throw new ToolError('range "inout" takes no start / end: give one or the other');
+  let wanted: TimeRange = { start: args.start ?? 0, end: still ? duration : (args.end ?? duration) };
+  if (inout && still) {
+    const at = cleanRange(project.range)?.in;
+    if (at === undefined) throw new ToolError('a picture is the frame at the in point: set_range an in point first');
+    wanted = { start: at, end: duration };
+  } else if (inout) {
+    const span = inOutSpan(project.range, duration);
+    if (!span) throw new ToolError('there is no in or out point inside the project. set_range marks them');
+    wanted = { start: span.start, end: span.end };
+  }
   const range = clampRange(wanted, duration);
+  if (!range && still && inout) {
+    throw new ToolError(
+      `the in point ${wanted.start} s is not inside the project (${Math.round(duration * 1000) / 1000} s long): set_range an earlier in point`,
+    );
+  }
   if (!range && still) {
     throw new ToolError(
       `start ${wanted.start} s is not inside the project (${Math.round(duration * 1000) / 1000} s long): a picture is the frame at start, which has to be before the end`,
@@ -80,6 +99,9 @@ export function planMcpExport(project: Project, args: ExportArgs): ExportPlanned
     );
   }
   const notes: string[] = [];
+  if (args.range === undefined && args.start === undefined && args.end === undefined && cleanRange(project.range)) {
+    notes.push('the project has in and out points: range "inout" exports only that part');
+  }
   const cut = (args.start !== undefined && args.start !== range.start) || (!still && args.end !== undefined && args.end !== range.end);
   if (cut) notes.push(`start / end were cut to the project, the part that is exported is ${round3(range.start)} to ${round3(range.end)} s`);
   const gif = isGifContainer(container);

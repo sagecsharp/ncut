@@ -31,6 +31,10 @@ export const COMMON_FIELDS: FieldRow[] = rows<TextClip>([
   ['fadeOut', 'number s, 0 or more', 'fade out at the tail, kept inside the clip length like fadeIn'],
 ]);
 
+const GRADE_TYPE = '{ liftR..offsetY, curves, off } | null';
+const GRADE_NOTE = 'color grade. lift, gamma, gain, offset as R, G, B and Y (level), -1..1, 0 = no change. curves { y, r, g, b, hueSat, hueHue, lumaSat }: [x, y] lists 0..1, at most 16; hue x from red toward yellow, wrapping; y 0.5 keeps. off: true hides it, the export too. keyable as grade.liftR ..';
+const GRADE_EXAMPLE = { liftB: 0.05, gammaY: 0.1, curves: { y: [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]] } };
+
 /** video, image, text and shape clips (everything with a picture) */
 export const PICTURE_FIELDS: FieldRow[] = rows<TextClip>([
   ['transform', 'object', TRANSFORM_NOTE, { x: 100, y: -50, scale: 1.2, rotation: 15, opacity: 0.8 }],
@@ -52,12 +56,14 @@ export const PICTURE_FIELDS: FieldRow[] = rows<TextClip>([
   ['parent', 'clip id | null', "attach to a visual or camera clip: this clip's transform is then relative to it (x / y / z count from the parent's pivot, its middle when it has none). update_clip keeps the clip where it is on screen unless the same patch sends transform. a clip whose x / y / scale / rotation are keyed keeps its keys and may move. a 2d clip attached to a camera becomes 3d. a loop is an error", 'clp_id'],
   ['motionBlur', '{ shutter, samples, style? } | null', "blurs the clip's own moves. shutter 0..2 frames (0.5 = classic), samples 2..32, style even | trail | ghost", { shutter: 0.5, samples: 8 }],
   ['adjust', '{ brightness, contrast, saturation, hue, temperature } | null', 'colour correction: brightness, contrast, saturation, temperature -1..1, hue -180..180 deg. all 0 = no change', { brightness: 0.1, contrast: 0.2, saturation: 0, hue: 0, temperature: 0 }],
+  ['grade', GRADE_TYPE, GRADE_NOTE, GRADE_EXAMPLE],
   ['chromaKey', '{ color, tolerance, softness, spill } | null', 'green screen: color hex to remove, tolerance, softness, spill each 0..1', { color: '#00ff00', tolerance: 0.3, softness: 0.1, spill: 0.5 }],
   ['mask', '{ shape, x, y, width, height, rotation, feather, invert, radius? } | null', 'show part of the picture. shape rect | ellipse | split | band | star | heart. x, y -1..1 and width, height 0..3 are fractions of the picture, rotation -360..360 deg, feather 0..1, invert boolean, radius 0..1 (rect)', { shape: 'ellipse', x: 0, y: 0, width: 0.8, height: 0.8, rotation: 0, feather: 0.1, invert: false }],
 ]);
 
 const SOUND_FIELDS = [
   ['volume', 'number 0..2', 'linear gain, 1 = as recorded (an error outside the range)'],
+  ['pan', 'number -1..1', 'where the sound sits: -1 left, 0 the middle, 1 right. keyable (set_keyframe prop pan)', 0.3],
   ['muted', 'boolean', 'silence this clip'],
   ['speed', `number ${MIN_SPEED}..${MAX_SPEED}`, 'playback rate, 1 = normal. outside the range the store clamps it (10 gives 4) and the answer still says speed changed. the clip gets shorter or longer to match (clamped to the next clip on the track)'],
   ['bpm', `number ${BPM_MIN}..${BPM_MAX} | null`, 'tempo of the sound, for effects that follow the beat. null = unknown, and a number outside the range is stored as null', 120],
@@ -123,6 +129,7 @@ export const EFFECT_FIELDS: FieldRow[] = rows<EffectClip>([
   ['timeOffset', 'number s', 'seconds added to the animation time', 0.5],
   ['fullDuration', 'number s, 0 or more', 'length the effect spreads its move over (set by splits and trims)', 3],
   ['beat', '{ source?, every, pulse, lock } | null', 'follow a tempo: source = clip id with a bpm (default the sound under it), every = beats per cycle 0.0625..64, pulse 0..1, lock boolean', { every: 1, pulse: 0.5, lock: false }],
+  ['grade', GRADE_TYPE, `grade effect only. ${GRADE_NOTE}`, GRADE_EXAMPLE],
 ]);
 
 export const CAMERA_FIELDS: FieldRow[] = rows<CameraClip>([

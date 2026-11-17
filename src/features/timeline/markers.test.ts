@@ -10,6 +10,8 @@ import {
   hitMarker,
   lowerBound,
   markerTimes,
+  rangeSnapPoints,
+  scrubSnapPoints,
   timelineSnapPoints,
   visibleMarkerRange,
 } from './markers';
@@ -96,6 +98,39 @@ describe('snap points', () => {
   it('works without markers', () => {
     expect(timelineSnapPoints({ clips: [clip] })).toEqual([0, 2, 5]);
     expect(markerTimes(undefined)).toEqual([]);
+  });
+});
+
+describe('range snap points', () => {
+  const clip = {
+    id: 'c1',
+    type: 'image',
+    trackId: 't',
+    start: 2,
+    duration: 3,
+    name: 'i',
+    fadeIn: 0,
+    fadeOut: 0,
+    assetId: 'a',
+    transform: { ...DEFAULT_TRANSFORM },
+  } as Clip;
+  it('timelineSnapPoints adds in and out', () => {
+    const pts = timelineSnapPoints({ clips: [clip], markers: [mk('m', 7)], range: { in: 1, out: 6 } });
+    expect(pts).toEqual([0, 1, 2, 5, 6, 7]);
+  });
+  it('no range gives the old list', () => {
+    expect(timelineSnapPoints({ clips: [clip], markers: [mk('m', 7)] })).toEqual([0, 2, 5, 7]);
+    expect(timelineSnapPoints({ clips: [clip], markers: [mk('m', 7)], range: {} })).toEqual([0, 2, 5, 7]);
+  });
+  it('scrubSnapPoints are the markers plus in and the last frame inside', () => {
+    expect(scrubSnapPoints({ markers: [mk('m', 7)], range: { in: 1, out: 6 }, fps: 30 })).toEqual([7, 1, 6 - 1 / 30]);
+    expect(scrubSnapPoints({ markers: [mk('m', 7)], fps: 30 })).toEqual([7]);
+  });
+  it('rangeSnapPoints have clip edges, 0, the playhead, the markers and the other mark', () => {
+    const p = { clips: [clip], markers: [mk('m', 7)], range: { in: 1, out: 6 } };
+    expect(rangeSnapPoints(p, 'in', 3)).toEqual([0, 2, 3, 5, 6, 7]);
+    expect(rangeSnapPoints(p, 'out', 3)).toEqual([0, 1, 2, 3, 5, 7]);
+    expect(rangeSnapPoints({ ...p, range: { in: 1 } }, 'in', 3)).toEqual([0, 2, 3, 5, 7]);
   });
 });
 

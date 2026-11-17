@@ -1,8 +1,11 @@
 import { PIVOT_SPOTS } from '../../engine/pivot';
 import { parentOf } from '../../lib/links';
+import type { TimeDisplay } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { closeProject, exportProjectFile } from '../../store/session';
+import { soloSelectedTracks, useSolo } from '../../store/solo';
+import { useTimeDisplay } from '../../store/timeDisplay';
 import { useUi } from '../../store/ui';
 import { isVisualClip } from '../../types';
 import { LAYOUT_RESET_EVENT } from '../editor/layoutReset';
@@ -12,14 +15,23 @@ import { usePivotMode } from '../preview/pivotMode';
 import { usePreviewQuality } from '../preview/quality';
 import type { PreviewQuality } from '../preview/quality';
 import { useSceneGrid, useSceneTool } from '../preview/sceneTool';
+import { useScopes } from '../preview/scopesState';
+import type { ScopeKind } from '../preview/scopesState';
+import { emptySource, sourceAdd } from '../preview/sourceKeys';
+import { useSourcePrefs } from '../preview/sourcePrefs';
 import type { SceneTool } from '../preview/sceneGizmo';
 import { attachClips } from '../properties/attachActions';
 import { bendLeader, bendTogether, flattenBends } from '../properties/bendActions';
+import { addGradeEffect, copyGradeOf, pasteGradeOn, resetGrades, showGrade, toggleGradeOn } from '../properties/gradeActions';
 import { pivotModeBlocker, setPivotMany } from '../properties/pivotActions';
 import { clearKeysOf, closeGapsOnTrack, insertGapAt, selectEffectsOf, selectLike } from '../timeline/actions';
 import { clipHasSound, markBeats } from '../timeline/beatActions';
 import { timelineCommands } from '../timeline/commands';
+import { editNow, targetSelectedNow, targetsAutoNow } from '../timeline/editActions';
+import { clearIn, clearOut, markSelection } from '../timeline/rangeActions';
 import { cutAtMarkers, fitToMarkers, makeRow } from '../timeline/sequenceActions';
+import { joinSoundNow, selectSideNow, syncSoundNow } from '../timeline/soundActions';
+import { slideBy, slipBy } from '../timeline/trimActions';
 import type { FitSpan } from '../timeline/sequenceActions';
 import { interaction } from '../timeline/view';
 import { REASON_IDS, reasonFor } from './reasons';
@@ -97,6 +109,21 @@ const qualityAction = (q: PreviewQuality, title: string): PaletteAction => ({
   group: 'preview',
   keys: [],
   run: () => usePreviewQuality.getState().setQuality(q),
+});
+
+const scopeAction = (kind: ScopeKind, title: string, also: string[]): PaletteAction => ({
+  id: `scopes-${kind}`,
+  title,
+  group: 'preview',
+  keys: [],
+  also,
+  run: () => useScopes.getState().showKind(kind),
+});
+
+const displayAction = (mode: TimeDisplay, title: string, also: readonly string[]): PaletteAction => ({
+  id: `time-display-${mode}`, title, group: 'timeline', keys: [], also,
+  why: () => (useTimeDisplay.getState().mode === mode ? `times already show as ${mode}` : null),
+  run: () => { useTimeDisplay.getState().setMode(mode); toast(`times show as ${mode}`); },
 });
 
 const toolAction = (tool: SceneTool, title: string): PaletteAction => ({
@@ -223,6 +250,22 @@ const EXTRA: readonly PaletteAction[] = [
     also: ['camera view'],
     run: () => useCameraInset.getState().toggle(),
   },
+  scopeAction('waveform', 'scopes: show the waveform', ['luma waveform', 'waveform monitor', 'exposure']),
+  scopeAction('parade', 'scopes: show the rgb parade', ['rgb parade', 'color balance', 'white balance check']),
+  scopeAction('vectorscope', 'scopes: show the vectorscope', ['vector scope', 'skin tone line', 'saturation check']),
+  scopeAction('histogram', 'scopes: show the histogram', ['levels', 'clipping', 'exposure histogram']),
+  {
+    id: 'scopes-exact',
+    title: 'scopes: exact reading on or off (every pixel, like the export)',
+    group: 'preview',
+    keys: [],
+    also: ['full resolution scopes', 'export quality scopes'],
+    run: () => {
+      const s = useScopes.getState();
+      s.setExact(!s.exact);
+      s.setOpen(true);
+    },
+  },
   qualityAction('full', 'preview quality: full'),
   qualityAction('half', 'preview quality: half (faster)'),
   qualityAction('quarter', 'preview quality: quarter (fastest)'),
@@ -237,6 +280,261 @@ const EXTRA: readonly PaletteAction[] = [
     group: 'app',
     keys: [],
     run: () => void window.dispatchEvent(new Event(LAYOUT_RESET_EVENT)),
+  },
+  // trim modes
+  {
+    id: 'slip-earlier',
+    title: 'slip the selected clip 1 frame earlier in its media',
+    group: 'editing',
+    keys: [],
+    also: ['slip clip selection left', 'slip tool'],
+    run: guarded(() => slipBy(-1)),
+  },
+  {
+    id: 'slip-later',
+    title: 'slip the selected clip 1 frame later in its media',
+    group: 'editing',
+    keys: [],
+    also: ['slip clip selection right'],
+    run: guarded(() => slipBy(1)),
+  },
+  {
+    id: 'slide-left',
+    title: 'slide the selected clip 1 frame left',
+    group: 'editing',
+    keys: [],
+    also: ['slide clip selection left', 'slide tool'],
+    run: guarded(() => slideBy(-1)),
+  },
+  {
+    id: 'slide-right',
+    title: 'slide the selected clip 1 frame right',
+    group: 'editing',
+    keys: [],
+    also: ['slide clip selection right'],
+    run: guarded(() => slideBy(1)),
+  },
+  // source view
+  {
+    id: 'side-by-side',
+    title: 'show the source view and the output side by side',
+    group: 'preview',
+    keys: [],
+    also: ['dual viewer', 'two up', 'source and program', 'two monitors', 'single viewer'],
+    run: () => {
+      useSourcePrefs.getState().toggleSideBySide();
+      toast(useSourcePrefs.getState().sideBySide ? 'side by side on' : 'side by side off');
+    },
+  },
+  {
+    id: 'media-skim',
+    title: 'skim video cards when the mouse moves over them',
+    group: 'preview',
+    keys: [],
+    also: ['hover scrub', 'skimming', 'scrub thumbnails'],
+    run: () => {
+      useSourcePrefs.getState().toggleSkim();
+      toast(useSourcePrefs.getState().skim ? 'skimming on' : 'skimming off');
+    },
+  },
+  {
+    id: 'source-empty',
+    title: 'empty the source view',
+    group: 'preview',
+    keys: [],
+    also: ['close source', 'unload source'],
+    run: () => emptySource(),
+  },
+  {
+    id: 'source-add',
+    title: 'add the media of the source view at the playhead (its marked part)',
+    group: 'editing',
+    keys: [],
+    also: ['insert source', 'add source clip'],
+    run: guarded(sourceAdd),
+  },
+  // in and out
+  {
+    id: 'mark-selection',
+    title: 'mark in and out around the selected clips',
+    group: 'inout',
+    keys: [],
+    also: ['mark selection', 'in and out from the selection'],
+    run: guarded(markSelection),
+  },
+  { id: 'clear-in', title: 'clear the in point', group: 'inout', keys: [], also: ['remove the in point'], run: guarded(clearIn) },
+  { id: 'clear-out', title: 'clear the out point', group: 'inout', keys: [], also: ['remove the out point'], run: guarded(clearOut) },
+  // split sound
+  {
+    id: 'join-sound',
+    title: 'join sound back (the sound clip goes, the picture plays its own sound again)',
+    group: 'editing',
+    keys: [],
+    also: ['link audio', 'relink', 'merge audio', 'reattach audio'],
+    run: guarded(() => joinSoundNow(selection())),
+  },
+  {
+    id: 'move-into-sync',
+    title: 'move the selected clips into sync with their picture or sound',
+    group: 'editing',
+    keys: [],
+    also: ['resync', 'fix sync', 'out of sync', 'sync audio'],
+    run: guarded(() => syncSoundNow(selection(), 'move')),
+  },
+  {
+    id: 'slip-into-sync',
+    title: 'slip the selected clips into sync (they stay, their media slides)',
+    group: 'editing',
+    keys: [],
+    also: ['resync', 'fix sync', 'out of sync'],
+    run: guarded(() => syncSoundNow(selection(), 'slip')),
+  },
+  {
+    id: 'select-sound',
+    title: 'select only the sound of the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['audio only', 'j cut', 'l cut', 'split edit'],
+    run: guarded(() => selectSideNow(selection(), 'sound')),
+  },
+  {
+    id: 'select-picture',
+    title: 'select only the picture of the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['video only'],
+    run: guarded(() => selectSideNow(selection(), 'picture')),
+  },
+  // mixer
+  {
+    id: 'solo-selection',
+    title: 'solo the tracks of the selected clips (again: hear every track)',
+    group: 'playback',
+    keys: [],
+    also: ['solo', 'listen alone', 'isolate track'],
+    run: () => soloSelectedTracks(),
+  },
+  {
+    id: 'solo-off',
+    title: 'solo off: hear every track',
+    group: 'playback',
+    keys: [],
+    also: ['unsolo', 'clear solo'],
+    run: () => useSolo.getState().clearSolo(),
+  },
+  {
+    id: 'mixer-reset',
+    title: 'reset the mixer: every fader to 0 db, every pan to the middle',
+    group: 'editing',
+    keys: [],
+    also: ['reset faders', 'reset levels', 'unity gain'],
+    run: guarded(() => useEditor.getState().resetMixer()),
+  },
+  // time display
+  displayAction('timecode', 'show times as timecode (hours:minutes:seconds:frames)', ['time display', 'timecode display', 'display format', 'time format', 'show timecode']),
+  displayAction('frames', 'show times as frames', ['frame count', 'frame numbers', 'show frames', 'display frames']),
+  displayAction('seconds', 'show times as seconds', ['show seconds', 'display seconds', 'time in seconds']),
+  // grade
+  {
+    id: 'grade-show',
+    title: 'show the grade of the selected clip',
+    group: 'editing',
+    keys: [],
+    also: ['color grading', 'color wheels', 'lift gamma gain', 'curves', 'primaries', 'lumetri color'],
+    run: guarded(() => showGrade(selection())),
+  },
+  {
+    id: 'grade-on-off',
+    title: 'turn the grade of the selected clips off or on',
+    group: 'editing',
+    keys: [],
+    also: ['bypass', 'before and after', 'compare grade', 'disable grade'],
+    run: guarded(() => {
+      const t = toggleGradeOn(selection());
+      if (t) toast(t);
+    }),
+  },
+  {
+    id: 'grade-reset',
+    title: 'reset the grade of the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['clear grade', 'remove grade', 'reset color wheels', 'reset curves'],
+    run: guarded(() => {
+      const t = resetGrades(selection());
+      if (t) toast(t);
+    }),
+  },
+  {
+    id: 'grade-copy',
+    title: 'copy the grade of the selected clip',
+    group: 'editing',
+    keys: [],
+    also: ['copy color', 'match shots'],
+    run: guarded(() => {
+      const t = copyGradeOf(selection());
+      if (t) toast(t);
+    }),
+  },
+  {
+    id: 'grade-paste',
+    title: 'paste the grade on the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['apply grade', 'paste color', 'match shots'],
+    run: guarded(() => {
+      const t = pasteGradeOn(selection());
+      if (t) toast(t);
+    }),
+  },
+  {
+    id: 'grade-add',
+    title: 'add a grade effect over everything below',
+    group: 'editing',
+    keys: [],
+    also: ['adjustment layer', 'color correction layer', 'grading layer'],
+    run: guarded(() => addGradeEffect()),
+  },
+  // three point edits
+  {
+    id: 'replace-edit',
+    title: 'replace edit: the clip under the playhead shows the source media, frame matched',
+    group: 'editing',
+    keys: [],
+    also: ['replace', 'replace edit', 'replace with source', 'swap shot', 'match frame replace'],
+    run: guarded(() => editNow('replace')),
+  },
+  {
+    id: 'fit-edit',
+    title: 'fit to the range: the marked part fills in to out at another speed',
+    group: 'editing',
+    keys: [],
+    also: ['fit to fill', 'fit edit', 'fit to range', 'speed to fill'],
+    run: guarded(() => editNow('fit')),
+  },
+  {
+    id: 'append-edit',
+    title: 'append: the marked part after the last clip of the target tracks',
+    group: 'editing',
+    keys: [],
+    also: ['append', 'append to end', 'append at end', 'add to end'],
+    run: guarded(() => editNow('append')),
+  },
+  {
+    id: 'edit-targets-auto',
+    title: 'edit targets back to auto (the lowest video track, the top audio track)',
+    group: 'editing',
+    keys: [],
+    also: ['reset targets', 'auto track targeting', 'source patching', 'patch tracks'],
+    run: targetsAutoNow,
+  },
+  {
+    id: 'edit-targets-selected',
+    title: 'target the tracks of the selected clips',
+    group: 'editing',
+    keys: [],
+    also: ['target selected tracks', 'patch to selection', 'destination track'],
+    run: targetSelectedNow,
   },
   // bend and pivot, last on purpose. no `why`: reasons.ts does not know them, the rows toast their own messages
   {

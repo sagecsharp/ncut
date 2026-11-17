@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { usePlayback } from '../../store/playback';
-import { call, clipOf, ed, fresh, oneStepOf, refused } from './editKit';
+import { addVideoClip, call, clipOf, ed, fresh, oneStepOf, refused } from './editKit';
 
 let id = '';
 beforeEach(async () => {
@@ -137,5 +137,28 @@ describe('clear_keyframes', () => {
   it('refuses a prop without keys', async () => {
     await call('set_keyframe', { id, prop: 'x', time: 3, value: 1 });
     await refused('clear_keyframes', { id, prop: 'y' }, /no keys.*keyed: x/);
+  });
+});
+
+describe('set_keyframe grade and pan', () => {
+  it('keys grade.liftR on a video and a grade effect, refuses it on blur', async () => {
+    const v = addVideoClip(fresh().video, 0);
+    const r = await oneStepOf(() => call('set_keyframe', { id: v, prop: 'grade.liftR', time: 0, value: 0.2 }));
+    expect(r.data.keys[0].v).toBe(0.2);
+    await call('set_keyframe', { id: v, prop: 'grade.offsetY', time: 1, value: -0.3 });
+    expect((clipOf(v).keyframes?.['grade.offsetY'] ?? []).length).toBe(1);
+    const fx = (await call('add_effect', { effect: 'grade', start: 0, duration: 3 })).data.id as string;
+    const k = await call('set_keyframe', { id: fx, prop: 'grade.gainB', time: 0, value: 0.4 });
+    expect(k.ok, k.text).toBe(true);
+    const blur = (await call('add_effect', { effect: 'blur', start: 0, duration: 3 })).data.id as string;
+    await refused('set_keyframe', { id: blur, prop: 'grade.liftR', time: 0, value: 0.2 }, /no animatable property "grade.liftR"/);
+  });
+
+  it('keys pan on a video clip', async () => {
+    const v = addVideoClip(fresh().video, 0);
+    const r = await oneStepOf(() => call('set_keyframe', { id: v, prop: 'pan', time: 0, value: -1 }));
+    expect(r.data.keys[0].v).toBe(-1);
+    const r2 = await call('set_keyframe', { id: v, prop: 'pan', time: 1, value: 5 });
+    expect(r2.data.keys.at(-1).v).toBe(1);
   });
 });

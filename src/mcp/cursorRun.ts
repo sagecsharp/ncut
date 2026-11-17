@@ -2,6 +2,7 @@
  * the glue between a tool call and the cursor store: points the caller's cursor before the tool runs and after it
  * ended. a cursor is only decoration, so nothing in here may ever break or hold back a tool call.
  */
+import { cleanRange } from '../lib/inOut';
 import { useEditor } from '../store/editorStore';
 import { useMcpCursors } from '../store/mcpCursors';
 import { targetAfter, targetBefore, type CursorLookup, type Target } from './cursor';
@@ -14,6 +15,7 @@ export const storeLookup: CursorLookup = {
     const c = useEditor.getState().project?.clips.find((x) => x.id === id);
     return c && 'transform' in c && c.transform ? { x: c.transform.x, y: c.transform.y } : undefined;
   },
+  rangeIn: () => cleanRange(useEditor.getState().project?.range)?.in,
 };
 
 /** a call that is being shown: null when cursors are off (nothing is computed then) */

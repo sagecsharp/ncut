@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Ellipsis, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
 import { getClipBox } from '../../engine/draw';
 import { pivotOffset } from '../../engine/pivot';
@@ -13,7 +13,7 @@ import { withFollowerMovesFrom } from '../timeline/followMoves';
 import { useUi } from '../../store/ui';
 import { tip } from '../shell/tip';
 import { openClipMenuAt } from '../timeline/commands';
-import type { Clip, MediaKind, Project, TextAlign, Transform, VisualClip } from '../../types';
+import type { Clip, EffectClip, MediaKind, Project, TextAlign, Transform, VisualClip } from '../../types';
 import { DEFAULT_TRANSFORM, isTimedClip, isVisualClip } from '../../types';
 import { AnimField, InspectedClip } from './AnimField';
 import { BendSection } from './BendSection';
@@ -29,11 +29,15 @@ import { BeatSyncSection, TempoSection } from './BeatSections';
 import { hasKeys } from './keyActions';
 import { LookSection } from './LookSection';
 import { ColorSection } from './ColorSection';
+import { GradeSection } from './GradeSection';
+import { AudioSection } from './AudioSection';
 import { OnSidesNote } from './FacesSection';
 import { MaskSection } from './MaskSection';
 import { SwapMedia } from './SwapMedia';
 import { LinksSection } from './AttachSection';
 import { hasLinks } from '../../lib/links';
+import { GRADE_EFFECT, canGrade } from '../../lib/gradeData';
+import { hasSoundApart } from '../../lib/soundPair';
 import { ClipMotionSection } from './MotionSection';
 import { ShapeSection } from './ShapeSection';
 import { PathSection } from './PathSection';
@@ -46,10 +50,13 @@ import { beginEdit, liveOpts } from './edit';
 import { handFocusTo, takesFocus } from './focusHandoff';
 import { STRETCH_REST, coverScale, thicknessAtRest } from './shapeLogic';
 import { InspectorTabs, rememberTab, rememberedTab } from './TabBar';
-import { onTab, resolveTab, sectionsOf, tabsFor } from './clipTabs';
+import { onTab, resolveTab, revealTab, sectionsOf, tabsFor } from './clipTabs';
 import type { InspectorTab, SectionId } from './clipTabs';
 
 const actions = () => useEditor.getState();
+
+/** the newest reveal ask a tab switch has answered, so a new inspector does not answer an old one */
+let tabRevealHandled = 0;
 
 /** a field interaction starts: undo step + follower snapshot */
 function beginFollowEdit(): void {
@@ -243,25 +250,6 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
           reset
         </button>
       </div>
-    </Section>
-  );
-});
-
-/* ---------- audio ---------- */
-
-const AudioSection = memo(function AudioSection({ id, muted }: { id: string; muted: boolean }) {
-  return (
-    <Section id="audio" title="audio">
-      <AnimField id={id} prop="volume" label="volume" title="volume (%)" feel="volume" />
-      <Row label="mute" title="mute this clip: no sound from it">
-        <input
-          type="checkbox"
-          className="checkbox"
-          title="mute"
-          checked={muted}
-          onChange={(e) => actions().updateClip(id, { muted: e.target.checked })}
-        />
-      </Row>
     </Section>
   );
 });
@@ -498,6 +486,18 @@ export function ClipInspector({ id }: { id: string }) {
   const [wanted, setWanted] = useState<InspectorTab>(rememberedTab);
   // an effect, camera or sound clip only has an "attach" section while it is linked to something
   const linked = useEditor((s) => !!clip && !!s.project && hasLinks(s.project, clip));
+  const apart = useEditor((s) => clip?.type === 'video' && !!s.project && hasSoundApart(s.project.clips, id));
+  const revealN = useUi((s) => s.reveal?.n ?? 0);
+  useEffect(() => {
+    if (revealN <= tabRevealHandled) return;
+    tabRevealHandled = revealN;
+    const next = revealTab(wanted, useUi.getState().reveal?.id ?? '');
+    if (next) {
+      rememberTab(next);
+      setWanted(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealN]);
   const body = useRef<HTMLDivElement>(null);
   const feelCtx = useCanvasFeelCtx();
   if (!clip) {
@@ -516,7 +516,7 @@ export function ClipInspector({ id }: { id: string }) {
   const timed = isTimedClip(clip);
   const hasAudio = clip.type === 'audio' || (clip.type === 'video' && (asset?.hasAudio ?? true));
   // which sections this clip has, which tabs that makes, and which sections show on the chosen tab
-  const have = sectionsOf(clip.type, hasAudio, linked);
+  const have = sectionsOf(clip.type, hasAudio, linked, clip.type === 'effect' && clip.effect === GRADE_EFFECT);
   const tabs = tabsFor(have);
   const tab = resolveTab(wanted, tabs);
   const show = (id: SectionId) => have.includes(id) && onTab(tab, id);
@@ -620,12 +620,13 @@ export function ClipInspector({ id }: { id: string }) {
         {show('attach') ? <LinksSection clip={clip} /> : null}
         {show('look') && isVisualClip(clip) ? <LookSection clip={clip} /> : null}
         {show('color') && isVisualClip(clip) ? <ColorSection clip={clip} /> : null}
+        {show('grade') && canGrade(clip) ? <GradeSection clip={clip as VisualClip | EffectClip} /> : null}
         {show('mask') && isVisualClip(clip) ? <MaskSection clip={clip} /> : null}
         {show('clip-effects') && isVisualClip(clip) ? <ClipEffectsSection clip={clip} /> : null}
         {show('motion') && isVisualClip(clip) ? <ClipMotionSection clip={clip} /> : null}
         {show('transition') && isVisualClip(clip) ? <TransitionSection clip={clip} transition={clip.transition} /> : null}
         {show('audio') && (clip.type === 'video' || clip.type === 'audio') ? <AudioSection id={clip.id} muted={clip.muted} /> : null}
-        {show('tempo') && (clip.type === 'video' || clip.type === 'audio') ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
+        {show('tempo') && (clip.type === 'video' || clip.type === 'audio') && !apart ? <TempoSection id={clip.id} bpm={clip.bpm} beatOffset={clip.beatOffset} speed={clip.speed} /> : null}
         {show('speed') && (clip.type === 'video' || clip.type === 'audio') ? <SpeedSection id={clip.id} speed={clip.speed} /> : null}
         {show('fades') ? (
           <FadeSection id={clip.id} fadeIn={clip.fadeIn} fadeOut={clip.fadeOut} duration={clip.duration}

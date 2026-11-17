@@ -5,6 +5,7 @@
  */
 import type { Clip, Project } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
+import { expandGroups } from '../../lib/links';
 import type { ClipMove } from '../../store/editorStore';
 import { planInsertGap } from './gapInsert';
 import { withFollowerMoves } from './followMoves';
@@ -49,6 +50,15 @@ export function planDropInsert(
   if (shift <= EPS) return { start: point, shift: 0, moves: [], insert };
   const planned = planInsertGap(project.clips, project.tracks, point, shift, trackId);
   // an effect follows its clip: it goes with a clip that moves and stays with one that does not
-  const moves = withFollowerMoves(project.clips, project.tracks, planned, true);
+  // the group mates on other tracks move with it (the sound of a pair): a refused move stops the whole drop
+  const moved = new Set(planned.map((m) => m.id));
+  const byId = new Map(project.clips.map((c) => [c.id, c]));
+  const all = [...planned];
+  for (const id of expandGroups(project, [...moved])) {
+    const c = byId.get(id);
+    if (!c || moved.has(id) || c.trackId === trackId) continue;
+    all.push({ id, trackId: c.trackId, start: c.start + shift });
+  }
+  const moves = withFollowerMoves(project.clips, project.tracks, all, true);
   return { start: point, shift, moves, insert };
 }

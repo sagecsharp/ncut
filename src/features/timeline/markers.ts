@@ -4,6 +4,7 @@
  */
 import type { Marker, Project } from '../../types';
 import { collectSnapPoints } from '../../lib/timelineOps';
+import { cleanRange, playheadStops, rangeTimes } from '../../lib/inOut';
 
 /** flag height in the ruler (px) */
 export const FLAG_H = 13;
@@ -90,15 +91,27 @@ export function markerTimes(markers: readonly Marker[] | undefined, skipId?: str
   return out;
 }
 
+/** snap times for scrubbing: the markers and the in / out marks (see playheadStops) */
+export function scrubSnapPoints(project: Pick<Project, 'markers' | 'range' | 'fps'>): number[] {
+  return [...markerTimes(project.markers), ...playheadStops(project.range, project.fps)];
+}
+
 /**
  * snap times for clip moves, trims and scrubbing: clip edges, 0, the extras (playhead) and every
  * marker. sorted and unique.
  */
 export function timelineSnapPoints(
-  project: Pick<Project, 'clips' | 'markers'>,
+  project: Pick<Project, 'clips' | 'markers' | 'range'>,
   ignoreIds: readonly string[] = [],
   extra: readonly number[] = [],
   skipMarkerId?: string,
 ): number[] {
-  return collectSnapPoints(project, ignoreIds, [...extra, ...markerTimes(project.markers, skipMarkerId)]);
+  return collectSnapPoints(project, ignoreIds, [...extra, ...markerTimes(project.markers, skipMarkerId), ...rangeTimes(project.range)]);
+}
+
+/** snap times while a bracket is dragged: clip edges, 0, the playhead, the markers and the other mark (not the dragged one) */
+export function rangeSnapPoints(project: Pick<Project, 'clips' | 'markers' | 'range'>, which: 'in' | 'out', playhead: number): number[] {
+  const r = cleanRange(project.range);
+  const other = which === 'in' ? r?.out : r?.in;
+  return collectSnapPoints(project, [], [playhead, ...markerTimes(project.markers), ...(other !== undefined ? [other] : [])]);
 }

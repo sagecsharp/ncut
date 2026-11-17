@@ -6,7 +6,7 @@
  * applies at most one update per animation frame.
  */
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent } from 'react';
-import type { Clip, ClipType, EffectClip } from '../../types';
+import type { Clip, ClipType, EffectClip, Track } from '../../types';
 import { trackKindForClip } from '../../types';
 import { keyTimes } from '../../lib/anim';
 import { formatTimecode, snapToFrame } from '../../lib/time';
@@ -17,18 +17,28 @@ import { snapTimeFast as snapTime } from './snapSearch';
 import { useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { findFollowers, placeFollowers } from './effectFollow';
 import type { ClipSpan } from './effectFollow';
 import { planGroupTrim } from './groupTrim';
 import { hitKey } from './keyGeometry';
 import { groupIds, marqueeReplaceList, pressedSelection } from './selectionRules';
-import { HEADER_W, RULER_H, SNAP_PX, computeLayout, hitGap, hitLane } from './layout';
+import { CLIP_INSET, HEADER_W, RULER_H, SNAP_PX, computeLayout, hitGap, hitLane } from './layout';
 import { gapForMove, singleTrack } from './moveGap';
-import { hitMarker, markerTimes, timelineSnapPoints } from './markers';
+import { hitMarker, scrubSnapPoints, timelineSnapPoints } from './markers';
 import type { MarkerMenuRequest } from './MarkerUi';
 import type { Layout } from './layout';
 import type { Overlays } from './overlays';
-import { interaction, notifyView, view } from './view';
+import { TRIM_CURSORS } from './trimCursors';
+import { dragDelta, planFor, readoutText } from './trimDrag';
+import { setTrimView } from './trimLive';
+import type { TrimViewReq } from './trimLive';
+import { touchingAfter, touchingBefore } from './trimModes';
+import type { TrimMode, TrimPlan } from './trimModes';
+import { modeLabel, trimPress } from './trimPress';
+import type { PressMods, PressZone, TrimCursor, TrimPress } from './trimPress';
+import { TRIM_TEXT, lockedTracksText, trimStopText } from './trimText';
+import { interaction, notifyView, subscribeView, view } from './view';
 
 export interface MenuRequest {
   x: number;
@@ -157,9 +167,33 @@ interface MarkerGesture extends Base {
   points: number[];
 }
 
-type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture | KeyGesture | TransitionGesture | MarkerGesture;
+/** a trim mode drag (trim 3.5): every frame is a plan of the press, replanned from the clips at the first real move */
+interface EditGesture extends Base {
+  kind: 'edit';
+  press: TrimPress;
+  zone: PressZone;
+  /** ctrl was down at the press */
+  ctrl: boolean;
+  alt: boolean;
+  /** pointer time at press, scroll included */
+  anchor: number;
+  /** the clips the plan may bring along: the selection after the press rule, or just the grabbed clip(s) */
+  pool: string[];
+  baseClips: Clip[];
+  lastClips: Clip[];
+  lastTracks: Track[];
+  /** edge times of the grabbed clips that snap, empty for a slip */
+  edges: number[];
+  points: number[];
+  lastKey: string;
+  plan: TrimPlan | null;
+  wrote: boolean;
+}
+
+type Gesture = MoveGesture | TrimGesture | SeekGesture | MarqueeGesture | KeyGesture | TransitionGesture | MarkerGesture | EditGesture;
 
 const DRAG_THRESHOLD = 3;
+const HINT_DELAY = 250;
 const EDGE = 36;
 const EDGE_MAX_SPEED = 22;
 
@@ -168,6 +202,17 @@ type PointerLike = ReactPointerEvent<HTMLElement>;
 export function createGestures(env: GestureEnv) {
   let g: Gesture | null = null;
   let rafId = 0;
+  /** the capture phase keydown listener of a running edit drag (escape puts everything back) */
+  let escListener: ((e: KeyboardEvent) => void) | null = null;
+  // trim mode hover: the pointer shape, the hint after a pause, the keys that change both
+  let cursorKey: TrimCursor | null = null;
+  let hoverRaf = 0;
+  let hintTimer = 0;
+  let hintKey = '';
+  let hintShown = false;
+  let hoverKeys = false;
+  let offView: (() => void) | null = null;
+  const pt = { has: false, cx: 0, cy: 0, target: null as HTMLElement | null, ctrl: false, shift: false, alt: false };
 
   const store = () => useEditor.getState();
 
@@ -203,6 +248,7 @@ export function createGestures(env: GestureEnv) {
 
   function begin(next: Gesture, mode: string): void {
     end();
+    hideHint();
     g = next;
     try {
       next.captureEl?.setPointerCapture(next.pointerId);
@@ -225,6 +271,10 @@ export function createGestures(env: GestureEnv) {
   function end(): void {
     const cur = g;
     g = null;
+    if (escListener) {
+      window.removeEventListener('keydown', escListener, true);
+      escListener = null;
+    }
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
@@ -247,6 +297,13 @@ export function createGestures(env: GestureEnv) {
       const content = scroller.firstElementChild as HTMLElement | null;
       if (content) content.style.minWidth = '';
     }
+    if (cur?.kind === 'edit') {
+      setTrimView(null);
+      setCursor(null);
+      // the pointer moved while the drag held it: forget the old spot, the next move over the lanes checks again
+      pt.has = false;
+      pt.target = null;
+    }
   }
 
   function onMove(e: PointerEvent): void {
@@ -267,12 +324,18 @@ export function createGestures(env: GestureEnv) {
     }
     const cur = g;
     step(cur);
+    // a step can end the gesture itself (an edit that was blocked, a change from outside)
+    if (g !== cur) return;
     finish(cur);
     end();
   }
 
   function onCancel(e: PointerEvent): void {
     if (!g || e.pointerId !== g.pointerId) return;
+    if (g.kind === 'edit') {
+      cancelEdit(g);
+      return;
+    }
     end();
   }
 
@@ -307,7 +370,7 @@ export function createGestures(env: GestureEnv) {
       }
     }
     step(cur);
-    if (again) schedule();
+    if (again && g === cur) schedule();
   }
 
   function step(cur: Gesture): void {
@@ -333,11 +396,15 @@ export function createGestures(env: GestureEnv) {
       case 'marker':
         stepMarker(cur);
         break;
+      case 'edit':
+        stepEdit(cur);
+        break;
     }
   }
 
   function finish(cur: Gesture): void {
     if (cur.kind === 'move') finishMove(cur);
+    else if (cur.kind === 'edit') finishEdit(cur);
     else if ((cur.kind === 'key' || cur.kind === 'marker') && !cur.started) usePlayback.getState().seek(cur.time);
   }
 
@@ -719,12 +786,405 @@ export function createGestures(env: GestureEnv) {
     st.select(marqueeReplaceList(project, mq.baseSelection, hits), 'replace');
   }
 
+  /* ---------- trim mode: edit drags ---------- */
+
+  const clipOf = (clips: readonly Clip[], id: string | undefined): Clip | undefined => (id === undefined ? undefined : clips.find((c) => c.id === id));
+  const edgeTime = (c: Clip, edge: 'start' | 'end'): number => (edge === 'end' ? clipEnd(c) : c.start);
+  const modsOf = (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }): PressMods => ({
+    ctrl: e.ctrlKey || e.metaKey,
+    shift: e.shiftKey,
+    alt: e.altKey,
+  });
+
+  /** what a press means by where it landed: an edge handle, a transition band, or the body of a clip */
+  function zoneOf(target: HTMLElement): PressZone {
+    const t = target.closest<HTMLElement>('[data-trim]')?.dataset.trim;
+    if (t === 'start' || t === 'end') return t;
+    return target.closest('[data-transition-clip]') ? 'band' : 'body';
+  }
+
+  /** the pointer shape of trim mode on the scroller, or none */
+  function setCursor(key: TrimCursor | null): void {
+    if (key === cursorKey) return;
+    cursorKey = key;
+    const el = env.getScroller();
+    if (!el) return;
+    if (key) {
+      el.dataset.trimCursor = key;
+      el.style.setProperty('--tl-cur', TRIM_CURSORS[key]);
+    } else {
+      delete el.dataset.trimCursor;
+      el.style.removeProperty('--tl-cur');
+    }
+  }
+
+  function viewReq(press: TrimPress): TrimViewReq {
+    if (press.mode === 'move-edit') {
+      return { mode: 'move-edit', clipId: press.clipId, edge: press.edge ?? 'end', otherId: press.edge === 'start' ? press.leftId : press.rightId };
+    }
+    if (press.mode === 'ripple') return { mode: 'ripple', clipId: press.clipId, edge: press.edge ?? 'end' };
+    return { mode: press.mode as TrimMode, clipId: press.clipId };
+  }
+
+  /** the pointer pressed an edge, an edit or the middle of a clip in trim mode (or ctrl on an edge): the press rule, then a drag that plans */
+  function startEdit(e: PointerLike, geo: Geo, layout: Layout, captureEl: Element, press: TrimPress, zone: PressZone, mods: PressMods): void {
+    const st = store();
+    const project = st.project;
+    if (!project) return;
+    const id = press.clipId;
+    const left = press.leftId;
+    const right = press.rightId;
+    if (press.mode === 'move-edit' && left !== undefined && right !== undefined) {
+      if (!st.selection.includes(left) || !st.selection.includes(right)) {
+        st.select(mods.alt ? [left, right] : [...new Set([...groupIds(project, left), ...groupIds(project, right)])], 'replace');
+      }
+    } else if (press.mode !== 'slide' && !st.selection.includes(id)) {
+      st.select(groupIds(project, id, mods.alt), 'replace');
+    }
+    const pool = press.alone ? (press.mode === 'move-edit' && left !== undefined && right !== undefined ? [left, right] : [id]) : [...store().selection];
+    const ed: EditGesture = {
+      ...base(e, geo, layout, captureEl),
+      kind: 'edit',
+      press,
+      zone,
+      alt: mods.alt,
+      ctrl: mods.ctrl,
+      anchor: laneX(geo, e.clientX) / st.zoom,
+      pool,
+      baseClips: project.clips,
+      lastClips: project.clips,
+      lastTracks: project.tracks,
+      edges: [],
+      points: [],
+      lastKey: '',
+      plan: null,
+      wrote: false,
+    };
+    begin(ed, 'edit');
+    setCursor(press.cursor);
+    escListener = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      cancelEdit(ed);
+    };
+    window.addEventListener('keydown', escListener, true);
+    const pos = readoutPos(ed, project.clips);
+    if (pos) env.overlays.setReadout(pos.x, pos.y, modeLabel(press.mode as TrimMode));
+  }
+
+  /** escape or a cancelled pointer: what the drag wrote is taken back */
+  function cancelEdit(ed: EditGesture): void {
+    if (ed.wrote) store().rollback();
+    end();
+  }
+
+  /** where the readout goes: above the lane of the grabbed clip, at its edge (the middle for a slip or a slide) */
+  function readoutPos(ed: EditGesture, clips: readonly Clip[]): { x: number; y: number } | null {
+    const press = ed.press;
+    const c = clipOf(clips, press.clipId);
+    if (!c) return null;
+    const i = ed.lastTracks.findIndex((t) => t.id === c.trackId);
+    const top = ed.layout.tops[i];
+    if (top === undefined) return null;
+    let t: number;
+    if (press.mode === 'slip' || press.mode === 'slide') t = c.start + c.duration / 2;
+    else if (press.mode === 'move-edit') t = (clipOf(clips, press.rightId) ?? c).start;
+    else t = edgeTime(c, press.edge ?? 'end');
+    return { x: Math.round(t * ed.zoom), y: Math.max(0, top - 15) };
+  }
+
+  function stepEdit(ed: EditGesture): void {
+    const st = store();
+    const project = st.project;
+    if (!project) return;
+    const press = ed.press;
+    const ui = useUi.getState();
+    if (!ed.started) {
+      if (Math.hypot(ed.cx - ed.startX, ed.cy - ed.startY) < DRAG_THRESHOLD) return;
+      ed.started = true;
+      if (press.blocked) {
+        ui.toast(trimStopText(press.blocked, project));
+        end();
+        return;
+      }
+      const grabbed = clipOf(project.clips, press.clipId);
+      if (!grabbed) {
+        end();
+        return;
+      }
+      // a slide waits for its first real move: a click before it is today's alt click
+      if (press.mode === 'slide') {
+        if (!st.selection.includes(press.clipId)) st.select(groupIds(project, press.clipId, true), 'replace');
+        ed.pool = [...store().selection];
+      }
+      st.pushHistory();
+      ed.baseClips = project.clips;
+      ed.lastClips = project.clips;
+      ed.lastTracks = project.tracks;
+      if (press.mode === 'ripple' || press.mode === 'stretch') ed.edges = [edgeTime(grabbed, press.edge ?? 'end')];
+      else if (press.mode === 'move-edit') ed.edges = [(clipOf(project.clips, press.rightId) ?? grabbed).start];
+      else if (press.mode === 'slide') ed.edges = [grabbed.start, clipEnd(grabbed)];
+      if (st.snapping && ed.edges.length > 0) {
+        // the clips a plan moves cannot be snap points: ask it for one frame each way
+        const ignore = new Set<string>([press.clipId]);
+        if (press.leftId !== undefined) ignore.add(press.leftId);
+        if (press.rightId !== undefined) ignore.add(press.rightId);
+        for (const dir of [1, -1]) {
+          const probe = planFor(press, project, dir / project.fps, ed.pool);
+          if (!probe) continue;
+          for (const op of probe.ops) {
+            if (op.kind === 'move') for (const m of op.moves) ignore.add(m.id);
+            else ignore.add(op.id);
+          }
+        }
+        ed.points = timelineSnapPoints(project, [...ignore], [usePlayback.getState().time]);
+      }
+      if (press.mode !== 'stretch') setTrimView(viewReq(press));
+    }
+    // something else wrote to the timeline: the drag stops and keeps what it has
+    if (project.clips !== ed.lastClips || project.tracks !== ed.lastTracks) {
+      ui.toast(TRIM_TEXT.dragStopped);
+      end();
+      return;
+    }
+    const fps = project.fps;
+    const raw = laneX(ed.geo, ed.cx) / ed.zoom - ed.anchor;
+    const d = dragDelta({ raw, fps, edges: ed.edges, points: ed.points, threshold: SNAP_PX / ed.zoom });
+    const plan = planFor(press, { ...project, clips: ed.baseClips }, d.delta, ed.pool);
+    if (!plan) return;
+    if (plan.key !== ed.lastKey) {
+      ed.lastKey = plan.key;
+      const before = project.clips;
+      if (st.applyTrimPlan(plan.ops, { skipHistory: true, from: ed.baseClips })) {
+        ed.plan = plan;
+        const now = store().project;
+        if (now) {
+          if (now.clips !== before) ed.wrote = true;
+          ed.lastClips = now.clips;
+          ed.lastTracks = now.tracks;
+        }
+      }
+    }
+    const now = store().project ?? project;
+    env.overlays.setSnap(plan.stop === null ? d.snap : null, ed.zoom);
+    const pos = readoutPos(ed, now.clips);
+    if (pos) env.overlays.setReadout(pos.x, pos.y, readoutText(ed.plan ?? plan, plan.stop, now, press.clipId, fps));
+    const blocker = plan.stop ? clipOf(now.clips, plan.stop.clipId) : undefined;
+    const bi = blocker ? ed.lastTracks.findIndex((t) => t.id === blocker.trackId) : -1;
+    if (blocker && bi >= 0) {
+      env.overlays.setGhost(
+        { x: blocker.start * ed.zoom, y: ed.layout.tops[bi]! + CLIP_INSET, w: blocker.duration * ed.zoom, h: ed.layout.heights[bi]! - 2 * CLIP_INSET },
+        'block',
+      );
+    } else env.overlays.setGhost(null);
+  }
+
+  function finishEdit(ed: EditGesture): void {
+    const st = store();
+    const press = ed.press;
+    if (!ed.started) {
+      clickEdit(ed);
+      return;
+    }
+    const plan = ed.plan;
+    if (!plan || plan.ops.length === 0) {
+      st.rollback();
+      return;
+    }
+    const project = st.project;
+    const ui = useUi.getState();
+    if (project && plan.lockedBehind.length > 0) ui.toast(TRIM_TEXT.lockedStay.replace('{tracks}', lockedTracksText(project, plan.lockedBehind)));
+    if (!ui.trimMode) return;
+    if (press.mode === 'ripple' && press.edge) ui.setTrimEdge({ clipId: press.clipId, edge: press.edge, both: false, alone: press.alone });
+    else if (press.mode === 'move-edit' && press.leftId !== undefined) ui.setTrimEdge({ clipId: press.leftId, edge: 'end', both: true, alone: press.alone });
+  }
+
+  /** a release without a real move (trim 4.6): a click on an edge picks it, a slide press is today's alt click */
+  function clickEdit(ed: EditGesture): void {
+    const st = store();
+    const project = st.project;
+    const press = ed.press;
+    if (!project) return;
+    if (press.mode === 'slide') {
+      st.select([press.clipId], 'replace');
+      return;
+    }
+    if (press.mode === 'slip') {
+      if (st.selection.length > 1 && st.selection.includes(press.clipId)) st.select(groupIds(project, press.clipId), 'replace');
+      return;
+    }
+    const ui = useUi.getState();
+    if (!ui.trimMode) return;
+    if (press.mode === 'move-edit' && press.leftId !== undefined) ui.setTrimEdge({ clipId: press.leftId, edge: 'end', both: true, alone: press.alone });
+    else if (press.edge) {
+      const clip = project.clips.find((c) => c.id === press.clipId);
+      const other = clip && !ed.ctrl ? (press.edge === 'end' ? touchingAfter(project, clip) : touchingBefore(project, clip)) : null;
+      if (clip && other) ui.setTrimEdge({ clipId: press.edge === 'end' ? clip.id : other.id, edge: 'end', both: true, alone: press.alone });
+      else ui.setTrimEdge({ clipId: press.clipId, edge: press.edge, both: false, alone: press.alone });
+    }
+  }
+
+  /* ---------- trim mode: hover (trim 4.3) ---------- */
+
+  function scheduleHover(): void {
+    if (!hoverRaf) hoverRaf = requestAnimationFrame(evalHover);
+  }
+
+  function hideHint(): void {
+    if (hintTimer) {
+      window.clearTimeout(hintTimer);
+      hintTimer = 0;
+    }
+    if (hintShown) {
+      hintShown = false;
+      env.overlays.setReadout(0, 0, null);
+    }
+    hintKey = '';
+  }
+
+  function showHint(clipId: string, text: string): void {
+    hintTimer = 0;
+    if (g) return;
+    const project = store().project;
+    const geo = measure();
+    if (!project || !geo) return;
+    const c = clipOf(project.clips, clipId);
+    const i = c ? project.tracks.findIndex((t) => t.id === c.trackId) : -1;
+    const top = computeLayout(project.tracks).tops[i];
+    if (top === undefined) return;
+    hintShown = true;
+    env.overlays.setReadout(Math.round(laneX(geo, pt.cx) + 12), Math.max(0, top - 15), text);
+  }
+
+  function onModKey(e: KeyboardEvent): void {
+    if (e.key !== 'Control' && e.key !== 'Meta' && e.key !== 'Shift' && e.key !== 'Alt') return;
+    pt.ctrl = e.ctrlKey || e.metaKey;
+    pt.shift = e.shiftKey;
+    pt.alt = e.altKey;
+    scheduleHover();
+  }
+
+  function startHoverKeys(): void {
+    if (hoverKeys) return;
+    hoverKeys = true;
+    window.addEventListener('keydown', onModKey);
+    window.addEventListener('keyup', onModKey);
+    offView = subscribeView(hideHint);
+  }
+
+  function stopHoverKeys(): void {
+    if (!hoverKeys) return;
+    hoverKeys = false;
+    window.removeEventListener('keydown', onModKey);
+    window.removeEventListener('keyup', onModKey);
+    offView?.();
+    offView = null;
+  }
+
+  /** one evaluation per frame: what is under the pointer decides the pointer shape and the hint */
+  function evalHover(): void {
+    hoverRaf = 0;
+    const target = pt.target;
+    if (g || !pt.has || !target) return;
+    const project = store().project;
+    if (!project || !target.isConnected) {
+      setCursor(null);
+      hideHint();
+      return;
+    }
+    startHoverKeys();
+    const mods: PressMods = { ctrl: pt.ctrl, shift: pt.shift, alt: pt.alt };
+    const trimMode = useUi.getState().trimMode;
+    const zone = zoneOf(target);
+    let press: TrimPress | null = null;
+    let id: string | undefined;
+    if ((trimMode || mods.ctrl) && !target.closest('[data-transition-handle]')) {
+      const clipEl = target.closest<HTMLElement>('[data-clip-id]');
+      id = clipEl?.dataset.clipId ?? target.closest<HTMLElement>('[data-transition-clip]')?.dataset.transitionClip;
+      const clip = id === undefined ? undefined : clipOf(project.clips, id);
+      let onKey = false;
+      if (clip && clipEl && clip.keyframes && !mods.shift && !mods.ctrl) {
+        const rect = clipEl.getBoundingClientRect();
+        onKey =
+          hitKey(
+            keyTimes(clip.keyframes, undefined, clip.duration),
+            store().zoom,
+            Math.max(2, clip.duration * store().zoom),
+            rect.height - 2,
+            pt.cx - rect.left - 1,
+            pt.cy - rect.top - 1,
+          ) !== null;
+      }
+      if (clip && !onKey && (trimMode || (mods.ctrl && (zone === 'start' || zone === 'end')))) press = trimPress(project, clip.id, zone, mods, trimMode);
+    }
+    setCursor(press ? press.cursor : null);
+    if (!press || id === undefined) {
+      hideHint();
+      return;
+    }
+    const key = `${id}|${zone}|${press.hint}`;
+    if (key === hintKey) return;
+    hideHint();
+    hintKey = key;
+    const clipId = id;
+    const text = press.hint;
+    hintTimer = window.setTimeout(() => showHint(clipId, text), HINT_DELAY);
+  }
+
+  /** the pointer moved over the lanes. outside a gesture, with nothing to show, this costs one early return */
+  function onLanesHover(e: PointerLike): void {
+    if (g || e.buttons !== 0 || e.pointerType === 'touch') return;
+    pt.has = true;
+    pt.cx = e.clientX;
+    pt.cy = e.clientY;
+    pt.target = e.target as HTMLElement;
+    pt.ctrl = e.ctrlKey || e.metaKey;
+    pt.shift = e.shiftKey;
+    pt.alt = e.altKey;
+    if (!pt.ctrl && cursorKey === null && hintKey === '' && !useUi.getState().trimMode) return;
+    scheduleHover();
+  }
+
+  function onLanesLeave(): void {
+    if (g) return;
+    pt.has = false;
+    pt.target = null;
+    if (hoverRaf) {
+      cancelAnimationFrame(hoverRaf);
+      hoverRaf = 0;
+    }
+    hideHint();
+    setCursor(null);
+    stopHoverKeys();
+  }
+
+  /** trim mode toggled or a drag ended: look at what is under the pointer again */
+  function refreshHover(): void {
+    if (g || !pt.has) return;
+    scheduleHover();
+  }
+
+  function dispose(): void {
+    end();
+    if (hoverRaf) {
+      cancelAnimationFrame(hoverRaf);
+      hoverRaf = 0;
+    }
+    hideHint();
+    stopHoverKeys();
+    pt.has = false;
+    pt.target = null;
+  }
+
   /* ---------- entry points ---------- */
 
   function onLanesPointerDown(e: PointerLike): void {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest('.timeline-head')) return;
+    // a selected edge lives until the next press in the lanes: a click on an edge in trim mode picks it again on release
+    useUi.getState().setTrimEdge(null);
     const st = store();
     const project = st.project;
     if (!project) return;
@@ -746,7 +1206,13 @@ export function createGestures(env: GestureEnv) {
       const id = pressId;
       const clip = project.clips.find((c) => c.id === id);
       const track = clip ? project.tracks.find((t) => t.id === clip.trackId) : undefined;
-      if (!clip || !track || track.locked) return;
+      if (!clip || !track) return;
+      if (track.locked) {
+        // in trim mode (or ctrl on an edge) a press that goes nowhere says why
+        const zone = zoneOf(target);
+        if (useUi.getState().trimMode || ((e.ctrlKey || e.metaKey) && (zone === 'start' || zone === 'end'))) useUi.getState().toast(trimStopText({ why: 'locked', clipId: id }, project));
+        return;
+      }
       e.preventDefault();
       if (handleEl) {
         if (!st.selection.includes(id)) st.select([id], 'replace');
@@ -792,6 +1258,17 @@ export function createGestures(env: GestureEnv) {
             },
             'trim',
           );
+          return;
+        }
+      }
+      // trim mode (or ctrl on an edge): the press map decides. a plain move is today's code below
+      const zone = zoneOf(target);
+      const mods = modsOf(e);
+      const trimMode = useUi.getState().trimMode;
+      if (trimMode || (mods.ctrl && (zone === 'start' || zone === 'end'))) {
+        const press = trimPress(project, id, zone, mods, trimMode);
+        if (press && press.mode !== 'move') {
+          startEdit(e, geo, layout, captureEl, press, zone, mods);
           return;
         }
       }
@@ -921,7 +1398,7 @@ export function createGestures(env: GestureEnv) {
       );
       return;
     }
-    const points: number[] = markerTimes(st.snapping ? project.markers : undefined);
+    const points: number[] = st.snapping ? scrubSnapPoints(project) : [];
     if (st.snapping && st.selection.length > 0) {
       const sel = new Set(st.selection);
       for (const c of project.clips) {
@@ -983,7 +1460,10 @@ export function createGestures(env: GestureEnv) {
     onRulerDoubleClick,
     onRulerContextMenu,
     onContextMenu,
-    dispose: end,
+    onLanesHover,
+    onLanesLeave,
+    refreshHover,
+    dispose,
   };
 }
 

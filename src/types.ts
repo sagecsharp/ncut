@@ -21,6 +21,18 @@ export interface MediaAsset {
   /** true for audio assets and for video assets that carry an audio track. */
   hasAudio: boolean;
   createdAt: number;
+  /** the marked part of a video or audio file, seconds into the file, [in, out); either may be missing.
+   *  set with setMediaMarks, read with marksOf. not undo history. never on pictures */
+  marks?: InOutRange;
+}
+
+/** what of a media a new clip takes: both (default), the picture alone (sound muted) or the sound alone (an audio clip) */
+export type ClipParts = 'both' | 'picture' | 'sound';
+
+/** the part of a media a new clip takes. missing keys = today's whole clip */
+export interface ClipTake {
+  range?: InOutRange | null;
+  parts?: ClipParts;
 }
 
 /**
@@ -41,6 +53,15 @@ export interface Track {
   hidden: boolean;
   /** clips on this track cannot be selected/moved/edited. */
   locked: boolean;
+  /** fader level, linear: 1 = as recorded, 0 = off, at most MAX_TRACK_GAIN (+12 db). missing = 1, never stored as 1 */
+  volume?: number;
+  /** where the track sits: -1 left .. 1 right. missing = 0 (the middle), never stored as 0 */
+  pan?: number;
+}
+
+/** the output strip: the level of the whole mix, what gets exported */
+export interface MixOutput {
+  volume: number;
 }
 
 /**
@@ -232,6 +253,35 @@ export interface ChromaKey {
   spill: number;
 }
 
+/** a point of the grade curves: [in, out], both 0..1 */
+export type GradePoint = [number, number];
+
+/** the curves of a grade. a missing list changes nothing */
+export interface GradeCurves {
+  /** luma: the same amount on red, green and blue. spans x 0 to 1 */
+  y?: GradePoint[];
+  r?: GradePoint[];
+  g?: GradePoint[];
+  b?: GradePoint[];
+  /** hue (x 0..1 from red toward yellow, wraps) to saturation: y 0.5 keeps, 1 doubles, 0 is gray */
+  hueSat?: GradePoint[];
+  /** hue to a hue turn: y 0.5 keeps, 0 and 1 are half a turn back and on */
+  hueHue?: GradePoint[];
+  /** luma (x 0..1) to saturation, y like hueSat */
+  lumaSat?: GradePoint[];
+}
+
+/** the color grade of a clip. wheel numbers -1..1, missing = 0. R G B push one channel, Y is the level */
+export interface ClipGrade {
+  liftR?: number; liftG?: number; liftB?: number; liftY?: number;
+  gammaR?: number; gammaG?: number; gammaB?: number; gammaY?: number;
+  gainR?: number; gainG?: number; gainB?: number; gainY?: number;
+  offsetR?: number; offsetG?: number; offsetB?: number; offsetY?: number;
+  curves?: GradeCurves;
+  /** true: kept but not shown, in preview and export. only true is stored */
+  off?: boolean;
+}
+
 export type MaskShape = 'rect' | 'ellipse' | 'split' | 'band' | 'star' | 'heart';
 
 export const MASK_SHAPES: MaskShape[] = ['rect', 'ellipse', 'split', 'band', 'star', 'heart'];
@@ -341,6 +391,8 @@ interface Spatial {
   adjust?: ClipAdjust | null;
   chromaKey?: ChromaKey | null;
   mask?: Mask | null;
+  /** the color grade, after the color correction */
+  grade?: ClipGrade | null;
 }
 
 export interface VideoClip extends ClipBase, Spatial {
@@ -353,6 +405,8 @@ export interface VideoClip extends ClipBase, Spatial {
   /** 0..2 linear gain */
   volume: number;
   muted: boolean;
+  /** where the sound sits: -1 left .. 1 right. missing = 0. keyable as 'pan' */
+  pan?: number;
   /** tempo of its sound, like an audio clip (see AudioClip) */
   bpm?: number | null;
   beatOffset?: number | null;
@@ -370,6 +424,8 @@ export interface AudioClip extends ClipBase {
   speed: number;
   volume: number;
   muted: boolean;
+  /** where the sound sits: -1 left .. 1 right. missing = 0. keyable as 'pan' */
+  pan?: number;
   /** tempo of the sound in beats per minute at normal speed, detected or typed. missing or null = not known. see lib/tempo.ts */
   bpm?: number | null;
   /** source seconds where a beat falls: the beat grid runs both ways from there. missing = 0 */
@@ -650,6 +706,8 @@ export interface EffectClip extends ClipBase {
    * - lock: only for effects that repeat on their own (EffectDef.sync): their rhythm follows the cycle.
    */
   beat?: { source?: string | null; every: number; pulse: number; lock: boolean } | null;
+  /** read by the grade effect only */
+  grade?: ClipGrade | null;
 }
 
 /**
@@ -760,6 +818,15 @@ export type MediaClip = VideoClip | ImageClip | AudioClip;
 /** clips that read from a timed source (have trimStart/speed/volume) */
 export type TimedClip = VideoClip | AudioClip;
 
+/**
+ * the timeline in / out marks (i / o). in is the first moment inside, out the first moment after, so the range is
+ * [in, out). either may be missing. not part of undo. read it through src/lib/inOut.ts, never raw.
+ */
+export interface InOutRange {
+  in?: number;
+  out?: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -776,12 +843,16 @@ export interface Project {
   clips: Clip[];
   /** sorted by time. missing = none. */
   markers?: Marker[];
+  /** the timeline in / out marks. missing = none (every project made before this) */
+  range?: InOutRange;
   /** haze over the 3d space. null / missing = none. */
   fog?: SceneFog | null;
   /** the light of lit 3d clips. null / missing = taken from the sky when there is one, else from the scene: the background, the filled 2d shapes under the lowest 3d clip and the fog. */
   light?: SceneLight | null;
   /** a skybox behind every layer. null / missing = none: the background as always. */
   sky?: SceneSky | null;
+  /** the output level. missing or null = 0 db */
+  output?: MixOutput | null;
 }
 
 /** lightweight row for the projects screen */

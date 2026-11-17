@@ -11,7 +11,7 @@ const MOVES = [
 const TEMPORAL = ['motion-blur', 'echo', 'frame-blend', 'strobe'];
 const EDGE_FINDERS = ['halftone', 'edges', 'thermal', 'neon-edges', 'emboss', 'sketch', 'oil-paint'];
 
-/** the 46 keep effects: no alpha, not temporal */
+/** the 47 keep effects: no alpha, not temporal */
 const keeps = () => EFFECTS.filter((d) => !d.alpha && !d.temporal);
 
 function stripComments(src: string): string {
@@ -94,6 +94,8 @@ const KEEP_HASHES: Record<string, string> = {
   mist: 'cc421d2f',
   hearts: '64b2f911',
   spotlight: '03c55fb8',
+  // the grade effect, with its chunk (engine/grade.ts GRADE_GLSL) as it ships
+  grade: 'e3685703',
 };
 
 describe('effect alpha kinds', () => {
@@ -113,9 +115,9 @@ describe('effect alpha kinds', () => {
       expect(def!.alpha, id).toBeUndefined();
     }
   });
-  it('every other effect keeps the outline (46)', () => {
-    expect(keeps()).toHaveLength(46);
-    expect(EFFECTS).toHaveLength(94);
+  it('every other effect keeps the outline (47)', () => {
+    expect(keeps()).toHaveLength(47);
+    expect(EFFECTS).toHaveLength(95);
   });
   it('keep effects read only the pixel they draw, except the edge finders', () => {
     for (const def of keeps()) {

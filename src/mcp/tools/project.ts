@@ -9,16 +9,25 @@ import { autoLightAt, skyLightOf } from '../../engine/scene3d/light';
 import { layoutOf, skyBlur, skyBrightness, skyTurn, skyTurnsOf, skyUsable, withSkyValues } from '../../engine/scene3d/sky';
 import { SkyError, skyFromAssets, skyFromFaces } from '../../media/skyImport';
 import { keepOf } from '../../features/properties/skyLogic';
-import { projectDuration } from '../../lib/timelineOps';
+import { cleanRange, inOutSpan, sameRange, withIn, withOut } from '../../lib/inOut';
+import { frameIndexAt, marksOf } from '../../lib/marks';
+import { dbToGain, gainToDb, OFF_DB, patchTrack } from '../../lib/mix';
+import { mateOf, syncOffset } from '../../lib/soundPair';
+import { snapToFrame } from '../../lib/time';
+import { clipEnd, projectDuration } from '../../lib/timelineOps';
 import { faceNames } from '../../engine/scene3d/faces';
 import { getEffect } from '../../engine/effects/registry';
+import { editEndReason } from '../../features/shell/reasons';
+import { planEditStep } from '../../features/timeline/timeNudge';
 import { listProjects } from '../../storage/db';
 import { useEditor } from '../../store/editorStore';
 import type { ProjectSettingsPatch } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useSource } from '../../store/source';
+import { useTimeDisplay } from '../../store/timeDisplay';
 import { closeProject, createAndOpenProject, deleteStoredProject, openProjectById, useSaveState } from '../../store/session';
 import { useUi } from '../../store/ui';
-import type { Project, SceneFog, SceneLight, SceneSky } from '../../types';
+import type { InOutRange, MixOutput, Project, SceneFog, SceneLight, SceneSky } from '../../types';
 import { changedSince, clipBrief, needClip, needProject, needTrack, ok, oneStep, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 
@@ -40,6 +49,42 @@ function projectBrief(p: Project): Record<string, unknown> {
     media: p.assets.length,
     markers: p.markers?.length ?? 0,
   };
+}
+
+/** the level fields of a track or the project output as the answers show them: only what is set */
+function mixOf(t: { volume?: number; pan?: number }): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (t.volume !== undefined) {
+    const v = t.volume;
+    const db = gainToDb(v);
+    out.volume = round(v);
+    out.volumeDb = v <= 0 || db <= OFF_DB ? '-inf' : Math.round(db * 10) / 10 + 0;
+  }
+  if (t.pan !== undefined) out.pan = round(t.pan);
+  return out;
+}
+
+/** the in and out points as the answers show them (rounded like marker times), or null */
+export function rangeOf(r: InOutRange | null | undefined): InOutRange | null {
+  const c = cleanRange(r);
+  if (!c) return null;
+  return { ...(c.in !== undefined ? { in: round(c.in) } : {}), ...(c.out !== undefined ? { out: round(c.out) } : {}) };
+}
+
+/** the level of a track or the output from the arguments: volume, or volumeDb through dbToGain. undefined when neither is sent */
+function levelArg(args: Record<string, unknown>, what: string): number | undefined {
+  const v = args.volume;
+  const db = args.volumeDb;
+  if (v !== undefined && db !== undefined) throw new ToolError('send volume or volumeDb, not both');
+  if (v !== undefined) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 3.98) throw new ToolError(`${what}volume must be 0 to 3.98 (that is +12 db)`);
+    return v;
+  }
+  if (db !== undefined) {
+    if (typeof db !== 'number' || !Number.isFinite(db) || db > 12) throw new ToolError(`${what}volumeDb must be 12 or less`);
+    return dbToGain(db);
+  }
+  return undefined;
 }
 
 /** the fog as the answers show it: the object, or null when there is none */
@@ -202,13 +247,16 @@ export const projectTools: ToolDef[] = [
     title: 'get the editor state',
     description:
       'a small snapshot of ncut: the app version, the open project (id, name, size, fps, duration, counts) or null, the playhead time in seconds, ' +
-      'the selected clip ids, the save state, whether an export or another long job runs, and how many undo and redo steps there are. ' +
+      'the selected clip ids, the save state, whether an export or another long job runs, how many undo and redo steps there are, ' +
+      'what the source view shows (media, time, playing, active) or null, and timeDisplay (how times show: timecode, frames or seconds). ' +
       'call it first to see whether a project is open. it holds no clips: get_project lists those.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
     run() {
       const s = useEditor.getState();
       const busy = busyReason();
+      const src = useSource.getState();
+      const sid = src.assetId;
       return ok({
         app: shell.version || 'browser',
         project: s.project ? projectBrief(s.project) : null,
@@ -220,6 +268,8 @@ export const projectTools: ToolDef[] = [
         busy,
         undoSteps: s.past.length,
         redoSteps: s.future.length,
+        source: sid ? { media: sid, time: round(src.time), playing: src.playing, active: useUi.getState().previewMode === 'source' } : null,
+        timeDisplay: useTimeDisplay.getState().mode,
       });
     },
   },
@@ -383,7 +433,8 @@ export const projectTools: ToolDef[] = [
       'null = take it from the sky when there is one, else from the scene (the background, the filled 2d shapes under the lowest 3d clip and the fog; pictures, video and text are not read; get_project autoLight shows what that gives at the playhead). light only darkens or tints: white light gives the picture back, a dark scene makes it darker. ' +
       'an object may be given in part (laid over the own light, or when there is none over the light the sky gives, its sun included, when there is a sky, else over the scene sky, horizon and ground at the playhead plus a default sun: sun 0.4, sunColor #fff4e0, sunTurn -35, sunHeight 45; send sun 0 for the dome alone). ' +
       'sky is a skybox drawn behind every layer, far away, turning with the camera, made of image media of the project: { media } with 1 picture (a cross 4:3 or 3:4, a strip 6:1 or 1:6) or 6 side pictures in any order named like px nx py ny pz nz, posx ..., right left top bottom front back or rt lf up dn ft bk (word names get a seam check that may swap left and right or turn the top and bottom: notes says what it did), or { faces, turns? } with the 6 ids in side order. turn, brightness and blur may come with it or alone. lit 3d clips take their light from the sky unless there is an own light; that light is measured from the pictures and cannot be sent. 2:1 panoramas, hdr and exr are refused. null takes the sky off (its pictures stay in the media). ' +
-      'send only what changes; a call that changes nothing is an error. answers the project summary, the fog, the light and the sky (each an object, or null), and notes when the sides were changed.',
+      'output is the level of the whole mix, what gets exported: { volume } (linear, 0 to 3.98, 1 = 0 db) or { volumeDb } (12 or less, -90 or less = off), or null for 0 db. ' +
+      'send only what changes; a call that changes nothing is an error. answers the project summary, the fog, the light and the sky (each an object, or null), the output when set, and notes when the sides were changed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -429,6 +480,14 @@ export const projectTools: ToolDef[] = [
             light: { description: 'not taken: measured from the pictures. send light (top level) for an own light' },
           },
         },
+        // no type here either: null takes the output back to 0 db
+        output: {
+          description: 'the output level (the whole mix, what gets exported), or null for 0 db',
+          properties: {
+            volume: { type: 'number', minimum: 0, maximum: 3.98, description: 'linear: 1 = as mixed (0 db), 0 = off' },
+            volumeDb: { type: 'number', maximum: 12, description: 'in db: 0 = as mixed, -6 = half, -90 or less = off' },
+          },
+        },
       },
     },
     async run(args) {
@@ -445,17 +504,27 @@ export const projectTools: ToolDef[] = [
       }
       const sameFog = args.fog !== undefined ? layFog(before, args.fog, patch) : false;
       const sameLight_ = args.light !== undefined ? layLight(before, args.light, patch, usePlayback.getState().time) : false;
+      if (args.output !== undefined) {
+        const o = args.output;
+        if (o === null) patch.output = null;
+        else if (typeof o !== 'object' || Array.isArray(o)) throw new ToolError('output must be { volume } or { volumeDb }, or null');
+        else {
+          const g = levelArg(o as Record<string, unknown>, 'output ');
+          if (g === undefined) throw new ToolError('output needs volume or volumeDb, or null for 0 db');
+          patch.output = { volume: g } as MixOutput;
+        }
+      }
       const skyRes = args.sky !== undefined ? await laySky(before, args.sky, patch) : { same: false, notes: [] as string[] };
       if (args.sky !== undefined && useEditor.getState().project?.id !== before.id) throw new ToolError('the open project changed while the sky pictures were read. nothing changed');
       if (Object.keys(patch).length === 0) {
         if (sameFog || sameLight_ || skyRes.same) throw new ToolError('the project already has those settings, nothing changed');
-        throw new ToolError('nothing to change: send name, width, height, fps, background, fog, light or sky');
+        throw new ToolError('nothing to change: send name, width, height, fps, background, fog, light, sky or output');
       }
       const base = needProject();
       useEditor.getState().updateProject(patch);
       if (!changedSince(base)) throw new ToolError('the project already has those settings, nothing changed');
       const after = needProject();
-      return ok({ ...projectBrief(after), fog: fogOf(after), light: lightOf(after), sky: skyOf(after), ...(skyRes.notes.length ? { notes: skyRes.notes } : {}) });
+      return ok({ ...projectBrief(after), fog: fogOf(after), light: lightOf(after), sky: skyOf(after), ...(after.output ? { output: mixOf(after.output) } : {}), ...(skyRes.notes.length ? { notes: skyRes.notes } : {}) });
     },
   },
   {
@@ -463,8 +532,9 @@ export const projectTools: ToolDef[] = [
     title: 'read the project',
     description:
       'the contents of the open project: tracks top to bottom (id, kind, name, muted, hidden, locked), every clip as one short line (id, type, track, start, end, name, ' +
-      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size), markers, the fog and the light (each an object, or null), the sky (an object or null: its pictures, turn, brightness, blur and the light measured from it, missing: true when its pictures are gone), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead; from the sky when there is one, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
-      'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer.',
+      'and what picks it out: media id, text, shape kind, effect), the media (id, name, kind, duration, size, and marks { in, out } when set), markers, the fog and the light (each an object, or null), the sky (an object or null: its pictures, turn, brightness, blur and the light measured from it, missing: true when its pictures are gone), autoLight (the sky, horizon and ground colors the scene would give 3d clips at the playhead; from the sky when there is one, also while an own light is set: then lit clips get light, not autoLight) and the duration, all in seconds and project pixels. ' +
+      'it holds no keyframe values and no styling: get_clip gives one whole clip. the first track listed is the top layer. ' +
+      'range: the in and out points or null. tracks show volume, volumeDb and pan, the project its output, only when set.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
     run() {
@@ -475,10 +545,15 @@ export const projectTools: ToolDef[] = [
         light: lightOf(p),
         sky: skyOf(p),
         autoLight: autoLightAt(p, sceneTime(p, usePlayback.getState().time)),
-        trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked })),
+        trackList: p.tracks.map((t) => ({ id: t.id, kind: t.kind, name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked, ...mixOf(t) })),
         clipList: p.clips.map(clipBrief),
-        mediaList: p.assets.map((a) => ({ id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio })),
+        mediaList: p.assets.map((a) => {
+          const m = marksOf(a);
+          return { id: a.id, name: a.name, kind: a.kind, duration: round(a.duration), width: a.width, height: a.height, hasAudio: a.hasAudio, ...(m ? { marks: { ...(m.in !== undefined ? { in: round(m.in) } : {}), ...(m.out !== undefined ? { out: round(m.out) } : {}) } } : {}) };
+        }),
         markerList: (p.markers ?? []).map((m) => ({ id: m.id, time: round(m.time), name: m.name })),
+        range: rangeOf(p.range),
+        ...(p.output ? { output: mixOf(p.output) } : {}),
       });
     },
   },
@@ -487,7 +562,7 @@ export const projectTools: ToolDef[] = [
     title: 'read one clip',
     description:
       'one clip exactly as stored (every field, keyframes included), plus "animatable": the properties set_keyframe and update_clip can animate (prop, label, min, max, unit), ' +
-      'and for a 3d solid "sides": the side names set_sides takes. for what the fields mean see list_options with kind "fields". ids come from get_project.',
+      'for a 3d solid "sides": the side names set_sides takes, and for one side of a separated sound pair "pair" { other, offset } (seconds, + = this clip later). for what the fields mean see list_options with kind "fields". ids come from get_project.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'clip id' } },
@@ -507,6 +582,11 @@ export const projectTools: ToolDef[] = [
       if ('threeD' in clip && clip.threeD) {
         const names = faceNames(clip.shape);
         if (names.length > 0) out.sides = [...names];
+      }
+      const mate = mateOf(needProject().clips, clip.id);
+      if (mate) {
+        const off = syncOffset(needProject().clips, clip.id);
+        out.pair = off === null || Number.isNaN(off) ? { other: mate.id, speeds: 'differ' } : { other: mate.id, offset: round(off) };
       }
       return ok(out);
     },
@@ -537,19 +617,39 @@ export const projectTools: ToolDef[] = [
     name: 'seek',
     title: 'move the playhead',
     description:
-      'moves the playhead to a timeline time in seconds. it is clamped to 0..project length (the end of the last clip); playback keeps running if it was. ' +
-      'answers the time it landed on. render_frame can take a time of its own, seek is for what the user sees in the window.',
+      'moves the playhead to a timeline time in seconds, a frame number (at the project fps) or the edit before or after it (any clip start or end, like up / down). give exactly one of time, frame or edit. ' +
+      'it is clamped to 0..project length (the end of the last clip); playback keeps running if it was. ' +
+      'edit steps on the tracks of the selected clips, else on all tracks, and is an error when there is no edit that way. ' +
+      'answers the time it landed on and its frame. render_frame can take a time of its own, seek is for what the user sees in the window.',
     inputSchema: {
       type: 'object',
-      properties: { time: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds' } },
-      required: ['time'],
+      properties: {
+        time: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds' },
+        frame: { type: 'integer', minimum: 0, description: 'a frame number at the project fps, 0 = the first frame' },
+        edit: { type: 'string', enum: ['previous', 'next'], description: 'the edit before or after the playhead' },
+      },
+      required: [],
     },
     run(args) {
       const p = needProject();
-      const want = args.time as number;
+      const given = (['time', 'frame', 'edit'] as const).filter((k) => args[k] !== undefined);
+      if (given.length !== 1) throw new ToolError('give one of time, frame or edit');
+      let want: number;
+      if (args.frame !== undefined) {
+        const frame = args.frame as number;
+        if (frame / p.fps > 86400) throw new ToolError('frame is more than a day');
+        want = frame / p.fps;
+      } else if (args.edit !== undefined) {
+        const dir = args.edit === 'previous' ? -1 : 1;
+        const st = planEditStep(p, useEditor.getState().selection, null, usePlayback.getState().time, dir);
+        if (st.time === null) throw new ToolError(editEndReason(st.scope, dir));
+        want = st.time;
+      } else {
+        want = args.time as number;
+      }
       usePlayback.getState().seek(want);
       const time = usePlayback.getState().time;
-      return ok({ time: round(time), duration: round(projectDuration(p)), ...(time < want ? { clamped: true } : {}) });
+      return ok({ time: round(time), frame: frameIndexAt(time, p.fps), duration: round(projectDuration(p)), ...(time < want ? { clamped: true } : {}) });
     },
   },
   {
@@ -557,7 +657,7 @@ export const projectTools: ToolDef[] = [
     title: 'undo edits',
     description:
       'takes back the last edits, one step each (a tool that edits is one step). steps 1..50, default 1. answers how many were undone and how many are left; ' +
-      'it is an error when there is nothing to undo. redo brings steps back. media imports are not part of history.',
+      'it is an error when there is nothing to undo. redo brings steps back. media imports are not part of history, and the in and out points (set_range) are not part of history either.',
     inputSchema: {
       type: 'object',
       properties: { steps: { type: 'integer', minimum: 1, maximum: MAX_UNDO_STEPS, description: 'default 1' } },
@@ -637,6 +737,7 @@ export const projectTools: ToolDef[] = [
     title: 'change a track',
     description:
       'renames a track or sets muted (silences its audio), hidden (video tracks only: its pictures are not drawn) or locked (its clips cannot be edited or selected). ' +
+      'volume or volumeDb sets the track fader (+12 db at most), pan where the track sits. both apply to the preview and the export. solo is for listening in the app only and has no tool. ' +
       'one undo step. send only what changes; a call that changes nothing is an error. ids come from get_project.',
     inputSchema: {
       type: 'object',
@@ -646,6 +747,9 @@ export const projectTools: ToolDef[] = [
         muted: { type: 'boolean' },
         hidden: { type: 'boolean' },
         locked: { type: 'boolean' },
+        volume: { type: 'number', minimum: 0, maximum: 3.98, description: 'fader level, linear: 1 = as recorded (0 db), 0 = off' },
+        volumeDb: { type: 'number', maximum: 12, description: 'fader level in db: 0 = as recorded, -6 = half, -90 or less = off' },
+        pan: { type: 'number', minimum: -1, maximum: 1, description: '-1 left, 0 the middle, 1 right' },
       },
       required: ['id'],
     },
@@ -661,14 +765,19 @@ export const projectTools: ToolDef[] = [
         patch.hidden = args.hidden;
       }
       if (typeof args.locked === 'boolean') patch.locked = args.locked;
-      if (Object.keys(patch).length === 0) throw new ToolError('nothing to change: send name, muted, hidden or locked');
-      // the store writes a step even for equal values, so compare here
-      const same = (Object.keys(patch) as (keyof typeof patch)[]).every((k) => track[k] === patch[k]);
-      if (same) throw new ToolError(`the track ${track.id} already has those settings, nothing changed`);
+      const level = levelArg(args, '');
+      if (level !== undefined) patch.volume = level;
+      if (args.pan !== undefined) {
+        if (typeof args.pan !== 'number' || !Number.isFinite(args.pan) || args.pan < -1 || args.pan > 1) throw new ToolError('pan must be -1 (left) to 1 (right)');
+        patch.pan = args.pan;
+      }
+      if (Object.keys(patch).length === 0) throw new ToolError('nothing to change: send name, muted, hidden, locked, volume, volumeDb or pan');
+      // an equal change makes no step, so compare here
+      if (!patchTrack(track, patch)) throw new ToolError(`the track ${track.id} already has those settings, nothing changed`);
       useEditor.getState().updateTrack(track.id, patch);
       if (!changedSince(before)) throw new ToolError(`the track ${track.id} could not be changed`);
       const now = needTrack(track.id);
-      return ok({ id: now.id, kind: now.kind, name: now.name, muted: now.muted, hidden: now.hidden, locked: now.locked });
+      return ok({ id: now.id, kind: now.kind, name: now.name, muted: now.muted, hidden: now.hidden, locked: now.locked, ...mixOf(now) });
     },
   },
   {
@@ -734,5 +843,61 @@ export const projectTools: ToolDef[] = [
       return ok({ removed: args.id });
     },
   },
+  {
+    name: 'set_range',
+    title: 'mark in and out',
+    description:
+      'set the timeline in and out points: the range that loop playback, lift_range, extract_range and export_video range "inout" use. timeline seconds, snapped to the project frame rate. out is where the range ends: the frame before it is the last one inside. ' +
+      'clip: a clip id, marks its start and end exactly (the x key). clear: "in", "out" or "both" takes marks away first. a new in at or after the out drops the out (and the other way round), the notes say so. not an undo step. ' +
+      'answers { range: { in?, out? } or null, span: { start, end } or null (what plays and exports), notes? }',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        in: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds, the first moment inside' },
+        out: { type: 'number', minimum: 0, maximum: 86400, description: 'timeline seconds, the first moment after the range' },
+        clip: { type: 'string', description: 'a clip id: its start is the in point and its end the out point' },
+        clear: { type: 'string', enum: ['in', 'out', 'both'], description: 'take marks away first' },
+      },
+    },
+    run(args) {
+      const p = needProject();
+      const inT = optNumber(args.in);
+      const outT = optNumber(args.out);
+      const clipId = optString(args.clip);
+      const clear = optString(args.clear);
+      if (clipId !== undefined && (inT !== undefined || outT !== undefined)) throw new ToolError('give clip or in / out, not both');
+      if (clipId === undefined && inT === undefined && outT === undefined && clear === undefined) throw new ToolError('nothing to set: give in, out, clip or clear');
+      const was = cleanRange(p.range);
+      let range: InOutRange | null = was;
+      if (clear === 'both') range = null;
+      else if (clear === 'in') range = cleanRange(was && was.out !== undefined ? { out: was.out } : null);
+      else if (clear === 'out') range = cleanRange(was && was.in !== undefined ? { in: was.in } : null);
+      const notes: string[] = [];
+      if (clipId !== undefined) {
+        const c = needClip(clipId);
+        range = withOut(withIn(range, c.start).range, clipEnd(c)).range;
+      } else {
+        const a = inT === undefined ? undefined : snapToFrame(inT, p.fps);
+        const b = outT === undefined ? undefined : snapToFrame(outT, p.fps);
+        if (a !== undefined && b !== undefined && b <= a) throw new ToolError('in has to be before out');
+        if (b !== undefined && b <= 1e-6) throw new ToolError('out has to be after 0');
+        if (a !== undefined) {
+          const r = withIn(range, a);
+          range = r.range;
+          if (r.dropped && b === undefined) notes.push('the out point before the new in point was cleared');
+        }
+        if (b !== undefined) {
+          const r = withOut(range, b);
+          range = r.range;
+          if (r.dropped && a === undefined) notes.push('the in point after the new out point was cleared');
+        }
+      }
+      const next = cleanRange(range);
+      if (sameRange(was, next)) throw new ToolError('the range is already like that, nothing changed');
+      useEditor.getState().setRange(next);
+      const now = needProject();
+      const span = inOutSpan(now.range, projectDuration(now));
+      return ok({ range: rangeOf(now.range), span: span ? { start: round(span.start), end: round(span.end) } : null, ...(notes.length ? { notes } : {}) });
+    },
+  },
 ];
-

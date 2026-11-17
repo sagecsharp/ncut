@@ -20,12 +20,15 @@ import { useUi } from '../../store/ui';
 import { tip } from '../shell/tip';
 import { INSET_SETTLE_MS, insetBackingSize, insetCssSize, insetDelay, useCameraInset } from './insetState';
 import { usePreviewQuality } from './quality';
+import { LIVE_SAMPLE } from './scopes';
+import { onTapWanted, tapFrame } from './scopeTap';
+import { useScopes } from './scopesState';
 
 function leaveSceneView(): void {
   useUi.getState().setPreviewMode('output');
 }
 
-function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolver | null; onSkyReady?: (f: () => void) => () => void }) {
+function InsetBody({ getResolve, onSkyReady, hidden }: { getResolve: () => SourceResolver | null; onSkyReady?: (f: () => void) => () => void; hidden: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasProject = useEditor((s) => !!s.project);
 
@@ -50,7 +53,7 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
       const { time, playing } = usePlayback.getState();
       const css = insetCssSize(project.width, project.height);
       canvas.style.aspectRatio = `${css.w} / ${css.h}`;
-      const size = insetBackingSize(project.width, project.height, window.devicePixelRatio || 1, usePreviewQuality.getState().quality);
+      const size = insetBackingSize(project.width, project.height, window.devicePixelRatio || 1, usePreviewQuality.getState().quality, useScopes.getState().open ? LIVE_SAMPLE : 0);
       // assigning width / height clears the canvas: only when the size really changes
       if (canvas.width !== size.w) canvas.width = size.w;
       if (canvas.height !== size.h) canvas.height = size.h;
@@ -58,6 +61,8 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
       try {
         // while playing the motion blur uses fewer samples, like the main picture
         renderFrame(ctx, project, time, resolve, { quality: playing ? 0.5 : 1 });
+        // the scopes measure this picture in the scene view (nothing listens while they are closed)
+        tapFrame(canvas, canvas.width, canvas.height, 'scene', !playing);
       } catch {
         // a clip that cannot draw must not take the scene view down with it
       }
@@ -97,6 +102,11 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
       usePreviewQuality.subscribe((s, p) => {
         if (s.quality !== p.quality) request();
       }),
+      // the scopes or the probe want a picture, or the scopes opened or closed (the size changes)
+      onTapWanted(request),
+      useScopes.subscribe((s, p) => {
+        if (s.open !== p.open) request();
+      }),
     ];
     // the sky pictures finish loading after the first draw: draw again with them
     const offSky = onSkyReady?.(request);
@@ -117,7 +127,7 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
 
   if (!hasProject) return null;
   return (
-    <button type="button" className="scene-inset" {...tip('output inset', { does: 'what the export shows. click to go back to the output' })} aria-label="output inset: leave the scene view" onClick={leaveSceneView}>
+    <button type="button" className={`scene-inset${hidden ? ' is-hidden' : ''}`} {...tip('output inset', { does: 'what the export shows. click to go back to the output' })} aria-label="output inset: leave the scene view" onClick={leaveSceneView}>
       <canvas ref={canvasRef} className="scene-inset-canvas" />
       <span className="scene-inset-label">camera</span>
     </button>
@@ -127,6 +137,8 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
 export function CameraInset({ getResolve, onSkyReady }: { getResolve: () => SourceResolver | null; onSkyReady?: (f: () => void) => () => void }) {
   const scene = useUi((s) => s.previewMode === 'scene');
   const on = useCameraInset((s) => s.on);
-  if (!scene || !on) return null;
-  return <InsetBody getResolve={getResolve} onSkyReady={onSkyReady} />;
+  const scopesOpen = useScopes((s) => s.open);
+  // with the inset off the scopes still measure the output through it: it renders hidden
+  if (!scene || !(on || scopesOpen)) return null;
+  return <InsetBody getResolve={getResolve} onSkyReady={onSkyReady} hidden={!on} />;
 }

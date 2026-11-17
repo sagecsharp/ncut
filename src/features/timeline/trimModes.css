@@ -1,0 +1,43 @@
+/* trim mode on the timeline: faint edge handles, the pointer shapes, the stop outline and the selected edge */
+.timeline-scroller[data-trim-mode] .timeline-trim {
+  background: var(--clip-label);
+  opacity: 0.15;
+}
+.timeline-scroller[data-trim-mode] .timeline-trim:hover {
+  opacity: 0.35;
+}
+.timeline-scroller[data-trim-cursor] .timeline-lanes-wrap,
+.timeline-scroller[data-trim-cursor] .timeline-lanes-wrap * {
+  cursor: var(--tl-cur);
+}
+.timeline-ghost[data-kind='block'] {
+  border: 1px dashed var(--accent);
+  background: none;
+  opacity: 1;
+}
+.timeline-trim-edge {
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.timeline-trim-edge > span {
+  position: absolute;
+  width: 6px;
+  height: 2px;
+  background: var(--accent);
+}
+.timeline-trim-edge > .is-left {
+  right: 100%;
+}
+.timeline-trim-edge > .is-right {
+  left: 100%;
+}
+.timeline-trim-edge > .is-top {
+  top: 0;
+}
+.timeline-trim-edge > .is-bottom {
+  bottom: 0;
+}

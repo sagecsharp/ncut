@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import {
+  Brackets,
   Camera,
   CopyPlus,
   Flag,
@@ -24,9 +25,11 @@ import { formatDuration, formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { REASON_TEXT } from '../shell/reasons';
 import { tip } from '../shell/tip';
 import { freezeAtPlayhead, trimToPlayhead } from './actions';
+import { toggleTrimMode } from './trimActions';
 
 interface Props {
   /** zoom to an absolute px/second value, keeping the playhead steady in the viewport */
@@ -52,6 +55,7 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
   const hasSelection = selectedCount > 0;
   const hasClips = useEditor((s) => (s.project?.clips.length ?? 0) > 0);
   const snapping = useEditor((s) => s.snapping);
+  const trimMode = useUi((s) => s.trimMode);
   const zoom = useEditor((s) => s.zoom);
   const fps = useEditor((s) => s.project?.fps ?? 30);
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0));
@@ -188,6 +192,19 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         })}
       >
         <Magnet size={16} />
+      </button>
+      <button
+        className={`icon-btn${trimMode ? ' is-active' : ''}`}
+        onClick={() => toggleTrimMode()}
+        aria-label="trim mode"
+        aria-pressed={trimMode}
+        {...tip('trim mode', {
+          does: 'edges ripple trim, where two clips touch the edit moves, the middle of a clip slips (alt: slides), shift on an edge stretches',
+          keys: 'trim-mode',
+          on: trimMode,
+        })}
+      >
+        <Brackets size={16} />
       </button>
       <span className="timeline-toolbar-sep" />
       <button

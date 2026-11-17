@@ -1,11 +1,17 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Eye, EyeOff, Lock, Music, Trash2, Unlock, Video, Volume2, VolumeX } from 'lucide-react';
+import { Eye, EyeOff, Headphones, Lock, Music, Trash2, Unlock, Video, Volume2, VolumeX } from 'lucide-react';
 import type { Track } from '../../types';
 import { useEditor } from '../../store/editorStore';
+import { useSolo } from '../../store/solo';
+import { useSource } from '../../store/source';
+import { useUi } from '../../store/ui';
+import { soloActive, trackSoundLine } from '../../lib/mix';
 import { tip } from '../shell/tip';
 import { openTrackMenuAt } from './commands';
 import { selectTrackClips } from './trackClips';
+import { TargetToggle } from './TargetToggle';
+import '../media/mixer/mixer.css';
 
 interface Props {
   track: Track;
@@ -19,6 +25,11 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
   const [confirm, setConfirm] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const isVideo = track.kind === 'video';
+  const solo = useSolo((s) => s.solo);
+  const on = solo.includes(track.id);
+  const active = useEditor((st) => soloActive(st.project, solo));
+  const soundLine = trackSoundLine(track);
+  const shown = useSource((s) => s.assetId !== null);
 
   useEffect(() => {
     if (editing) {
@@ -58,7 +69,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
   };
 
   return (
-    <div className={`timeline-head${track.locked ? ' is-locked' : ''}`} data-track-id={track.id}>
+    <div className={`timeline-head${track.locked ? ' is-locked' : ''}${active && !on ? ' is-unheard' : ''}`} data-track-id={track.id}>
       <div className="timeline-head-top">
         <button
           type="button"
@@ -103,6 +114,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
         </button>
       </div>
       <div className="timeline-head-toggles">
+        {shown ? <TargetToggle track={track} /> : null}
         <button
           className={`icon-btn icon-btn-sm${track.muted ? ' is-active' : ''}`}
           onClick={() => update({ muted: !track.muted })}
@@ -111,6 +123,15 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
           aria-pressed={track.muted}
         >
           {track.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+        </button>
+        <button
+          className={'icon-btn icon-btn-sm' + (on ? ' is-solo' : '')}
+          onClick={(e) => useSolo.getState().toggleSolo(track.id, e.altKey)}
+          {...tip('solo track', { does: 'hear only the tracks on solo. for listening only: it is not saved and the export has every track. alt+click: solo only this track', on })}
+          aria-label="solo track"
+          aria-pressed={on}
+        >
+          <Headphones size={13} />
         </button>
         {isVideo ? (
           <button
@@ -132,6 +153,15 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
         >
           {track.locked ? <Lock size={13} /> : <Unlock size={13} />}
         </button>
+        {soundLine ? (
+          <button
+            className="timeline-head-mix"
+            onClick={() => useUi.getState().showMixer(track.id)}
+            {...tip('mixer', { does: 'this track has its own level or pan. click to open the mixer at it', keys: 'open-mixer' })}
+          >
+            {soundLine}
+          </button>
+        ) : null}
       </div>
     </div>
   );

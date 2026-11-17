@@ -1,19 +1,24 @@
 import { memo, useEffect, useRef } from 'react';
-import { Flag, MoveHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeftToLine, ArrowRightToLine, ArrowUpFromLine, Flag, FoldHorizontal, MoveHorizontal, Pencil, Play, Trash2, X } from 'lucide-react';
+import { cleanRange } from '../../lib/inOut';
 import { snapToFrame } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
+import { MenuKeys } from '../shell/MenuKeys';
+import { reasonFor, reasonSnapshot } from '../shell/reasons';
 import { tip } from '../shell/tip';
 import { insertGapAt } from './actions';
 import { useFloatingMenu } from './menuBehavior';
+import { clearInOut, extract, lift, markInAt, markOutAt, playInOut } from './rangeActions';
+import { RangeLines } from './RangeUi';
 
-/** a hairline per marker down through the tracks. positioned with transforms, only re-rendered when markers or zoom change. */
+/** the in / out lines first, then a hairline per marker down through the tracks. positioned with transforms, only re-rendered when markers or zoom change. */
 export const MarkerLines = memo(function MarkerLines() {
   const markers = useEditor((s) => s.project?.markers);
   const zoom = useEditor((s) => s.zoom);
-  if (!markers || markers.length === 0) return null;
   return (
     <>
-      {markers.map((m) => (
+      <RangeLines />
+      {markers?.map((m) => (
         <div key={m.id} className="timeline-marker-line" style={{ transform: `translate3d(${Math.round(m.time * zoom)}px,0,0)` }} />
       ))}
     </>
@@ -42,6 +47,12 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
     fn();
     onClose();
   };
+  const hasRange = cleanRange(useEditor.getState().project?.range) !== null;
+  const snap = { ...reasonSnapshot(), source: undefined };
+  const clearWhy = reasonFor('clear-in-out', snap);
+  const playWhy = reasonFor('play-in-out', snap);
+  const liftWhy = reasonFor('lift', snap);
+  const extractWhy = reasonFor('extract', snap);
   return (
     <div ref={ref} className="menu timeline-menu" style={{ left: pos.x, top: pos.y }} role="menu">
       {markerId ? (
@@ -78,6 +89,74 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
           <Flag size={14} />
           add marker here
         </button>
+      )}
+      <div className="menu-sep" />
+      <button
+        className="menu-item"
+        role="menuitem"
+        {...tip('mark in here', { does: 'the in point goes to this time', side: 'right' })}
+        onClick={run(() => markInAt(time))}
+      >
+        <ArrowRightToLine size={14} />
+        mark in here
+      </button>
+      <button
+        className="menu-item"
+        role="menuitem"
+        {...tip('mark out here', { does: 'the out point goes to this time', side: 'right' })}
+        onClick={run(() => markOutAt(Math.max(time, 1 / (useEditor.getState().project?.fps ?? 30))))}
+      >
+        <ArrowLeftToLine size={14} />
+        mark out here
+      </button>
+      {hasRange && (
+        <>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!!clearWhy}
+            {...tip('clear in and out', { does: 'take the in and out points away', side: 'right', keys: 'clear-in-out', off: clearWhy })}
+            onClick={run(() => clearInOut())}
+          >
+            <X size={14} />
+            clear in and out
+            <MenuKeys id="clear-in-out" />
+          </button>
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!!playWhy}
+            {...tip('play in to out', { does: 'play from the in point to the out point', side: 'right', keys: 'play-in-out', off: playWhy })}
+            onClick={run(() => playInOut())}
+          >
+            <Play size={14} />
+            play in to out
+            <MenuKeys id="play-in-out" />
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!!liftWhy}
+            {...tip('lift', { does: 'take out what is between in and out, the gap stays', side: 'right', keys: 'lift', off: liftWhy })}
+            onClick={run(() => lift())}
+          >
+            <ArrowUpFromLine size={14} />
+            lift
+            <MenuKeys id="lift" />
+          </button>
+          <button
+            className="menu-item"
+            role="menuitem"
+            disabled={!!extractWhy}
+            {...tip('extract', { does: 'take out what is between in and out and close up', side: 'right', keys: 'extract', off: extractWhy })}
+            onClick={run(() => extract())}
+          >
+            <FoldHorizontal size={14} />
+            extract
+            <MenuKeys id="extract" />
+          </button>
+        </>
       )}
       <div className="menu-sep" />
       <button

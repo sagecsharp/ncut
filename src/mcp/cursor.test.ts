@@ -309,3 +309,74 @@ describe('words and keys', () => {
     expect(targetKey({ kind: 'canvas', x: 1, y: 2 })).not.toBe(targetKey({ kind: 'canvas', x: 2, y: 1 }));
   });
 });
+
+describe('slip, slide, sound and the range', () => {
+  const look: CursorLookup = { markerTime: () => undefined, clipPos: () => undefined, rangeIn: () => 2.5 };
+  const before = (tool: string, args: Record<string, unknown>, l: CursorLookup = look) => targetBefore(tool, args, l);
+
+  it('slip, slide and the sound tools point at their clips', () => {
+    expect(before('slip_clip', { id: 'c1', by: 1 })).toEqual({ kind: 'clip', id: 'c1' });
+    expect(before('slide_clip', { id: 'c1', by: 1 })).toEqual({ kind: 'clip', id: 'c1' });
+    expect(before('separate_sound', { ids: ['a', 'b'] })).toEqual({ kind: 'clips', ids: ['a', 'b'] });
+    expect(before('join_sound', { ids: ['a'] })).toEqual({ kind: 'clips', ids: ['a'] });
+    expect(before('sync_sound', { ids: ['a'] })).toEqual({ kind: 'clips', ids: ['a'] });
+    expect(before('sync_sound', { ids: [] })).toEqual({ kind: 'nowhere' });
+    expect(cursorLabel('slip_clip')).toBe('slips a clip');
+    expect(cursorLabel('slide_clip')).toBe('slides a clip');
+    expect(cursorLabel('separate_sound')).toBe('separates sound');
+    expect(cursorLabel('join_sound')).toBe('joins sound back');
+    expect(cursorLabel('sync_sound')).toBe('lines up picture and sound');
+  });
+
+  it('set_range points at the clip, the time or the in point', () => {
+    expect(before('set_range', { clip: 'c1' })).toEqual({ kind: 'clip', id: 'c1' });
+    expect(before('set_range', { in: 1, out: 3 })).toEqual({ kind: 'time', time: 1 });
+    expect(before('set_range', { out: 3 })).toEqual({ kind: 'time', time: 3 });
+    expect(before('set_range', { clear: 'both' })).toEqual({ kind: 'time', time: 2.5 });
+    expect(before('set_range', { clear: 'both' }, NO_LOOKUP)).toEqual({ kind: 'nowhere' });
+    expect(cursorLabel('set_range')).toBe('marks in and out');
+  });
+
+  it('lift and extract point at the in point, nowhere without one', () => {
+    expect(before('lift_range', {})).toEqual({ kind: 'time', time: 2.5 });
+    expect(before('extract_range', {})).toEqual({ kind: 'time', time: 2.5 });
+    expect(before('lift_range', {}, NO_LOOKUP)).toEqual({ kind: 'nowhere' });
+    expect(before('extract_range', {}, { ...NO_LOOKUP, rangeIn: () => undefined })).toEqual({ kind: 'nowhere' });
+    expect(cursorLabel('lift_range')).toBe('lifts in to out');
+    expect(cursorLabel('extract_range')).toBe('extracts in to out');
+  });
+});
+
+describe('source, timecode and three point tools', () => {
+  const before = (tool: string, args: Record<string, unknown>) => targetBefore(tool, args);
+
+  it('source, timecode and three point tools', () => {
+    expect(before('set_media_marks', { asset: 'a1', in: 1 })).toEqual({ kind: 'media', id: 'a1' });
+    expect(before('set_media_marks', {})).toEqual({ kind: 'media' });
+    expect(before('match_frame', { clip: 'c1' })).toEqual({ kind: 'clip', id: 'c1' });
+    expect(before('match_frame', {})).toEqual({ kind: 'preview' });
+    expect(before('match_frame', { time: 2 })).toEqual({ kind: 'preview' });
+    expect(before('edit_media', { asset: 'a1', mode: 'insert' })).toEqual({ kind: 'media', id: 'a1' });
+    expect(before('nudge_clips', { ids: ['a', 'b'], frames: 1 })).toEqual({ kind: 'clips', ids: ['a', 'b'] });
+    expect(before('nudge_clips', { ids: [], frames: 1 })).toEqual({ kind: 'nowhere' });
+    expect(cursorLabel('set_media_marks')).toBe('marks media');
+    expect(cursorLabel('match_frame')).toBe("opens a clip's media in the source view");
+    expect(cursorLabel('match_frame').length).toBe(39);
+    expect(cursorLabel('edit_media')).toBe('edits media into the timeline');
+    expect(cursorLabel('nudge_clips')).toBe('nudges clips');
+  });
+
+  it('seek, match_frame and edit_media after the call', () => {
+    const after = (tool: string, args: Record<string, unknown>, data: unknown) => targetAfter(tool, args, ok(data));
+    expect(after('seek', { frame: 30 }, { time: 1, frame: 30, duration: 4 })).toEqual({ kind: 'time', time: 1 });
+    expect(after('seek', { edit: 'next' }, { time: 5, frame: 150, duration: 7 })).toEqual({ kind: 'time', time: 5 });
+    expect(after('seek', { time: 2 }, {})).toBeNull();
+    expect(before('seek', { frame: 30 })).toEqual({ kind: 'nowhere' });
+    expect(after('match_frame', { clip: 'c1' }, { clip: 'c1', asset: 'a1' })).toEqual({ kind: 'preview' });
+    expect(after('edit_media', { asset: 'a1', mode: 'insert' }, { clips: [{ id: 'k1' }, { id: 'k2' }] })).toEqual({ kind: 'clips', ids: ['k1', 'k2'] });
+    expect(after('edit_media', { asset: 'a1', mode: 'insert' }, { clips: [] })).toBeNull();
+    expect(after('set_media_marks', { asset: 'a1' }, { asset: 'a1' })).toBeNull();
+    expect(after('nudge_clips', { ids: ['a'], frames: 1 }, { moved: ['a'] })).toBeNull();
+    expect(targetAfter('edit_media', {}, fail('no project is open'))).toBeNull();
+  });
+});

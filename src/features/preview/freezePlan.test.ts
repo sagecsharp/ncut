@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Project, VideoClip } from '../../types';
 import { freezeFileName, freezeSourceTime, pickFreezeTarget, planFreeze, shiftMoves, stillClipFrom } from './freezePlan';
+import { resolveClip } from '../../lib/anim';
 
 const video = (id: string, trackId: string, start: number, duration: number, over: Partial<VideoClip> = {}): VideoClip => ({
   id,
@@ -154,5 +155,27 @@ describe('stillClipFrom bend and pivot', () => {
     expect(s.pivot).toEqual({ x: -0.5, y: 0.25 });
     expect(s.pivot).not.toBe(v.pivot);
     expect(stillClipFrom(video('b', 't1', 0, 4), tf, 'img', 0, 1)).not.toHaveProperty('pivot');
+  });
+});
+
+describe('stillClipFrom grade', () => {
+  const tf = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
+  it('the still gets the grade as it shows at the freeze time', () => {
+    const v = video('a', 't1', 0, 4, {
+      grade: { liftR: 0.1, curves: { y: [[0, 0], [0.5, 0.7], [1, 1]] } },
+      keyframes: { 'grade.gainY': [{ t: 0, v: 0, ease: 'linear' }, { t: 2, v: 0.4, ease: 'linear' }] } as never,
+    });
+    const shown = resolveClip(v, 1);
+    const s = stillClipFrom(shown, shown.transform, 'img', 0, 1);
+    expect(s.grade?.liftR).toBe(0.1);
+    expect(s.grade?.gainY).toBeCloseTo(0.2, 5);
+    expect(s.grade?.curves).toEqual(v.grade!.curves);
+    expect(s.grade).not.toBe(shown.grade);
+    expect(s.grade!.curves).not.toBe(v.grade!.curves);
+    expect(s.keyframes).toBeUndefined();
+  });
+  it('no grade, no field', () => {
+    expect(stillClipFrom(video('a', 't1', 0, 4), tf, 'img', 0, 1)).not.toHaveProperty('grade');
+    expect(stillClipFrom(video('b', 't1', 0, 4, { grade: null }), tf, 'img', 0, 1)).not.toHaveProperty('grade');
   });
 });

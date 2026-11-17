@@ -19,10 +19,16 @@ export function insetCssSize(projW: number, projH: number): { w: number; h: numb
   return { w: INSET_WIDTH, h: Math.max(1, Math.round(INSET_WIDTH * aspect)) };
 }
 
-/** backing size of the inset canvas: css size x pixel ratio (at most 2), never above the project, then the preview quality */
-export function insetBackingSize(projW: number, projH: number, dpr: number, quality: PreviewQuality): { w: number; h: number } {
+/**
+ * backing size of the inset canvas: css size x pixel ratio (at most 2), never above the project, then the preview quality.
+ * minLong (the scopes read it): a result with a shorter long side becomes the project shape at that long side (never above the project)
+ */
+export function insetBackingSize(projW: number, projH: number, dpr: number, quality: PreviewQuality, minLong = 0): { w: number; h: number } {
   const css = insetCssSize(projW, projH);
-  return backingSize(css.w, css.h, projW, projH, Math.min(2, dpr > 0 ? dpr : 1), quality);
+  const size = backingSize(css.w, css.h, projW, projH, Math.min(2, dpr > 0 ? dpr : 1), quality);
+  if (Math.max(size.w, size.h) >= minLong || !(projW > 0) || !(projH > 0)) return size;
+  const k = Math.min(1, minLong / Math.max(projW, projH));
+  return { w: Math.max(1, Math.round(projW * k)), h: Math.max(1, Math.round(projH * k)) };
 }
 
 /**

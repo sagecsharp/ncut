@@ -48,9 +48,9 @@ describe('shortcuts view', () => {
     expect(last.description).toBe(sceneMouseLine('unity'));
   });
 
-  it('the fields group now has eight rows', () => {
+  it('the fields group now has eighteen rows', () => {
     const fields = shortcutGroups('', SHORTCUTS, 'blender').find((g) => g.group === 'fields')!;
-    expect(fields.rows).toHaveLength(8);
+    expect(fields.rows).toHaveLength(18);
   });
 
   it('the mouse group has mouse-pivot', () => {

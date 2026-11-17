@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MIX_CHUNK_SECONDS, MIX_SAMPLE_RATE, clipWindow, planMixChunks, trimGainPoints } from './audioMix';
+import type { AudioClip } from '../../types';
+import { MIX_CHUNK_SECONDS, MIX_SAMPLE_RATE, clipSchedule, clipWindow, gainPoints, planMixChunks, trimGainPoints } from './audioMix';
 
 describe('clipWindow', () => {
   it('a clip fully inside the range lands at its offset', () => {
@@ -84,5 +85,33 @@ describe('planMixChunks', () => {
     expect(wa.skip + wa.span).toBeCloseTo(wb.skip);
     expect(wa.localTo).toBeCloseTo(wb.localFrom);
     expect(wa.span + wb.span).toBeCloseTo(20 * 1.5);
+  });
+});
+
+describe('clipSchedule', () => {
+  const clip = (over: Partial<AudioClip> = {}): AudioClip => ({
+    id: 'c', name: 'c', type: 'audio', trackId: 't', assetId: 'a', start: 2, duration: 4, trimStart: 0.25, speed: 1.5, volume: 0.8, muted: false,
+    fadeIn: 0.5, fadeOut: 1, keyframes: { volume: [{ t: 0, v: 0.5, ease: 'linear' }, { t: 2, v: 1, ease: 'linear' }] }, ...over,
+  });
+  it('equals clipWindow + gainPoints + trimGainPoints, timed from the window start', () => {
+    const c = clip();
+    for (const [offset, length] of [[0, 10], [3, 2], [5, 30]] as const) {
+      const win = clipWindow(c.start, c.duration, c.speed, offset, length)!;
+      const sch = clipSchedule(c, offset, length)!;
+      expect(sch.assetId).toBe('a');
+      expect(sch.from).toBe(Math.max(0, c.trimStart) + win.skip);
+      expect(sch.span).toBe(win.span);
+      expect(sch.when).toBe(win.when);
+      expect(sch.rate).toBe(c.speed);
+      expect(sch.gain).toEqual(trimGainPoints(gainPoints(c), win.localFrom, win.localTo).map(([t, g]) => [win.when + t, g]));
+      expect(sch.win).toEqual(win);
+    }
+  });
+  it('is null outside the window', () => {
+    expect(clipSchedule(clip(), 6, 5)).toBeNull();
+    expect(clipSchedule(clip(), 0, 2)).toBeNull();
+  });
+  it('a negative trimStart reads as 0', () => {
+    expect(clipSchedule(clip({ trimStart: -3 }), 0, 10)!.from).toBe(0);
   });
 });

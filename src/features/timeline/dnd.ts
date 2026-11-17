@@ -5,11 +5,9 @@
  */
 import type { DragEvent as ReactDragEvent } from 'react';
 import type { Clip, MediaAsset, TrackKind } from '../../types';
-import { DEFAULT_CAMERA_DURATION, DEFAULT_EFFECT_DURATION, DEFAULT_SHAPE_DURATION, DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION } from '../../lib/factory';
 import { DND_MIME, getDragPayload, isFileDrag, isNcutDrag } from '../../lib/dnd';
 import type { DragPayload } from '../../lib/dnd';
 import { getEffect } from '../../engine/effects/registry';
-import { getTransition } from '../../engine/transitions/registry';
 import { cutLimit, rememberTransition, transitionFor } from '../media/transitionApply';
 import { CUT_EPS, previousClipOnTrack } from '../../lib/transitions';
 import { isVisualClip } from '../../types';
@@ -23,6 +21,8 @@ import { planDropInsert } from './dropInsert';
 import type { DropPlan } from './dropInsert';
 import { effectDropTarget, pickEffectTrack } from './effectTarget';
 import { createEffectClip } from '../../lib/factory';
+import { durationOfPayload, ghostLabel, kindOfPayload, takeOf } from './dropPayload';
+import { insertMedia } from './insertMedia';
 import { importFiles } from '../../media/importer';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -52,32 +52,6 @@ interface Target {
   plan?: DropPlan;
 }
 
-function kindOfPayload(payload: DragPayload, assets: MediaAsset[]): TrackKind | null {
-  if (payload.kind === 'text' || payload.kind === 'shape' || payload.kind === 'effect' || payload.kind === 'camera') return 'video';
-  // transitions go on a clip, not on a lane
-  if (payload.kind === 'transition') return null;
-  const asset = assets.find((a) => a.id === payload.assetId);
-  if (!asset) return null;
-  return asset.kind === 'audio' ? 'audio' : 'video';
-}
-
-function durationOfPayload(payload: DragPayload, assets: MediaAsset[]): number {
-  if (payload.kind === 'text') {
-    const d = payload.preset?.duration;
-    return typeof d === 'number' && d > 0 ? d : DEFAULT_TEXT_DURATION;
-  }
-  if (payload.kind === 'shape') {
-    const d = payload.preset?.duration;
-    return typeof d === 'number' && d > 0 ? d : DEFAULT_SHAPE_DURATION;
-  }
-  if (payload.kind === 'effect') return DEFAULT_EFFECT_DURATION;
-  if (payload.kind === 'camera') return DEFAULT_CAMERA_DURATION;
-  if (payload.kind === 'transition') return 1;
-  const asset = assets.find((a) => a.id === payload.assetId);
-  if (!asset) return 1;
-  return asset.kind === 'image' ? DEFAULT_IMAGE_DURATION : Math.max(asset.duration, 0.1);
-}
-
 function ghostKind(payload: DragPayload | null): GhostKind {
   switch (payload?.kind) {
     case 'text':
@@ -88,15 +62,6 @@ function ghostKind(payload: DragPayload | null): GhostKind {
     default:
       return 'asset';
   }
-}
-
-function ghostLabel(payload: DragPayload | null): string {
-  if (!payload) return '';
-  if (payload.kind === 'camera') return 'camera';
-  if (payload.kind === 'shape') return payload.preset?.name ?? payload.preset?.kind ?? 'rect';
-  if (payload.kind === 'transition') return getTransition(payload.transition)?.name ?? payload.transition;
-  if (payload.kind !== 'effect') return '';
-  return getEffect(payload.effect)?.name ?? payload.effect;
 }
 
 /** over the last part of a clip with another clip right behind it, the user means the cut */
@@ -464,7 +429,7 @@ export function createDnd(env: DndEnv) {
   function placeOnLane(payload: DragPayload, trackId: string | undefined, start: number, skipHistory: boolean): boolean {
     const st = useEditor.getState();
     const o = { trackId, start, ...(skipHistory ? { skipHistory: true } : {}) };
-    if (payload.kind === 'asset') return st.insertAsset(payload.assetId, o) !== null;
+    if (payload.kind === 'asset') return insertMedia(payload.assetId, { ...o, ...takeOf(payload) }) !== null;
     if (payload.kind === 'effect') return st.addEffect(payload.effect, o) !== null;
     if (payload.kind === 'camera') return !!st.addCamera(o);
     if (payload.kind === 'shape') return !!st.addShape({ ...o, preset: payload.preset });
@@ -492,13 +457,7 @@ export function createDnd(env: DndEnv) {
     let t = dropStart;
     for (const asset of assets) {
       const kind: TrackKind = asset.kind === 'audio' ? 'audio' : 'video';
-      const id = useEditor
-        .getState()
-        .insertAsset(asset.id, {
-          trackId: laneTrack && laneTrack.kind === kind ? laneTrack.id : undefined,
-          start: t,
-          skipHistory: true,
-        });
+      const id = insertMedia(asset.id, { trackId: laneTrack && laneTrack.kind === kind ? laneTrack.id : undefined, start: t, skipHistory: true });
       if (!id) continue;
       const clip = useEditor.getState().project?.clips.find((c) => c.id === id);
       if (clip) t = clipEnd(clip);

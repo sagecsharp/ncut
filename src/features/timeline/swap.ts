@@ -12,7 +12,7 @@ export function swappableKind(clip: Pick<Clip, 'type'>): MediaAsset['kind'] | nu
   return clip.type === 'video' || clip.type === 'image' || clip.type === 'audio' ? clip.type : null;
 }
 
-/** other assets of the clip's kind, most recently added first. empty for clips without media. */
+/** other assets of the clip's kind, most recently added first. a sound clip (an audio clip of a video) also takes videos with sound. empty for clips without media. */
 export function swapCandidates(
   assets: readonly MediaAsset[],
   clip: Pick<Clip, 'type'> & { assetId?: string },
@@ -20,9 +20,10 @@ export function swapCandidates(
 ): MediaAsset[] {
   const kind = swappableKind(clip);
   if (!kind) return [];
+  const soundClip = kind === 'audio' && assets.find((a) => a.id === clip.assetId)?.kind === 'video';
   return assets
     .map((a, i) => ({ a, i }))
-    .filter(({ a }) => a.kind === kind && a.id !== clip.assetId)
+    .filter(({ a }) => (a.kind === kind || (soundClip && a.kind === 'video' && a.hasAudio)) && a.id !== clip.assetId)
     .sort((x, y) => y.a.createdAt - x.a.createdAt || y.i - x.i)
     .slice(0, limit)
     .map(({ a }) => a);

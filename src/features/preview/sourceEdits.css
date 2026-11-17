@@ -1,0 +1,32 @@
+/* the three point edit row under the source transport */
+.source-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+}
+.source-edit-plan {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: var(--font-size-sm);
+  color: var(--text-faint);
+}
+.source-edit-plan.is-blocked {
+  color: var(--warn);
+}
+/* the source pane is the container: labels first, then the plan */
+@container (max-width: 560px) {
+  .source-edit-label {
+    display: none;
+  }
+}
+@container (max-width: 400px) {
+  .source-edit-plan {
+    display: none;
+  }
+}

@@ -3,6 +3,7 @@ import { animProps, canKey, EASINGS, keyIndexAt, valueAt } from '../../lib/anim'
 import { usePlayback } from '../../store/playback';
 import { useEditor } from '../../store/editorStore';
 import type { Clip, Easing, Keyframes } from '../../types';
+import { hasSoundApart, mateOf, soundsOf } from '../../lib/soundPair';
 import { changedSince, needClip, needProject, needUnlocked, ok, optNumber, optString, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
 import { MAX_TIME, step } from './editPatch';
@@ -34,6 +35,20 @@ function allKeys(clip: Clip): Record<string, ReturnType<typeof keysOf>> {
 
 const EPS = 1e-6;
 
+/** the picture of a separated sound is muted: its volume and pan keys are never heard, so they are set on the sound clip */
+function needNotApart(clip: Clip, prop: string): void {
+  if (clip.type !== 'video' || (prop !== 'volume' && prop !== 'pan')) return;
+  const clips = needProject().clips;
+  if (!hasSoundApart(clips, clip.id)) return;
+  const soundId = mateOf(clips, clip.id)?.id ?? soundsOf(clips, clip)[0]?.id;
+  throw new ToolError(`the sound of ${clip.id} is the clip ${soundId}: set ${prop} there (or join_sound)`);
+}
+
+/** the same keys, to a thousandth, so a record read back from get_clip counts as unchanged */
+function sameKeys(a: Array<{ t: number; v: number; ease?: string }>, b: Array<{ t: number; v: number; ease?: string }>): boolean {
+  return a.length === b.length && a.every((k, i) => Math.abs(k.t - b[i]!.t) < 1e-3 && Math.abs(k.v - b[i]!.v) < 1e-3 && k.ease === b[i]!.ease);
+}
+
 function inside(clip: Clip, time: number): boolean {
   return time >= clip.start - EPS && time <= clip.start + clip.duration + EPS;
 }
@@ -43,7 +58,7 @@ const setKeyframe: ToolDef = {
   title: 'set a keyframe',
   description:
     'add or update one keyframe on one property of a clip, in one undo step. time is on the TIMELINE in seconds and has to be inside the clip. ' +
-    'prop is an animatable property of that clip: x y scale rotation opacity (and z rotX rotY for 3d, look values like blur, volume for sound, amount and p.<param> for effects, pan tilt roll fov for a camera; get_clip lists them with ranges). an unknown prop is an error that lists them. ' +
+    'prop is an animatable property of that clip: x y scale rotation opacity (and z rotX rotY for 3d, look values like blur, volume and pan for sound, amount and p.<param> for effects, pan tilt roll fov for a camera; get_clip lists them with ranges). an unknown prop is an error that lists them. ' +
     'value defaults to what the property is at that time; it is limited to the property\'s range. ease says how the value travels to the NEXT key: linear, ease, ease-in, ease-out, back, bounce, elastic or hold (default ease). ' +
     'once a property has keys its static value is ignored. answers { id, prop, keys: [{ t: seconds from clip start, time: timeline seconds, v, ease }] }. to set many keys at once use set_keyframes, to remove one remove_keyframe.',
   inputSchema: {
@@ -63,6 +78,7 @@ const setKeyframe: ToolDef = {
     const time = args.time as number;
     needUnlocked(clip);
     needProp(clip, prop);
+    needNotApart(clip, prop);
     if (!canKey(clip, prop)) {
       throw new ToolError(`"${prop}" cannot be keyed yet: the clip has no ${prop.split('.')[0]} set. set it first with update_clip (for example a mask or an outline), then key it`);
     }
@@ -158,6 +174,8 @@ const setKeyframes: ToolDef = {
       });
     }
     if (bad.length > 0) throw new ToolError(`a ${clip.type} clip cannot animate ${bad.map((b) => `"${b}"`).join(', ')}. it can: ${list.join(', ')}`);
+    // a volume or pan that is sent back as it is stays fine, so a record from get_clip still works
+    for (const prop of Object.keys(out)) if (!sameKeys(out[prop]!, clip.keyframes?.[prop] ?? [])) needNotApart(clip, prop);
     for (const prop of Object.keys(out)) {
       if (!canKey(clip, prop)) throw new ToolError(`"${prop}" cannot be keyed yet: set it first with update_clip (for example a mask or an outline), then key it`);
     }
