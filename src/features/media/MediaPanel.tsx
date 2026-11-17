@@ -21,6 +21,7 @@ import { CaptionTools } from './captions/CaptionTools';
 import { MEDIA_SORTS, filterAssets, sortAssets, swapKind, usedAssetIds } from './mediaList';
 import type { MediaFilter, MediaSort } from './mediaList';
 import { PLAIN_COLOR_NAME, plainColorPreset, showsPlainColor, usePlainColor } from './plainColor';
+import { tip } from '../shell/tip';
 import { TEXT_PRESETS } from './textPresets';
 import type { TextPreset } from './textPresets';
 import './media.css';
@@ -118,7 +119,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
   };
 
   const dims = asset.width && asset.height ? ` - ${asset.width}x${asset.height}` : '';
-  const tip = `${asset.name} - ${formatBytes(asset.size)}${dims}`;
+  const info = `${asset.name} - ${formatBytes(asset.size)}${dims}`;
 
   return (
     <div
@@ -127,7 +128,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
       data-asset-id={id}
       draggable={!editing}
       tabIndex={0}
-      title={tip}
+      title={info}
       onDragStart={onDragStart}
       onDragEnd={endDrag}
       onDoubleClick={() => onInsert(id)}
@@ -142,7 +143,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
         <div className="media-actions">
           <button
             className="icon-btn icon-btn-sm"
-            title="add to timeline at the playhead"
+            {...tip('add to timeline', { does: 'at the playhead' })}
             aria-label="add to timeline"
             onClick={(e) => {
               e.stopPropagation();
@@ -155,7 +156,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
           {canSwap ? (
             <button
               className="icon-btn icon-btn-sm"
-              title="swap into selected clip (replaces its media, keeps its place)"
+              {...tip('swap into selected clip', { does: 'the selected clip shows this media instead. its place and look stay' })}
               aria-label="swap into selected clip"
               onClick={(e) => {
                 e.stopPropagation();
@@ -168,8 +169,8 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
           ) : null}
           <button
             className="icon-btn icon-btn-sm"
-            title="remove from project"
-            aria-label="remove"
+            {...tip('remove from project', { does: 'the media and every clip that uses it' })}
+            aria-label="remove from project"
             onClick={(e) => {
               e.stopPropagation();
               onRemove(id);
@@ -185,7 +186,7 @@ const AssetCard = memo(function AssetCard({ asset, onInsert, onRemove, swapKind:
           className="input input-sm media-rename"
           value={draft}
           autoFocus
-          title="asset name"
+          title="media name"
           onFocus={(e) => e.currentTarget.select()}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
@@ -416,7 +417,7 @@ function MediaTab() {
               <button
                 key={f.id}
                 className={`btn btn-sm btn-ghost${filter === f.id ? ' is-active' : ''}`}
-                title={`show ${f.label} assets`}
+                title={f.id === 'all' ? 'show all media' : `show only ${f.label}`}
                 onClick={() => setFilter(f.id)}
               >
                 {f.label}
@@ -424,7 +425,7 @@ function MediaTab() {
             ))}
             <button
               className={`btn btn-sm btn-ghost${unusedOnly ? ' is-active' : ''}`}
-              title="only show assets that no clip uses"
+              title="only show media that no clip uses"
               aria-pressed={unusedOnly}
               onClick={() => setUnusedOnly((v) => !v)}
             >
@@ -436,14 +437,14 @@ function MediaTab() {
             <input
               className="input input-sm"
               placeholder="search"
-              title="search assets by name"
+              title="search media by name"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
             <select
               className="select media-sort"
-              title="sort assets"
-              aria-label="sort assets"
+              title="sort media"
+              aria-label="sort media"
               value={sort}
               onChange={(e) => setSort(e.target.value as MediaSort)}
             >
@@ -476,7 +477,7 @@ function MediaTab() {
               : null}
           </div>
         ) : (
-          <div className="empty">no matching assets</div>
+          <div className="empty">no matching media</div>
         )}
         {!hasAssets ? (
           <div className="empty media-empty-import">
@@ -493,15 +494,15 @@ function MediaTab() {
 
       <Dialog
         open={!!pending}
-        title="remove asset"
+        title="remove media"
         onClose={cancelRemove}
         width={400}
         footer={
           <>
-            <button className="btn" title="keep the asset" onClick={cancelRemove}>
+            <button className="btn" title="keep the media" onClick={cancelRemove}>
               cancel
             </button>
-            <button className="btn btn-danger" title="remove the asset and its clips" onClick={confirmRemove}>
+            <button className="btn btn-danger" title="remove the media and its clips" onClick={confirmRemove}>
               remove
             </button>
           </>
@@ -578,12 +579,12 @@ function TextTab() {
 /* ---------- panel ---------- */
 
 const TABS: { id: Tab; label: string; tip: string; icon: LucideIcon }[] = [
-  { id: 'media', label: 'media', tip: 'imported files', icon: Film },
-  { id: 'layers', label: 'layers', tip: 'everything on screen right now', icon: Layers },
-  { id: 'text', label: 'text', tip: 'text presets', icon: Type },
+  { id: 'media', label: 'media', tip: 'the files you imported', icon: Film },
+  { id: 'layers', label: 'layers', tip: 'every clip on screen now, attached clips under their clip', icon: Layers },
+  { id: 'text', label: 'text', tip: 'text presets and captions', icon: Type },
   { id: 'shapes', label: 'shapes', tip: 'shapes and backgrounds', icon: Shapes },
-  { id: 'effects', label: 'effects', tip: 'effects for the timeline', icon: Sparkles },
-  { id: 'transitions', label: 'transitions', tip: 'transitions between clips', icon: ArrowLeftRight },
+  { id: 'effects', label: 'effects', tip: 'drop one on a track to change everything below, or alt drop it on a clip for that clip only', icon: Sparkles },
+  { id: 'transitions', label: 'transitions', tip: 'drop one on a cut or on selected clips', icon: ArrowLeftRight },
 ];
 
 export function MediaPanel() {
@@ -598,7 +599,7 @@ export function MediaPanel() {
             role="tab"
             aria-selected={tab === t.id}
             aria-label={t.label}
-            title={t.tip}
+            {...tip(t.label, { does: t.tip })}
             onClick={() => setTab(t.id)}
           >
             <t.icon className="media-tab-icon" size={14} />

@@ -256,6 +256,7 @@ export const CURSOR_RULES: Record<string, Rule> = {
     after: (_a, res) => clips(briefIds(res?.copies)),
   },
   group_clips: onClips('groups clips'),
+  bend_clips: onClips('bends clips'),
   ungroup_clips: onClips('ungroups clips'),
   // keyframes
   set_keyframe: {

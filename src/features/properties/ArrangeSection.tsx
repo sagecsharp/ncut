@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ArrowDownToLine, Camera, ChartSpline, Dices, Eye, EyeOff, Fan, Footprints, Globe, Layers, LayoutGrid, Orbit, RectangleHorizontal, RectangleVertical, Square, Tornado, Columns3 } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
@@ -8,6 +8,7 @@ import { arrangeSelection, flattenSelection, setLookAll } from './arrangeActions
 import { dropToFloor, layFlat, putInFrontOfCamera, standUp } from './placeActions';
 import { Row, SliderRow, Switch } from './controls';
 import { liveOpts } from './edit';
+import { arrangeFeel } from './fieldFeel';
 import { arrangeCounts } from './selectionSets';
 
 const KINDS: { kind: ArrangeKind; icon: typeof Orbit; title: string }[] = [
@@ -24,13 +25,15 @@ const KINDS: { kind: ArrangeKind; icon: typeof Orbit; title: string }[] = [
 ];
 
 /**
- * "arrange in 3d" for 2 or more visual clips: layout buttons + the slider of the last layout, face the
- * camera / stop facing, and back to 2d. clips attached to a parent or on a locked track are left out.
+ * "arrange in 3d" for 2 or more visual clips: layout buttons + the slider of the last layout, look at the
+ * camera / stop looking, and back to 2d. clips attached to a parent or on a locked track are left out.
  */
 export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: string[] }) {
   const [kind, setKind] = useState<ArrangeKind | null>(null);
   const [vals, setVals] = useState<Record<ArrangeKey, number>>({ ...ARRANGE_DEFAULTS });
   const [outward, setOutward] = useState(true);
+  // the values at the start of a drag, put back when escape cancels it
+  const start = useRef(vals);
   // another selection starts without a chosen layout: its slider must not re-arrange clips nobody asked to arrange
   const idsKey = ids.join(',');
   const [shownFor, setShownFor] = useState(idsKey);
@@ -89,12 +92,13 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
           label={slider.label}
           title={`${slider.label} of the ${kind}`}
           value={vals[slider.key]}
-          min={slider.min}
-          max={slider.max}
-          step={slider.step}
-          suffix={slider.suffix}
+          feel={arrangeFeel(slider)}
           disabled={off}
-          onChange={setVal}
+          onStart={() => {
+            start.current = vals;
+          }}
+          onCancel={() => setVals(start.current)}
+          onChange={(v) => setVal(v)}
         />
       ) : null}
       {extra && kind ? (
@@ -102,11 +106,12 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
           label={extra.label}
           title={`${extra.label} of the ${kind}`}
           value={vals[extra.key]}
-          min={extra.min}
-          max={extra.max}
-          step={extra.step}
-          suffix={extra.suffix}
+          feel={arrangeFeel(extra)}
           disabled={off}
+          onStart={() => {
+            start.current = vals;
+          }}
+          onCancel={() => setVals(start.current)}
           onChange={(v) => setVal(v, extra)}
         />
       ) : null}
@@ -116,13 +121,13 @@ export const ArrangeSection = memo(function ArrangeSection({ ids }: { ids: strin
         </Row>
       ) : null}
       <div className="props-buttons">
-        <button type="button" className="btn btn-sm" title="3d clips always turn to face the camera" disabled={threeD === 0} onClick={() => setLookAll(ids, 'camera')}>
+        <button type="button" className="btn btn-sm" title="3d clips always look at the camera" disabled={threeD === 0} onClick={() => setLookAll(ids, 'camera')}>
           <Eye size={14} />
-          face the camera
+          look at the camera
         </button>
-        <button type="button" className="btn btn-sm" title="3d clips stop turning toward the camera" disabled={threeD === 0} onClick={() => setLookAll(ids, 'none')}>
+        <button type="button" className="btn btn-sm" title="3d clips stop looking at the camera" disabled={threeD === 0} onClick={() => setLookAll(ids, 'none')}>
           <EyeOff size={14} />
-          stop facing
+          stop looking
         </button>
         <button type="button" className="btn btn-sm" title="back to flat 2d: z, tilt and turn go to 0" disabled={threeD === 0} onClick={() => flattenSelection(ids)}>
           <Square size={14} />

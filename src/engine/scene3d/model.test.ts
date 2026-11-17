@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { Transform } from '../../types';
 import { DEFAULT_TRANSFORM } from '../../types';
 import type { ClipBox } from '../draw';
+import { pictureBox } from '../pivot';
 import { clipModelMatrix, planeCorners } from './model';
-import { cross, dot, length, mul, normalize, rotationZ, scaling, sub, translation, type Mat4, type Vec3 } from './math';
+import { DEG, cross, dot, length, mul, normalize, rotationX, rotationY, rotationZ, scaling, sub, transformPoint, translation, type Mat4, type Vec3 } from './math';
 
 const box = (o: Partial<ClipBox> = {}): ClipBox => ({ cx: 500, cy: 300, width: 400, height: 200, rotation: 0, ...o });
 const tf = (o: Partial<Transform> = {}): Transform => ({ ...DEFAULT_TRANSFORM, ...o });
@@ -367,5 +368,53 @@ describe("lookAt 'clip' (a look point instead of the eye)", () => {
     near(normalOf(m), normalize(sub([960, 540, 400], p)), 4);
     const c = planeCorners(clipModelMatrix(box({ width: 10, height: 10 }), tf(), 'clip', EYE, parent, p));
     expect(length(sub(c[1], c[0]))).toBeCloseTo(30, 3);
+  });
+});
+
+describe('pivot (box.px / py)', () => {
+  const rnd = (() => {
+    let s = 12345;
+    return () => {
+      s = (s * 1664525 + 1013904223) % 4294967296;
+      return s / 4294967296;
+    };
+  })();
+  const span = (a: number, b: number) => a + (b - a) * rnd();
+
+  it('a pivot point lands on the position for any turn, tilt, spin, scale, parent and look at', () => {
+    for (let i = 0; i < 20; i++) {
+      const w = span(50, 600);
+      const h = span(50, 400);
+      const fx = span(-1.5, 1.5);
+      const fy = span(-1.5, 1.5);
+      const b = box({ width: w, height: h, rotation: span(-180, 180), px: fx * w, py: fy * h, cx: span(0, 1920), cy: span(0, 1080) });
+      const t = tf({ rotX: span(-80, 80), rotY: span(-80, 80), z: span(-300, 300), x: span(-100, 100), y: span(-100, 100) });
+      const look = (['none', 'camera', 'cameraY'] as const)[i % 3];
+      const parent = i % 2 ? mul(mul(translation(span(0, 900), span(0, 500), span(-200, 200)), rotationZ(span(-3, 3))), scaling(2, 2, 2)) : null;
+      const bare = { ...b, px: undefined, py: undefined };
+      const m = clipModelMatrix(b, t, look, EYE, parent);
+      const m0 = clipModelMatrix(bare, t, look, EYE, parent);
+      const p = transformPoint(m, fx, fy, 0);
+      near([p[0], p[1], p[2]], [m0[12]!, m0[13]!, m0[14]!], 2);
+    }
+  });
+  it('a box without px / py gives the same matrix as before', () => {
+    const t = tf({ rotX: 20, rotY: -30, z: 40 });
+    const b = box({ rotation: 15 });
+    const want = mul(mul(mul(mul(translation(500, 300, 40), rotationY(30 * DEG)), rotationX(-20 * DEG)), rotationZ(15 * DEG)), scaling(400, 200, 1));
+    expect(Array.from(clipModelMatrix(b, t, undefined, EYE))).toEqual(Array.from(want));
+    expect(Array.from(clipModelMatrix({ ...b, px: 0, py: 0 }, t, undefined, EYE))).toEqual(Array.from(want));
+    expect(Array.from(clipModelMatrix({ ...b, px: undefined, py: undefined }, t, undefined, EYE))).toEqual(Array.from(want));
+  });
+  it('without tilt and turn the quad of a pivoted plane is the rectangle of pictureBox', () => {
+    const b = box({ rotation: 30, px: -200, py: 50 });
+    const pic = pictureBox(b);
+    const c = planeCorners(clipModelMatrix(b, tf(), undefined, EYE));
+    const a = (pic.rotation * Math.PI) / 180;
+    const at = (x: number, y: number): Vec3 => [pic.cx + x * Math.cos(a) - y * Math.sin(a), pic.cy + x * Math.sin(a) + y * Math.cos(a), 0];
+    const hw = pic.width / 2;
+    const hh = pic.height / 2;
+    const want = [at(-hw, -hh), at(hw, -hh), at(hw, hh), at(-hw, hh)];
+    for (let i = 0; i < 4; i++) near(c[i]!, want[i]!, 3);
   });
 });

@@ -1,6 +1,4 @@
-import { roundShown } from '../../components/ui/numberFormat';
 import { memo, useMemo } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import { COUNTER_TOKEN, DEFAULT_COUNTER } from '../../engine/counter';
 import {
   DEFAULT_TEXT_ANIM_IN,
@@ -14,8 +12,8 @@ import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
 import type { TextAnim, TextClip, TextCounter, TextExtrude, TextGradient, TextHighlight, TextShadow, TextStroke } from '../../types';
 import { AnimField } from './AnimField';
-import { ColorField, Row, Section, SelectRow, Switch } from './controls';
-import { beginEdit, liveOpts } from './edit';
+import { ColorField, FeelField, Row, Section, SelectRow, Switch } from './controls';
+import { liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
 import { defaultSecondColor } from './shapeLogic';
 import { SPLIT_MODES, splitPlans, splitReason, splitText } from './textSplitActions';
@@ -29,49 +27,6 @@ const DEFAULT_HIGHLIGHT: TextHighlight = { color: '#ffe14d', mode: 'fill' };
 const DEFAULT_HIGHLIGHT_BOX = '#000000';
 const DEFAULT_EXTRUDE: TextExtrude = { depth: 0.2, angle: 135, color: '#555555' };
 const DEFAULT_SHADOW: TextShadow = { color: '#000000', opacity: 0.6, blur: 0.1, distance: 0.08, angle: 45 };
-
-/**
- * a percent field for a fraction stored in the clip. with `prop` it is an animatable field of that clip (its own diamond and
- * keys, see lib/anim.ts), the value then goes through the key list instead of `onChange`.
- */
-function Pct({
-  id,
-  prop,
-  label,
-  title,
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  id?: string;
-  prop?: string;
-  label: string;
-  title: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (fraction: number) => void;
-}) {
-  if (id !== undefined && prop !== undefined) {
-    return <AnimField id={id} prop={prop} label={label} title={title} scale={100} suffix="%" min={min} max={max} step={1} precision={0} />;
-  }
-  return (
-    <Row label={label} title={title}>
-      <NumberField
-        className="props-grow"
-        suffix="%"
-        title={title}
-        value={roundShown(value * 100, 0)}
-        min={min}
-        max={max}
-        precision={0}
-        onStart={beginEdit}
-        onChange={(v) => onChange(v / 100)}
-      />
-    </Row>
-  );
-}
 
 export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip: TextClip }) {
   const id = clip.id;
@@ -106,22 +61,8 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 
   return (
     <Section id="text-style" title="text style">
-      <Pct id={id} prop="letterSpacing"
-        label="spacing"
-        title="space between letters (% of the font size)"
-        value={clip.letterSpacing ?? 0}
-        min={-50}
-        max={200}
-        onChange={(v) => actions().updateClip(id, { letterSpacing: v }, liveOpts())}
-      />
-      <Pct id={id} prop="lineHeight"
-        label="line gap"
-        title="space between lines (% of the font size)"
-        value={clip.lineHeight ?? 1.25}
-        min={50}
-        max={300}
-        onChange={(v) => actions().updateClip(id, { lineHeight: v }, liveOpts())}
-      />
+      <AnimField id={id} prop="letterSpacing" label="spacing" title="space between letters (% of the font size)" feel="letterSpacing" />
+      <AnimField id={id} prop="lineHeight" label="line gap" title="space between lines (% of the font size)" feel="lineHeight" />
       <Row label="capitals" title="draw the text in capital letters">
         <Switch checked={!!clip.uppercase} title="capitals on or off" onChange={(v) => actions().updateClip(id, { uppercase: v })} />
       </Row>
@@ -135,7 +76,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
         {stroke ? <ColorField title="outline color" value={stroke.color} onChange={(c) => setStroke({ color: c })} /> : null}
       </Row>
       {stroke ? (
-        <Pct id={id} prop="stroke.width" label="width" title="outline width (% of the font size)" value={stroke.width} min={1} max={50} onChange={(v) => setStroke({ width: v })} />
+        <AnimField id={id} prop="stroke.width" label="width" title="outline width (% of the font size)" feel="textStroke" />
       ) : null}
       {stroke || stroke2 || clip.hollow ? (
         <>
@@ -148,14 +89,7 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             {stroke2 ? <ColorField title="second outline color" value={stroke2.color} onChange={(c) => setStroke2({ color: c })} /> : null}
           </Row>
           {stroke2 ? (
-            <Pct id={id} prop="stroke2.width"
-              label="width"
-              title="second outline width, outside the first one (% of the font size)"
-              value={stroke2.width}
-              min={1}
-              max={50}
-              onChange={(v) => setStroke2({ width: v })}
-            />
+            <AnimField id={id} prop="stroke2.width" label="width" title="second outline width, outside the first one (% of the font size)" feel="textStroke2" />
           ) : null}
         </>
       ) : null}
@@ -173,17 +107,10 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {shadow ? (
         <>
-          <Pct id={id} prop="shadow.opacity" label="opacity" title="shadow opacity (%)" value={shadow.opacity} min={0} max={100} onChange={(v) => setShadow({ opacity: v })} />
-          <Pct id={id} prop="shadow.blur" label="blur" title="shadow softness (% of the font size)" value={shadow.blur} min={0} max={100} onChange={(v) => setShadow({ blur: v })} />
-          <Pct id={id} prop="shadow.distance"
-            label="distance"
-            title="how far the shadow falls (% of the font size)"
-            value={shadow.distance}
-            min={0}
-            max={100}
-            onChange={(v) => setShadow({ distance: v })}
-          />
-          <AnimField id={id} prop="shadow.angle" label="angle" title="direction the shadow falls (degrees, 0 = right, 90 = down)" suffix="deg" min={-360} max={360} step={1} precision={0} />
+          <AnimField id={id} prop="shadow.opacity" label="opacity" title="shadow opacity (%)" feel="shadowOpacity" />
+          <AnimField id={id} prop="shadow.blur" label="blur" title="shadow softness (% of the font size)" feel="shadowBlur" />
+          <AnimField id={id} prop="shadow.distance" label="distance" title="how far the shadow falls (% of the font size)" feel="shadowDistance" />
+          <AnimField id={id} prop="shadow.angle" label="angle" title="direction the shadow falls (degrees, 0 = right, 90 = down)" feel="shadowAngle" />
         </>
       ) : null}
 
@@ -197,10 +124,10 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       </Row>
       {extrude ? (
         <>
-          <Pct id={id} prop="extrude.depth" label="length" title="how far the side reaches (% of the font size)" value={extrude.depth} min={1} max={100} onChange={(v) => setExtrude({ depth: v })} />
-          <AnimField id={id} prop="extrude.angle" label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)" suffix="deg" min={0} max={360} step={1} precision={0} />
+          <AnimField id={id} prop="extrude.depth" label="length" title="how far the side reaches (% of the font size)" feel="extrudeDepth" />
+          <AnimField id={id} prop="extrude.angle" label="angle" title="direction the side reaches (degrees, 0 = right, 90 = down)" feel="extrudeAngle" />
           {clip.threeD ? (
-            <AnimField id={id} prop="scaleZ" label="scale z" title="stretch the depth of the letters in 3d only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+            <AnimField id={id} prop="scaleZ" label="scale z" title="stretch the depth of the letters in 3d only, on top of scale (%)" feel="scaleZ" />
           ) : null}
         </>
       ) : null}
@@ -220,12 +147,12 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
           <Row label="to" title="gradient end color">
             <ColorField title="gradient end color" value={gradient.to} onChange={(c) => setGradient({ to: c })} />
           </Row>
-          <AnimField id={id} prop="gradient.angle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" suffix="deg" min={-360} max={360} step={1} precision={0} />
+          <AnimField id={id} prop="gradient.angle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" feel="textGradientAngle" />
         </>
       ) : null}
 
-      <AnimField id={id} prop="curve" label="curve" title="bend each line along a circle (degrees of arc, + arch, - smile, 0 straight)" suffix="deg" min={-360} max={360} step={1} precision={0} />
-      <AnimField id={id} prop="wrapWidth" label="wrap" title="wrap lines longer than this width (px, 0 = off)" suffix="px" min={0} max={20000} step={1} precision={0} />
+      <AnimField id={id} prop="curve" label="curve" title="curve each line along a circle (degrees of arc, + arch, - smile, 0 straight)" feel="curve" />
+      <AnimField id={id} prop="wrapWidth" label="wrap" title="wrap lines longer than this width (px, 0 = off)" feel="wrapWidth" />
 
       <Row label="counter" title="a number that counts up or down over the length of the clip">
         <Switch
@@ -237,28 +164,10 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
       {counter ? (
         <>
           <Row label="from" title={isTime ? 'seconds at the start' : 'the number at the start'}>
-            <NumberField
-              className="props-grow"
-              title="counter start number"
-              value={counter.from}
-              min={-1000000000}
-              max={1000000000}
-              precision={4}
-              onStart={beginEdit}
-              onChange={(v) => setCounter({ from: v })}
-            />
+            <FeelField feel="counterValue" precision={counter.decimals} title="counter start number" value={counter.from} onChange={(v) => setCounter({ from: v })} />
           </Row>
           <Row label="to" title={isTime ? 'seconds at the end' : 'the number at the end'}>
-            <NumberField
-              className="props-grow"
-              title="counter end number"
-              value={counter.to}
-              min={-1000000000}
-              max={1000000000}
-              precision={4}
-              onStart={beginEdit}
-              onChange={(v) => setCounter({ to: v })}
-            />
+            <FeelField feel="counterValue" precision={counter.decimals} title="counter end number" value={counter.to} onChange={(v) => setCounter({ to: v })} />
           </Row>
           <SelectRow
             label="show as"
@@ -271,15 +180,15 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             onChange={(v) => setCounter({ format: v === 'time' ? 'time' : 'number' })}
           />
           <Row label="decimals" title={isTime ? 'digits after the seconds (0 to 4)' : 'digits after the point (0 to 4)'}>
-            <NumberField
-              className="props-grow"
+            <FeelField
+              feel="counterDecimals"
               title="counter decimals (0 to 4)"
               value={counter.decimals}
-              min={0}
-              max={4}
-              precision={0}
-              onStart={beginEdit}
-              onChange={(v) => setCounter({ decimals: Math.min(4, Math.max(0, Math.round(v))) })}
+              onChange={(v) => {
+                const kept = Math.min(4, Math.max(0, Math.round(v)));
+                setCounter({ decimals: kept });
+                return kept;
+              }}
             />
           </Row>
           {isTime ? null : (
@@ -306,15 +215,11 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             onChange={(v) => setCounter({ ease: v === 'linear' ? 'linear' : v === 'in-out' ? 'in-out' : 'out' })}
           />
           <Row label="hold at end" title="seconds at the end of the clip where the final number just stays">
-            <NumberField
-              className="props-grow"
-              suffix="s"
+            <FeelField
+              feel="counterHold"
+              soft={[0, Math.min(clip.duration, 10)]}
               title="hold at end (seconds)"
               value={counter.hold ?? 0}
-              min={0}
-              max={3600}
-              precision={2}
-              onStart={beginEdit}
               onChange={(v) => setCounter({ hold: v })}
             />
           </Row>
@@ -359,22 +264,8 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 
       {clip.background !== null ? (
         <>
-          <Pct id={id} prop="backgroundRadius"
-            label="corners"
-            title="corner roundness of the box (0 square, 100 pill)"
-            value={clip.backgroundRadius ?? 0}
-            min={0}
-            max={100}
-            onChange={(v) => actions().updateClip(id, { backgroundRadius: v }, liveOpts())}
-          />
-          <Pct id={id} prop="backgroundPadding"
-            label="padding"
-            title="space between the text and the edge of the box (% of the font size)"
-            value={clip.backgroundPadding ?? 0.3}
-            min={0}
-            max={200}
-            onChange={(v) => actions().updateClip(id, { backgroundPadding: v }, liveOpts())}
-          />
+          <AnimField id={id} prop="backgroundRadius" label="corners" title="corner roundness of the box (0 square, 100 pill)" feel="backgroundRadius" />
+          <AnimField id={id} prop="backgroundPadding" label="padding" title="space between the text and the edge of the box (% of the font size)" feel="backgroundPadding" />
           <Row label="per line" title="one box per line, like captions">
             <Switch
               checked={!!clip.backgroundPerLine}
@@ -424,6 +315,7 @@ export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: T
         value={clip.animIn}
         defaultDuration={DEFAULT_TEXT_ANIM_IN}
         durationTitle="how long the entrance takes (seconds)"
+        feel="motionDuration"
         onChange={set('animIn')}
       />
       <MotionRow
@@ -433,6 +325,7 @@ export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: T
         value={clip.animOut}
         defaultDuration={DEFAULT_TEXT_ANIM_OUT}
         durationTitle="how long the exit takes (seconds)"
+        feel="motionDuration"
         onChange={set('animOut')}
       />
       <MotionRow
@@ -442,6 +335,7 @@ export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: T
         value={clip.animLoop}
         defaultDuration={DEFAULT_TEXT_ANIM_LOOP}
         durationTitle="seconds per cycle"
+        feel="motionLoop"
         onChange={set('animLoop')}
       />
     </Section>

@@ -1,12 +1,14 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { FpsCounter } from '../../components/ui/FpsCounter';
+import { setTipReason } from '../../components/ui/tips';
 import { clamp } from '../../lib/time';
 import { useUi } from '../../store/ui';
 import { MediaPanel } from '../media/MediaPanel';
 import { Preview } from '../preview/Preview';
 import { PropertiesPanel } from '../properties/PropertiesPanel';
 import { Header } from '../shell/Header';
+import { reasonFor, reasonSnapshot } from '../shell/reasons';
 import { loadExportDialog, loadProjectSettingsDialog, loadShortcutsDialog, preloadDialogsWhenIdle } from '../shell/lazyDialogs';
 import { useShortcuts } from '../shell/useShortcuts';
 import { Timeline } from '../timeline/Timeline';
@@ -82,6 +84,12 @@ export function EditorLayout() {
 
   useShortcuts();
   useEffect(() => preloadDialogsWhenIdle(), []);
+
+  // the third line of a tip: why an action would do nothing now, asked only when a tip shows
+  useEffect(() => {
+    setTipReason((id) => reasonFor(id, reasonSnapshot()));
+    return () => setTipReason(null);
+  }, []);
 
   useEffect(() => {
     try {

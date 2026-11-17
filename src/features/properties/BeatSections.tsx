@@ -4,11 +4,10 @@
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeftRight, AudioLines, Drum, Eraser, Magnet, MoveHorizontal, Repeat } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
 import { BPM_MAX, BPM_MIN, TAP_GAP_MS, parseBeatOffset, parseBpm, scaleBpm, tapBpm } from '../../lib/tempo';
 import { useEditor } from '../../store/editorStore';
 import { beatSources, detectBpm } from '../timeline/tempoActions';
-import { Row, Section, SelectRow } from './controls';
+import { FeelField, Row, Section, SelectRow } from './controls';
 import { beginEdit, patchClip } from './edit';
 import { fitKeysToBeatAction, loopKeysOnBeatAction, snapKeysToBeatAction } from './keyActions';
 
@@ -61,15 +60,10 @@ export const TempoSection = memo(function TempoSection({ id, bpm: rawBpm, beatOf
       {bpm !== null ? (
         <>
           <Row label="bpm" title="beats per minute of this sound at normal speed">
-            <NumberField
-              className="props-num-wide"
+            <FeelField
+              feel="bpm"
               title={`beats per minute (${BPM_MIN} to ${BPM_MAX})`}
               value={bpm}
-              min={BPM_MIN}
-              max={BPM_MAX}
-              step={1}
-              precision={2}
-              onStart={beginEdit}
               // the field shows two decimals of a tempo that is kept finer: handing the shown number back (enter
               // without typing) is no change
               onChange={(v) => {
@@ -78,14 +72,11 @@ export const TempoSection = memo(function TempoSection({ id, bpm: rawBpm, beatOf
             />
           </Row>
           <Row label="first beat" title="where a beat falls in the sound, in seconds from its start. nudge it until the ticks on the clip sit on the hits">
-            <NumberField
-              className="props-num-wide"
-              suffix="s"
+            <FeelField
+              feel="beatOffset"
+              soft={[0, 60 / bpm]}
               title="where a beat falls (seconds into the sound)"
               value={offset}
-              step={0.01}
-              precision={3}
-              onStart={beginEdit}
               onChange={(v) => patchClip(id, { beatOffset: v }, true)}
             />
           </Row>
@@ -117,7 +108,7 @@ export const TempoSection = memo(function TempoSection({ id, bpm: rawBpm, beatOf
             <button type="button" className="btn btn-sm" disabled={double === null} title="double time: the detector heard it half as fast" onClick={() => patchClip(id, { bpm: double })}>
               x2
             </button>
-            <button type="button" className="btn btn-sm" title="forget the tempo of this clip" onClick={() => patchClip(id, { bpm: null, beatOffset: null })}>
+            <button type="button" className="btn btn-sm" title="clear the tempo of this clip" onClick={() => patchClip(id, { bpm: null, beatOffset: null })}>
               <Eraser size={14} />
               clear
             </button>

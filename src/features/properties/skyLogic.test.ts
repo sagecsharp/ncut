@@ -47,8 +47,8 @@ describe('skyLogic', () => {
     expect(removeAssetText('a.png', 0, false)).toBeNull();
     expect(removeAssetText('a.png', 2, false)).toBe('"a.png" is used by 2 clips on the timeline. removing it deletes those clips too. this clears undo history.');
     expect(removeAssetText('a.png', 1, false)).toBe('"a.png" is used by 1 clip on the timeline. removing it deletes that clip too. this clears undo history.');
-    expect(removeAssetText('a.png', 0, true)).toBe('"a.png" is part of the sky. removing it takes the sky off.');
-    expect(removeAssetText('a.png', 1, true)).toBe('"a.png" is part of the sky and used by 1 clip on the timeline. removing it takes the sky off and deletes that clip too. this clears undo history.');
+    expect(removeAssetText('a.png', 0, true)).toBe('"a.png" is part of the sky. removing it removes the sky.');
+    expect(removeAssetText('a.png', 1, true)).toBe('"a.png" is part of the sky and used by 1 clip on the timeline. removing it removes the sky and deletes that clip too. this clears undo history.');
     expect(removeAssetText('a.png', 3, true)).toContain('used by 3 clips');
     expect(removeAssetText('a.png', 3, true)).toContain('deletes those clips too');
   });

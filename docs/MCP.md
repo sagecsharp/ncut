@@ -166,16 +166,22 @@ edits (tools/edit.ts):
   `params` are checked against the effect and its ranges, `speed` re-times the clip. `start`, `duration`, `trimStart`, the track, `keyframes`, the sides,
   the media (`assetId`), the group and the effect id are refused with the name of the tool that does it. a property that has keyframes is refused too
   (the keys decide its value). the answer lists the fields that changed; a patch that changes nothing is an error. `lit` (0..1, 3d clips only, 0 = unlit, null = off, what the inspector switch writes when off, 0.75 is what the inspector switch sets when on) shades a clip with the light of the scene (see `update_project` `light`); it can be keyed. light only darkens or tints: on a black background with no own light lit 1 is black.
+  `bend` { angle, along?, center?, span? } rolls a picture round a tube (planes only, a 3d solid ignores it); it can be keyed as `bend.angle` (`bend_clips` bends several clips as one).
+  `pivot` ({ x, y } in fractions of the clip's own box from its middle, -0.5 = left / top edge, or a spot name like `left`, null = the middle) is the point the clip rotates and scales around, and its x / y / z say where that point is.
+  `pivot` and `parent` keep the clip and the clips attached to it where they are on screen at the playhead unless `transform` is in the same patch; the answer then lists the attached clips it moved in `moved`. a clip that looks at something looks from its pivot, so a new pivot can turn and shift a big picture a little, and a ready-made motion is not counted in the place that is kept.
+  a rig, for example an arm: three shapes, each with pivot `left`; attach the second to the first and the third to the second (it stays in place); then key or loop each one's rotation.
 - `set_sides` { id, sides }: what a 3d solid shows per side: `{ "front": { "clip": id, "fit"?: 'fill' | 'fit' | 'stretch' }, "top": { "color": "#rrggbb" }, "all": ..., "back": null }`.
   null = that side shows the solid's own picture again. the names come from `get_clip` / `list_options shapes`; a shape with one side (sphere, ring, capsule)
   takes `all`. a clip that shows this solid on one of its own sides is refused as a source (two solids would hide each other).
 - `move_clip` { id, start?, track? }, `trim_clip` { id, edge: 'start' | 'end', time }
 - `split_clips` { time, ids? }, `delete_clips` { ids, ripple? }, `duplicate_clips` { ids, same_time? }
 - `group_clips` { ids }, `ungroup_clips` { ids }
+- `bend_clips` { ids, angle, along?, together?, middle?, key?, time? }: bends clips round a tube like a cinema screen in one undo step. `angle` -360..360 deg over the whole bent length (+ brings the ends toward the camera, - pushes them away, 360 = a ring). `together` (default true, two or more clips) groups them and bends them as one surface, `together` false bends each round its own middle. `along` width | height, `middle` -0.5..0.5 = where the row stays flat. `key` true writes a keyframe at `time` (default the playhead). angle 0 without `key` takes the bend off. 3d solids are skipped. answers { bent, skipped: [{ id, why }], together, along, angle, onePlane, group }.
 
 keyframes (tools/keys.ts):
 - `set_keyframe` { id, prop, time, value?, ease? } (time on the timeline)
 - `remove_keyframe` { id, prop, time }
+- prop `bend.angle` keys a bend (`set_keyframe`, `set_keyframes`).
 - `set_keyframes` { id, keyframes }: the whole record at once, `{ prop: [{ t, v, ease? }] }` with t in seconds from the clip's start.
 - `clear_keyframes` { id, prop? }
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { shell } from '../../lib/shell';
 import type { UpdateState } from '../../lib/shell';
 import { clearUserCheck, noteUserCheck } from '../../lib/updateNotice';
-import { Switch } from '../../features/properties/controls';
+import { Switch } from './Switch';
 import { useUi } from '../../store/ui';
 import { acceptUpdateState, updateButtons, updateStatusText } from './updateText';
 import type { UpdateButtonId } from './updateText';

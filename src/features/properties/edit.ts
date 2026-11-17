@@ -8,18 +8,38 @@ import type { ActionOpts, ClipPatch } from '../../store/editorStore';
  * every following change of the same interaction is applied with skipHistory.
  */
 let armed = false;
+/** liveOpts opened an undo step in this gesture */
+let wrote = false;
 
 export function beginEdit(): void {
   armed = true;
+  wrote = false;
 }
 
 /** call right before applying a live change. returns the opts to pass to the store action. */
 export function liveOpts(): ActionOpts {
   if (armed) {
     armed = false;
+    wrote = true;
     useEditor.getState().pushHistory();
   }
   return { skipHistory: true };
+}
+
+/**
+ * escape: take back what this gesture wrote. only when liveOpts opened a step: rollback() with nothing open would
+ * pop the step before the gesture. rollback itself handles a step that is open but got no change.
+ */
+export function cancelEdit(): void {
+  if (wrote) useEditor.getState().rollback();
+  armed = false;
+  wrote = false;
+}
+
+/** the gesture ended (released, blurred): forget it, so a later cancelEdit can not reach it */
+export function endEdit(): void {
+  armed = false;
+  wrote = false;
 }
 
 export function even(v: number): number {

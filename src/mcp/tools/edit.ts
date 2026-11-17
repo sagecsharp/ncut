@@ -1,11 +1,14 @@
+import { BEND_ANGLE_MAX } from '../../engine/scene3d/bend';
 import { faceClipId, faceFill, faceNames, hasSides, withFace, FACE_ALL } from '../../engine/scene3d/faces';
+import { bendEach, bendTargets, skippedOf, bendTogether, flattenBends } from '../../features/properties/bendActions';
 import { useEditor } from '../../store/editorStore';
+import { usePlayback } from '../../store/playback';
 import { clipEnd, rangesOverlap } from '../../lib/timelineOps';
 import type { Clip, FaceFill, FaceFit, Project, VisualClip } from '../../types';
 import { isVisualClip, trackKindForClip } from '../../types';
 import { changedSince, clipBrief, idList, needClip, needProject, needTrack, needUnlocked, ok, optNumber, round, ToolError } from '../helpers';
 import type { ToolDef } from '../types';
-import { applyPatch, MAX_TIME, step } from './editPatch';
+import { applyPatch, MAX_TIME, step, type KeepPlace } from './editPatch';
 
 const ids = (what: string): { type: 'array'; items: { type: 'string' }; minItems: number; maxItems: number; description: string } => ({
   type: 'array',
@@ -26,10 +29,13 @@ const updateClip: ToolDef = {
   description:
     'change any stored field of one clip in one undo step. patch is an object of field: value, the same names get_clip shows (list_options with kind "fields" lists what each clip type takes, with units and ranges). ' +
     '"transform" is a partial transform ({ "x": 120, "scale": 1.5, "rotation": 10, "opacity": 0.8 }, pixels from the canvas middle, degrees, opacity 0..1; z / rotX / rotY / scaleX / scaleY / scaleZ for 3d) and goes through the same limits as the inspector. ' +
+    '"pivot" is the point the clip rotates and scales around: { "x", "y" } in fractions of its own box from its middle (-0.5 = left or top edge, 0.5 = right or bottom edge, each -10..10), a spot name (top-left, top, top-right, left, middle, right, bottom-left, bottom, bottom-right) or null for the middle. transform x / y / z then say where the pivot is, and attached clips count from it. ' +
+    '"pivot" and "parent" keep the clip, and the clips attached to it, where they are on screen at the playhead (x / y / z or their keys move) unless the same patch sends "transform": then they are written as given. a clip that looks at something looks from its pivot, so a new pivot can turn a big picture a little; a motion is not counted in the place that is kept. ' +
+    '"bend" { angle, along?, center?, span? } rolls a picture round a tube (planes only), keyable as bend.angle; bend_clips bends several clips as one. ' +
     'on an effect clip "params" is an object of numbers ({ "radius": 12 }, an unknown key is an error that lists the keys) and "amount" is 0..1. "speed" (video and audio clips, 0.25 to 4) re-times the clip and its length follows. ' +
     'null takes an optional field away (for example "mask": null). a field the clip type does not have is an error, not ignored. ' +
     'refused here: start (use move_clip), duration and trimStart (use trim_clip), trackId (move_clip), keyframes (set_keyframe, set_keyframes, clear_keyframes), faces (set_sides). ' +
-    'answers { clip: short brief of the clip, changed: [names of the fields that changed] }. a patch that changes nothing is an error.',
+    'answers { clip: short brief of the clip, changed: [names of the fields that changed], moved?: [ids of attached clips that were moved so they stay in place] }. a patch that changes nothing is an error.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -42,12 +48,13 @@ const updateClip: ToolDef = {
     const id = String(args.id);
     const patch = args.patch as Record<string, unknown>;
     if (Object.keys(patch).length === 0) throw new ToolError('patch is empty: say which fields to change');
-    const changed = step((opts) => applyPatch(id, patch, opts));
+    const keep: KeepPlace = { moved: [] };
+    const changed = step((opts) => applyPatch(id, patch, opts, keep));
     if (changed.length === 0) {
       useEditor.getState().rollback();
       throw new ToolError('nothing changed: every value was already set, or was limited to what it already is (get_clip shows the stored values)');
     }
-    return ok({ clip: clipBrief(needClip(id)), changed });
+    return ok({ clip: clipBrief(needClip(id)), changed, ...(keep.moved.length > 0 ? { moved: keep.moved } : {}) });
   },
 };
 
@@ -380,4 +387,77 @@ const ungroupClips: ToolDef = {
   },
 };
 
-export const editTools: ToolDef[] = [updateClip, setSides, moveClip, trimClip, splitClips, deleteClips, duplicateClips, groupClips, ungroupClips];
+/** why each clip that cannot bend was left out, for the error text */
+function whyNotBent(wanted: string[]): string {
+  return skippedOf(needProject(), wanted, bendTargets(needProject(), wanted).clips.map((c) => c.id))
+    .map((s) => `${s.id}: ${s.why}`)
+    .join('; ');
+}
+
+const bendClips: ToolDef = {
+  name: 'bend_clips',
+  title: 'bend clips',
+  description:
+    'bend clips round a tube like a cinema screen, in one undo step. angle = degrees of arc over the whole bent length: + brings the ends toward the camera, - pushes them away, 360 closes a ring. ' +
+    'together (default true, needs two or more clips) bends them as one surface: they are grouped, each bends by its share and the outer ones come forward or go back. together false bends every clip round its own middle. ' +
+    'along width (default) bends the left and right edges round, height the top and bottom. middle -0.5..0.5 = where the row stays flat (0 = its middle, -0.5 / 0.5 = an end). ' +
+    'key true writes a keyframe at time (default the playhead) instead of the plain value. angle 0 without key takes the bend off, keyframes too. 3d solids (a shape other than plane) are skipped. ' +
+    'answers { bent, skipped: [{ id, why }], together, along, angle, onePlane, group }. onePlane false = the clips do not face the same way in one plane: they bend but do not join up.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: ids('the clips to bend'),
+      angle: { type: 'number', minimum: -BEND_ANGLE_MAX, maximum: BEND_ANGLE_MAX, description: 'degrees over the whole bent length' },
+      along: { type: 'string', enum: ['width', 'height'], description: 'which edges bend round (default width, or what the clips have)' },
+      together: { type: 'boolean', description: 'one surface through all the clips (default true)' },
+      middle: { type: 'number', minimum: -0.5, maximum: 0.5, description: 'together: where the row stays flat, a share of its length from the middle (default 0, or what it was)' },
+      key: { type: 'boolean', description: 'write a keyframe at time instead of the plain value' },
+      time: { type: 'number', description: 'timeline seconds for the key and for measuring the clips (default the playhead)' },
+    },
+    required: ['ids', 'angle'],
+  },
+  run(args) {
+    const wanted = idList(args.ids);
+    needClips(wanted);
+    const angle = args.angle;
+    if (typeof angle !== 'number' || !Number.isFinite(angle) || angle < -BEND_ANGLE_MAX || angle > BEND_ANGLE_MAX) throw new ToolError(`angle must be a number from -${BEND_ANGLE_MAX} to ${BEND_ANGLE_MAX}`);
+    const along = args.along;
+    if (along !== undefined && along !== 'width' && along !== 'height') throw new ToolError('along must be width or height');
+    const middle = args.middle;
+    if (middle !== undefined && (typeof middle !== 'number' || !Number.isFinite(middle) || middle < -0.5 || middle > 0.5)) throw new ToolError('middle must be a number from -0.5 to 0.5');
+    const time = optNumber(args.time) ?? usePlayback.getState().time;
+    const together = args.together !== false && wanted.length > 1;
+    const key = args.key === true;
+    if (angle === 0 && !key) {
+      const p = needProject();
+      const bentNow = p.clips.filter((c) => wanted.includes(c.id) && isVisualClip(c) && (c.bend || (c.keyframes?.['bend.angle']?.length ?? 0) > 0));
+      const lockedTrack = (trackId: string) => !!p.tracks.find((t) => t.id === trackId)?.locked;
+      const was = bentNow.filter((c) => !lockedTrack(c.trackId)).map((c) => c.id);
+      const skipped = bentNow.filter((c) => lockedTrack(c.trackId)).map((c) => ({ id: c.id, why: 'its track is locked' }));
+      const n = step((opts) => flattenBends(wanted, opts));
+      if (n === 0) {
+        useEditor.getState().rollback();
+        if (skipped.length > 0) throw new ToolError(`nothing to take off: ${skipped.map((s) => `${s.id}: ${s.why}`).join(', ')}`);
+        throw new ToolError('nothing to take off: none of these clips is bent');
+      }
+      return ok({ bent: [], flat: was, skipped, together, along: 'width', angle: 0, onePlane: true, group: null });
+    }
+    const keyMode = key ? ('add' as const) : undefined;
+    const result = step((opts) =>
+      together
+        ? bendTogether(wanted, { angle, along: along as 'width' | 'height' | undefined, middle: middle as number | undefined, fit: true, key: keyMode }, time, opts)
+        : bendEach(wanted, { angle, along: along as 'width' | 'height' | undefined, key: keyMode }, time, opts),
+    );
+    if (!result || result.bent.length === 0) {
+      useEditor.getState().rollback();
+      const can = bendTargets(needProject(), wanted).clips.length;
+      if (together && can === 1) {
+        throw new ToolError('bending together needs two or more clips that can bend (or together false)');
+      }
+      throw new ToolError(`nothing was bent: ${whyNotBent(wanted)}`);
+    }
+    return ok({ ...result, together });
+  },
+};
+
+export const editTools: ToolDef[] = [updateClip, setSides, moveClip, trimClip, splitClips, deleteClips, duplicateClips, groupClips, ungroupClips, bendClips];

@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, Copy, Diamond, Flag, Layers, Link2, Link2Off, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Type, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { AlignHorizontalJustifyStart, AudioLines, Blend, Box, CopyPlus, Diamond, Flag, Group, Layers, ListEnd, MousePointer2, Paperclip, Replace, Scissors, Snowflake, Sparkles, Square, Target, Type, Trash2, Ungroup, Unlink, Volume2, VolumeX } from 'lucide-react';
 import { hasKeyframes } from '../../lib/anim';
 import { isVisualClip } from '../../types';
 import { clipEnd } from '../../lib/timelineOps';
@@ -9,7 +9,10 @@ import { SPLIT_MODES, splitPlans, splitReason, splitText } from '../properties/t
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
-import { applyEffectsToEverything, freezeAtPlayhead, goToEffectTarget, groupIdsNow, selectEffectsOf, ungroupIdsNow } from './actions';
+import { MenuKeys } from '../shell/MenuKeys';
+import { REASON_TEXT } from '../shell/reasons';
+import { tip } from '../shell/tip';
+import { applyEffectsToEverything, clearKeysOf, freezeAtPlayhead, goToEffectTarget, groupIdsNow, selectEffectsOf, ungroupIdsNow } from './actions';
 import { clearBeatMarkers, clipHasSound, markBeats } from './beatActions';
 import { getEffect } from '../../engine/effects/registry';
 import { effectsOn } from './effectTarget';
@@ -21,16 +24,18 @@ interface Props {
   x: number;
   y: number;
   clipId: string;
+  /** opened from the keyboard: the focus goes to the first item */
+  focusFirst?: boolean;
   onClose(): void;
 }
 
 /** right click menu for a clip. closes on outside click, escape, scroll, resize and blur. */
-export function ClipMenu({ x, y, clipId, onClose }: Props) {
+export function ClipMenu({ x, y, clipId, focusFirst, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const clip = useEditor((s) => s.project?.clips.find((c) => c.id === clipId));
   const selection = useEditor((s) => s.selection);
 
-  const pos = useFloatingMenu(ref, x, y, onClose);
+  const pos = useFloatingMenu(ref, x, y, onClose, { focusFirst });
 
   if (!clip) return null;
   const ids = selection.includes(clipId) ? selection : [clipId];
@@ -79,17 +84,18 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         className="menu-item"
         role="menuitem"
         disabled={!canSplit}
-        title="split the selected clips at the playhead"
+        {...tip('split at playhead', { does: 'split the selected clips at the playhead', side: 'right', keys: 'split', off: canSplit ? null : REASON_TEXT.playheadOnClip })}
         onClick={run(() => useEditor.getState().splitClips(usePlayback.getState().time, ids))}
       >
         <Scissors size={14} />
         split at playhead
+        <MenuKeys id="split" />
       </button>
       <button
         className="menu-item"
         role="menuitem"
         disabled={!canSplitAll}
-        title="split every clip on every track at the playhead"
+        {...tip('split all tracks here', { does: 'split every clip on every track at the playhead', side: 'right', off: canSplitAll ? null : REASON_TEXT.noClipUnder })}
         onClick={run(() => {
           const st = useEditor.getState();
           st.splitClips(usePlayback.getState().time, st.project?.clips.map((c) => c.id) ?? []);
@@ -102,59 +108,74 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="split the selected clips at every marker inside them"
+          {...tip('split at the markers', { does: 'split the selected clips at every marker inside them', side: 'right' })}
           onClick={run(() => cutAtMarkers(ids))}
         >
           <Flag size={14} />
-          cut at the markers
+          split at the markers
         </button>
       ) : null}
       <button
         className="menu-item"
         role="menuitem"
-        title="duplicate the selected clips"
+        {...tip('duplicate', { does: 'duplicate the selected clips', side: 'right', keys: 'duplicate' })}
         onClick={run(() => useEditor.getState().duplicateClips(ids))}
       >
-        <Copy size={14} />
+        <CopyPlus size={14} />
         duplicate
+        <MenuKeys id="duplicate" />
       </button>
       <div className="menu-sep" />
       <button
         className="menu-item"
         role="menuitem"
-        title="delete the selected clips"
+        {...tip('delete', { does: 'delete the selected clips', side: 'right', keys: 'delete' })}
         onClick={run(() => useEditor.getState().deleteClips(ids))}
       >
         <Trash2 size={14} />
         delete
+        <MenuKeys id="delete" />
       </button>
       <button
         className="menu-item"
         role="menuitem"
-        title="delete and close the gap"
+        {...tip('ripple delete', { does: 'delete and close the gap', side: 'right', keys: 'ripple-delete' })}
         onClick={run(() => useEditor.getState().deleteClips(ids, { ripple: true }))}
       >
         <ListEnd size={14} />
         ripple delete
+        <MenuKeys id="ripple-delete" />
       </button>
       {ids.length > 1 || grouped || children.length > 0 || parent || attached.length > 0 || clip.type === 'video' ? <div className="menu-sep" /> : null}
       {ids.length > 1 ? (
-        <button className="menu-item" role="menuitem" title="move and edit these clips as one (ctrl+g)" onClick={run(() => groupIdsNow(ids))}>
-          <Link2 size={14} />
+        <button
+          className="menu-item"
+          role="menuitem"
+          {...tip('group', { does: 'move and edit these clips as one', side: 'right', keys: 'group' })}
+          onClick={run(() => groupIdsNow(ids))}
+        >
+          <Group size={14} />
           group
+          <MenuKeys id="group" />
         </button>
       ) : null}
       {grouped ? (
-        <button className="menu-item" role="menuitem" title="split the group apart (ctrl+shift+g)" onClick={run(() => ungroupIdsNow(ids))}>
-          <Link2Off size={14} />
+        <button
+          className="menu-item"
+          role="menuitem"
+          {...tip('ungroup', { does: 'ungroup: the clips stay where they are', side: 'right', keys: 'ungroup' })}
+          onClick={run(() => ungroupIdsNow(ids))}
+        >
+          <Ungroup size={14} />
           ungroup
+          <MenuKeys id="ungroup" />
         </button>
       ) : null}
       {children.length > 0 ? (
         <button
           className="menu-item"
           role="menuitem"
-          title="select this clip and the clips attached to it"
+          {...tip('select attached clips', { does: 'select this clip and the clips attached to it', side: 'right' })}
           onClick={run(() => useEditor.getState().select([clip.id, ...children.map((c) => c.id)], 'replace'))}
         >
           <MousePointer2 size={14} />
@@ -165,7 +186,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="select the clip this one is attached to"
+          {...tip('select what it is attached to', { does: 'select the clip this one is attached to', side: 'right' })}
           onClick={run(() => useEditor.getState().select([parent.id], 'replace'))}
         >
           <Paperclip size={14} />
@@ -176,7 +197,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="detach the selected clips, they stay where they are"
+          {...tip('detach', { does: 'detach the selected clips, they stay where they are', side: 'right' })}
           onClick={run(() => {
             // the shared action: one undo step, keeps the place on screen, leaves animated values alone
             attachClips(
@@ -185,7 +206,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
             );
           })}
         >
-          <Paperclip size={14} />
+          <Unlink size={14} />
           detach
         </button>
       ) : null}
@@ -194,11 +215,12 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           className="menu-item"
           role="menuitem"
           disabled={!inClip}
-          title={inClip ? 'turn the frame at the playhead into a still (shift+f)' : 'move the playhead onto the clip first'}
+          {...tip('freeze frame', { does: 'turn the frame at the playhead into a still', side: 'right', keys: 'freeze-frame', off: inClip ? null : 'move the playhead onto the clip first' })}
           onClick={run(freezeAtPlayhead)}
         >
           <Snowflake size={14} />
           freeze frame
+          <MenuKeys id="freeze-frame" />
         </button>
       ) : null}
       {clip.type === 'text' && splitModes.length > 0 ? (
@@ -209,7 +231,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
               key={m}
               className="menu-item"
               role="menuitem"
-              title={`replace this text with one text clip per ${m.slice(0, -1)}, each where it is now`}
+              {...tip(`split into ${m}`, { does: `replace this text with one text clip per ${m.slice(0, -1)}, each where it is now`, side: 'right' })}
               onClick={run(() => splitText(clip.id, m))}
             >
               <Type size={14} />
@@ -229,7 +251,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
               key={a.id}
               className="menu-item"
               role="menuitem"
-              title={`replace this clip's media with ${a.name}`}
+              {...tip(a.name, { does: `replace this clip's media with ${a.name}`, side: 'right' })}
               onClick={run(() => {
                 if (!useEditor.getState().replaceClipAsset(clip.id, a.id)) useUi.getState().toast('could not swap the media');
               })}
@@ -243,7 +265,12 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
       {seqIds.length > 1 ? (
         <>
           <div className="menu-sep" />
-          <button className="menu-item" role="menuitem" title="lay the selected clips end to end on one track" onClick={run(() => makeRow(ids))}>
+          <button
+            className="menu-item"
+            role="menuitem"
+            {...tip('in a row', { does: 'lay the selected clips end to end on one track', side: 'right' })}
+            onClick={run(() => makeRow(ids))}
+          >
             <AlignHorizontalJustifyStart size={14} />
             in a row
           </button>
@@ -251,7 +278,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
             className="menu-item"
             role="menuitem"
             disabled={!hasMarkers}
-            title={hasMarkers ? 'lay the clips end to end, each one from a marker to the next' : 'no markers yet: mark the beats of a clip first'}
+            {...tip('fit to the markers', { does: 'lay the clips end to end, each one from a marker to the next', side: 'right', off: hasMarkers ? null : REASON_TEXT.noMarkers })}
             onClick={run(() => fitToMarkers(ids, 1))}
           >
             <Flag size={14} />
@@ -261,7 +288,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
             className="menu-item"
             role="menuitem"
             disabled={!hasMarkers}
-            title="like fit to the markers, each clip spans 2 markers"
+            {...tip('fit to every 2nd marker', { does: 'like fit to the markers, each clip spans 2 markers', side: 'right', off: hasMarkers ? null : REASON_TEXT.noMarkers })}
             onClick={run(() => fitToMarkers(ids, 2))}
           >
             <Flag size={14} />
@@ -271,7 +298,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
             className="menu-item"
             role="menuitem"
             disabled={!hasMarkers}
-            title="like fit to the markers, each clip spans 4 markers"
+            {...tip('fit to every 4th marker', { does: 'like fit to the markers, each clip spans 4 markers', side: 'right', off: hasMarkers ? null : REASON_TEXT.noMarkers })}
             onClick={run(() => fitToMarkers(ids, 4))}
           >
             <Flag size={14} />
@@ -284,7 +311,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="select the effects that are put on this clip"
+          {...tip('select its effects', { does: 'select the effects that are put on this clip', side: 'right' })}
           onClick={run(() => selectEffectsOf(visual.map((c) => c.id)))}
         >
           <Sparkles size={14} />
@@ -297,7 +324,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
             className="menu-item"
             role="menuitem"
             disabled={!targetClip}
-            title={targetClip ? 'select the clip this effect is on and show it' : 'the clip this effect was on is gone'}
+            {...tip('go to its clip', { does: 'select the clip this effect is on and show it', side: 'right', off: targetClip ? null : 'the clip this effect was on is gone' })}
             onClick={run(() => goToEffectTarget(clip.id))}
           >
             <Target size={14} />
@@ -306,7 +333,10 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <button
             className="menu-item"
             role="menuitem"
-            title={allOwn ? 'make the selected chroma keys key the video or picture right under them' : 'make the selected effects change everything below their track again'}
+            {...tip(allOwn ? 'key the clip under it' : 'apply to everything below', {
+              does: allOwn ? 'make the selected chroma keys key the video or picture right under them' : 'make the selected effects change everything below their track again',
+              side: 'right',
+            })}
             onClick={run(() => applyEffectsToEverything(picked.map((c) => c.id)))}
           >
             <Layers size={14} />
@@ -319,7 +349,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="remove the transition from the selected clips"
+          {...tip('remove transition', { does: 'remove the transition from the selected clips', side: 'right' })}
           onClick={run(() => {
             const st = useEditor.getState();
             st.pushHistory();
@@ -334,13 +364,8 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title="remove every keyframe of the selected clips (values stay as they are at the playhead)"
-          onClick={run(() => {
-            const st = useEditor.getState();
-            const now = usePlayback.getState().time;
-            st.pushHistory();
-            for (const c of withKeys) st.clearKeyframes(c.id, Math.min(clipEnd(c), Math.max(c.start, now)), undefined, { skipHistory: true });
-          })}
+          {...tip('clear keyframes', { does: 'clear every keyframe of the selected clips (values stay as they are at the playhead)', side: 'right' })}
+          onClick={run(() => clearKeysOf(withKeys.map((c) => c.id)))}
         >
           <Diamond size={14} />
           clear keyframes
@@ -350,7 +375,11 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         <button
           className="menu-item"
           role="menuitem"
-          title={is3d ? 'make the selected clips flat 2d again' : 'place the selected clips in 3d space'}
+          {...tip(is3d ? 'make 2d' : 'make 3d', {
+            does: is3d ? 'make the selected clips flat 2d again' : 'place the selected clips in 3d space',
+            side: 'right',
+            keys: 'toggle-3d',
+          })}
           onClick={run(() => {
             const st = useEditor.getState();
             st.pushHistory();
@@ -359,6 +388,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
         >
           {is3d ? <Square size={14} /> : <Box size={14} />}
           {is3d ? 'make 2d' : 'make 3d'}
+          <MenuKeys id="toggle-3d" />
         </button>
       ) : null}
       {timed ? (
@@ -367,7 +397,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <button
             className="menu-item"
             role="menuitem"
-            title={muted ? 'unmute the clip audio' : 'mute the clip audio'}
+            {...tip(muted ? 'unmute' : 'mute', { does: muted ? 'unmute the clip audio' : 'mute the clip audio', side: 'right', keys: 'mute' })}
             onClick={run(() => {
               const st = useEditor.getState();
               const next = !muted;
@@ -382,6 +412,7 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           >
             {muted ? <Volume2 size={14} /> : <VolumeX size={14} />}
             {muted ? 'unmute' : 'mute'}
+            <MenuKeys id="mute" />
           </button>
         </>
       ) : null}
@@ -391,19 +422,39 @@ export function ClipMenu({ x, y, clipId, onClose }: Props) {
           <div className="menu-hint" aria-hidden="true">
             beats
           </div>
-          <button className="menu-item" role="menuitem" title="put a marker on every beat of this clip" onClick={run(() => void markBeats(clip.id, 1))}>
+          <button
+            className="menu-item"
+            role="menuitem"
+            {...tip('mark every beat', { does: 'put a marker on every beat of this clip', side: 'right' })}
+            onClick={run(() => void markBeats(clip.id, 1))}
+          >
             <AudioLines size={14} />
             mark every beat
           </button>
-          <button className="menu-item" role="menuitem" title="put a marker on every 2nd beat" onClick={run(() => void markBeats(clip.id, 2))}>
+          <button
+            className="menu-item"
+            role="menuitem"
+            {...tip('mark every 2nd beat', { does: 'put a marker on every 2nd beat', side: 'right' })}
+            onClick={run(() => void markBeats(clip.id, 2))}
+          >
             <AudioLines size={14} />
             mark every 2nd beat
           </button>
-          <button className="menu-item" role="menuitem" title="put a marker on every 4th beat (bars)" onClick={run(() => void markBeats(clip.id, 4))}>
+          <button
+            className="menu-item"
+            role="menuitem"
+            {...tip('mark every 4th beat', { does: 'put a marker on every 4th beat (bars)', side: 'right' })}
+            onClick={run(() => void markBeats(clip.id, 4))}
+          >
             <AudioLines size={14} />
             mark every 4th beat
           </button>
-          <button className="menu-item" role="menuitem" title="remove the beat markers inside this clip" onClick={run(() => void clearBeatMarkers(clip.id))}>
+          <button
+            className="menu-item"
+            role="menuitem"
+            {...tip('clear beat markers', { does: 'remove the beat markers inside this clip', side: 'right' })}
+            onClick={run(() => void clearBeatMarkers(clip.id))}
+          >
             <Trash2 size={14} />
             clear beat markers
           </button>

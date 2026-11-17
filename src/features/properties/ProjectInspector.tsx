@@ -1,12 +1,15 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
+import { useUi } from '../../store/ui';
 import type { Project } from '../../types';
-import { ColorField, Pair, Row, Section } from './controls';
-import { beginEdit, even, liveOpts } from './edit';
+import { tip } from '../shell/tip';
+import { handFocusTo, takesFocus } from './focusHandoff';
+import { ColorField, FeelField, Pair, Row, Section } from './controls';
+import { even, liveOpts } from './edit';
+import { FeelContext, useCanvasFeelCtx } from './feelContext';
 import { FogSection } from './FogSection';
 import { LightSection } from './LightSection';
 import { SkySection } from './SkySection';
@@ -69,24 +72,18 @@ const ProjectSettings = memo(function ProjectSettings({
       </Row>
       <Row label="size" title="canvas width and height in pixels">
         <Pair>
-          <NumberField
+          <FeelField
             label="w"
-            suffix="px"
+            feel="canvasSide"
             title="canvas width"
             value={width}
-            min={16}
-            max={8192}
-            onStart={beginEdit}
             onChange={(v) => update({ width: even(v) }, liveOpts())}
           />
-          <NumberField
+          <FeelField
             label="h"
-            suffix="px"
+            feel="canvasSide"
             title="canvas height"
             value={height}
-            min={16}
-            max={8192}
-            onStart={beginEdit}
             onChange={(v) => update({ height: even(v) }, liveOpts())}
           />
         </Pair>
@@ -138,40 +135,57 @@ const ProjectStats = memo(function ProjectStats({
       <Stat label="duration" value={formatTimecode(duration, fps)} />
       <Stat label="tracks" value={trackCount} />
       <Stat label="clips" value={clips.length} />
-      <Stat label="assets" value={assetCount} />
+      <Stat label="media" value={assetCount} />
     </Section>
   );
 });
 
-export function ProjectInspector() {
+export function ProjectInspector({ back = false }: { back?: boolean }) {
   const project = useEditor((s) => s.project);
+  const feelCtx = useCanvasFeelCtx();
   if (!project) return null;
   return (
-    <section className="panel props-panel">
-      <div className="panel-header">
-        <span className="panel-title" title={project.name}>
-          {project.name || 'project'}
-        </span>
-        <span className="props-tag">project</span>
-      </div>
-      <div className="panel-body">
-        <ProjectSettings
-          name={project.name}
-          width={project.width}
-          height={project.height}
-          fps={project.fps}
-          background={project.background}
-        />
-        <SkySection sky={project.sky} />
-        <FogSection fog={project.fog} background={project.background} />
-        <LightSection light={project.light} />
-        <ProjectStats
-          clips={project.clips}
-          trackCount={project.tracks.length}
-          assetCount={project.assets.length}
-          fps={project.fps}
-        />
-      </div>
-    </section>
+    <FeelContext.Provider value={feelCtx}>
+      <section className="panel props-panel">
+        <div className="panel-header">
+          <span className="panel-title" title={project.name}>
+            {project.name || 'project'}
+          </span>
+          <span className="props-tag">project</span>
+          {back ? (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              ref={takesFocus('back')}
+              onClick={() => {
+                handFocusTo('project');
+                useUi.getState().showProjectPanel(false);
+              }}
+              {...tip('back', { does: 'back to the selection' })}
+            >
+              back
+            </button>
+          ) : null}
+        </div>
+        <div className="panel-body">
+          <ProjectSettings
+            name={project.name}
+            width={project.width}
+            height={project.height}
+            fps={project.fps}
+            background={project.background}
+          />
+          <SkySection sky={project.sky} />
+          <FogSection fog={project.fog} background={project.background} />
+          <LightSection light={project.light} />
+          <ProjectStats
+            clips={project.clips}
+            trackCount={project.tracks.length}
+            assetCount={project.assets.length}
+            fps={project.fps}
+          />
+        </div>
+      </section>
+    </FeelContext.Provider>
   );
 }

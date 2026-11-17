@@ -3,6 +3,8 @@ import type { KeyboardEvent } from 'react';
 import { Eye, EyeOff, Lock, Music, Trash2, Unlock, Video, Volume2, VolumeX } from 'lucide-react';
 import type { Track } from '../../types';
 import { useEditor } from '../../store/editorStore';
+import { tip } from '../shell/tip';
+import { openTrackMenuAt } from './commands';
 import { selectTrackClips } from './trackClips';
 
 interface Props {
@@ -58,9 +60,15 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
   return (
     <div className={`timeline-head${track.locked ? ' is-locked' : ''}`} data-track-id={track.id}>
       <div className="timeline-head-top">
-        <span className="timeline-head-kind" title={`${track.kind} track`}>
+        <button
+          type="button"
+          className="timeline-head-kind"
+          aria-label="track menu"
+          onClick={(e) => openTrackMenuAt(e.currentTarget, track.id)}
+          {...tip('track menu', { does: 'select, close gaps, insert a gap, transitions on every cut. a right click on the track works too' })}
+        >
           {isVideo ? <Video size={13} /> : <Music size={13} />}
-        </span>
+        </button>
         {editing ? (
           <input
             ref={inputRef}
@@ -88,7 +96,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
           className={`icon-btn icon-btn-sm timeline-head-remove${confirm ? ' is-confirm' : ''}`}
           onClick={remove}
           onBlur={() => setConfirm(false)}
-          title={confirm ? 'click again to remove the track and its clips' : 'remove track'}
+          {...tip(confirm ? 'click again to remove the track and its clips' : 'remove track', { does: 'a track with clips asks for a second click' })}
           aria-label="remove track"
         >
           <Trash2 size={13} />
@@ -98,7 +106,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
         <button
           className={`icon-btn icon-btn-sm${track.muted ? ' is-active' : ''}`}
           onClick={() => update({ muted: !track.muted })}
-          title={track.muted ? 'unmute track' : 'mute track'}
+          {...tip('mute track', { does: 'no sound from this track', on: track.muted })}
           aria-label="mute track"
           aria-pressed={track.muted}
         >
@@ -108,7 +116,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
           <button
             className={`icon-btn icon-btn-sm${track.hidden ? ' is-active' : ''}`}
             onClick={() => update({ hidden: !track.hidden })}
-            title={track.hidden ? 'show track' : 'hide track'}
+            {...tip('hide track', { does: 'its clips are not drawn, in the preview and in the export', on: track.hidden })}
             aria-label="hide track"
             aria-pressed={track.hidden}
           >
@@ -118,7 +126,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: Props) {
         <button
           className={`icon-btn icon-btn-sm${track.locked ? ' is-active' : ''}`}
           onClick={() => update({ locked: !track.locked })}
-          title={track.locked ? 'unlock track' : 'lock track'}
+          {...tip('lock track', { does: 'its clips cannot be moved or changed', on: track.locked })}
           aria-label="lock track"
           aria-pressed={track.locked}
         >

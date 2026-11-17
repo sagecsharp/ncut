@@ -34,6 +34,8 @@ export interface MenuRequest {
   x: number;
   y: number;
   clipId: string;
+  /** a menu opened from the keyboard puts the focus on its first item */
+  focusFirst?: boolean;
 }
 
 export interface GestureEnv {

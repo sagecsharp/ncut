@@ -105,7 +105,7 @@ export const SkySection = memo(function SkySection({ sky }: { sky: SceneSky | nu
               <button
                 className="btn btn-sm"
                 disabled={busy}
-                title="take the sky off. the pictures stay in the media"
+                title="remove the sky. the pictures stay in the media"
                 onClick={() => {
                   clearSkyNotes();
                   setSky(null);
@@ -121,28 +121,21 @@ export const SkySection = memo(function SkySection({ sky }: { sky: SceneSky | nu
               label="turn"
               title="turn the sky around the scene (deg). 90 = its right side ahead"
               value={skyTurn(sky)}
-              min={-180}
-              max={180}
-              precision={1}
-              suffix="deg"
+              feel="skyTurn"
               onChange={(v) => setSky(withSkyValues(sky, { turn: v }), true)}
             />
             <SliderRow
               label="brightness"
               title="how bright the sky is (%). 100 = as the pictures are"
               value={roundShown(skyBrightness(sky) * 100, 0)}
-              min={0}
-              max={200}
-              suffix="%"
+              feel="skyBrightness"
               onChange={(v) => setSky(withSkyValues(sky, { brightness: v / 100 }), true)}
             />
             <SliderRow
               label="blur"
               title="soften the sky (%)"
               value={roundShown(skyBlur(sky) * 100, 0)}
-              min={0}
-              max={100}
-              suffix="%"
+              feel="skyBlur"
               onChange={(v) => setSky(withSkyValues(sky, { blur: v / 100 }), true)}
             />
             {faces

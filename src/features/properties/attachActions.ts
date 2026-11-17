@@ -1,10 +1,16 @@
-import { reparentTransform } from '../../engine/parent';
-import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
-import type { ClipPatch } from '../../store/editorStore';
+import type { ActionOpts } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import { isCameraClip, isVisualClip } from '../../types';
-import { hasAnimatedPose } from './parentOptions';
+import { type AttachPlan, attachPlan } from './attachPlan';
+
+/** write attach plans (store only, no ui): parent and kept transform of each clip, with the given opts */
+export function applyAttachPlan(plans: readonly AttachPlan[], opts: ActionOpts): void {
+  const st = useEditor.getState();
+  for (const plan of plans) {
+    st.updateClip(plan.id, plan.patch, opts);
+    if (plan.transform) st.updateTransform(plan.id, plan.transform, opts);
+  }
+}
 
 /**
  * attach visual clips to a parent (or detach with null) as ONE undo step. every clip keeps its place
@@ -16,24 +22,9 @@ export function attachClips(ids: readonly string[], parentId: string | null): nu
   const st = useEditor.getState();
   const p = st.project;
   if (!p) return 0;
-  const parent = parentId ? p.clips.find((c) => c.id === parentId) : null;
-  if (parentId && !parent) return 0;
-  const time = usePlayback.getState().time;
-  const plans: { id: string; patch: ClipPatch; transform: ReturnType<typeof reparentTransform> | null }[] = [];
-  for (const clip of p.clips) {
-    if (!ids.includes(clip.id) || !isVisualClip(clip)) continue;
-    if ((clip.parent ?? null) === parentId) continue;
-    const patch: Record<string, unknown> = { parent: parentId };
-    if (parent && isCameraClip(parent) && !clip.threeD) patch.threeD = true;
-    // computed from the project as it is now, before anything is written
-    const transform = hasAnimatedPose(clip) ? null : reparentTransform(p, clip, parentId, clamp(time, clip.start, clip.start + clip.duration));
-    plans.push({ id: clip.id, patch: patch as ClipPatch, transform });
-  }
+  const plans = attachPlan(p, ids, parentId, usePlayback.getState().time);
   if (plans.length === 0) return 0;
   st.pushHistory();
-  for (const plan of plans) {
-    st.updateClip(plan.id, plan.patch, { skipHistory: true });
-    if (plan.transform) st.updateTransform(plan.id, plan.transform, { skipHistory: true });
-  }
+  applyAttachPlan(plans, { skipHistory: true });
   return plans.length;
 }

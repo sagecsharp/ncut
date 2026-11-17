@@ -152,6 +152,26 @@ export interface Crop {
   bottom: number;
 }
 
+/** which edges of a clip bend round: 'width' = the left and right edges (missing = width), 'height' = the top and bottom */
+export type BendAlong = 'width' | 'height';
+export const BEND_ALONG: BendAlong[] = ['width', 'height'];
+
+/**
+ * a clip rolled round a tube, keeping its length (engine/scene3d/bend.ts). planes only: a 3d solid ignores it.
+ * angle = degrees of arc over the bent length (keyable as bend.angle): + brings the ends toward the viewer, - pushes
+ * them away, 360 closes a tube.
+ */
+export interface ClipBend {
+  /** -360..360 */
+  angle: number;
+  /** missing = 'width' */
+  along?: BendAlong;
+  /** where the clip stays flat and in place: a share of the bent length from the clip's middle, -1..1. missing = 0 (the middle) */
+  center?: number;
+  /** px of the clip's own plane the angle is spread over (the length of the row it is bent with), 1..100000. missing = the clip's own length */
+  span?: number;
+}
+
 /**
  * a ready-made motion for a whole clip (video, image, shape, text). `id` is a motion in engine/clipAnim.
  * in / out: `duration` = how long the entrance / exit takes (seconds). loop: seconds per cycle.
@@ -242,6 +262,12 @@ export interface Mask {
   radius?: number;
 }
 
+/** a point of a clip's own box, as fractions from its middle: x -0.5 = left edge, 0.5 = right edge, y -0.5 = top, 0.5 = bottom */
+export interface Pivot {
+  x: number;
+  y: number;
+}
+
 /** how a clip's picture sits on a side of a solid: 'fill' covers it (cut where the proportions differ), 'fit' shows all of it (the solid's own picture around it), 'stretch' squeezes it to the side */
 export type FaceFit = 'fill' | 'fit' | 'stretch';
 
@@ -291,6 +317,8 @@ interface Spatial {
   crop?: Crop | null;
   /** corner roundness of the (cropped) picture, 0..1. 1 = fully round ends (a circle for a square). */
   radius?: number;
+  /** roll the clip round a tube (ClipBend). null / missing = flat. planes only */
+  bend?: ClipBend | null;
   /** ready-made motion when the clip appears / leaves / while it is on screen (engine/clipAnim) */
   motionIn?: ClipAnim | null;
   motionOut?: ClipAnim | null;
@@ -301,6 +329,13 @@ interface Spatial {
    * inherited. null / missing / unknown id / a loop = no parent. the exact rules are in engine/parent.ts.
    */
   parent?: string | null;
+  /**
+   * the point the clip rotates and scales around, as fractions of its own box from its middle (the box at its scale and
+   * stretch, uncropped, a text without outline room). transform x / y / z say where this point is and attached clips
+   * count from it. null / missing / 0 0 = the middle. each axis -10..10, a broken number counts as 0. not keyable.
+   * the rules are in engine/pivot.ts.
+   */
+  pivot?: Pivot | null;
   /** blurs the clip's own moves (keyframes, motions, parents), 2d and 3d. a camera move is not part of it: that is what the motion blur effect layer is for. null / missing = off. */
   motionBlur?: ClipMotionBlur | null;
   adjust?: ClipAdjust | null;
@@ -491,7 +526,7 @@ export interface TextClip extends ClipBase, Spatial {
   /** gradient fill across the whole text block. null / missing = the plain `color`. */
   gradient?: TextGradient | null;
   /**
-   * bend the text along a circle: degrees of arc one line spans. + = an arch (ends hang down),
+   * curve the text along a circle: degrees of arc one line spans. + = an arch (ends hang down),
    * - = a smile (ends rise). 0 / missing = straight. 360 = a full ring.
    */
   curve?: number;

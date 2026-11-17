@@ -6,8 +6,10 @@
 import { CLIP_MOTIONS_IN, CLIP_MOTIONS_LOOP, DEFAULT_CLIP_MOTION_IN, DEFAULT_CLIP_MOTION_LOOP } from '../../engine/clipAnim';
 import { DEFAULT_TEXT_ANIM_IN, DEFAULT_TEXT_ANIM_LOOP, TEXT_ANIMS_IN, TEXT_ANIMS_LOOP } from '../../engine/textAnim';
 import { DEFAULT_TRANSITION_DURATION, getTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION } from '../../engine/transitions/registry';
+import { normalizePivot, PIVOT_MAX, PIVOT_SPOTS } from '../../engine/pivot';
 import { BPM_MAX, BPM_MIN } from '../../lib/tempo';
-import { BLEND_MODES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
+import { BEND_ANGLE_MAX, BEND_CENTER_MAX, BEND_SPAN_MAX, BEND_SPAN_MIN } from '../../engine/scene3d/bend';
+import { BEND_ALONG, BLEND_MODES, isVisualClip, MASK_SHAPES, MOTION_BLUR_STYLES, SHAPE_KINDS, SHAPES_3D, type Clip, type ClipType } from '../../types';
 import { needProject, ToolError } from '../helpers';
 
 /** returns the value to store. `cur` is what the clip holds there now */
@@ -122,6 +124,17 @@ function anim(list: readonly { id: string }[], what: string, duration: number): 
 
 const stroke = (maxWidth: number): Check => orNull(obj({ color, width: num(0, maxWidth) }, ['color', 'width']));
 
+/** a pivot: { x, y } in fractions of the box (a partial one lies over the current), a spot name, or null. the middle is stored as null */
+const pivot: Check = (v, path, cur, clip) => {
+  if (v === null) return null;
+  if (typeof v === 'string') {
+    const spot = PIVOT_SPOTS.find((s) => s.id === v);
+    if (!spot) throw new ToolError(`${path} must be { x, y }, null or one of: ${PIVOT_SPOTS.map((s) => s.id).join(', ')}`);
+    return normalizePivot(spot);
+  }
+  return normalizePivot(obj({ x: num(-PIVOT_MAX, PIVOT_MAX), y: num(-PIVOT_MAX, PIVOT_MAX) }, ['x', 'y'], { x: 0, y: 0 })(v, path, cur, clip));
+};
+
 /** every picture clip (video, image, text, shape) */
 const PICTURE: Record<string, Check> = {
   threeD: bool,
@@ -134,6 +147,8 @@ const PICTURE: Record<string, Check> = {
   blend: oneOf(BLEND_MODES),
   crop: orNull(obj({ left: num(0, 0.95), top: num(0, 0.95), right: num(0, 0.95), bottom: num(0, 0.95) }, ['left', 'top', 'right', 'bottom'], { left: 0, top: 0, right: 0, bottom: 0 })),
   radius: num(0, 1),
+  bend: orNull(obj({ angle: num(-BEND_ANGLE_MAX, BEND_ANGLE_MAX), along: oneOf(BEND_ALONG), center: num(-BEND_CENTER_MAX, BEND_CENTER_MAX), span: num(BEND_SPAN_MIN, BEND_SPAN_MAX) }, ['angle'], { angle: 0 })),
+  pivot,
   motionIn: anim(CLIP_MOTIONS_IN, 'clip motion', DEFAULT_CLIP_MOTION_IN),
   motionOut: anim(CLIP_MOTIONS_IN, 'clip motion', DEFAULT_CLIP_MOTION_IN),
   motionLoop: anim(CLIP_MOTIONS_LOOP, 'looping clip motion', DEFAULT_CLIP_MOTION_LOOP),

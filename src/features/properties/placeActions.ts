@@ -10,6 +10,7 @@ import { DEFAULT_FOV, cameraAt, cameraClipAt, cameraRig } from '../../engine/sce
 import { valueAt } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
+import { sub } from '../../engine/scene3d/math';
 import type { Vec3 } from '../../engine/scene3d/math';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
@@ -127,6 +128,15 @@ function commit(plans: readonly Plan[]): number {
   return todo.length;
 }
 
+/** the world step from a clip's picture middle to its pivot along world axes right / down (0 0 0 without a pivot) */
+function pivotWorld(p: Project, it: Target, right: Vec3, down: Vec3): Vec3 {
+  const box = getClipBox(p, it.now);
+  const k = it.parent ? frameScale(it.parent) : 1;
+  const px = (box.px ?? 0) * k;
+  const py = (box.py ?? 0) * k;
+  return [right[0] * px + down[0] * py, right[1] * px + down[1] * py, right[2] * px + down[2] * py];
+}
+
 function skippedToast(n: number): void {
   toast(`${n === 1 ? 'a clip was' : `${n} clips were`} left out: the clip it is attached to cannot place it`);
 }
@@ -155,7 +165,8 @@ export function putInFrontOfCamera(ids: readonly string[]): number {
     rig,
     list.map((it) => {
       const a = axesOf(it.frame);
-      return { center: a.center, keepDepth: !!it.now.threeD };
+      // the picture middle is placed, not the pivot
+      return { center: sub(a.center, pivotWorld(p, it, a.right, a.down)), keepDepth: !!it.now.threeD };
     }),
     flat,
   );
@@ -163,7 +174,11 @@ export function putInFrontOfCamera(ids: readonly string[]): number {
   let skipped = 0;
   list.forEach((it, i) => {
     const scale = frameScale(it.frame);
-    const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix(centers[i]!, rig.right, rig.down, rig.forward, scale));
+    // the position written is the pivot's place: the picture middle plus the pivot's step at the new turn
+    const at = centers[i]!;
+    const pw = pivotWorld(p, it, rig.right, rig.down);
+    const pos: Vec3 = [at[0] + pw[0], at[1] + pw[1], at[2] + pw[2]];
+    const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix(pos, rig.right, rig.down, rig.forward, scale));
     if (next) plans.push(planOf(it, next, { withScale: !!it.parent }));
     else skipped++;
   });
@@ -218,7 +233,7 @@ export function frameWithCamera(id: string): boolean {
   const down: Vec3 = upright ? ax.down : [0, 1, 0];
   const normal: Vec3 = upright ? ax.normal : [0, 0, 1];
   const size = worldSize(p, it);
-  const v = frameCamera(ax.center, right, down, normal, size.w, size.h, fov, p.width, p.height);
+  const v = frameCamera(sub(ax.center, pivotWorld(p, it, ax.right, ax.down)), right, down, normal, size.w, size.h, fov, p.width, p.height);
   if (![v.x, v.y, v.z, v.pan, v.tilt, v.roll].every(Number.isFinite)) return false;
   const wanted = [
     ['x', v.x],
@@ -294,7 +309,7 @@ function setTilt(ids: readonly string[], angle: number): number {
   if (plans.length === 0) return 0;
   const turnedOff = plans.filter((pl) => pl.unlook).length;
   commit(plans);
-  if (turnedOff > 0) toast(`${turnedOff === 1 ? 'a clip' : `${turnedOff} clips`} stopped facing something so the tilt shows`);
+  if (turnedOff > 0) toast(`${turnedOff === 1 ? 'a clip' : `${turnedOff} clips`} stopped looking at something so the tilt shows`);
   return plans.length;
 }
 
@@ -323,12 +338,13 @@ export function dropToFloor(ids: readonly string[]): number {
     const a = axesOf(it.frame);
     const size = worldSize(p, it);
     const round = !!it.now.threeD && it.now.shape === 'sphere';
+    const pw = pivotWorld(p, it, a.right, a.down);
     const y = floorCenterY(p.height, size.w, size.h, a.right, a.down, solidDepth(it, size), a.normal, round);
-    const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix([a.center[0], y, a.center[2]], a.right, a.down, a.normal, frameScale(it.frame)));
+    const next = poseFromWorld(it.parent, p.width, p.height, worldMatrix([a.center[0], y + pw[1], a.center[2]], a.right, a.down, a.normal, frameScale(it.frame)));
     if (next) plans.push(planOf(it, next, { withScale: !!it.parent, make3d: false }));
     else skipped++;
   }
-  if (facing > 0) toast(`${facing === 1 ? 'a clip' : `${facing} clips`} that face the camera or a clip: turn facing off first`);
+  if (facing > 0) toast(`${facing === 1 ? 'a clip' : `${facing} clips`} that look at the camera or a clip: set look at to none first`);
   if (skipped > 0) skippedToast(skipped);
   if (plans.length === 0) return 0;
   commit(plans);

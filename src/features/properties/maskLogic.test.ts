@@ -20,9 +20,9 @@ describe('mask ui mapping', () => {
     expect(maskUiValue(m, 'rotation')).toBe(45.5);
   });
   it('clamps to the ui range and ignores junk', () => {
-    expect(setMaskValue(newMask(), 'width', 999).width).toBe(2);
+    expect(setMaskValue(newMask(), 'width', 999).width).toBe(3);
     expect(setMaskValue(newMask(), 'x', -999).x).toBe(-1);
-    expect(setMaskValue(newMask(), 'rotation', 400).rotation).toBe(180);
+    expect(setMaskValue(newMask(), 'rotation', 400).rotation).toBe(360);
     expect(setMaskValue(newMask(), 'feather', Number.NaN).feather).toBe(0);
   });
   it('stores radius only above 0', () => {

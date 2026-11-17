@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from 'react';
 import { Flag, MoveHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { snapToFrame } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
+import { tip } from '../shell/tip';
 import { insertGapAt } from './actions';
 import { useFloatingMenu } from './menuBehavior';
 
@@ -48,7 +49,7 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
           <button
             className="menu-item"
             role="menuitem"
-            title="give the marker a name"
+            {...tip('rename', { does: 'give the marker a name', side: 'right' })}
             onClick={run(() => onRename(markerId, x, y))}
           >
             <Pencil size={14} />
@@ -57,7 +58,7 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
           <button
             className="menu-item"
             role="menuitem"
-            title="delete the marker"
+            {...tip('delete', { does: 'delete the marker', side: 'right' })}
             onClick={run(() => useEditor.getState().removeMarker(markerId))}
           >
             <Trash2 size={14} />
@@ -68,7 +69,7 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
         <button
           className="menu-item"
           role="menuitem"
-          title="add a marker at this time"
+          {...tip('add marker here', { does: 'add a marker at this time', side: 'right' })}
           onClick={run(() => {
             const fps = useEditor.getState().project?.fps ?? 30;
             useEditor.getState().addMarker(snapToFrame(time, fps));
@@ -82,7 +83,7 @@ export function MarkerMenu({ x, y, markerId, time, onClose, onRename }: MenuProp
       <button
         className="menu-item"
         role="menuitem"
-        title="push every clip that starts at or after this point right by 1 second, on all unlocked tracks"
+        {...tip('insert gap here', { does: 'push every clip that starts at or after this point right by 1 second, on all unlocked tracks', side: 'right' })}
         onClick={run(() => insertGapAt(snapToFrame(time, useEditor.getState().project?.fps ?? 30)))}
       >
         <MoveHorizontal size={14} />

@@ -1153,3 +1153,20 @@ describe('one bad clip does not stop the frame', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('paintFlat with a pivot', () => {
+  it('paintFlat draws a pivoted clip at its picture box', () => {
+    const tracks = [track('t', 'video')];
+    // 960 x 540 at scale 0.5, pivot on the left edge, rotated 90: the picture hangs down from the position
+    const c = video('t', 0, 5, { transform: { x: 100, y: 50, scale: 0.5, rotation: 90, opacity: 1 }, pivot: { x: -0.5, y: 0 } });
+    const p = project([c], tracks);
+    const ctx = new FakeCtx();
+    renderFrame(asCtx(ctx), p, 1, () => mkSource('a', 1920, 1080));
+    const t = ctx.ops('translate')[0]!;
+    // the position is (1060, 590), the middle is R(90) (480, 0) = (0, 480) away from it
+    expect(t.args[0]).toBeCloseTo(1060, 6);
+    expect(t.args[1]).toBeCloseTo(1070, 6);
+    const d = ctx.ops('drawImage')[0]!;
+    expect(d.args.slice(1)).toEqual([-480, -270, 960, 540]);
+  });
+});

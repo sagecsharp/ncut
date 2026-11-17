@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankItem, searchItems, wordTier } from './paletteSearch';
+import { filterRows, rankItem, searchItems, wordTier } from './paletteSearch';
 
 const items = [
   { title: 'split at playhead', group: 'editing' },
@@ -35,5 +35,22 @@ describe('paletteSearch', () => {
   it('is case insensitive and matches the group', () => {
     expect(searchItems('EXPORT', items)[0]?.title).toBe('export');
     expect(rankItem('playback', items[1]!)).not.toBeNull();
+  });
+  it('an alias finds a renamed row one tier later, the title wins a tie', () => {
+    const renamed = { title: 'trim start: the clip starts at the playhead', also: ['cut off the left side'] };
+    expect(rankItem('cut off', renamed)).toBe(3);
+    expect(rankItem('cut off', { title: 'cut off now' })).toBe(1);
+    expect(rankItem('left side', renamed)).not.toBeNull();
+    expect(rankItem('zzz', renamed)).toBeNull();
+    const list = [renamed, { title: 'cut off the edge' }];
+    expect(searchItems('cut off', list).map((i) => i.title)).toEqual(['cut off the edge', renamed.title]);
+  });
+  it('filterRows keeps the order and drops rows that miss a word', () => {
+    const rows = ['zoom in', 'play / pause', 'zoom out', 'Split at playhead'];
+    expect(filterRows('zoom', rows, (r) => r)).toEqual(['zoom in', 'zoom out']);
+    expect(filterRows('AT play', rows, (r) => r)).toEqual(['Split at playhead']);
+    expect(filterRows('zoom pause', rows, (r) => r)).toEqual([]);
+    expect(filterRows('  ', rows, (r) => r)).toEqual(rows);
+    expect(filterRows('', rows, (r) => r)).not.toBe(rows);
   });
 });

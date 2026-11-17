@@ -6,7 +6,9 @@
  */
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip } from '../../types';
+import { indexClips, parentChainIn } from '../../lib/links';
 import { isAlignable } from './alignLogic';
+import { INHERITED_PROPS } from './multiEdit';
 
 type Clips = readonly Clip[] | undefined;
 
@@ -88,4 +90,24 @@ export function arrangeCounts(project: Pick<Project, 'clips' | 'tracks'> | null,
     if (c.threeD && !firstLocked.get(c.trackId)) threeD += 1;
   }
   return { usable, visual, threeD };
+}
+
+/**
+ * the selected clips an offset of prop should be written to. for an inherited prop (INHERITED_PROPS) a clip whose
+ * parent, grandparent ... is also selected is left out: it already moves with that parent. other props: every id.
+ * ids that are not clips are dropped. walks with lib/links indexClips + parentChainIn (8 hops, stops on a loop).
+ */
+export function offsetTargets(clips: Clips, ids: readonly string[], prop: string): string[] {
+  if (!clips) return [];
+  const index = indexClips(clips);
+  const inherited = INHERITED_PROPS.has(prop);
+  const want = new Set(ids);
+  const out: string[] = [];
+  for (const id of ids) {
+    const clip = index.get(id);
+    if (!clip) continue;
+    if (inherited && parentChainIn(index, clip).some((a) => want.has(a.id))) continue;
+    out.push(id);
+  }
+  return out;
 }

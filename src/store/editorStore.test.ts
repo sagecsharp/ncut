@@ -1694,3 +1694,31 @@ describe('locked track editing', () => {
 });
 
 export type { TextClip };
+
+describe('updateClip pivot', () => {
+  it('updateClip stores a cleaned pivot, deletes it for the middle and ignores a same value', () => {
+    let a = '';
+    let au = '';
+    load((v, aT) => {
+      const x = mkImage(v, 0, 2);
+      const y = mkAudio(aT, 0, 2);
+      a = x.id;
+      au = y.id;
+      return [x, y];
+    });
+    ed().updateClip(a, { pivot: { x: -0.5, y: 99 } });
+    expect((proj().clips.find((c) => c.id === a) as ImageClip).pivot).toEqual({ x: -0.5, y: 10 });
+    const before = proj();
+    ed().updateClip(a, { pivot: { x: -0.5, y: 10 } });
+    ed().updateClip(a, { pivot: { x: -0.50000001, y: 10 } });
+    expect(proj()).toBe(before);
+    ed().updateClip(a, { pivot: { x: 0, y: 0 } });
+    expect('pivot' in proj().clips.find((c) => c.id === a)!).toBe(false);
+    const gone = proj();
+    ed().updateClip(a, { pivot: null });
+    expect(proj()).toBe(gone);
+    ed().updateClip(au, { pivot: { x: 1, y: 1 } } as never);
+    expect('pivot' in proj().clips.find((c) => c.id === au)!).toBe(false);
+    inv();
+  });
+});

@@ -7,6 +7,8 @@
 export interface Searchable {
   title: string;
   group?: string;
+  /** old or other words that find the item one tier later than its title */
+  also?: readonly string[];
 }
 
 export function words(query: string): string[] {
@@ -42,11 +44,25 @@ export function rankItem(query: string, item: Searchable): number | null {
   const ws = words(query);
   let sum = 0;
   for (const w of ws) {
-    const tier = wordTier(w, item.title, item.group);
+    let tier = wordTier(w, item.title, item.group);
+    for (const a of item.also ?? []) {
+      const t = wordTier(w, a);
+      if (t !== null) tier = tier === null ? t + 1 : Math.min(tier, t + 1);
+    }
     if (tier === null) return null;
     sum += tier;
   }
   return sum;
+}
+
+/** keep the rows where every word of the query is in hay(row), in their order (the ? dialog) */
+export function filterRows<T>(query: string, rows: readonly T[], hay: (row: T) => string): T[] {
+  const ws = words(query);
+  if (ws.length === 0) return rows.slice();
+  return rows.filter((row) => {
+    const h = hay(row).toLowerCase();
+    return ws.every((w) => h.includes(w));
+  });
 }
 
 /** the matching items, best first; ties keep the input order */

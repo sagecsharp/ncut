@@ -1,10 +1,7 @@
 import { memo } from 'react';
 import { Equal } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
 import {
   DEFAULT_TRANSITION_DURATION,
-  MAX_TRANSITION_DURATION,
-  MIN_TRANSITION_DURATION,
   TRANSITIONS,
   TRANSITION_CATEGORIES,
   getTransition,
@@ -16,8 +13,8 @@ import { rememberTransition } from '../media/transitionApply';
 import { planSameLength } from '../media/transitionBatch';
 import { isVisualClip } from '../../types';
 import type { Clip, Transition } from '../../types';
-import { Row, Section } from './controls';
-import { beginEdit, liveOpts } from './edit';
+import { FeelField, Row, Section } from './controls';
+import { liveOpts } from './edit';
 
 const actions = () => useEditor.getState();
 
@@ -99,16 +96,10 @@ export const TransitionSection = memo(function TransitionSection({ clip, transit
       </Row>
       {transition ? (
         <Row label="duration" title="how long the transition takes (seconds)">
-          <NumberField
-            className="props-grow"
-            suffix="s"
+          <FeelField
+            feel="transitionDuration"
             title="transition duration (seconds)"
             value={transition.duration}
-            min={MIN_TRANSITION_DURATION}
-            max={MAX_TRANSITION_DURATION}
-            step={0.1}
-            precision={2}
-            onStart={beginEdit}
             onChange={(v) => {
               actions().updateClip(id, { transition: { id: transition.id, duration: v } }, liveOpts());
               rememberTransition(transition.id, v);

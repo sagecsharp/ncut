@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SHAPES_3D } from '../../types';
 import { faceNames } from './faces';
 import { outlineFor } from './outline2d';
-import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
+import { CAPSULE_CAP, DEFAULT_SEGMENTS, TORUS_TUBE, bendStrip, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
 
 describe('shape meshes', () => {
   for (const shape of SHAPES_3D) {
@@ -363,5 +363,39 @@ describe('normals and the lit meshes', () => {
     const a = interleaveLit(shapeMesh('plane'));
     expect(a.length).toBe(32);
     expect([...a.slice(0, 8)]).toEqual([-0.5, -0.5, 0, 0, 0, 0, 0, -1]);
+  });
+
+  it('bendStrip has 130 vertices and 384 indices for 64 steps', () => {
+    for (const axis of [0, 1] as const) {
+      const m = bendStrip(axis);
+      expect(m.positions.length / 3).toBe(130);
+      expect(m.uvs.length / 2).toBe(130);
+      expect(m.normals.length / 3).toBe(130);
+      expect(m.indices.length).toBe(384);
+      expect(m.groups).toEqual([]);
+    }
+  });
+  it('bendStrip uv runs 0..1 along the strip and winds like plane()', () => {
+    const area = (m: ReturnType<typeof bendStrip>, t: number) => {
+      const p = (i: number) => [m.positions[i * 3]!, m.positions[i * 3 + 1]!];
+      const a = p(m.indices[t]!);
+      const b = p(m.indices[t + 1]!);
+      const c = p(m.indices[t + 2]!);
+      return (b[0]! - a[0]!) * (c[1]! - a[1]!) - (b[1]! - a[1]!) * (c[0]! - a[0]!);
+    };
+    const flat = shapeMesh('plane');
+    const sign = Math.sign(area(flat, 0));
+    for (const axis of [0, 1] as const) {
+      const m = bendStrip(axis);
+      // the uv along the axis is the position along it, shifted to 0..1
+      for (let i = 0; i < 130; i++) {
+        const u = m.uvs[i * 2 + axis]!;
+        expect(u).toBeCloseTo(m.positions[i * 3 + axis]! + 0.5, 6);
+        expect(m.normals[i * 3 + 2]).toBe(-1);
+      }
+      expect(m.uvs[0 * 2 + axis]).toBe(0);
+      expect(m.uvs[128 * 2 + axis]).toBe(1);
+      for (let t = 0; t < m.indices.length; t += 3) expect(Math.sign(area(m, t))).toBe(sign);
+    }
   });
 });

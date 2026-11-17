@@ -193,6 +193,14 @@
 .timeline-head-kind {
   display: inline-flex;
   color: var(--text-faint);
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.timeline-head-kind:hover {
+  color: var(--text);
 }
 .timeline-head-name {
   flex: 1;

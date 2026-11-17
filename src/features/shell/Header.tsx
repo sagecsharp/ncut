@@ -5,6 +5,8 @@ import { closeProject, useSaveState } from '../../store/session';
 import type { SaveStatus } from '../../store/session';
 import { useUi } from '../../store/ui';
 import { loadCommandPalette } from './lazyDialogs';
+import { REASON_TEXT } from './reasons';
+import { tip } from './tip';
 import { closePalette, openPalette, usePalette } from './paletteStore';
 import './shell.css';
 
@@ -79,7 +81,7 @@ function ProjectName() {
     return (
       <button
         className="shell-name"
-        title="rename project"
+        {...tip('rename project', { does: 'click and type a new name' })}
         onClick={() => {
           cancelled.current = false;
           setDraft(name);
@@ -121,7 +123,7 @@ export function Header() {
   return (
     <header className="shell-header">
       <div className="shell-header-left">
-        <button className="icon-btn" onClick={back} title="back to projects" aria-label="back to projects">
+        <button className="icon-btn" onClick={back} {...tip('back to projects', { does: 'close the project, it is saved' })} aria-label="back to projects">
           <ArrowLeft size={16} />
         </button>
         <span className="shell-mark" aria-hidden="true">
@@ -131,27 +133,27 @@ export function Header() {
         <SaveIndicator />
       </div>
       <div className="shell-header-right">
-        <button className="icon-btn" onClick={undo} disabled={!canUndo} title="undo (ctrl+z)" aria-label="undo">
+        <button className="icon-btn" onClick={undo} disabled={!canUndo} {...tip('undo', { keys: 'undo', off: canUndo ? null : REASON_TEXT.noUndo })} aria-label="undo">
           <Undo2 size={16} />
         </button>
-        <button className="icon-btn" onClick={redo} disabled={!canRedo} title="redo (ctrl+shift+z)" aria-label="redo">
+        <button className="icon-btn" onClick={redo} disabled={!canRedo} {...tip('redo', { keys: 'redo', off: canRedo ? null : REASON_TEXT.noRedo })} aria-label="redo">
           <Redo2 size={16} />
         </button>
         <span className="shell-sep" />
-        <button className="icon-btn" onClick={openPalette} title="search actions (ctrl+k)" aria-label="search actions">
+        <button className="icon-btn" onClick={openPalette} {...tip('search actions', { does: 'every action by name, also the ones without a key', keys: 'palette' })} aria-label="search actions">
           <Search size={16} />
         </button>
-        <button className="icon-btn" onClick={openShortcuts} title="keyboard shortcuts (?)" aria-label="keyboard shortcuts">
+        <button className="icon-btn" onClick={openShortcuts} {...tip('keyboard shortcuts', { does: 'every key and mouse move, searchable', keys: 'shortcuts' })} aria-label="keyboard shortcuts">
           <Keyboard size={16} />
         </button>
-        <button className="icon-btn" onClick={openSettings} title="project settings (ctrl+,)" aria-label="project settings">
+        <button className="icon-btn" onClick={openSettings} {...tip('settings', { does: 'theme, layout, 3d controls, mcp, updates and this project', keys: 'settings' })} aria-label="settings">
           <Settings size={16} />
         </button>
         <button
           className="btn btn-primary"
           onClick={openExport}
           disabled={!hasClips}
-          title={hasClips ? 'export video (ctrl+e)' : 'add a clip to export'}
+          {...tip('export', { does: 'a video, gif, picture or sound file', keys: 'export', off: hasClips ? null : REASON_TEXT.addClip })}
         >
           <Download size={14} />
           export

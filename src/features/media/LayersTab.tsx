@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent, MouseEvent } from 'react';
-import { Box, Camera, Crosshair, Eye, EyeOff, Film, Image as ImageIcon, Link2, Lock, Pencil, Shapes, Sparkles, SquareDashed, Type, Unlink } from 'lucide-react';
+import { Box, Camera, Crosshair, Eye, EyeOff, Film, Image as ImageIcon, Lock, Paperclip, Pencil, Shapes, Sparkles, SquareDashed, Type, Unlink } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEditor } from '../../store/editorStore';
 import type { ClipPatch } from '../../store/editorStore';
@@ -155,7 +155,7 @@ const LayerRow = memo(function LayerRow(p: RowProps) {
       ) : null}
       {attached ? (
         <span className="layers-flag" title={`attached to ${p.attachedName}`}>
-          <Link2 size={12} aria-label={`attached to ${p.attachedName}`} />
+          <Paperclip size={12} aria-label={`attached to ${p.attachedName}`} />
         </span>
       ) : null}
       {node.locked ? (

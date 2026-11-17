@@ -25,6 +25,12 @@ export interface UiState {
   toasts: Toast[];
   previewMode: PreviewMode;
   projectsVersion: number;
+  /** the properties panel shows the project (canvas, sky, fog, light) while a clip is selected */
+  projectPanel: boolean;
+  /** a section the properties panel should open, scroll to and focus. n counts up so the same id can be asked twice */
+  reveal: { id: string; n: number } | null;
+  showProjectPanel(on: boolean): void;
+  revealSection(id: string): void;
   setPreviewMode(mode: PreviewMode): void;
   /** bumped when stored projects change outside the projects screen (mcp) */
   projectsChanged(): void;
@@ -35,11 +41,26 @@ export interface UiState {
   dismissToast(id: string): void;
 }
 
+/** the same ids, in any order */
+export function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((id) => set.has(id)) && new Set(b).size === set.size;
+}
+
 export const useUi = create<UiState>()((set, get) => ({
   dialog: null,
   toasts: [],
   previewMode: 'output',
   projectsVersion: 0,
+  projectPanel: false,
+  reveal: null,
+  showProjectPanel(on) {
+    if (get().projectPanel !== on) set({ projectPanel: on });
+  },
+  revealSection(id) {
+    set({ reveal: { id, n: (get().reveal?.n ?? 0) + 1 } });
+  },
   setPreviewMode(mode) {
     if (get().previewMode !== mode) set({ previewMode: mode });
   },

@@ -221,3 +221,15 @@ describe('frameInfo', () => {
     expect(info.allStatic).toBe(true);
   });
 });
+
+describe('isStaticAt: bend and pivot', () => {
+  it('a clip with bend keys is not static', () => {
+    const keys = { 'bend.angle': [{ t: 0, v: 0, ease: 'linear' as const }, { t: 1, v: 90, ease: 'linear' as const }] };
+    const c = image('i', { bend: { angle: 0 }, keyframes: keys });
+    expect(isStaticAt(project([c]), c, 5)).toBe(false);
+  });
+  it('a clip with a pivot and nothing moving is static', () => {
+    const c = image('i', { pivot: { x: -0.5, y: 0 }, bend: { angle: 45 } });
+    expect(isStaticAt(project([c]), c, 5)).toBe(true);
+  });
+});

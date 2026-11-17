@@ -139,3 +139,20 @@ describe('stillClipFrom', () => {
     expect(s.group).toBeUndefined();
   });
 });
+
+describe('stillClipFrom bend and pivot', () => {
+  const tf = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 };
+  it('a still copy keeps its own copy of the bend', () => {
+    const v = video('a', 't1', 0, 4, { bend: { angle: 90, along: 'height', center: 0.25, span: 800 } });
+    const s = stillClipFrom(v, tf, 'img', 0, 1);
+    expect(s.bend).toEqual({ angle: 90, along: 'height', center: 0.25, span: 800 });
+    expect(s.bend).not.toBe(v.bend);
+  });
+  it('stillClipFrom copies the pivot', () => {
+    const v = video('a', 't1', 0, 4, { pivot: { x: -0.5, y: 0.25 } });
+    const s = stillClipFrom(v, tf, 'img', 0, 1);
+    expect(s.pivot).toEqual({ x: -0.5, y: 0.25 });
+    expect(s.pivot).not.toBe(v.pivot);
+    expect(stillClipFrom(video('b', 't1', 0, 4), tf, 'img', 0, 1)).not.toHaveProperty('pivot');
+  });
+});

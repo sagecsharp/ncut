@@ -23,9 +23,9 @@ export function removeAssetText(name: string, clips: number, inSky: boolean): st
   const s = clips === 1 ? '' : 's';
   const that = clips === 1 ? 'that clip' : 'those clips';
   if (inSky && clips > 0) {
-    return `"${name}" is part of the sky and used by ${clips} clip${s} on the timeline. removing it takes the sky off and deletes ${that} too. this clears undo history.`;
+    return `"${name}" is part of the sky and used by ${clips} clip${s} on the timeline. removing it removes the sky and deletes ${that} too. this clears undo history.`;
   }
-  if (inSky) return `"${name}" is part of the sky. removing it takes the sky off.`;
+  if (inSky) return `"${name}" is part of the sky. removing it removes the sky.`;
   if (clips > 0) return `"${name}" is used by ${clips} clip${s} on the timeline. removing it deletes ${that} too. this clears undo history.`;
   return null;
 }

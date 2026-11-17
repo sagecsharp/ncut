@@ -9,7 +9,7 @@
  */
 import { useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from 'react';
-import { Grid3x3, Maximize2, Move, RotateCw } from 'lucide-react';
+import { Axis3d, LocateFixed, Maximize2, Move, RotateCw } from 'lucide-react';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
 import { parentModelMatrix } from '../../engine/parent';
 import { type CameraRig, cameraClipAt, cameraFromClip, cameraRig, homeDistance, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
@@ -23,9 +23,11 @@ import { useUi } from '../../store/ui';
 import type { Project, VisualClip } from '../../types';
 import { MAX_SCALE, MIN_SCALE, isVisualClip, stretchX, stretchY, stretchZ } from '../../types';
 import { floorY } from '../properties/place3d';
+import { pivotModeBlocker } from '../properties/pivotActions';
+import { tip } from '../shell/tip';
 import { isAttached, localDelta, localDelta3, resolveShown, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture } from './gesture';
-import { type Quad, asScenePlane, clipQuad, closestOnAxis, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
+import { type Quad, asScenePlane, clipQuad, closestOnAxis, quadPoints, rayBent, rayQuad, sceneCenter, segDist, unwrapStep, usesParentFrame, worldCenter3d } from './overlayMath';
 import { type Orbit, currentOrbit, frameOrbit, toCamera3D, useSceneCamera } from './sceneCamera';
 import {
   MIN_STRETCH_HANDLE_PX,
@@ -65,6 +67,7 @@ import {
 import {
   SCENE_HINTS,
   type SceneCommand,
+  bentTouchesRect,
   blenderCommand,
   blenderPress,
   blenderView,
@@ -78,6 +81,8 @@ import {
   typedValue,
   useSceneControls,
 } from './sceneControls';
+import { PivotLayer } from './PivotLayer';
+import { usePivotMode } from './pivotMode';
 import { snapAngle, snapDelta } from './sceneSnap';
 import { useSceneGrid, useSceneTool } from './sceneTool';
 import { cameraToView, frameSelected, frameTarget, viewRig, viewThroughCamera } from './sceneViews';
@@ -459,7 +464,7 @@ function boxHits(project: Project, time: number, rig: CameraRig, x0: number, y0:
   }
   for (const clip of clips) {
     const q = clipQuad(project, clip, time, rig);
-    if (q.visible && quadTouchesRect(q.p, box)) out.push(clip.id);
+    if (q.visible && (q.bent ? bentTouchesRect(q, box) : quadTouchesRect(q.p, box))) out.push(clip.id);
   }
   return out;
 }
@@ -480,7 +485,7 @@ function sceneHit(project: Project, time: number, rig: CameraRig, px: number, py
     const track = project.tracks.find((t) => t.id === clip.trackId);
     if (!track || track.locked) continue;
     const q = clipQuad(project, clip, time, rig);
-    const t = rayQuad(ray.origin, ray.dir, q.world);
+    const t = q.bent ? rayBent(ray.origin, ray.dir, q) : rayQuad(ray.origin, ray.dir, q.world);
     if (t !== null && t < bestT) {
       best = clip.id;
       bestT = t;
@@ -534,6 +539,8 @@ export function SceneOverlay() {
   const lastPointer = useRef<PointerSnapshot | null>(null);
   const viewF = useRef(0);
   const redrawRef = useRef<() => void>(() => undefined);
+  /** the pivot layer's own redraw: called at the end of every redraw, so it follows the view camera */
+  const pivotFns = useRef(new Set<() => void>());
   const gizmo = useRef<GizmoState>({
     visible: false,
     tool: 'move',
@@ -571,6 +578,17 @@ export function SceneOverlay() {
   const setTool = useSceneTool((s) => s.setTool);
   const gridOn = useSceneGrid((s) => s.on);
   const toggleGrid = useSceneGrid((s) => s.toggle);
+  const pivotOn = usePivotMode((s) => s.on);
+
+  /** the pivot button: off -> on only for one picture clip that is not locked (else a toast says why), on -> off */
+  const togglePivot = () => {
+    const mode = usePivotMode.getState();
+    if (mode.on) return mode.set(false);
+    const st = useEditor.getState();
+    const why = pivotModeBlocker(st.project, st.selection);
+    if (why) useUi.getState().toast(why);
+    else mode.set(true);
+  };
 
   /* ---------- imperative drawing ---------- */
   useLayoutEffect(() => {
@@ -700,10 +718,9 @@ export function SceneOverlay() {
           handle.style.transform = `translate3d(${fh.x - 6}px, ${fh.y - 6}px, 0)`;
           handle.classList.toggle('is-disabled', fh.disabled);
           handle.classList.toggle('is-active', gestureRef.current?.kind === 'focus');
-          const title = fh.disabled
-            ? 'focus distance: the focus follows the camera target. turn off follow target in the inspector to drag it'
-            : 'focus distance: drag along the view axis. the focus distance field in the inspector does the same';
-          if (handle.title !== title) handle.title = title;
+          // the tip says what to do first while the focus follows the camera target
+          if (fh.disabled) handle.setAttribute('data-tip-off', 'turn off follow target in the inspector');
+          else handle.removeAttribute('data-tip-off');
         }
       }
     };
@@ -726,12 +743,13 @@ export function SceneOverlay() {
           const q = clipQuad(project, asScenePlane(clip), time, rig, scratch);
           if (!q.visible) continue;
           const i = poly(used++);
-          const pts = `${q.p[0] * f},${q.p[1] * f} ${q.p[2] * f},${q.p[3] * f} ${q.p[4] * f},${q.p[5] * f} ${q.p[6] * f},${q.p[7] * f}`;
+          const pts = quadPoints(q, f);
           unders[i]!.setAttribute('points', pts);
           lines[i]!.setAttribute('points', pts);
         }
         // the gizmo of the active tool
-        const target = gizmoTarget(project, selection, time, rig);
+        // the move pivot mode shows the pivot mark only: no gizmo, no center dot
+        const target = usePivotMode.getState().on ? null : gizmoTarget(project, selection, time, rig);
         if (target) {
           const tl: SceneTool = target.kind === 'clip' ? useSceneTool.getState().tool : 'move';
           const c = projectPoint(rig, target.center[0], target.center[1], target.center[2], project.width, project.height);
@@ -1042,6 +1060,7 @@ export function SceneOverlay() {
           ro.setAttribute('y', String(gz.cy + 30));
         }
       }
+      pivotFns.current.forEach((fn) => fn());
     };
     redrawRef.current = redraw;
 
@@ -1119,6 +1138,14 @@ export function SceneOverlay() {
     const unGrid = useSceneGrid.subscribe(drawGrid);
     const unTool = useSceneTool.subscribe((s, p) => {
       if (s.tool !== p.tool) {
+        usePivotMode.getState().set(false);
+        hover.current = null;
+        redraw();
+      }
+    });
+    // the gizmo hides at once when the move pivot mode starts, and comes back when it ends
+    const unPivot = usePivotMode.subscribe((s, p) => {
+      if (s.on !== p.on) {
         hover.current = null;
         redraw();
       }
@@ -1131,6 +1158,7 @@ export function SceneOverlay() {
       unCam();
       unGrid();
       unTool();
+      unPivot();
       keyHook = null;
       modalKeys = null;
       modalOff.current?.();
@@ -2264,30 +2292,54 @@ export function SceneOverlay() {
         <rect ref={boxRect} className="scene-box" style={{ display: 'none' }} />
         <text ref={readoutEl} className="scene-readout" style={{ display: 'none' }} />
       </svg>
-      <div ref={focusHandleEl} className="scene-focus-handle" style={{ display: 'none' }} role="img" aria-label="focus distance handle" />
+      <div ref={focusHandleEl} className="scene-focus-handle" style={{ display: 'none' }} role="img" aria-label="focus distance handle" {...tip('focus distance', { does: 'drag to set where 3d clips are sharp' })} />
+      <PivotLayer
+        kind="scene"
+        getF={() => viewF.current}
+        getRig={(p) => viewRig(p)}
+        register={(fn) => {
+          pivotFns.current.add(fn);
+          return () => {
+            pivotFns.current.delete(fn);
+          };
+        }}
+      />
       <div className="scene-tools" role="group" aria-label="scene tool" onPointerDown={stop} onDoubleClick={stop} onWheel={stop} onContextMenu={stop}>
-        {TOOLS.map(({ tool: t, label, key, Icon, hint }) => (
+        {TOOLS.map(({ tool: t, label, Icon, hint }, i) => (
           <button
             key={t}
             type="button"
-            className={`icon-btn icon-btn-sm${tool === t ? ' is-active' : ''}`}
-            title={scheme === 'unity' ? `${label} (${key}): ${hint}` : `${label}: ${hint}`}
+            className={`icon-btn icon-btn-sm${tool === t && !pivotOn ? ' is-active' : ''}`}
+            {...tip(label, { does: hint, keys: scheme === 'unity' ? 'scene-tools' : undefined, pick: i })}
             aria-label={label}
-            aria-pressed={tool === t}
-            onClick={() => setTool(t)}
+            aria-pressed={tool === t && !pivotOn}
+            onClick={() => {
+              usePivotMode.getState().set(false);
+              setTool(t);
+            }}
           >
             <Icon size={14} />
           </button>
         ))}
         <button
           type="button"
+          className={`icon-btn icon-btn-sm${pivotOn ? ' is-active' : ''}`}
+          {...tip('pivot', { does: 'move the point the clip rotates and scales around. the clip stays where it is', on: pivotOn })}
+          aria-label="pivot"
+          aria-pressed={pivotOn}
+          onClick={togglePivot}
+        >
+          <LocateFixed size={14} />
+        </button>
+        <button
+          type="button"
           className={`icon-btn icon-btn-sm${gridOn ? ' is-active' : ''}`}
-          title={gridOn ? 'hide the floor grid and axis lines' : 'show the floor grid and axis lines (x right, z away)'}
+          {...tip('floor grid', { does: 'the floor and the axis lines: x right, z away', on: gridOn })}
           aria-label="floor grid"
           aria-pressed={gridOn}
           onClick={toggleGrid}
         >
-          <Grid3x3 size={14} />
+          <Axis3d size={14} />
         </button>
       </div>
       <div className="preview-scene-hint">{SCENE_HINTS[scheme]}</div>

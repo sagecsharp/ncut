@@ -106,3 +106,36 @@ describe('effect params keep inside the effect\'s ranges', () => {
     expect((clipOf(fx) as { params: Record<string, number> }).params.strength).toBe(40);
   });
 });
+
+describe('update_clip bend and pivot', () => {
+  it('bend refuses angle 400 and along sideways, merges angle over the current bend', async () => {
+    await refused('update_clip', { id: shape, patch: { bend: { angle: 400 } } }, /bend\.angle must be between -360 and 360/);
+    await refused('update_clip', { id: shape, patch: { bend: { angle: 10, along: 'sideways' } } }, /bend\.along must be one of: width, height/);
+    await call('update_clip', { id: shape, patch: { bend: { angle: 45, along: 'height', center: 0.25, span: 800 } } });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { bend: { angle: 90 } } }));
+    expect((clipOf(shape) as { bend?: unknown }).bend).toEqual({ angle: 90, along: 'height', center: 0.25, span: 800 });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { bend: null } }));
+    expect((clipOf(shape) as { bend?: unknown }).bend ?? null).toBeNull();
+  });
+
+  it('pivot takes { x, y }, a partial object, a spot name and null', async () => {
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { pivot: { x: -0.5, y: 0.25 } } }));
+    expect((clipOf(shape) as { pivot?: unknown }).pivot).toEqual({ x: -0.5, y: 0.25 });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { pivot: { x: 0.5 } } }));
+    expect((clipOf(shape) as { pivot?: unknown }).pivot).toEqual({ x: 0.5, y: 0.25 });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { pivot: 'bottom-left' } }));
+    expect((clipOf(shape) as { pivot?: unknown }).pivot).toEqual({ x: -0.5, y: 0.5 });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { pivot: null } }));
+    expect((clipOf(shape) as { pivot?: unknown }).pivot ?? null).toBeNull();
+    await call('update_clip', { id: shape, patch: { pivot: 'left' } });
+    await oneStepOf(() => call('update_clip', { id: shape, patch: { pivot: 'middle' } }));
+    expect((clipOf(shape) as { pivot?: unknown }).pivot ?? null).toBeNull();
+  });
+
+  it('pivot refuses out of range numbers, unknown names and other fields', async () => {
+    await refused('update_clip', { id: shape, patch: { pivot: { x: 11, y: 0 } } }, /pivot\.x must be between -10 and 10/);
+    await refused('update_clip', { id: shape, patch: { pivot: 'nowhere' } }, /pivot must be \{ x, y \}, null or one of: top-left/);
+    await refused('update_clip', { id: shape, patch: { pivot: { x: 0, y: 0, z: 1 } } }, /pivot\.z is not a known field/);
+    await refused('update_clip', { id: shape, patch: { pivot: 5 } }, /pivot must be an object/);
+  });
+});

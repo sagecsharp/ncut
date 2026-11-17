@@ -1,7 +1,6 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowLeftRight, Camera, ClipboardPaste, Copy, Eraser, FlipHorizontal2, Maximize, MoveHorizontal, RectangleHorizontal, RectangleVertical, Repeat, RotateCcw, Waves } from 'lucide-react';
 import { hasKeyframes, valueAt } from '../../lib/anim';
-import { NumberField } from '../../components/ui/NumberField';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
@@ -9,7 +8,9 @@ import type { Clip, Keyframes, LookAt, Shape3D } from '../../types';
 import { SHAPES_3D } from '../../types';
 import { AnimField } from './AnimField';
 import { setValuesNow } from './animEdit';
-import { Row, SelectRow, Section, Switch, useSelectOpen } from './controls';
+import { tip } from '../shell/tip';
+import { FeelField, Row, SelectRow, Section, Switch, useSelectOpen } from './controls';
+import { wiggleFeel } from './fieldFeel';
 import { targetLabelOf, targetOptions } from './targets';
 import { CAMERA_MOVES, cameraMove, moveProps } from './cameraMoves';
 import type { CameraMoveId, CameraValues } from './cameraMoves';
@@ -49,6 +50,7 @@ export const AnimationSection = memo(function AnimationSection({
     }
   }
   const has = keys > 0;
+  const off = has ? null : 'no keyframes on this clip yet';
   const copied = useKeyClipboard();
   const clip = useEditor((s) => s.project?.clips.find((c) => c.id === id));
   const choices = useMemo(() => (clip ? wiggleProps(clip) : []), [clip?.type, clip && 'threeD' in clip ? clip.threeD : false]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -56,7 +58,8 @@ export const AnimationSection = memo(function AnimationSection({
   const [amount, setAmount] = useState<number | null>(null);
   const [perSecond, setPerSecond] = useState(4);
   const chosen = choices.find((c) => c.prop === prop) ?? choices[0];
-  const amt = amount ?? (clip && chosen ? wiggleDefault(clip, chosen.prop) : 1);
+  const amt0 = clip && chosen ? wiggleDefault(clip, chosen.prop) : 1;
+  const amt = amount ?? amt0;
   return (
     <Section id="animation" title="animation">
       <div className="props-stat">
@@ -67,7 +70,7 @@ export const AnimationSection = memo(function AnimationSection({
           type="button"
           className="btn btn-sm"
           disabled={!has}
-          title="remove every keyframe. values stay as they are at the playhead."
+          title="clear keyframes: values stay as they are at the playhead."
           onClick={() => actions().clearKeyframes(id, clamp(usePlayback.getState().time, start, start + duration))}
         >
           <Eraser size={14} />
@@ -75,26 +78,26 @@ export const AnimationSection = memo(function AnimationSection({
         </button>
       </div>
       <div className="props-buttons">
-        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="reverse: play the animation backwards" aria-label="reverse keyframes" onClick={() => reverseKeysAction(id)}>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} {...tip('reverse', { does: 'play the keyframes backwards', off })} aria-label="reverse keyframes" onClick={() => reverseKeysAction(id)}>
           <FlipHorizontal2 size={14} />
         </button>
-        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="fit to clip: stretch the keyframes over the whole clip" aria-label="fit keyframes to the clip" onClick={() => fitKeysAction(id)}>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} {...tip('fit to clip', { does: 'stretch the keyframes over the whole clip', off })} aria-label="fit keyframes to the clip" onClick={() => fitKeysAction(id)}>
           <MoveHorizontal size={14} />
         </button>
-        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="repeat x2: play the animation twice in the same time" aria-label="repeat keyframes twice" onClick={() => repeatKeysAction(id, false)}>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} {...tip('play twice', { does: 'the keyframes play twice in the same time', off })} aria-label="play the keyframes twice" onClick={() => repeatKeysAction(id, false)}>
           <Repeat size={14} />
         </button>
-        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="ping pong: play it forward, then backward, in the same time" aria-label="repeat keyframes as ping pong" onClick={() => repeatKeysAction(id, true)}>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} {...tip('ping pong', { does: 'forward, then backward, in the same time', off })} aria-label="repeat keyframes as ping pong" onClick={() => repeatKeysAction(id, true)}>
           <ArrowLeftRight size={14} />
         </button>
-        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} title="copy keys" aria-label="copy keyframes" onClick={() => copyKeysAction(id)}>
+        <button type="button" className="icon-btn icon-btn-sm" disabled={!has} {...tip('copy keyframes', { off })} aria-label="copy keyframes" onClick={() => copyKeysAction(id)}>
           <Copy size={14} />
         </button>
         <button
           type="button"
           className="icon-btn icon-btn-sm"
           disabled={!copied}
-          title={copied ? 'paste keys: the first key lands on the playhead' : 'copy keys first'}
+          {...tip('paste keyframes', { does: 'the first keyframe lands on the playhead', off: copied ? null : 'copy keyframes first' })}
           aria-label="paste keyframes"
           onClick={() => pasteKeysAction(id)}
         >
@@ -114,10 +117,10 @@ export const AnimationSection = memo(function AnimationSection({
             }}
           />
           <Row label="amount" title="how far it strays from the value at the playhead">
-            <NumberField value={amt} min={0} step={1} precision={2} title="amount" onChange={setAmount} />
+            <FeelField local feel={wiggleFeel(amt0)} value={amt} title="amount" onChange={setAmount} />
           </Row>
-          <Row label="per second" title="keys per second: higher is faster and jumpier">
-            <NumberField value={perSecond} min={1} max={12} step={1} title="keys per second" onChange={setPerSecond} />
+          <Row label="per second" title="keyframes per second: higher is faster and jumpier">
+            <FeelField local feel="wigglePerSecond" value={perSecond} title="keyframes per second" onChange={setPerSecond} />
           </Row>
           <div className="props-buttons">
             <button
@@ -169,7 +172,7 @@ const LookTargetRow = memo(function LookTargetRow({ id, target }: { id: string; 
     <>
       <ParentSelect
         label="which clip"
-        title="the clip this one keeps facing"
+        title="the clip this one looks at"
         value={target ?? ''}
         current={picked}
         build={build}
@@ -177,7 +180,7 @@ const LookTargetRow = memo(function LookTargetRow({ id, target }: { id: string; 
       />
       {target && picked !== null ? (
         <div className="props-stat">
-          <button type="button" className="btn btn-sm" title="select the clip this one faces" onClick={() => actions().select([target])}>
+          <button type="button" className="btn btn-sm" title="select the clip this one looks at" onClick={() => actions().select([target])}>
             {picked}
           </button>
         </div>
@@ -258,13 +261,13 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
       <PlaceRow id={id} />
       {threeD ? (
         <>
-          <AnimField wide id={id} prop="z" label="depth" title="depth: how far away from the viewer (px)" suffix="px" step={1} precision={0} />
-          <AnimField wide id={id} prop="rotX" label="tilt" title="tilt: lean the top edge away or toward you (degrees)" suffix="deg" step={1} precision={1} />
-          <AnimField wide id={id} prop="rotY" label="turn" title="turn: face left or right (degrees)" suffix="deg" step={1} precision={1} />
+          <AnimField wide id={id} prop="z" label="depth" title="depth: how far away from the viewer (px)" feel="z" />
+          <AnimField wide id={id} prop="rotX" label="tilt" title="tilt: lean the top edge away or toward you (degrees)" feel="rotX" />
+          <AnimField wide id={id} prop="rotY" label="turn" title="turn: look left or right (degrees)" feel="rotY" />
           <SelectRow
             wide
             label="look at"
-            title="make this clip face the camera or another clip"
+            title="keep this clip turned to the camera or another clip"
             value={lookAt}
             options={LOOK_AT}
             onChange={(v) => patchClip(id, v === 'clip' ? { lookAt: v } : { lookAt: v, lookTarget: null })}
@@ -279,16 +282,16 @@ export const ThreeDSection = memo(function ThreeDSection({ id, threeD, lookAt, l
             onChange={(v) => actions().updateClip(id, { shape: v as Shape3D })}
           />
           {shape !== 'plane' && shape !== 'sphere' ? (
-            <AnimField wide id={id} prop="shapeDepth" label="thickness" title="thickness of the shape (px)" suffix="px" min={1} max={10000} step={1} precision={0} fallback={defaultDepth} />
+            <AnimField wide id={id} prop="shapeDepth" label="thickness" title="thickness of the shape (px)" feel="shapeDepth" fallback={defaultDepth} />
           ) : null}
           {shape !== 'plane' ? (
-            <AnimField wide id={id} prop="scaleZ" label="scale z" title="stretch the depth only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
+            <AnimField wide id={id} prop="scaleZ" label="scale z" title="stretch the depth only, on top of scale (%)" feel="scaleZ" />
           ) : null}
           <Row label="lit" title="shade this clip with the light of the scene (project, light). it only darkens or tints: in a dark scene the clip gets darker" wide>
             <Switch checked={lit} title="lit on or off" onChange={(on) => setLit(id, on)} />
           </Row>
           {lit ? (
-            <AnimField wide slider id={id} prop="lit" label="how lit" title="how much the light changes this clip (%). 0 = as it is. lower it when the clip gets too dark" scale={100} suffix="%" min={0} max={100} step={1} precision={0} />
+            <AnimField wide id={id} prop="lit" label="how lit" title="how much the light changes this clip (%). 0 = as it is. lower it when the clip gets too dark" feel="lit" />
           ) : null}
           {faceNames(shape).length > 0 ? <FacesSection id={id} shape={shape} /> : null}
         </>
@@ -336,7 +339,7 @@ const CameraMoves = memo(function CameraMoves({ id }: { id: string }) {
         <button
           type="button"
           className="btn btn-sm"
-          title="remove every keyframe of the camera. values stay as they are at the playhead."
+          title="clear the keyframes of the camera: values stay as they are at the playhead."
           disabled={!animated}
           onClick={() => {
             const c = actions().project?.clips.find((k) => k.id === id);
@@ -380,25 +383,13 @@ function CameraTarget({ id, target }: { id: string; target: string | null }) {
 export const CameraSection = memo(function CameraSection({ id, target }: { id: string; target: string | null }) {
   return (
     <Section id="camera" title="camera">
-      <AnimField wide id={id} prop="x" label="move right" title="move the camera right (px)" suffix="px" step={1} precision={0} />
-      <AnimField wide id={id} prop="y" label="move down" title="move the camera down (px)" suffix="px" step={1} precision={0} />
-      <AnimField wide id={id} prop="z" label="move forward" title="move the camera forward, into the scene (px)" suffix="px" step={1} precision={0} />
-      <AnimField wide id={id} prop="pan" label="pan" title="pan: look left or right (degrees)" suffix="deg" step={1} precision={1} />
-      <AnimField wide id={id} prop="tilt" label="tilt" title="tilt: look up or down (degrees)" suffix="deg" step={1} precision={1} />
-      <AnimField wide id={id} prop="roll" label="roll" title="roll: turn the picture clockwise (degrees)" suffix="deg" step={1} precision={1} />
-      <AnimField
-        wide
-        slider
-        id={id}
-        prop="fov"
-        label="field of view"
-        title="field of view in degrees. smaller zooms in."
-        suffix="deg"
-        min={5}
-        max={150}
-        step={1}
-        precision={0}
-      />
+      <AnimField wide id={id} prop="x" label="move right" title="move the camera right (px)" feel="x" />
+      <AnimField wide id={id} prop="y" label="move down" title="move the camera down (px)" feel="y" />
+      <AnimField wide id={id} prop="z" label="move forward" title="move the camera forward, into the scene (px)" feel="cameraZ" />
+      <AnimField wide id={id} prop="pan" label="pan" title="pan: look left or right (degrees)" feel="pan" />
+      <AnimField wide id={id} prop="tilt" label="tilt" title="tilt: look up or down (degrees)" feel="cameraTilt" />
+      <AnimField wide id={id} prop="roll" label="roll" title="roll: rotate the picture clockwise (degrees)" feel="roll" />
+      <AnimField wide id={id} prop="fov" label="field of view" title="field of view in degrees. smaller zooms in." feel="fov" />
       <CameraTarget id={id} target={target} />
       <div className="props-hint">the camera keeps this clip centered. pan and tilt add an offset.</div>
       <div className="props-hint">the camera for every 3d clip while this clip is active</div>

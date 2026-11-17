@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Crosshair, Ellipsis, Italic, Maximize, Minimize, RotateCcw, SquareDashed, Strikethrough, Underline } from 'lucide-react';
 import { getClipBox } from '../../engine/draw';
+import { pivotOffset } from '../../engine/pivot';
 import { FontPicker } from '../fonts/FontPicker';
 import { isAnimated, resolveClip } from '../../lib/anim';
 import { formatTimecode } from '../../lib/time';
@@ -10,9 +10,15 @@ import { useAsset, useClip, useEditor } from '../../store/editorStore';
 import type { ClipMove } from '../../store/editorStore';
 import { applyFollowerSpans, followBase, markFollowGesture } from '../timeline/followApply';
 import { withFollowerMovesFrom } from '../timeline/followMoves';
-import type { Clip, MediaKind, TextAlign, VisualClip } from '../../types';
-import { DEFAULT_TRANSFORM, MAX_SPEED, MIN_CLIP_DURATION, MIN_SPEED, isTimedClip, isVisualClip } from '../../types';
+import { useUi } from '../../store/ui';
+import { tip } from '../shell/tip';
+import { openClipMenuAt } from '../timeline/commands';
+import type { Clip, MediaKind, Project, TextAlign, Transform, VisualClip } from '../../types';
+import { DEFAULT_TRANSFORM, isTimedClip, isVisualClip } from '../../types';
 import { AnimField, InspectedClip } from './AnimField';
+import { BendSection } from './BendSection';
+import { PivotRow } from './PivotRow';
+import { FeelContext, useCanvasFeelCtx } from './feelContext';
 import { AlignButtons } from './AlignButtons';
 import { ClipEffectsSection } from './ClipEffectsSection';
 import { EffectSection } from './EffectSection';
@@ -35,8 +41,9 @@ import { RepeatSection } from './RepeatSection';
 import { TextAnimSection, TextStyleSection } from './TextStyle';
 import { TransitionSection } from './TransitionSection';
 import { setValuesNow } from './animEdit';
-import { ColorField, Pair, Row, Section } from './controls';
+import { ColorField, FeelField, Pair, Row, Section } from './controls';
 import { beginEdit, liveOpts } from './edit';
+import { handFocusTo, takesFocus } from './focusHandoff';
 import { STRETCH_REST, coverScale, thicknessAtRest } from './shapeLogic';
 import { InspectorTabs, rememberTab, rememberedTab } from './TabBar';
 import { onTab, resolveTab, sectionsOf, tabsFor } from './clipTabs';
@@ -102,14 +109,11 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
       </Row>
       <Row label="timing" title="start and duration in seconds">
         <Pair>
-          <NumberField
+          <FeelField
             label="in"
-            suffix="s"
+            feel="clipIn"
             title="start on the timeline (seconds)"
             value={start}
-            min={0}
-            step={0.05}
-            precision={2}
             onStart={beginFollowEdit}
             onChange={(v) => {
               // a rejected move leaves the store untouched, so the field falls back to the real value
@@ -118,18 +122,19 @@ const ClipSection = memo(function ClipSection({ id, trackId, name, start, durati
               const moves: ClipMove[] = [{ id, trackId, start: v }];
               const base = followBase(st.project);
               actions().moveClips(st.project && base ? withFollowerMovesFrom(base.clips, st.project.clips, st.project.tracks, moves) : moves, liveOpts());
+              return useEditor.getState().project?.clips.find((c) => c.id === id)?.start ?? v;
             }}
           />
-          <NumberField
+          <FeelField
             label="len"
-            suffix="s"
+            feel="clipLen"
             title="duration (seconds)"
             value={duration}
-            min={MIN_CLIP_DURATION}
-            step={0.05}
-            precision={2}
             onStart={beginFollowEdit}
-            onChange={(v) => trimWithEffects(id, start + v)}
+            onChange={(v) => {
+              trimWithEffects(id, start + v);
+              return useEditor.getState().project?.clips.find((c) => c.id === id)?.duration ?? v;
+            }}
           />
         </Pair>
       </Row>
@@ -154,8 +159,29 @@ function clipNow<T extends Clip>(clip: T): T {
 
 /* ---------- transform ---------- */
 
+/** x / y that put the picture's middle where 0 0 puts the position: the pivot's step from the middle at the new pose. 0 0 without a pivot */
+function centeredXY(p: Project, now: VisualClip, over: Partial<Transform>): { x: number; y: number } {
+  if (!now.pivot) return { x: 0, y: 0 };
+  const clip = { ...now, transform: { ...now.transform, ...over } } as VisualClip;
+  const box = getClipBox(p, clip);
+  const o = pivotOffset(clip.transform, !!clip.threeD, box.px ?? 0, box.py ?? 0);
+  return { x: Math.round(o[0] * 100) / 100, y: Math.round(o[1] * 100) / 100 };
+}
+
+/** centeredXY for the clip as it is right now in the store (0 0 when it is not a picture clip) */
+function centeredNow(id: string, over: Partial<Transform>): { x: number; y: number } {
+  const p = actions().project;
+  const clip = p?.clips.find((c) => c.id === id);
+  if (!p || !clip || !isVisualClip(clip)) return { x: 0, y: 0 };
+  return centeredXY(p, clipNow(clip), over);
+}
+
 const TransformSection = memo(function TransformSection({ id }: { id: string }) {
   const ids = useMemo(() => [id], [id]);
+  const hasPivot = useEditor((s) => {
+    const c = s.project?.clips.find((k) => k.id === id);
+    return !!c && isVisualClip(c) && !!c.pivot;
+  });
   // fill: scale so the clip's box (media, text or shape) covers the whole canvas
   const fill = () => {
     const p = actions().project;
@@ -164,25 +190,47 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
     // the clip as it is right now: a keyed size or text size changes its box
     const now = clipNow(clip);
     const box = getClipBox(p, now);
-    setValuesNow(id, { x: 0, y: 0, scale: coverScale(now.transform.scale, box.width, box.height, p.width, p.height) });
+    const scale = coverScale(now.transform.scale, box.width, box.height, p.width, p.height);
+    setValuesNow(id, { ...centeredXY(p, now, { scale }), scale });
+  };
+  const fit = () => {
+    const over = { scale: 1, ...STRETCH_REST };
+    setValuesNow(id, { ...centeredNow(id, over), ...over });
+  };
+  const reset = () => {
+    const over = { scale: DEFAULT_TRANSFORM.scale, ...STRETCH_REST, rotation: 0 };
+    setValuesNow(id, { ...centeredNow(id, over), ...over, opacity: 1 });
   };
 
   return (
     <Section id="transform" title="transform">
-      <AnimField id={id} prop="x" label="pos x" title="x offset from the canvas center (px)" suffix="px" step={1} precision={0} />
-      <AnimField id={id} prop="y" label="pos y" title="y offset from the canvas center (px)" suffix="px" step={1} precision={0} />
-      <AnimField id={id} prop="scale" label="scale" title="scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
-      <AnimField id={id} prop="scaleX" label="scale x" title="stretch the width only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
-      <AnimField id={id} prop="scaleY" label="scale y" title="stretch the height only, on top of scale (%)" scale={100} suffix="%" min={1} max={1000} step={1} precision={0} />
-      <AnimField id={id} prop="rotation" label="rotation" title="rotation (degrees)" suffix="deg" min={-3600} max={3600} step={1} precision={1} />
-      <AnimField id={id} prop="opacity" label="opacity" title="opacity (%)" scale={100} suffix="%" min={0} max={100} step={1} precision={0} slider />
+      <AnimField
+        id={id}
+        prop="x"
+        label="pos x"
+        title={hasPivot ? 'x of the pivot from the canvas center (px)' : 'x offset from the canvas center (px)'}
+        feel="x"
+      />
+      <AnimField
+        id={id}
+        prop="y"
+        label="pos y"
+        title={hasPivot ? 'y of the pivot from the canvas center (px)' : 'y offset from the canvas center (px)'}
+        feel="y"
+      />
+      <AnimField id={id} prop="scale" label="scale" title="scale (%)" feel="scale" />
+      <AnimField id={id} prop="scaleX" label="scale x" title="stretch the width only, on top of scale (%)" feel="scaleX" />
+      <AnimField id={id} prop="scaleY" label="scale y" title="stretch the height only, on top of scale (%)" feel="scaleY" />
+      <AnimField id={id} prop="rotation" label="rotation" title="rotation (degrees)" feel="rotation" />
+      <PivotRow id={id} />
+      <AnimField id={id} prop="opacity" label="opacity" title="opacity (%)" feel="opacity" />
       <AlignButtons ids={ids} />
       <div className="props-buttons">
-        <button type="button" className="btn btn-sm" title="center on the canvas" onClick={() => setValuesNow(id, { x: 0, y: 0 })}>
+        <button type="button" className="btn btn-sm" title="center on the canvas" onClick={() => setValuesNow(id, centeredNow(id, {}))}>
           <Crosshair size={14} />
           center
         </button>
-        <button type="button" className="btn btn-sm" title="scale 100%, no stretch, centered" onClick={() => setValuesNow(id, { x: 0, y: 0, scale: 1, ...STRETCH_REST })}>
+        <button type="button" className="btn btn-sm" title="scale 100%, no stretch, centered" onClick={fit}>
           <Minimize size={14} />
           fit
         </button>
@@ -190,12 +238,7 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
           <Maximize size={14} />
           fill
         </button>
-        <button
-          type="button"
-          className="btn btn-sm"
-          title="reset the transform"
-          onClick={() => setValuesNow(id, { x: 0, y: 0, scale: DEFAULT_TRANSFORM.scale, ...STRETCH_REST, rotation: 0, opacity: 1 })}
-        >
+        <button type="button" className="btn btn-sm" title="reset the transform" onClick={reset}>
           <RotateCcw size={14} />
           reset
         </button>
@@ -209,8 +252,8 @@ const TransformSection = memo(function TransformSection({ id }: { id: string }) 
 const AudioSection = memo(function AudioSection({ id, muted }: { id: string; muted: boolean }) {
   return (
     <Section id="audio" title="audio">
-      <AnimField id={id} prop="volume" label="volume" title="volume (%)" scale={100} suffix="%" min={0} max={200} step={1} precision={0} slider />
-      <Row label="mute" title="silence this clip">
+      <AnimField id={id} prop="volume" label="volume" title="volume (%)" feel="volume" />
+      <Row label="mute" title="mute this clip: no sound from it">
         <input
           type="checkbox"
           className="checkbox"
@@ -231,17 +274,16 @@ const SpeedSection = memo(function SpeedSection({ id, speed }: { id: string; spe
   return (
     <Section id="speed" title="speed">
       <Row label="speed" title="playback speed">
-        <NumberField
-          className="props-num-wide"
-          suffix="x"
+        <FeelField
+          feel="speed"
           title="playback speed (0.25 to 4)"
           value={speed}
-          min={MIN_SPEED}
-          max={MAX_SPEED}
-          step={0.05}
-          precision={2}
           onStart={beginFollowEdit}
-          onChange={(v) => setSpeedWithEffects(id, v, true)}
+          onChange={(v) => {
+            setSpeedWithEffects(id, v, true);
+            const kept = useEditor.getState().project?.clips.find((c) => c.id === id);
+            return kept && 'speed' in kept ? kept.speed : v;
+          }}
         />
       </Row>
       <div className="props-buttons">
@@ -282,29 +324,29 @@ const FadeSection = memo(function FadeSection({
     <Section id="fades" title="fades">
       <Row label="fade" title="fade in and fade out in seconds">
         <Pair>
-          <NumberField
+          <FeelField
             label="in"
-            suffix="s"
+            feel="fade"
             title="fade in (seconds)"
             value={fadeIn}
-            min={0}
             max={duration}
-            step={0.1}
-            precision={2}
-            onStart={beginEdit}
-            onChange={(v) => actions().updateClip(id, { fadeIn: v }, liveOpts())}
+            soft={[0, Math.min(duration, 5)]}
+            onChange={(v) => {
+              actions().updateClip(id, { fadeIn: v }, liveOpts());
+              return useEditor.getState().project?.clips.find((c) => c.id === id)?.fadeIn ?? v;
+            }}
           />
-          <NumberField
+          <FeelField
             label="out"
-            suffix="s"
+            feel="fade"
             title="fade out (seconds)"
             value={fadeOut}
-            min={0}
             max={duration}
-            step={0.1}
-            precision={2}
-            onStart={beginEdit}
-            onChange={(v) => actions().updateClip(id, { fadeOut: v }, liveOpts())}
+            soft={[0, Math.min(duration, 5)]}
+            onChange={(v) => {
+              actions().updateClip(id, { fadeOut: v }, liveOpts());
+              return useEditor.getState().project?.clips.find((c) => c.id === id)?.fadeOut ?? v;
+            }}
           />
         </Pair>
       </Row>
@@ -350,7 +392,7 @@ const TextSection = memo(function TextSection({ id, text, fontFamily, fontSize, 
       <Row label="font" title="font family">
         <FontPicker value={fontFamily} onChange={(f) => actions().updateClip(id, { fontFamily: f })} />
       </Row>
-      <AnimField id={id} prop="fontSize" label="size" title="font size in canvas pixels" suffix="px" min={4} max={1000} step={1} precision={0} />
+      <AnimField id={id} prop="fontSize" label="size" title="font size in canvas pixels" feel="fontSize" />
       <Row label="style" title="bold, italic, underline, strike, hollow and alignment">
         <div className="props-seg">
           <button
@@ -457,6 +499,7 @@ export function ClipInspector({ id }: { id: string }) {
   // an effect, camera or sound clip only has an "attach" section while it is linked to something
   const linked = useEditor((s) => !!clip && !!s.project && hasLinks(s.project, clip));
   const body = useRef<HTMLDivElement>(null);
+  const feelCtx = useCanvasFeelCtx();
   if (!clip) {
     return (
       <section className="panel props-panel">
@@ -490,9 +533,31 @@ export function ClipInspector({ id }: { id: string }) {
           {clip.name || typeLabel(clip)}
         </span>
         <span className="props-tag">{typeLabel(clip)}</span>
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost"
+          ref={takesFocus('project')}
+          onClick={() => {
+            handFocusTo('back');
+            useUi.getState().showProjectPanel(true);
+          }}
+          {...tip('project', { does: 'canvas, sky, fog and light. the selection stays' })}
+        >
+          project
+        </button>
+        <button
+          type="button"
+          className="icon-btn icon-btn-sm"
+          aria-label="clip menu"
+          onClick={(e) => openClipMenuAt(e.currentTarget, clip.id)}
+          {...tip('clip menu', { does: 'the right click menu of this clip', keys: 'clip-menu' })}
+        >
+          <Ellipsis size={14} />
+        </button>
       </div>
       <InspectorTabs tabs={tabs} active={tab} onPick={pick} />
       <div className="panel-body" ref={body}>
+        <FeelContext.Provider value={feelCtx}>
         <InspectedClip.Provider value={clip}>
         {isVisualClip(clip) ? <OnSidesNote id={clip.id} /> : null}
         {show('clip') ? (
@@ -549,6 +614,7 @@ export function ClipInspector({ id }: { id: string }) {
             lit={clip.lit != null || isAnimated(clip, 'lit')}
           />
         ) : null}
+        {show('bend') && isVisualClip(clip) ? <BendSection clip={clip} /> : null}
         {show('path') && isVisualClip(clip) ? <PathSection id={clip.id} /> : null}
         {show('repeat') && isVisualClip(clip) ? <RepeatSection id={clip.id} /> : null}
         {show('attach') ? <LinksSection clip={clip} /> : null}
@@ -567,6 +633,7 @@ export function ClipInspector({ id }: { id: string }) {
           />
         ) : null}
         </InspectedClip.Provider>
+        </FeelContext.Provider>
       </div>
     </section>
   );

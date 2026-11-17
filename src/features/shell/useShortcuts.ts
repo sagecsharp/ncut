@@ -32,7 +32,7 @@ export function ownsKey(target: EventTarget | null, key: string): boolean {
   return false;
 }
 
-const PRESSABLE = new Set(['button', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'link', 'summary']);
+const PRESSABLE = new Set(['button', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'menuitemradio', 'menuitemcheckbox', 'link', 'summary']);
 
 /** what kind of pressable thing an element is ('' = none) */
 function pressRole(el: HTMLElement): string {
@@ -49,6 +49,24 @@ function pressRole(el: HTMLElement): string {
   return '';
 }
 
+/**
+ * the browser follows shift+f10 and the menu key with a native contextmenu event: eat the next one, within `ms`.
+ * it covers both orders (keydown or keyup on windows).
+ */
+function armContextMenuSwallow(win: Window, ms = 1000): void {
+  const eat = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    done();
+  };
+  const timer = setTimeout(() => done(), ms);
+  function done() {
+    clearTimeout(timer);
+    win.removeEventListener('contextmenu', eat, true);
+  }
+  win.addEventListener('contextmenu', eat, true);
+}
+
 /** a modal is open: store-driven dialogs or any local Dialog (they render a .dialog-backdrop) */
 const modalOpen = () => usePalette.getState().open || useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop') !== null;
 /** registers the global keyboard shortcuts of the editor. call once from EditorLayout. */
@@ -57,6 +75,8 @@ export function useShortcuts(): void {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
       if (isTypingTarget(e.target)) return;
+      // a focused menu owns its keys: an arrow never steps a frame under it, s never splits under it
+      if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
       if (!e.ctrlKey && !e.metaKey && ownsKey(e.target, e.key)) return;
       // dialogs own the keyboard (they handle escape themselves)
       if (modalOpen()) return;
@@ -74,6 +94,7 @@ export function useShortcuts(): void {
       }
       e.preventDefault();
       shortcut.run();
+      if (shortcut.id === 'clip-menu') armContextMenuSwallow(window);
     };
 
     // a focused button would otherwise "click" on space keyup after we handled keydown

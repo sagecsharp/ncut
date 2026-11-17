@@ -27,7 +27,7 @@ export const SplitButtons = memo(function SplitButtons({ ids }: { ids: string[] 
 
   return (
     <>
-      <Row label="split" title="split screen: every selected clip gets a part of the frame, upright and still. pictures are cropped to fit (this replaces their crop).">
+      <Row wide label="split screen" title="split screen: every selected clip gets a part of the frame, upright and still. pictures are cropped to fit (this replaces their crop).">
         <div className="props-seg">
           {KINDS.map(({ kind, icon: Icon, title }) => (
             <button key={kind} type="button" className="icon-btn" title={title} aria-label={title} disabled={off} onClick={() => splitScreen(ids, kind, gap)}>
@@ -36,7 +36,7 @@ export const SplitButtons = memo(function SplitButtons({ ids }: { ids: string[] 
           ))}
         </div>
       </Row>
-      <SliderRow label="gap" title="space between the parts of the split screen (px). click a layout again to apply it." value={gap} min={0} max={80} suffix="px" disabled={off} onChange={setGap} />
+      <SliderRow label="gap" title="space between the parts of the split screen (px). click a layout again to apply it." value={gap} feel="splitGap" local disabled={off} onChange={setGap} />
     </>
   );
 });

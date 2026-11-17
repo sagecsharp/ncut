@@ -7,6 +7,7 @@
  */
 import { SHAPES_3D } from '../../types';
 import type { Shape3D } from '../../types';
+import { BEND_STEPS } from './bend';
 import { isOutlineShape, outlineFor } from './outline2d';
 import type { OutlineKind } from './outline2d';
 
@@ -95,6 +96,30 @@ function plane(): MeshArrays {
   b.vert(0.5, 0.5, 0, 1, 1, 0, 0, -1);
   b.vert(-0.5, 0.5, 0, 0, 1, 0, 0, -1);
   b.quad(0, 1, 2, 3);
+  return b.done();
+}
+
+/**
+ * the mesh of a bent plane: a strip of `steps` columns across the bend axis (0 = x, 1 = y). positions in -0.5..0.5 like
+ * plane(), uv 0..1, normal (0, 0, -1), wound like plane(). the bent vertex shader rolls it (bend.ts BEND_GLSL).
+ */
+export function bendStrip(axis: 0 | 1, steps = BEND_STEPS): MeshArrays {
+  const b = new Builder();
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps;
+    if (axis === 0) {
+      b.vert(u - 0.5, -0.5, 0, u, 0, 0, 0, -1);
+      b.vert(u - 0.5, 0.5, 0, u, 1, 0, 0, -1);
+    } else {
+      b.vert(-0.5, u - 0.5, 0, 0, u, 0, 0, -1);
+      b.vert(0.5, u - 0.5, 0, 1, u, 0, 0, -1);
+    }
+  }
+  for (let i = 0; i < steps; i++) {
+    const a = i * 2;
+    if (axis === 0) b.quad(a, a + 2, a + 3, a + 1);
+    else b.quad(a, a + 1, a + 3, a + 2);
+  }
   return b.done();
 }
 

@@ -1,4 +1,6 @@
+import { getClipBox } from '../../engine/draw';
 import { reparentTransform } from '../../engine/parent';
+import { pivotOf } from '../../engine/pivot';
 import { glyphLayout, measureText } from '../../engine/text';
 import type { TextGlyph } from '../../engine/text';
 import { clamp } from '../../lib/time';
@@ -7,6 +9,7 @@ import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { isCameraClip, isVisualClip } from '../../types';
 import type { TextClip } from '../../types';
+import { resolveShown } from '../preview/attached';
 import { hasAnimatedPose } from './parentOptions';
 import { MAX_PIECES, keepsBackground, middlePiece, modeBlocker, pieceClip, splitBlocker, splitNotes, splitPlan } from './textSplit';
 import type { SplitMode, SplitPlan } from './textSplit';
@@ -63,7 +66,12 @@ export function splitText(id: string, mode: SplitMode): number {
   // offsets are worked out with the clip's scale / spin at the playhead (held inside the clip)
   const time = clamp(usePlayback.getState().time, clip.start, clip.start + clip.duration);
   const effectIds = p.clips.filter((c) => c.type === 'effect' && c.target === id).map((c) => c.id);
-  const pieces = plan.pieces.map((pc) => pieceClip(clip, pc, mode, time));
+  // a pivoted text sits by its pivot: the pieces are counted from there (pivot step from the middle at scale 1)
+  const shown = resolveShown(clip, time);
+  const m = clip.pivot ? measureText(shown) : null;
+  const rest = m ? { x: pivotOf(clip).x * m.width, y: pivotOf(clip).y * m.height } : undefined;
+  const box = getClipBox(p, shown);
+  const pieces = plan.pieces.map((pc) => pieceClip(clip, pc, mode, time, { box, pivotRest: rest }));
   const mates = clip.group ? p.clips.filter((c) => c.group === clip.group && c.id !== id).map((c) => c.id) : [];
 
   // what hangs on the original: attached clips (they keep their place), look targets and camera targets
@@ -112,7 +120,7 @@ export function splitText(id: string, mode: SplitMode): number {
         // inside the old box comes off x / y (off every key, or off the plain value)
         const kf = { ...(kid.keyframes ?? {}) };
         const tr = { ...kid.transform };
-        for (const [prop, d] of [['x', -anchor.cx], ['y', -anchor.cy]] as const) {
+        for (const [prop, d] of [['x', -(anchor.cx - (rest?.x ?? 0))], ['y', -(anchor.cy - (rest?.y ?? 0))]] as const) {
           const keys = kf[prop];
           if (keys && keys.length > 0) kf[prop] = keys.map((k) => ({ ...k, v: k.v + d }));
           else tr[prop] = (tr[prop] ?? 0) + d;

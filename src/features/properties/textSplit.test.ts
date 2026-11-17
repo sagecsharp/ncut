@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createTextClip } from '../../lib/factory';
-import { MAX_PIECES, layoutGlyphsFrom, pieceClip, pieceTransform, splitBlocker, splitPlan } from './textSplit';
+import { MAX_PIECES, layoutGlyphsFrom, pieceBend, pieceClip, pieceTransform, splitBlocker, splitPlan } from './textSplit';
 import type { PieceBase } from './textSplit';
 
 /** a straight layout: every letter 10 wide, lines 20 apart, "ab cd" then "ef" */
@@ -225,5 +225,77 @@ describe('splitBlocker', () => {
     expect(splitBlocker({ counter: { from: 0, to: 9, decimals: 0 } })).toMatch(/running number/);
     expect(splitBlocker({ highlight: { color: '#fff', mode: 'word' } })).toMatch(/karaoke/);
     expect(splitBlocker({})).toBeNull();
+  });
+});
+
+describe('pieceClip, bend and pivot', () => {
+  const bentText = () => ({ ...createTextClip('v', 0, { text: 'abc' }), bend: { angle: 90, center: 0.1 }, pivot: { x: 0.5, y: 0 } });
+
+  it('pieceClip with a box gives each piece the text bend with its own center', () => {
+    const clip = bentText();
+    const out = pieceClip(clip, { text: 'b', cx: 100, cy: 0, rot: 0 }, 'letters', 0, { box: { width: 400, height: 80 } });
+    // the text bends over its own 400 px: the flat line sits 40 px right of the middle, the piece middle at 100
+    expect(out.bend!.angle).toBe(90);
+    expect(out.bend!.span).toBe(400);
+    expect(out.bend!.center).toBeCloseTo((40 - 100) / 400);
+    expect(out.pivot).toBeUndefined();
+    // a text that is scaled keeps the same tube: the offset counts in the text's own px
+    const big = pieceClip({ ...clip, transform: { ...clip.transform, scale: 2 } }, { text: 'b', cx: 100, cy: 0, rot: 0 }, 'letters', 0, {
+      box: { width: 800, height: 160 },
+    });
+    expect(big.bend!.span).toBe(800);
+    expect(big.bend!.center).toBeCloseTo((80 - 200) / 800);
+    // a bent height uses the y offset and the box height
+    const tall = pieceClip({ ...clip, bend: { angle: 30, along: 'height', span: 500 } }, { text: 'b', cx: 100, cy: 50, rot: 0 }, 'letters', 0, {
+      box: { width: 400, height: 80 },
+    });
+    expect(tall.bend).toEqual({ angle: 30, along: 'height', span: 500, center: -50 / 500 });
+  });
+
+  it('pieceClip without a box drops the bend', () => {
+    const out = pieceClip(bentText(), { text: 'b', cx: 100, cy: 0, rot: 0 }, 'letters', 0);
+    expect('bend' in out).toBe(false);
+    expect('pivot' in out).toBe(false);
+  });
+
+  it('a bend that is only keyed gives the pieces the tube, or no keys without a box', () => {
+    const keys = { 'bend.angle': [{ t: 0, v: 0, ease: 'linear' as const }, { t: 2, v: 180, ease: 'linear' as const }] };
+    const clip = { ...bentText(), keyframes: keys };
+    const { bend: _b, ...plain } = clip;
+    void _b;
+    const withBox = pieceClip(plain as typeof clip, { text: 'b', cx: 100, cy: 0, rot: 0 }, 'letters', 0, { box: { width: 600, height: 100 } });
+    expect(withBox.bend?.span).toBe(600);
+    expect(withBox.keyframes?.['bend.angle']).toHaveLength(2);
+    const noBox = pieceClip(plain as typeof clip, { text: 'b', cx: 100, cy: 0, rot: 0 }, 'letters', 0);
+    expect('bend' in noBox).toBe(false);
+    expect(noBox.keyframes).toBeUndefined();
+  });
+
+  it('a flat line past the tube grows span and angle together', () => {
+    const b = pieceBend({ angle: 90, center: 0.8 }, 600, { cx: -250, cy: 0 }, 1, 1, 1);
+    expect(Math.abs(b.center!)).toBeLessThanOrEqual(1);
+    expect(b.span).toBeCloseTo(730);
+    expect(b.angle).toBeCloseTo((90 * 730) / 600);
+    // flat line at -250 + 730 = 480 of the 600 row, the same place
+    expect(b.center).toBe(1);
+  });
+
+  it('pieces of a pivoted text sit where the letters were, without a pivot', () => {
+    const clip = { ...createTextClip('v', 0, { text: 'abc', transform: { x: 100, y: 50, scale: 1, rotation: 0, opacity: 1 } }), pivot: { x: 0.5, y: 0 } };
+    // the pivot is the right edge of a 200 px wide text: 100 px right of the middle. x / y says where that pivot is.
+    // a letter 30 px right of the middle is 70 px left of the pivot
+    const out = pieceClip(clip, { text: 'b', cx: 30, cy: 0, rot: 0 }, 'letters', 0, { pivotRest: { x: 100, y: 0 } });
+    expect(out.transform.x).toBeCloseTo(100 - 70);
+    expect(out.transform.y).toBeCloseTo(50);
+    expect(out.pivot).toBeUndefined();
+    // turned 90 degrees: the same step turns with it
+    const turned = pieceClip({ ...clip, transform: { ...clip.transform, rotation: 90 } }, { text: 'b', cx: 30, cy: 0, rot: 0 }, 'letters', 0, {
+      pivotRest: { x: 100, y: 0 },
+    });
+    expect(turned.transform.x).toBeCloseTo(100);
+    expect(turned.transform.y).toBeCloseTo(50 - 70);
+    // pieceTransform counts from the pivot too
+    const t = pieceTransform({ ...clip, pivotRest: { x: 100, y: 0 } }, { cx: 100, cy: 0, rot: 0 }, 0);
+    expect(t.transform.x).toBeCloseTo(100);
   });
 });

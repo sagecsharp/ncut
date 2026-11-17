@@ -87,6 +87,7 @@ export function clipBrief(clip: Clip): Record<string, unknown> {
   if ('threeD' in clip && clip.threeD) out.threeD = true;
   if ('shape' in clip && clip.shape && clip.shape !== 'plane') out.shape3d = clip.shape;
   if ('parent' in clip && clip.parent) out.parent = clip.parent;
+  if ('pivot' in clip && clip.pivot) out.pivot = clip.pivot;
   if (clip.keyframes && Object.keys(clip.keyframes).length > 0) out.keyed = Object.keys(clip.keyframes);
   if (clip.group) out.group = clip.group;
   return out;

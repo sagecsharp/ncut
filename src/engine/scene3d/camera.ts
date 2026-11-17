@@ -135,6 +135,17 @@ export function homeEye(projectWidth: number, projectHeight: number): Vec3 {
   return [projectWidth / 2, projectHeight / 2, -homeDistance(projectHeight)];
 }
 
+let homeKey = '';
+let homeValue: CameraRig | null = null;
+/** the rig of the home camera (DEFAULT_CAMERA) for a canvas size: the canvas plane z = 0 maps 1:1. cached for the last size */
+export function homeRig(width: number, height: number): CameraRig {
+  const key = `${width}x${height}`;
+  if (homeValue && homeKey === key) return homeValue;
+  homeValue = cameraRig(DEFAULT_CAMERA, width, height);
+  homeKey = key;
+  return homeValue;
+}
+
 /** how many camera targets are being worked out inside each other right now (see cameraTargetCenter) */
 let aiming = 0;
 

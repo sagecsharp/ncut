@@ -18,12 +18,14 @@ import type {
   AudioClip,
   CameraClip,
   Clip,
+  ClipBend,
   Easing,
   EffectClip,
   ImageClip,
   Keyframe,
   Keyframes,
   MediaAsset,
+  Pivot,
   Project,
   ShapeClip,
   TextClip,
@@ -48,6 +50,8 @@ import {
 } from '../lib/factory';
 import { getEffect } from '../engine/effects/registry';
 import { hasKeyedPose, reparentTransform } from '../engine/parent';
+import { normalizePivot, samePivot } from '../engine/pivot';
+import { parseBend } from '../engine/scene3d/bend';
 import {
   KEY_EPS,
   animProps,
@@ -88,9 +92,24 @@ export const MIN_ZOOM = 4;
 export const MAX_ZOOM = 600;
 export const DEFAULT_ZOOM = 80;
 
+/** one clip's bend write (setBends). keys: undefined = keep the bend.angle keys, null = remove them, a list = these (clip-local seconds) */
+export interface BendWrite {
+  id: string;
+  bend: ClipBend | null;
+  keys?: readonly Keyframe[] | null;
+}
+
 export interface ActionOpts {
   /** do not record an undo step for this change */
   skipHistory?: boolean;
+}
+
+/** one edit of setClipValues. time is a timeline time, value in stored units */
+export interface ClipValueEdit {
+  id: string;
+  prop: string;
+  time: number;
+  value: number;
 }
 
 type LockedKeys = 'id' | 'type' | 'trackId' | 'start' | 'duration' | 'trimStart' | 'speed';
@@ -124,6 +143,8 @@ const SPATIAL_KEYS = [
   'chromaKey',
   'mask',
   'lookTarget',
+  'bend',
+  'pivot',
 ] as const;
 const OPTIONAL_CLIP_KEYS: Record<string, readonly string[]> = {
   video: [...SPATIAL_KEYS, 'bpm', 'beatOffset'],
@@ -252,6 +273,12 @@ export interface EditorState {
    * values are clamped to the property's range.
    */
   setClipValue(id: string, prop: string, time: number, value: number, opts?: ActionOpts): void;
+  /**
+   * setClipValue for many clips in ONE store update (one undo step, one notify): the multi inspector's drags.
+   * each time is clamped into its clip. per edit the same rules as setClipValue (clampProp, a key when the prop has
+   * keys, the base value otherwise). locked, missing and unchanged edits are skipped. nothing changed: no step.
+   */
+  setClipValues(edits: readonly ClipValueEdit[], opts?: ActionOpts): void;
   /** add a key holding the current value at `time`, or remove the key that is already there */
   toggleKeyframe(id: string, prop: string, time: number, opts?: ActionOpts): void;
   /** add or update a key at `time`. value defaults to the current value there. */
@@ -275,6 +302,8 @@ export interface EditorState {
   setEffectParam(id: string, key: string, value: number, opts?: ActionOpts): void;
   /** patch editable fields (name, volume, transform, text props, effect amount, fades...). */
   updateClip(id: string, patch: ClipPatch, opts?: ActionOpts): void;
+  /** set the bend (and the bend.angle keys) of several clips as one change. null takes the bend off. one undo step unless skipHistory */
+  setBends(list: readonly BendWrite[], opts?: ActionOpts): void;
   /** shallow-merge into the clip transform (visual clips only) */
   updateTransform(id: string, patch: Partial<Transform>, opts?: ActionOpts): void;
   /**
@@ -535,6 +564,18 @@ function clampProp(clip: Clip, prop: string, value: number): number | null {
   return info.int ? Math.round(v) : v;
 }
 
+/** setClipValue for one clip: the new clip, or null for "nothing to do" (locked track, no such prop, same value) */
+function valueEdit(p: Project, clip: Clip, prop: string, time: number, value: number): Clip | null {
+  if (isLocked(p, clip.trackId) || !Number.isFinite(value)) return null;
+  if (baseValue(clip, prop) === undefined && !prop.startsWith('p.') && !isSeedable(clip, prop)) return null;
+  const v = clampProp(clip, prop, value);
+  if (v === null) return null;
+  if (valueAt(clip, prop, time) === v && (!isAnimated(clip, prop) || keyIndexAt(clip.keyframes![prop]!, time - clip.start) >= 0)) {
+    return null;
+  }
+  return withValueAt(clip, prop, time, v);
+}
+
 /** the value a property has when nothing is stored for it (effect params fall back to the effect default) */
 function propDefault(clip: Clip, prop: string): number | undefined {
   if (clip.type === 'effect' && prop.startsWith('p.')) {
@@ -576,6 +617,28 @@ export function removeClipsKeepingPose(p: Project, gone: ReadonlySet<string>): C
   });
   // the sides that showed a removed clip go back to the solid's own picture (in the same step, so one undo restores both)
   return remapSides(unlinkRemoved(placed, gone), (id) => (gone.has(id) ? null : undefined));
+}
+
+/** the keyframes without the bend.angle row (undefined when nothing is left) */
+function withoutBendKeys(kf: Keyframes | undefined): Keyframes | undefined {
+  if (!kf) return undefined;
+  const { 'bend.angle': _drop, ...rest } = kf;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+/** bend.angle keys for setBends: finite t and v only, the angle clamped, sorted by t */
+function cleanBendKeys(keys: readonly Keyframe[]): Keyframe[] {
+  const out: Keyframe[] = [];
+  for (const k of keys) {
+    if (!k || !Number.isFinite(k.t) || !Number.isFinite(k.v)) continue;
+    out.push({ t: k.t, v: clamp(k.v, -360, 360), ease: k.ease ?? 'ease' });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+function sameClipBend(a: ClipBend | null | undefined, b: ClipBend | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.angle === b.angle && a.along === b.along && a.center === b.center && a.span === b.span;
 }
 
 function sameKeyframes(a: Keyframes | undefined, b: Keyframes | undefined): boolean {
@@ -965,14 +1028,29 @@ export const useEditor = create<EditorState>()((set, get) => {
     setClipValue(id, prop, time, value, opts) {
       mutate((p) => {
         const clip = p.clips.find((c) => c.id === id);
-        if (!clip || isLocked(p, clip.trackId) || !Number.isFinite(value)) return null;
-        if (baseValue(clip, prop) === undefined && !prop.startsWith('p.') && !isSeedable(clip, prop)) return null;
-        const v = clampProp(clip, prop, value);
-        if (v === null) return null;
-        if (valueAt(clip, prop, time) === v && (!isAnimated(clip, prop) || keyIndexAt(clip.keyframes![prop]!, time - clip.start) >= 0)) {
-          return null;
+        if (!clip) return null;
+        const next = valueEdit(p, clip, prop, time, value);
+        return next ? replaceClip(p, next) : null;
+      }, opts);
+    },
+    setClipValues(edits, opts) {
+      mutate((p) => {
+        const index = new Map<string, number>();
+        p.clips.forEach((c, i) => {
+          if (!index.has(c.id)) index.set(c.id, i);
+        });
+        let clips: Clip[] | null = null;
+        for (const e of edits) {
+          const i = index.get(e.id);
+          if (i === undefined) continue;
+          const clip = (clips ?? p.clips)[i]!;
+          const t = clamp(e.time, clip.start, clip.start + clip.duration);
+          const next = valueEdit(p, clip, e.prop, t, e.value);
+          if (!next) continue;
+          if (!clips) clips = p.clips.slice();
+          clips[i] = next;
         }
-        return replaceClip(p, withValueAt(clip, prop, time, v));
+        return clips ? { ...p, clips } : null;
       }, opts);
     },
     toggleKeyframe(id, prop, time, opts) {
@@ -1092,6 +1170,36 @@ export const useEditor = create<EditorState>()((set, get) => {
               continue;
             }
           }
+          // a pivot is cleaned to { x, y } in range or nothing at all, and compared by value. the middle = no field
+          // (a saved project stays as it was before the feature)
+          if (key === 'pivot') {
+            value = normalizePivot(value);
+            if (samePivot(next.pivot as Pivot | null | undefined, value as Pivot | null)) continue;
+            if (value === null) {
+              delete next.pivot;
+              changed = true;
+              continue;
+            }
+          }
+          // a bend is cleaned like setBends does. null takes the field and its keys off. an equal bend is no change
+          if (key === 'bend') {
+            const clean = value === null ? null : parseBend(value);
+            if (clean === null) {
+              if ('bend' in next) {
+                delete next.bend;
+                changed = true;
+              }
+              if ((clip.keyframes?.['bend.angle']?.length ?? 0) > 0) {
+                const kf = withoutBendKeys(clip.keyframes);
+                if (kf) next.keyframes = kf;
+                else delete next.keyframes;
+                changed = true;
+              }
+              continue;
+            }
+            if (sameClipBend(next.bend as ClipBend | null | undefined, clean)) continue;
+            value = clean;
+          }
           // the sides of a solid: no fill left = no field (the saved project stays as it was before the feature)
           if (key === 'faces' && (value === null || typeof value !== 'object' || Object.keys(value as object).length === 0)) {
             if (key in next) {
@@ -1114,6 +1222,35 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (typeof next.volume === 'number') next.volume = clamp(next.volume as number, 0, 2);
         if (clip.type === 'effect' && typeof next.amount === 'number') next.amount = clamp(next.amount as number, 0, 1);
         return replaceClip(p, clampFades(next as unknown as Clip));
+      }, opts);
+    },
+    setBends(list, opts) {
+      mutate((p) => {
+        const byId = new Map(list.map((w) => [w.id, w]));
+        let any = false;
+        const clips = p.clips.map((c) => {
+          const w = byId.get(c.id);
+          if (!w || !isVisualClip(c) || isLocked(p, c.trackId)) return c;
+          const bend = w.bend === null ? null : parseBend(w.bend);
+          let keys: Keyframe[] | undefined | null = undefined;
+          if (w.keys === null) keys = null;
+          else if (w.keys) keys = cleanBendKeys(w.keys);
+          const sameB = bend === null ? !c.bend : sameClipBend(c.bend, bend);
+          let kf = c.keyframes;
+          if (keys === null) kf = withoutBendKeys(c.keyframes);
+          else if (keys && keys.length > 0) kf = { ...(c.keyframes ?? {}), 'bend.angle': keys };
+          else if (keys) kf = withoutBendKeys(c.keyframes);
+          const sameK = sameKeyframes(c.keyframes, kf);
+          if (sameB && sameK) return c;
+          any = true;
+          const next: Record<string, unknown> = { ...c };
+          if (bend === null) delete next.bend;
+          else next.bend = bend;
+          if (kf) next.keyframes = kf;
+          else delete next.keyframes;
+          return next as unknown as Clip;
+        });
+        return any ? { ...p, clips } : null;
       }, opts);
     },
     replaceClipAsset(id, assetId, opts) {

@@ -1,7 +1,7 @@
 import { ArrowLeftRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Dialog } from '../../components/ui/Dialog';
-import { NumberField } from '../../components/ui/NumberField';
+import { SliderField } from '../../components/ui/SliderField';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
 import { useEditor } from '../../store/editorStore';
 import { AppSettings } from './AppSettings';
@@ -123,7 +123,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
       <div className="field">
         <span className="field-label">canvas size</span>
         <div className="shell-settings-size">
-          <NumberField label="w" suffix="px" value={width} min={MIN_SIDE} max={MAX_SIDE} onChange={setWidth} title="canvas width" />
+          <SliderField label="w" suffix="px" value={width} min={MIN_SIDE} max={MAX_SIDE} step={1} perPx={2} snap={10} onStart={() => undefined} onChange={setWidth} title="canvas width" ariaLabel="canvas width" />
  <button
             className="icon-btn"
             title="swap width and height"
@@ -135,7 +135,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
           >
             <ArrowLeftRight size={14} />
           </button>
-          <NumberField label="h" suffix="px" value={height} min={MIN_SIDE} max={MAX_SIDE} onChange={setHeight} title="canvas height" />
+          <SliderField label="h" suffix="px" value={height} min={MIN_SIDE} max={MAX_SIDE} step={1} perPx={2} snap={10} onStart={() => undefined} onChange={setHeight} title="canvas height" ariaLabel="canvas height" />
         </div>
       </div>
 

@@ -58,12 +58,13 @@ for (const on of ['video', 'image', 'text', 'shape'] as const) {
     ROWS.push({ prop: 'adjust.' + a, on, missing: 'neutral', neutral: 0, to: 0.5, range: [lo, hi] });
   }
   for (const a of ['tolerance', 'softness', 'spill']) ROWS.push({ prop: 'chromaKey.' + a, on, withParent: { chromaKey: KEY } as Partial<Clip>, missing: 'none', to: 0.7, range: [0, 1] });
-  for (const [a, lo, hi] of [['x', -1, 1], ['y', -1, 1], ['width', 0, 2], ['height', 0, 2], ['rotation', -180, 180], ['feather', 0, 1]] as const) {
+  for (const [a, lo, hi] of [['x', -1, 1], ['y', -1, 1], ['width', 0, 3], ['height', 0, 3], ['rotation', -360, 360], ['feather', 0, 1]] as const) {
     ROWS.push({ prop: 'mask.' + a, on, withParent: { mask: MASK } as Partial<Clip>, missing: 'none', to: 0.5, range: [lo, hi] });
   }
   ROWS.push({ prop: 'mask.radius', on, withParent: { mask: MASK } as Partial<Clip>, missing: 'none', neutral: 0, to: 0.5, range: [0, 1] });
   ROWS.push({ prop: 'shapeDepth', on, missing: 'n/a', to: 300, range: [1, 10000] });
   ROWS.push({ prop: 'lit', on, missing: 'n/a', neutral: 0, to: 0.6, range: [0, 1] });
+  ROWS.push({ prop: 'bend.angle', on, missing: 'neutral', neutral: 0, to: 90, range: [-360, 360] });
 }
 const TXT = { color: '#000', width: 0.08 };
 const textRows: Row[] = [
@@ -326,5 +327,24 @@ describe('animatesPicture', () => {
   it('keys of something that is switched off do not count (no mask: the picture is the plain one)', () => {
     expect(animatesPicture(video({ keyframes: { 'mask.x': [k(0, 0), k(1, 0.5)] } }))).toBe(false);
     expect(animatesPicture(video({ mask: null, keyframes: { 'mask.width': [k(0, 0)] } }))).toBe(false);
+  });
+});
+
+describe('bend.angle keys', () => {
+  it('bend.angle keys resolve into clip.bend.angle', () => {
+    const keys = { 'bend.angle': [k(0, 0), k(2, 90)] };
+    // the clip type has no bend field yet in every branch, so the clip is built with a plain cast
+    for (const make of [video, image, text, shape] as const) {
+      const flat = make({ keyframes: keys } as never) as unknown as { bend?: { angle: number } };
+      expect(flat.bend).toBeUndefined();
+      const r = resolveClip(flat as unknown as Clip, 3) as unknown as { bend?: { angle: number } };
+      expect(r.bend?.angle).toBeCloseTo(45, 9);
+      const withBend = make({ bend: { angle: 10, along: 'x', center: 0.2, span: 300 }, keyframes: keys } as never);
+      const r2 = resolveClip(withBend, 3) as unknown as { bend: { angle: number; along: string; center: number; span: number } };
+      expect(r2.bend.angle).toBeCloseTo(45, 9);
+      expect(r2.bend.along).toBe('x');
+      expect(r2.bend.center).toBe(0.2);
+      expect(r2.bend.span).toBe(300);
+    }
   });
 });

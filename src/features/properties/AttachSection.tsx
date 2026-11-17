@@ -1,11 +1,12 @@
 import { memo, useCallback, useMemo } from 'react';
-import { Link2Off, Ungroup } from 'lucide-react';
+import { LocateFixed, Ungroup, Unlink } from 'lucide-react';
 import { childrenOf, parentOf } from '../../lib/links';
 import { useEditor } from '../../store/editorStore';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
 import { Row, Section, useSelectOpen } from './controls';
 import { attachClips } from './attachActions';
+import { pivotWhereTheyMeet } from './pivotActions';
 import { hasAnimatedPose, parentOptions } from './parentOptions';
 import type { ParentOption } from './parentOptions';
 import { closedModel, currentLabel, openModel } from './selectModel';
@@ -110,7 +111,7 @@ export const LinksSection = memo(function LinksSection({ clip }: { clip: Clip })
         <>
           <ParentSelect
             label="attach to"
-            title="follow another clip or a camera: it moves, turns and scales with it"
+            title="attach to another clip or a camera: it moves, rotates and scales with it. to rotate at the spot where they meet, set its pivot"
             value={parent ? parent.id : ''}
             current={parentLabel}
             build={build}
@@ -122,13 +123,26 @@ export const LinksSection = memo(function LinksSection({ clip }: { clip: Clip })
                 {parentName}
               </button>
               <button type="button" className="btn btn-sm" title="detach from it, the clip stays where it is" onClick={() => attachClips([id], null)}>
-                <Link2Off size={14} />
+                <Unlink size={14} />
                 detach
               </button>
             </div>
           ) : null}
+          {parent && isVisualClip(parent) ? (
+            <div className="props-buttons">
+              <button
+                type="button"
+                className="btn btn-sm"
+                title={`put the pivot where this clip meets ${parentName}: the corner, edge or middle nearest to it. it stays where it is`}
+                onClick={() => pivotWhereTheyMeet(id)}
+              >
+                <LocateFixed size={14} />
+                pivot where they meet
+              </button>
+            </div>
+          ) : null}
           {parent && hasAnimatedPose(clip) ? (
-            <div className="props-hint">animated values now move relative to the new parent</div>
+            <div className="props-hint">animated values now move relative to the clip it is attached to</div>
           ) : null}
         </>
       ) : null}
@@ -150,7 +164,7 @@ export const LinksSection = memo(function LinksSection({ clip }: { clip: Clip })
       {groupSize >= 2 ? (
         <div className="props-stat">
           <span className="props-hint">in a group of {groupSize}</span>
-          <button type="button" className="btn btn-sm" title="split the group, the clips stay as they are" onClick={() => actions().ungroupClips([id])}>
+          <button type="button" className="btn btn-sm" title="ungroup: the clips stay where they are" onClick={() => actions().ungroupClips([id])}>
             <Ungroup size={14} />
             ungroup
           </button>

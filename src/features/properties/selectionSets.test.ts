@@ -3,7 +3,7 @@ import type { Clip, Project, Track } from '../../types';
 import { isVisualClip } from '../../types';
 import { alignableClips } from './alignActions';
 import { arrangeTargets } from './arrange3d';
-import { alignCounts, anyGrouped, arrangeCounts, firstVisual, sharedParent, visualIdsOf } from './selectionSets';
+import { alignCounts, anyGrouped, arrangeCounts, firstVisual, offsetTargets, sharedParent, visualIdsOf } from './selectionSets';
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -67,5 +67,31 @@ describe('selection counts match the array based originals', () => {
     expect(sharedParent(undefined, new Set(['a']))).toBeNull();
     expect(anyGrouped(undefined, ['a'])).toBe(false);
     expect(firstVisual(undefined, new Set(['a']))).toBeUndefined();
+  });
+});
+
+describe('offsetTargets', () => {
+  const pic = (id: string, parent?: string): Clip => ({ id, trackId: 't0', type: 'image', assetId: 'a', start: 0, duration: 2, name: id, fadeIn: 0, fadeOut: 0, transform: tf, parent }) as unknown as Clip;
+  const audio = { id: 'au', trackId: 't1', type: 'audio', assetId: 'a', start: 0, duration: 2, name: 'au', fadeIn: 0, fadeOut: 0 } as unknown as Clip;
+
+  it('offsetTargets leaves out a child of a selected parent for x', () => {
+    const clips = [pic('a'), pic('b', 'a'), pic('c')];
+    expect(offsetTargets(clips, ['a', 'b', 'c'], 'x')).toEqual(['a', 'c']);
+    expect(offsetTargets(clips, ['b', 'c'], 'x')).toEqual(['b', 'c']);
+  });
+  it('offsetTargets leaves out a grandchild too', () => {
+    const clips = [pic('a'), pic('b', 'a'), pic('c', 'b')];
+    expect(offsetTargets(clips, ['a', 'c'], 'rotation')).toEqual(['a']);
+  });
+  it('offsetTargets keeps every clip for opacity', () => {
+    const clips = [pic('a'), pic('b', 'a'), audio];
+    expect(offsetTargets(clips, ['a', 'b'], 'opacity')).toEqual(['a', 'b']);
+    expect(offsetTargets(clips, ['a', 'missing', 'au'], 'opacity')).toEqual(['a', 'au']);
+  });
+  it('offsetTargets ends on a parent loop', () => {
+    const clips = [pic('a', 'b'), pic('b', 'a'), pic('c')];
+    const out = offsetTargets(clips, ['a', 'b', 'c'], 'x');
+    expect(out).toContain('c');
+    expect(out.length).toBeLessThanOrEqual(3);
   });
 });

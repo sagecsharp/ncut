@@ -29,11 +29,11 @@ describe('inspector tabs', () => {
 
   it('"all" keeps the old order', () => {
     expect(sectionsOf('text', false)).toEqual([
-      'clip', 'animation', 'beat-sync', 'text', 'text-style', 'text-anim', 'transform', 'threed', 'path', 'repeat',
+      'clip', 'animation', 'beat-sync', 'text', 'text-style', 'text-anim', 'transform', 'threed', 'bend', 'path', 'repeat',
       'attach', 'look', 'color', 'mask', 'clip-effects', 'motion', 'transition', 'fades',
     ]);
     expect(sectionsOf('video', true)).toEqual([
-      'clip', 'animation', 'beat-sync', 'transform', 'threed', 'path', 'repeat', 'attach', 'look', 'color', 'mask',
+      'clip', 'animation', 'beat-sync', 'transform', 'threed', 'bend', 'path', 'repeat', 'attach', 'look', 'color', 'mask',
       'clip-effects', 'motion', 'transition', 'audio', 'tempo', 'speed', 'fades',
     ]);
   });
@@ -49,27 +49,57 @@ describe('inspector tabs', () => {
     expect(tabsFor(sectionsOf('image', false))).toEqual(['basic', 'look', 'animate', 'all']);
     expect(tabsFor(sectionsOf('text', false))).toEqual(['basic', 'look', 'animate', 'all']);
     expect(tabsFor(sectionsOf('shape', false))).toEqual(['basic', 'look', 'animate', 'all']);
-    expect(tabsFor(sectionsOf('audio', true))).toEqual(['basic', 'look', 'animate', 'sound', 'all']);
-    expect(tabsFor(sectionsOf('effect', false))).toEqual(['basic', 'look', 'animate', 'all']);
-    expect(tabsFor(sectionsOf('camera', false))).toEqual(['basic', 'look', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('audio', true))).toEqual(['basic', 'animate', 'sound', 'all']);
+    expect(tabsFor(sectionsOf('effect', false))).toEqual(['basic', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('camera', false))).toEqual(['basic', 'animate', 'all']);
   });
 
-  it('a clip that is not a picture has no look tab unless it is linked to something', () => {
+  it('a clip that is not a picture has no look tab', () => {
     expect(tabsFor(sectionsOf('effect', false, false))).toEqual(['basic', 'animate', 'all']);
     expect(tabsFor(sectionsOf('camera', false, false))).toEqual(['basic', 'animate', 'all']);
     expect(tabsFor(sectionsOf('audio', true, false))).toEqual(['basic', 'animate', 'sound', 'all']);
-    expect(tabsFor(sectionsOf('effect', false, true))).toEqual(['basic', 'look', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('effect', false, true))).toEqual(['basic', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('camera', false, true))).toEqual(['basic', 'animate', 'all']);
+    expect(tabsFor(sectionsOf('audio', true, true))).toEqual(['basic', 'animate', 'sound', 'all']);
     // a picture can always be attached
     expect(sectionsOf('image', false, false)).toContain('attach');
   });
 
   it('puts the main sections where they belong', () => {
-    expect(sectionsOf('effect', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'effect', 'effect-beat', 'fades']);
-    expect(sectionsOf('camera', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'camera', 'focus', 'fades']);
+    expect(sectionsOf('effect', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'effect', 'effect-beat', 'attach', 'fades']);
+    expect(sectionsOf('camera', false).filter((s) => TAB_OF[s] === 'basic')).toEqual(['clip', 'camera', 'focus', 'attach', 'fades']);
     expect(sectionsOf('text', false).filter((s) => TAB_OF[s] === 'look')).toEqual([
-      'text-style', 'threed', 'attach', 'look', 'color', 'mask', 'clip-effects',
+      'text-style', 'threed', 'bend', 'look', 'color', 'mask', 'clip-effects',
     ]);
     expect(sectionsOf('video', true).filter((s) => TAB_OF[s] === 'sound')).toEqual(['audio', 'tempo']);
+  });
+
+  it('attach sits on basic right after transform', () => {
+    for (const type of ['video', 'image', 'text', 'shape'] as const) {
+      const basic = sectionsOf(type, false).filter((s) => TAB_OF[s] === 'basic');
+      expect(basic[basic.indexOf('transform') + 1], type).toBe('attach');
+    }
+  });
+
+  it('the tab titles name their sections', () => {
+    const title = (id: InspectorTab) => INSPECTOR_TABS.find((t) => t.id === id)!.title;
+    expect(title('basic')).toContain('attach');
+    expect(title('look')).not.toContain('links');
+    expect(title('look')).not.toContain('attach');
+    expect(title('look')).toContain('bend');
+  });
+
+  it('bend comes right after threed, on the look tab', () => {
+    expect(SECTION_ORDER[SECTION_ORDER.indexOf('threed') + 1]).toBe('bend');
+    expect(TAB_OF.bend).toBe('look');
+  });
+
+  it('bend is on the look tab of every picture clip', () => {
+    for (const type of ['video', 'image', 'text', 'shape'] as const) {
+      expect(sectionsOf(type, false), type).toContain('bend');
+      expect(tabsFor(sectionsOf(type, false)), type).toContain('look');
+    }
+    for (const type of ['audio', 'effect', 'camera'] as const) expect(sectionsOf(type, true), type).not.toContain('bend');
   });
 
   it('the tab list has unique ids and "all" last', () => {

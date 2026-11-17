@@ -1,22 +1,51 @@
-import { useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { ChevronDown, ChevronRight, Pipette } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
-import { beginEdit, isHex, toColorInput } from './edit';
+import { SliderField, type SliderSource } from '../../components/ui/SliderField';
+import { beginEdit, cancelEdit, endEdit, isHex, toColorInput } from './edit';
+import { FEEL, resolveFeel, type FeelEntry, type FeelKey, type FeelOverride } from './fieldFeel';
+import { useFeelCtx } from './feelContext';
+import { SECTION_TIPS } from './sectionTips';
+import { useUi } from '../../store/ui';
+import { tip } from '../shell/tip';
 
 /** remembered per section name while the app is open */
 const openState = new Map<string, boolean>();
 
+/** the last reveal a section handled (n only grows), so a remount never scrolls again */
+let revealHandled = 0;
+
 /** `defaultOpen` (default true) is used until the user has toggled that section */
 export function Section({ id, title, defaultOpen = true, children }: { id: string; title: string; defaultOpen?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(() => openState.get(id) ?? defaultOpen);
+  const head = useRef<HTMLButtonElement>(null);
+  // a number, so only the revealed section re-renders
+  const revealN = useUi((s) => (s.reveal?.id === id ? s.reveal.n : 0));
+  // layout effect: open first, then measure the opened body before paint
+  useLayoutEffect(() => {
+    if (revealN <= revealHandled) return;
+    openState.set(id, true);
+    if (!open) {
+      setOpen(true);
+      return;
+    }
+    revealHandled = revealN;
+    const h = head.current;
+    const body = h?.closest<HTMLElement>('.panel-body');
+    if (h && body) body.scrollTop += h.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    // focus after the scroll event, or the blurb tip is hidden by it
+    requestAnimationFrame(() => head.current?.focus({ preventScroll: true }));
+  }, [revealN, open, id]);
+  const blurb = SECTION_TIPS[id];
+  const headTip = blurb ? tip(title, { does: blurb, side: 'left' }) : { title: open ? `collapse ${title}` : `expand ${title}` };
   return (
     <section className="props-section">
       <button
+        ref={head}
         type="button"
         className="props-section-head"
-        title={open ? `collapse ${title}` : `expand ${title}`}
+        {...headTip}
         aria-expanded={open}
         onClick={() => {
           openState.set(id, !open);
@@ -44,50 +73,101 @@ export function Pair({ children }: { children: ReactNode }) {
   return <div className="props-pair">{children}</div>;
 }
 
-interface SliderRowProps {
+export interface FeelFieldProps extends FeelOverride {
+  feel: FeelKey | FeelEntry;
+  /** shown value. null = mixed */
+  value: number | null;
+  onChange(v: number, source: SliderSource): number | void;
+  /** session values that are not in the store: no undo step; escape writes the start value back */
+  local?: boolean;
+  /** replaces beginEdit (ClipInspector in, len and speed pass beginFollowEdit) */
+  onStart?(): void;
+  /** escape during a drag, after the store edit is cancelled (for values the site keeps in its own state) */
+  onCancel?(): void;
+  /** pointer down, before the drag starts (keyed fields pause playback here) */
+  onPress?(): void;
+  /** inner label (pairs) */
+  label?: string;
+  title: string;
+  ariaLabel?: string;
+  /** default 'props-grow' */
+  className?: string;
+  disabled?: boolean;
+  mixedFrom?: number;
+  dragText?: string | null;
+}
+
+const noop = (): void => undefined;
+
+/** one slider field of the feel table: the number box is the slider */
+export function FeelField(p: FeelFieldProps) {
+  const ctx = useFeelCtx();
+  const f = resolveFeel(typeof p.feel === 'string' ? FEEL[p.feel] : p.feel, ctx, p);
+  return (
+    <SliderField
+      value={p.value}
+      onChange={p.onChange}
+      onStart={p.local ? noop : (p.onStart ?? beginEdit)}
+      onPress={p.onPress}
+      onEnd={p.local ? undefined : endEdit}
+      onCancel={p.local ? undefined : () => {
+        cancelEdit();
+        p.onCancel?.();
+      }}
+      min={f.min}
+      max={f.max}
+      soft={f.soft}
+      step={f.step}
+      precision={f.precision}
+      snap={f.snap}
+      perPx={f.perPx}
+      origin={f.origin}
+      rest={f.rest}
+      mixedFrom={p.mixedFrom}
+      dragText={p.dragText}
+      label={p.label}
+      suffix={f.unit || undefined}
+      disabled={p.disabled}
+      className={p.className ?? 'props-grow'}
+      title={p.title}
+      ariaLabel={p.ariaLabel}
+    />
+  );
+}
+
+interface SliderRowProps extends FeelOverride {
   label: string;
   title: string;
   value: number;
-  min: number;
-  max: number;
-  step?: number;
-  precision?: number;
-  suffix?: string;
+  feel: FeelKey | FeelEntry;
+  wide?: boolean;
   disabled?: boolean;
+  local?: boolean;
+  /** runs after the store edit has begun, at the start of a drag */
+  onStart?(): void;
+  onCancel?(): void;
   onChange: (v: number) => void;
 }
 
-/** .range slider + number field bound to the same value */
-export function SliderRow({ label, title, value, min, max, step = 1, precision = 0, suffix, disabled, onChange }: SliderRowProps) {
+/** a label row with one slider field */
+export function SliderRow({ label, title, value, feel, wide, disabled, local, onChange, onStart, onCancel, ...over }: SliderRowProps) {
   return (
-    <Row label={label} title={title}>
-      <input
-        type="range"
-        className="range props-range"
-        title={title}
-        min={min}
-        max={max}
-        step={step}
-        disabled={disabled}
-        value={Math.min(max, Math.max(min, value))}
-        onPointerDown={beginEdit}
-        onKeyDown={(e) => {
-          if (!e.repeat) beginEdit();
-        }}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <NumberField
-        className="props-num"
+    <Row label={label} title={title} wide={wide}>
+      <FeelField
+        feel={feel}
+        {...over}
+        className="props-grow"
+        ariaLabel={label}
         title={title}
         value={value}
-        min={min}
-        max={max}
-        step={step}
-        precision={precision}
-        suffix={suffix}
         disabled={disabled}
-        onStart={beginEdit}
+        local={local}
         onChange={onChange}
+        onStart={onStart ? () => {
+          beginEdit();
+          onStart();
+        } : undefined}
+        onCancel={onCancel}
       />
     </Row>
   );
@@ -170,22 +250,7 @@ export function ColorField({ value, title, disabled, onChange }: ColorFieldProps
   );
 }
 
-/** clear on / off switch: a button that reads "on" or "off" */
-export function Switch({ checked, title, onChange }: { checked: boolean; title: string; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      className={`btn btn-sm props-switch${checked ? ' btn-primary' : ''}`}
-      title={title}
-      aria-label={title}
-      onClick={() => onChange(!checked)}
-    >
-      {checked ? 'on' : 'off'}
-    </button>
-  );
-}
+export { Switch } from '../../components/ui/Switch';
 
 export interface SelectOpenHandlers {
   onPointerDown: () => void;

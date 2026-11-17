@@ -1,11 +1,10 @@
 import { memo, useState } from 'react';
 import { Route, Trash2 } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
 import { useClip } from '../../store/editorStore';
 import { isVisualClip } from '../../types';
-import { Row, Section } from './controls';
+import { FeelField, Row, Section } from './controls';
 import { applyPath, removePath } from './pathActions';
-import { DEFAULT_PATH, MAX_TURNS, MIN_TURNS, PATH_KINDS } from './pathMoves';
+import { DEFAULT_PATH, PATH_KINDS } from './pathMoves';
 import type { PathKind, PathOptions } from './pathMoves';
 import './path.css';
 
@@ -48,10 +47,10 @@ export const PathSection = memo(function PathSection({ id }: { id: string }) {
       </Row>
       <p className="path-hint">{kind.hint}</p>
       <Row label="size" title="how far the path reaches (px)">
-        <NumberField className="props-num path-num" title="how far the path reaches (px)" value={vals.size} min={0} max={5000} step={10} precision={0} suffix="px" onChange={(v) => set({ size: v })} />
+        <FeelField local feel="pathSize" title="how far the path reaches (px)" value={vals.size} onChange={(v) => set({ size: v })} />
       </Row>
       <Row label="laps" title={lapsTitle}>
-        <NumberField className="props-num path-num" title={lapsTitle} value={vals.turns} min={MIN_TURNS} max={MAX_TURNS} step={0.25} precision={2} onChange={(v) => set({ turns: v })} />
+        <FeelField local feel="pathLaps" title={lapsTitle} value={vals.turns} onChange={(v) => set({ turns: v })} />
       </Row>
       <Row label="other way" title="go the other direction">
         <input type="checkbox" className="checkbox" title="go the other direction" checked={vals.reverse} onChange={(e) => set({ reverse: e.target.checked })} />

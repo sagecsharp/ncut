@@ -1,24 +1,30 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { AlignHorizontalJustifyStart, Copy, Flag, Group, Trash2, Ungroup } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
+import { AlignHorizontalJustifyStart, CopyPlus, Ellipsis, Flag, Group, Trash2, Ungroup } from 'lucide-react';
+import { PIVOT_SPOTS, pivotOf, spotOf } from '../../engine/pivot';
 import { useEditor } from '../../store/editorStore';
-import type { ActionOpts } from '../../store/editorStore';
-import { usePlayback } from '../../store/playback';
+import { useUi } from '../../store/ui';
 import { useShallow } from 'zustand/react/shallow';
 import type { Clip } from '../../types';
 import { isVisualClip } from '../../types';
+import { tip } from '../shell/tip';
+import { openClipMenuAt } from '../timeline/commands';
 import { AlignButtons } from './AlignButtons';
 import { ArrangeSection } from './ArrangeSection';
 import { CascadeSection } from './CascadeSection';
 import { SplitButtons } from './SplitButtons';
 import { LookButtons } from './LookSection';
+import { MultiBendSection } from './BendSection';
+import { MultiField } from './MultiField';
+import { PivotDots } from './PivotRow';
+import { setPivotMany } from './pivotActions';
+import { FeelContext, useCanvasFeelCtx } from './feelContext';
 import { ParentSelect } from './AttachSection';
 import { attachClips } from './attachActions';
 import { parentOptions } from './parentOptions';
-import { Pair, Row, Section, SelectRow, SliderRow, Switch } from './controls';
+import { Pair, Row, Section, SelectRow, Switch } from './controls';
+import { handFocusTo, takesFocus } from './focusHandoff';
 import { fitToMarkers, makeRow } from '../timeline/sequenceActions';
 import type { FitSpan } from '../timeline/sequenceActions';
-import { beginEdit, liveOpts } from './edit';
 import { currentLabel } from './selectModel';
 import { anyGrouped, firstVisual, sharedParent, visualIdsOf } from './selectionSets';
 
@@ -34,11 +40,6 @@ interface Summary {
   /** every selected visual clip is 3d */
   allThreeD: boolean;
   audible: number;
-  /** values of the first matching clip, shown as the shared value */
-  opacity: number;
-  volume: number;
-  fadeIn: number;
-  fadeOut: number;
   allMuted: boolean;
   minDuration: number;
 }
@@ -57,32 +58,20 @@ function summarize(ids: string[]): Summary {
     visual: 0,
     allThreeD: true,
     audible: 0,
-    opacity: 1,
-    volume: 1,
-    fadeIn: 0,
-    fadeOut: 0,
     allMuted: true,
     minDuration: Infinity,
   };
   if (!p) return out;
   const set = new Set(ids);
-  let first = true;
   for (const c of p.clips) {
     if (!set.has(c.id)) continue;
     out[c.type] += 1;
     out.minDuration = Math.min(out.minDuration, c.duration);
-    if (first) {
-      out.fadeIn = c.fadeIn;
-      out.fadeOut = c.fadeOut;
-      first = false;
-    }
     if (isVisualClip(c)) {
-      if (out.visual === 0) out.opacity = c.transform.opacity;
       out.visual += 1;
       if (!c.threeD) out.allThreeD = false;
     }
     if (c.type === 'audio' || (c.type === 'video' && (p.assets.find((a) => a.id === c.assetId)?.hasAudio ?? true))) {
-      if (out.audible === 0) out.volume = c.volume;
       out.audible += 1;
       if (!c.muted) out.allMuted = false;
     }
@@ -96,18 +85,22 @@ function targets(ids: string[], pick: (c: ReturnType<typeof getClips>[number]) =
   const set = new Set(ids);
   return getClips().filter((c) => set.has(c.id) && pick(c)).map((c) => c.id);
 }
-/** animatable value for several clips: keyframed clips get a key at the playhead, the others a static value */
-function setAtPlayhead(ids: string[], prop: string, value: number, opts: ActionOpts): void {
-  const st = useEditor.getState();
-  const time = usePlayback.getState().time;
-  for (const id of ids) {
-    const c = st.project?.clips.find((k) => k.id === id);
-    if (!c) continue;
-    st.setClipValue(id, prop, Math.min(c.start + c.duration, Math.max(c.start, time)), value, opts);
-  }
-}
 function getClips() {
   return useEditor.getState().project?.clips ?? [];
+}
+
+/** the spot id all selected picture clips sit on ('' = they differ or there is none) */
+function sharedSpotId(clips: readonly Clip[] | undefined, want: ReadonlySet<string>): string {
+  let id: string | null = null;
+  if (!clips) return '';
+  for (const c of clips) {
+    if (!want.has(c.id) || !isVisualClip(c)) continue;
+    const spot = spotOf(pivotOf(c));
+    if (!spot) return '';
+    if (id === null) id = spot.id;
+    else if (id !== spot.id) return '';
+  }
+  return id ?? '';
 }
 
 /** "attach all to": the picker reads the clips itself (only while open), so the rest of the controls do not re-render with every clip edit */
@@ -128,22 +121,10 @@ function AttachAll({ ids, want }: { ids: string[]; want: ReadonlySet<string> }) 
 }
 
 const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[]; sum: Summary }) {
-  const setOpacity = (v: number) => {
-    const o = liveOpts();
-    setAtPlayhead(targets(ids, isVisualClip), 'opacity', v / 100, o);
-  };
   const setThreeD = (on: boolean) => {
     const st = useEditor.getState();
     st.pushHistory();
     for (const id of targets(ids, isVisualClip)) st.updateClip(id, { threeD: on }, { skipHistory: true });
-  };
-  const setVolume = (v: number) => {
-    const o = liveOpts();
-    setAtPlayhead(targets(ids, (c) => c.type === 'audio' || c.type === 'video'), 'volume', v / 100, o);
-  };
-  const setFade = (key: 'fadeIn' | 'fadeOut', v: number) => {
-    const o = liveOpts();
-    for (const id of ids) useEditor.getState().updateClip(id, { [key]: v }, o);
   };
   const toggleMute = (muted: boolean) => {
     const st = useEditor.getState();
@@ -162,13 +143,39 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
   const seqCount = sum.video + sum.image + sum.audio + sum.text + sum.shape;
   const markerCount = useEditor((s) => s.project?.markers?.length ?? 0);
   const [span, setSpan] = useState<FitSpan>(1);
+  const fadeSoft = useMemo<[number, number]>(() => [0, Math.min(sum.minDuration, 5)], [sum.minDuration]);
 
   const source = useEditor((s) => firstVisual(s.project?.clips, want));
+  // the spot id every selected picture clip shares ('' = they differ): a string, so the selector stays stable
+  const sharedSpot = useEditor((s) => sharedSpotId(s.project?.clips, want));
+  const allSame = PIVOT_SPOTS.find((p) => p.id === sharedSpot) ?? null;
   return (
     <>
       {sum.visual > 0 ? (
+        <Section id="m-transform" title="transform">
+          <MultiField want={want} label="pos x" title="x offset from the canvas center, for every selected clip (px)" feel="x" prop="x" pick={isVisualClip} />
+          <MultiField want={want} label="pos y" title="y offset from the canvas center, for every selected clip (px)" feel="y" prop="y" pick={isVisualClip} />
+          <MultiField want={want} label="scale" title="scale of every selected clip (%)" feel="scale" prop="scale" mode="times" pick={isVisualClip} />
+          <MultiField want={want} label="rotation" title="rotation of every selected clip (degrees)" feel="rotation" prop="rotation" pick={isVisualClip} />
+          <Row label="pivot" title="set the pivot of every selected clip to the same spot of each. none of them moves">
+            <PivotDots value={allSame} onPick={(s) => setPivotMany(visualIds, s)} />
+          </Row>
+          <MultiField want={want} label="opacity" title="opacity of all selected visual clips (%)" feel="opacity" prop="opacity" pick={isVisualClip} />
+          {sum.allThreeD ? (
+            <>
+              <MultiField want={want} wide label="depth" title="depth of every selected 3d clip: how far away from the viewer (px)" feel="z" prop="z" pick={isVisualClip} />
+              <MultiField want={want} wide label="tilt" title="tilt of every selected 3d clip (degrees)" feel="rotX" prop="rotX" pick={isVisualClip} />
+              <MultiField want={want} wide label="turn" title="turn of every selected 3d clip (degrees)" feel="rotY" prop="rotY" pick={isVisualClip} />
+            </>
+          ) : null}
+          <div className="props-hint">
+            a drag moves every clip by the same amount (scale: by the same factor), a typed number sets them all. a clip attached to another selected clip goes
+            with it
+          </div>
+        </Section>
+      ) : null}
+      {sum.visual > 0 ? (
         <Section id="m-visual" title="visual">
-          <SliderRow label="opacity" title="opacity of all selected visual clips (%)" value={sum.opacity * 100} min={0} max={100} suffix="%" onChange={setOpacity} />
           <Row label="3d" title="put all selected visual clips in 3d space or back to flat">
             <Switch checked={sum.allThreeD} title="3d on or off for all selected visual clips" onChange={setThreeD} />
           </Row>
@@ -183,22 +190,32 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
         </Section>
       ) : null}
       {visualIds.length > 1 ? (
+        <Section id="m-bend" title="bend">
+          <MultiBendSection ids={visualIds} />
+        </Section>
+      ) : null}
+      {visualIds.length > 1 ? (
         <Section id="m-arrange" title="arrange in 3d">
           <ArrangeSection ids={ids} />
         </Section>
       ) : null}
       {sum.audible > 0 ? (
         <Section id="m-audio" title="audio">
-          <SliderRow label="volume" title="volume of all selected audio clips (%)" value={sum.volume * 100} min={0} max={200} suffix="%" onChange={setVolume} />
-          <Row label="mute" title="silence all selected audio clips">
+          <MultiField want={want} label="volume" title="volume of all selected audio clips (%)" feel="volume" prop="volume" pick={(c) => c.type === 'audio' || c.type === 'video'} />
+          <Row label="mute" title="mute all selected audio clips">
             <input
               type="checkbox"
               className="checkbox"
-              title="mute all"
+              title="mute all selected audio clips"
               checked={sum.allMuted}
               onChange={(e) => toggleMute(e.target.checked)}
             />
           </Row>
+        </Section>
+      ) : null}
+      {sum.effect > 0 ? (
+        <Section id="m-effects" title="effects">
+          <MultiField want={want} label="strength" title="how strong every selected effect clip is (%)" feel="effectAmount" prop="amount" pick={(c) => c.type === 'effect'} />
         </Section>
       ) : null}
       {seqCount > 1 ? (
@@ -238,30 +255,8 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
       <Section id="m-fades" title="fades">
         <Row label="fade" title="fade in and fade out in seconds">
           <Pair>
-            <NumberField
-              label="in"
-              suffix="s"
-              title="fade in (seconds)"
-              value={sum.fadeIn}
-              min={0}
-              max={sum.minDuration}
-              step={0.1}
-              precision={2}
-              onStart={beginEdit}
-              onChange={(v) => setFade('fadeIn', v)}
-            />
-            <NumberField
-              label="out"
-              suffix="s"
-              title="fade out (seconds)"
-              value={sum.fadeOut}
-              min={0}
-              max={sum.minDuration}
-              step={0.1}
-              precision={2}
-              onStart={beginEdit}
-              onChange={(v) => setFade('fadeOut', v)}
-            />
+            <MultiField want={want} bare label="in" title="fade in (seconds)" feel="fade" prop="fadeIn" soft={fadeSoft} pick={() => true} />
+            <MultiField want={want} bare label="out" title="fade out (seconds)" feel="fade" prop="fadeOut" soft={fadeSoft} pick={() => true} />
           </Pair>
         </Row>
         {sum.effect > 0 ? <div className="props-hint">fades ramp the strength of effect clips</div> : null}
@@ -271,6 +266,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
 });
 
 export function MultiInspector() {
+  const feelCtx = useCanvasFeelCtx();
   const ids = useEditor((s) => s.selection);
   const anyGroup = useEditor((s) => anyGrouped(s.project?.clips, s.selection));
   const sum = useEditor(useShallow((s) => (s.project ? summarize(s.selection) : summarize([]))));
@@ -280,36 +276,59 @@ export function MultiInspector() {
     .join(', ');
 
   return (
-    <section className="panel props-panel">
-      <div className="panel-header">
-        <span className="panel-title">{ids.length} clips selected</span>
-      </div>
-      <div className="panel-body">
-        <div className="props-summary" title="selected clips by type">
-          {parts}
+    <FeelContext.Provider value={feelCtx}>
+      <section className="panel props-panel">
+        <div className="panel-header">
+          <span className="panel-title">{ids.length} clips selected</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            ref={takesFocus('project')}
+          onClick={() => {
+            handFocusTo('back');
+            useUi.getState().showProjectPanel(true);
+          }}
+            {...tip('project', { does: 'canvas, sky, fog and light. the selection stays' })}
+          >
+            project
+          </button>
+          <button
+            type="button"
+            className="icon-btn icon-btn-sm"
+            aria-label="clip menu"
+            onClick={(e) => openClipMenuAt(e.currentTarget, ids[0]!)}
+            {...tip('clip menu', { does: 'the right click menu of this clip', keys: 'clip-menu' })}
+          >
+            <Ellipsis size={14} />
+          </button>
         </div>
-        <div className="props-buttons props-buttons-top">
-          <button type="button" className="btn btn-sm" title="duplicate selected clips" onClick={() => useEditor.getState().duplicateClips(ids)}>
-            <Copy size={14} />
-            duplicate
-          </button>
-          <button type="button" className="btn btn-sm" title="group the selected clips so they move, copy and delete together" onClick={() => useEditor.getState().groupClips(ids)}>
-            <Group size={14} />
-            group
-          </button>
-          {anyGroup ? (
-            <button type="button" className="btn btn-sm" title="split the groups of the selected clips" onClick={() => useEditor.getState().ungroupClips(ids)}>
-              <Ungroup size={14} />
-              ungroup
+        <div className="panel-body">
+          <div className="props-summary" title="selected clips by type">
+            {parts}
+          </div>
+          <div className="props-buttons props-buttons-top">
+            <button type="button" className="btn btn-sm" title="duplicate selected clips" onClick={() => useEditor.getState().duplicateClips(ids)}>
+              <CopyPlus size={14} />
+              duplicate
             </button>
-          ) : null}
-          <button type="button" className="btn btn-sm btn-danger" title="delete selected clips" onClick={() => useEditor.getState().deleteClips(ids)}>
-            <Trash2 size={14} />
-            delete
-          </button>
+            <button type="button" className="btn btn-sm" title="group the selected clips so they move, copy and delete together" onClick={() => useEditor.getState().groupClips(ids)}>
+              <Group size={14} />
+              group
+            </button>
+            {anyGroup ? (
+              <button type="button" className="btn btn-sm" title="ungroup the selected clips" onClick={() => useEditor.getState().ungroupClips(ids)}>
+                <Ungroup size={14} />
+                ungroup
+              </button>
+            ) : null}
+            <button type="button" className="btn btn-sm btn-danger" title="delete selected clips" onClick={() => useEditor.getState().deleteClips(ids)}>
+              <Trash2 size={14} />
+              delete
+            </button>
+          </div>
+          <MultiControls ids={ids} sum={sum} />
         </div>
-        <MultiControls ids={ids} sum={sum} />
-      </div>
-    </section>
+      </section>
+    </FeelContext.Provider>
   );
 }

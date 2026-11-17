@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { Shrink } from 'lucide-react';
 import { useFloatingMenu } from '../timeline/menuBehavior';
+import { tip } from '../shell/tip';
 import { usePreviewView, zoomTo } from './previewView';
 import { percentLabel } from './zoomMath';
 import type { Zoom } from './zoomMath';
@@ -15,7 +16,7 @@ const CHOICES: ReadonlyArray<{ zoom: Zoom; label: string }> = [
 function ZoomMenu({ x, y, onClose }: { x: number; y: number; onClose(): void }) {
   const ref = useRef<HTMLDivElement>(null);
   const zoom = usePreviewView((s) => s.zoom);
-  const pos = useFloatingMenu(ref, x, y, onClose);
+  const pos = useFloatingMenu(ref, x, y, onClose, { focusFirst: true });
   return (
     <div ref={ref} className="menu preview-zoom-menu" style={{ left: pos.x, top: pos.y }} role="menu">
       {CHOICES.map((c) => (
@@ -24,7 +25,7 @@ function ZoomMenu({ x, y, onClose }: { x: number; y: number; onClose(): void }) 
           className="menu-item"
           role="menuitemradio"
           aria-checked={zoom === c.zoom}
-          title={c.zoom === 'fit' ? 'fit the whole picture in the panel' : `show the picture at ${c.label}`}
+          title={c.zoom === 'fit' ? 'fit the whole canvas in the panel' : `show the canvas at ${c.label}`}
           onClick={() => {
             zoomTo(c.zoom);
             onClose();
@@ -49,7 +50,7 @@ export function ZoomControl() {
     <>
       <button
         className={`icon-btn${fitted ? ' is-active' : ''}`}
-        title="fit the whole picture in the panel"
+        {...tip('fit to panel', { does: 'the whole canvas fits the panel' })}
         aria-label="fit to panel"
         aria-pressed={fitted}
         onClick={() => zoomTo('fit')}
@@ -58,7 +59,7 @@ export function ZoomControl() {
       </button>
       <button
         className="btn preview-zoom"
-        title={`zoom ${percentLabel(scale)}: click for sizes, double click to fit. ctrl + wheel zooms, middle drag or space + drag moves`}
+        {...tip(`zoom ${percentLabel(scale)}`, { does: 'click for sizes, double click to fit. ctrl + wheel zooms, middle drag or space + drag moves' })}
         aria-label={`zoom ${percentLabel(scale)}`}
         aria-haspopup="menu"
         aria-expanded={menu !== null}

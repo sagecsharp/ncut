@@ -14,13 +14,34 @@ import { openPalette } from './paletteStore';
 import { nextMarkerTime, prevMarkerTime } from './markerNav';
 import { collectSnapPoints, projectDuration } from '../../lib/timelineOps';
 import { freezeAtPlayhead, groupIdsNow, selectAfterPlayhead, trimToPlayhead, ungroupIdsNow } from '../timeline/actions';
+import { reasonFor, reasonSnapshot, REASON_TEXT } from './reasons';
+import { timelineCommands } from '../timeline/commands';
 
-export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'app';
+export type ShortcutGroup = 'playback' | 'editing' | 'animation' | 'markers' | 'timeline' | 'preview' | 'mouse' | 'fields' | 'app';
 
-export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'preview', 'app'];
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = ['playback', 'editing', 'animation', 'markers', 'timeline', 'preview', 'mouse', 'fields', 'app'];
+
+export const GROUP_LABEL: Readonly<Record<ShortcutGroup, string>> = {
+  playback: 'playback',
+  editing: 'editing',
+  animation: 'keyframes and 3d',
+  markers: 'markers',
+  timeline: 'timeline',
+  preview: 'preview and scene view',
+  mouse: 'mouse',
+  fields: 'fields',
+  app: 'app',
+};
+
+/** the display name of a group id (palette extras use the same ids) */
+export function groupLabel(group: string): string {
+  return (GROUP_LABEL as Readonly<Record<string, string>>)[group] ?? group;
+}
 
 export interface Shortcut {
   id: string;
+  /** old or other words that find this row in search actions and in the ? dialog */
+  also?: readonly string[];
   /** alternatives; each alternative is a list of key caps shown with .kbd */
   keys: readonly (readonly string[])[];
   group: ShortcutGroup;
@@ -107,7 +128,10 @@ function toggleMute(): void {
   const { project, selection, updateClip } = useEditor.getState();
   if (!project) return;
   const targets = project.clips.filter((c): c is TimedClip => selection.includes(c.id) && isTimedClip(c));
-  if (targets.length === 0) return;
+  if (targets.length === 0) {
+    toast(REASON_TEXT.timedFirst);
+    return;
+  }
   const mute = targets.some((c) => !c.muted);
   useEditor.getState().pushHistory();
   for (const c of targets) updateClip(c.id, { muted: mute }, { skipHistory: true });
@@ -171,7 +195,7 @@ function addKeyframes(): void {
     for (const prop of props) jobs.push({ id: c.id, prop });
   }
   if (jobs.length === 0) {
-    toast(outside ? 'move the playhead onto the selected clip first' : 'select a video, image, text or camera clip first');
+    toast(outside ? REASON_TEXT.playheadOnClip : REASON_TEXT.keyTarget);
     return;
   }
   useEditor.getState().pushHistory();
@@ -183,7 +207,7 @@ function toggle3d(): void {
   if (!project) return;
   const targets = project.clips.filter((c) => selection.includes(c.id) && isVisualClip(c));
   if (targets.length === 0) {
-    toast('select a video, image or text clip first');
+    toast(REASON_TEXT.visualFirst);
     return;
   }
   const on = !targets.every((c) => isVisualClip(c) && c.threeD);
@@ -235,6 +259,11 @@ function openExport(): void {
   const project = useEditor.getState().project;
   if (project && project.clips.length > 0) useUi.getState().openDialog('export');
   else toast('add a clip before exporting');
+}
+
+/** rows that only document a mouse move or a number box: shown in the ? dialog, never run */
+function infoRows(group: ShortcutGroup, rows: readonly (readonly [string, readonly (readonly string[])[], string])[]): Shortcut[] {
+  return rows.map(([id, keys, description]) => ({ id, keys, group, description, info: true, match: () => false, run: () => undefined }));
 }
 
 /* ---------- the table ---------- */
@@ -352,7 +381,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
     group: 'editing',
     description: 'split at playhead',
     match: anyOf(byKey('s'), byKey('b', { mod: true })),
-    run: () => useEditor.getState().splitClips(usePlayback.getState().time),
+    run: () => {
+      const r = reasonFor('split', reasonSnapshot());
+      if (r) {
+        toast(r);
+        return;
+      }
+      useEditor.getState().splitClips(usePlayback.getState().time);
+    },
   },
   {
     id: 'delete',
@@ -405,7 +441,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     mutates: true,
     keys: [['ctrl', 'x']],
     group: 'editing',
-    description: 'cut',
+    description: 'cut (copy, then delete)',
     match: byKey('x', { mod: true }),
     run: () => useEditor.getState().cutSelection(),
   },
@@ -529,7 +565,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
     mutates: true,
     keys: [['[']],
     group: 'editing',
-    description: 'cut off the left side: the clip starts at the playhead',
+    description: 'trim start: the clip starts at the playhead',
+    also: ['cut off the left side'],
     match: (e) => byCode('BracketLeft')(e) && notMapped(e),
     run: () => trimToPlayhead('start'),
   },
@@ -538,9 +575,22 @@ export const SHORTCUTS: readonly Shortcut[] = [
     mutates: true,
     keys: [[']']],
     group: 'editing',
-    description: 'cut off the right side: the clip ends at the playhead',
+    description: 'trim end: the clip ends at the playhead',
+    also: ['cut off the right side'],
     match: (e) => byCode('BracketRight')(e) && notMapped(e),
     run: () => trimToPlayhead('end'),
+  },
+  {
+    id: 'clip-menu',
+    keys: [['shift', 'f10'], ['menu']],
+    group: 'editing',
+    description: 'open the clip menu of the selection (like a right click)',
+    match: anyOf(byKey('F10', { shift: true }), byKey('ContextMenu')),
+    run: () => {
+      const r = reasonFor('clip-menu', reasonSnapshot());
+      if (r) toast(r);
+      else timelineCommands.openClipMenu?.({ focusFirst: true });
+    },
   },
 
   // animation and 3d
@@ -660,6 +710,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
       toast(snapping ? 'snapping off' : 'snapping on');
     },
   },
+  {
+    id: 'zoom-fit',
+    keys: [['shift', 'z']],
+    group: 'timeline',
+    description: 'zoom to fit the whole project',
+    match: byKey('z', { shift: true }),
+    run: () => timelineCommands.fit?.(),
+  },
 
   // preview (handled by the preview itself; listed here so the dialog shows them)
   {
@@ -690,6 +748,15 @@ export const SHORTCUTS: readonly Shortcut[] = [
     run: () => undefined,
   },
   {
+    id: 'preview-pivot-done',
+    keys: [['esc']],
+    group: 'preview',
+    description: 'move pivot: done',
+    info: true,
+    match: () => false,
+    run: () => undefined,
+  },
+  {
     id: 'scene-tools',
     keys: [['w'], ['e'], ['r']],
     group: 'preview',
@@ -711,7 +778,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-grab',
     keys: [['g'], ['r'], ['s']],
     group: 'preview',
-    description: 'scene view: move, rotate, scale the selection (pointer over the view). x y z pick the axis, a typed number the amount, click keeps, right click cancels',
+    description: 'scene view, blender controls: move, rotate, scale the selection (pointer over the view). x y z pick the axis, a typed number the amount, click keeps, right click cancels',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -720,7 +787,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-clear',
     keys: [['alt', 'g'], ['alt', 'r'], ['alt', 's']],
     group: 'preview',
-    description: 'scene view: put the position, rotation or scale of the selection back',
+    description: 'scene view, blender controls: put the position, rotation or scale of the selection back',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -729,7 +796,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-copy',
     keys: [['shift', 'd']],
     group: 'preview',
-    description: 'scene view: copy the selection and move the copy',
+    description: 'scene view, blender controls: copy the selection and move the copy',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -738,7 +805,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-delete',
     keys: [['x']],
     group: 'preview',
-    description: 'scene view: delete the selection',
+    description: 'scene view, blender controls: delete the selection',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -747,7 +814,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-select-all',
     keys: [['a'], ['alt', 'a']],
     group: 'preview',
-    description: 'scene view: select everything in the scene, or nothing',
+    description: 'scene view, blender controls: select everything in the scene, or nothing',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -756,7 +823,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-views',
     keys: [['num 1'], ['num 3'], ['num 7'], ['num 0']],
     group: 'preview',
-    description: 'scene view: front, right, top (ctrl: the other side), through the camera. 9 flips, 2 4 6 8 turn, + - zoom',
+    description: 'scene view, blender controls: front, right, top (ctrl: the other side), through the camera. 9 flips, 2 4 6 8 rotate, + - zoom',
     info: true,
     match: () => false,
     run: () => undefined,
@@ -765,20 +832,60 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'scene-frame-all',
     keys: [['home']],
     group: 'preview',
-    description: 'scene view: everything in view',
+    description: 'scene view, blender controls: everything in view',
     info: true,
     match: () => false,
     run: () => undefined,
   },
   {
     id: 'swap-media',
-    keys: [['alt']],
-    group: 'timeline',
-    description: 'hold while dropping media on a clip of the same kind to swap its media',
+    keys: [['alt', 'drop']],
+    group: 'mouse',
+    description: 'drop media on a clip of the same kind: swap its media',
     info: true,
     match: () => false,
     run: () => undefined,
   },
+
+  // mouse and fields (info rows: they document what the mouse and the number boxes do)
+  ...infoRows('mouse', [
+    ['mouse-move', [['drag']], 'a clip: move it. onto the line between two tracks: a new track there'],
+    ['mouse-trim', [['drag']], 'the edge of a clip: trim it (selected clips trim together)'],
+    ['mouse-marquee', [['drag']], 'an empty spot of a track: draw a box to select clips'],
+    ['mouse-add', [['shift', 'click']], 'a clip: add it to the selection'],
+    ['mouse-toggle', [['ctrl', 'click']], 'a clip: add it to the selection or take it out'],
+    ['mouse-one', [['alt', 'click']], 'a clip in a group: select only that clip'],
+    ['mouse-key', [['drag']], 'a keyframe diamond on a clip: move the keyframe'],
+    ['mouse-transition', [['drag']], 'the edge of a transition on a clip: change its length'],
+    ['mouse-menus', [['right click']], 'a clip, a track or the ruler: its menu (the clip menu button in the properties and the track icon open them too)'],
+    ['mouse-ruler', [['click'], ['drag']], 'the ruler: move the playhead'],
+    ['mouse-marker-rename', [['double click']], 'a marker on the ruler: rename it'],
+    ['mouse-track-rename', [['double click']], 'a track name: rename it'],
+    ['mouse-media', [['double click'], ['enter']], 'a media card: add it at the playhead (f2 renames it)'],
+    ['mouse-effect-on', [['alt', 'drop']], 'drop an effect on a clip: put it on that clip only'],
+    ['mouse-tl-zoom', [['ctrl', 'wheel']], 'over the timeline: zoom in or out'],
+    ['mouse-tl-scroll', [['shift', 'wheel']], 'over the timeline: scroll sideways'],
+    ['mouse-pv-zoom', [['ctrl', 'wheel']], 'over the preview: zoom the picture'],
+    ['mouse-pv-pan', [['space', 'drag'], ['middle drag']], 'over a zoomed preview: move the picture'],
+    ['mouse-pv-fit', [['double click']], 'the zoom percent of the preview: fit the picture'],
+    ['mouse-canvas', [['drag']], 'the box of the selected clip in the preview: move it, scale it by a corner, rotate it by the round handle (shift: 15 degree steps)'],
+    [
+      'mouse-pivot',
+      [['drag'], ['alt', 'drag'], ['double click']],
+      'the pivot mark of the selected clip in the preview: drag it to move the pivot, the clip stays where it is. alt: no snapping. double click: back to the middle',
+    ],
+    ['mouse-splitter', [['double click']], 'the line between two panels: back to its default size'],
+  ]),
+  ...infoRows('fields', [
+    ['field-drag', [['drag']], 'a number in the properties: drag it sideways to change it, click it to type (maths like 1920/2 works)'],
+    ['field-fine', [['shift', 'drag']], 'a number in the properties: finer while dragging'],
+    ['field-snap', [['ctrl', 'drag']], 'a number in the properties: round steps while dragging'],
+    ['field-reset', [['double click']], 'a number in the properties: back to its rest value'],
+    ['field-cancel', [['esc']], 'while dragging a number in the properties: put it back'],
+    ['field-arrows', [['↑'], ['↓']], 'a number in the properties: one step up or down (shift: 10 steps)'],
+    ['field-enter', [['enter'], ['esc']], 'while typing a number in the properties: keep the typed value, or go back'],
+    ['field-tabs', [['←'], ['→']], 'on the property tabs: next or previous tab (home, end: first, last)'],
+  ]),
 
   // app
   {
@@ -809,7 +916,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'settings',
     keys: [['ctrl', ',']],
     group: 'app',
-    description: 'project settings',
+    description: 'settings (app and project)',
+    also: ['project settings', 'preferences'],
     match: byCode('Comma', { mod: true }),
     run: () => useUi.getState().openDialog('settings'),
   },

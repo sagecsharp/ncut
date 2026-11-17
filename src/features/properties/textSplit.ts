@@ -5,9 +5,10 @@
 import { curveLayout } from '../../engine/text';
 import { textAnimUnits } from '../../engine/textAnim';
 import type { TextBox, TextGlyph } from '../../engine/text';
+import { BEND_CENTER_MAX } from '../../engine/scene3d/bend';
 import { evalKeys } from '../../lib/anim';
 import { stretchX, stretchY } from '../../types';
-import type { Keyframes, TextClip, Transform } from '../../types';
+import type { ClipBend, Keyframes, TextClip, Transform } from '../../types';
 
 export type SplitMode = 'letters' | 'words' | 'lines';
 
@@ -174,6 +175,8 @@ export interface PieceBase {
   keyframes?: Keyframes;
   /** timeline start of the clip (keyframe times are relative to it) */
   start: number;
+  /** a pivot of the text: its step from the middle at scale 1, px. missing = none */
+  pivotRest?: { x: number; y: number };
 }
 
 export interface PieceTransform {
@@ -233,7 +236,8 @@ function shifted(keys: Keyframes, prop: string, d: number): Keyframes {
  * those are animated too, the pieces are exact at that moment and drift from the original elsewhere.
  */
 export function pieceTransform(base: PieceBase, piece: Pick<SplitPiece, 'cx' | 'cy' | 'rot'>, time: number): PieceTransform {
-  const { dx, dy, dz } = pieceOffset(base, piece, time);
+  // the text sits by its pivot: a piece is counted from there, not from the middle of the box
+  const { dx, dy, dz } = pieceOffset(base, { cx: piece.cx - (base.pivotRest?.x ?? 0), cy: piece.cy - (base.pivotRest?.y ?? 0) }, time);
   const t = base.transform;
   const kf = base.keyframes;
   const transform: Transform = { ...t };
@@ -301,6 +305,12 @@ export function splitNotes(clip: TextClip, mode?: SplitMode): string[] {
   if (moving.length > 0) notes.push('the size / turn is animated: the pieces match at the playhead only');
   // a letter on a curve that is stretched more one way than the other is slanted: a piece can be turned and stretched, not slanted
   if (clip.curve && Math.abs(stretchX(clip.transform) - stretchY(clip.transform)) > 1e-3) notes.push('curved and stretched: the letters lose their slant');
+  // a piece of a curved text turns on its own and does not join a bent row
+  if (clip.curve && (clip.bend || (clip.keyframes?.['bend.angle']?.length ?? 0) > 0)) notes.push('curved and bent: the pieces bend on their own');
+  // a flat line far from the middle can leave the tube on the pieces at the far end
+  const cen = Math.abs(clip.bend?.center ?? 0);
+  const ang = Math.abs(clip.bend?.angle ?? 0);
+  if (cen > 0.5 && (keyed('bend.angle') || ang * (cen + 0.5) > 360)) notes.push('the bend is flat far from the middle: some pieces lose the tube');
   const looks: string[] = [];
   if (clip.gradient) looks.push('gradient');
   if (clip.motionIn || clip.motionOut || clip.motionLoop) looks.push('motion');
@@ -314,15 +324,72 @@ export function keepsBackground(mode: SplitMode): boolean {
   return mode !== 'letters';
 }
 
-/** a copy of the text clip for one piece. the id is a placeholder, the store gives the real one. */
-export function pieceClip(clip: TextClip, piece: SplitPiece, mode: SplitMode, time: number): TextClip {
-  const { wrapWidth: _w, curve: _c, group: _g, ...rest } = clip;
+/**
+ * the bend of one piece of a split text: the same tube as the text. span = the text's bent length L (its span, or its own
+ * length along the axis), center = (center L - off) / L with off = the piece middle along the axis in the text's own px
+ * (piece.cx s scaleX for width, piece.cy s scaleY for height). along, angle and keys stay.
+ */
+export function pieceBend(
+  bend: ClipBend,
+  ownLen: number,
+  piece: Pick<SplitPiece, 'cx' | 'cy'>,
+  s: number,
+  sx: number,
+  sy: number,
+  keyed = false,
+): ClipBend {
+  const L = typeof bend.span === 'number' && Number.isFinite(bend.span) && bend.span > 0 ? bend.span : ownLen;
+  const height = bend.along === 'height';
+  const off = height ? piece.cy * s * sy : piece.cx * s * sx;
+  const c = typeof bend.center === 'number' && Number.isFinite(bend.center) ? bend.center : 0;
+  const center = L > 0 ? (c * L - off) / L : 0;
+  const { center: _c, ...rest } = bend;
+  void _c;
+  // a flat line past the tube's reach (|center| over 1) is clamped by the engine: grow span and angle together, which keeps the curve
+  if (Math.abs(center) > BEND_CENTER_MAX && !keyed) {
+    const L2 = Math.abs(center) * L;
+    const angle = bend.angle * (L2 / L);
+    if (Math.abs(angle) <= 360) return { ...rest, angle, span: L2, center: Math.sign(center) * BEND_CENTER_MAX };
+  }
+  return { ...rest, span: L, ...(center !== 0 ? { center } : {}) };
+}
+
+/**
+ * a copy of the text clip for one piece. the id is a placeholder, the store gives the real one.
+ * more.box = the text's own box at `time` (getClipBox): with it a bent text gives each piece the same tube, without it the
+ * bend is dropped (a wrong bend is worse than none). more.pivotRest = the text's pivot as a step from its middle at scale 1.
+ * a piece never keeps the pivot: it turns around its own middle.
+ */
+export function pieceClip(
+  clip: TextClip,
+  piece: SplitPiece,
+  mode: SplitMode,
+  time: number,
+  more?: { box?: { width: number; height: number }; pivotRest?: { x: number; y: number } },
+): TextClip {
+  const { wrapWidth: _w, curve: _c, group: _g, bend: _b, pivot: _p, ...rest } = clip;
   void _w;
   void _c;
   void _g;
-  const { transform, keyframes } = pieceTransform(clip, piece, time);
+  void _p;
+  const { transform, keyframes } = pieceTransform(more?.pivotRest ? { ...clip, pivotRest: more.pivotRest } : clip, piece, time);
   const out: TextClip = { ...rest, text: piece.text, align: 'center', transform, name: piece.text.slice(0, 24) };
-  if (keyframes) out.keyframes = keyframes;
+  // a bend that is only keyed has the keys and no bend object
+  const keyedBend = (clip.keyframes?.['bend.angle']?.length ?? 0) > 0;
+  const b = _b ?? (keyedBend ? { angle: 0 } : undefined);
+  let kf = keyframes;
+  if (b && more?.box) {
+    const s = at(clip, 'scale', 1, time);
+    const ownLen = b.along === 'height' ? more.box.height : more.box.width;
+    out.bend = pieceBend(b, ownLen, piece, s, at(clip, 'scaleX', 1, time), at(clip, 'scaleY', 1, time), keyedBend);
+  } else if (kf?.['bend.angle']) {
+    // no box: no bend at all, the keys would make every piece bend on its own
+    const { 'bend.angle': _k, ...left } = kf;
+    void _k;
+    kf = Object.keys(left).length > 0 ? left : undefined;
+  }
+  if (kf) out.keyframes = kf;
+  else delete out.keyframes;
   if (!keepsBackground(mode)) out.background = null;
   return out;
 }

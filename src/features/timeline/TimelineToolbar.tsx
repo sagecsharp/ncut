@@ -1,11 +1,10 @@
 import { useEffect, useRef } from 'react';
 import {
   Camera,
-  Copy,
+  CopyPlus,
   Flag,
   ListEnd,
   Magnet,
-  Maximize2,
   Music,
   PanelLeftClose,
   PanelRightClose,
@@ -16,6 +15,7 @@ import {
   Snowflake,
   Trash2,
   Undo2,
+  UnfoldHorizontal,
   Video,
   ZoomIn,
   ZoomOut,
@@ -24,6 +24,8 @@ import { formatDuration, formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useCanRedo, useCanUndo, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
+import { REASON_TEXT } from '../shell/reasons';
+import { tip } from '../shell/tip';
 import { freezeAtPlayhead, trimToPlayhead } from './actions';
 
 interface Props {
@@ -71,10 +73,22 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
 
   return (
     <div className="panel-header timeline-toolbar">
-      <button className="icon-btn" onClick={() => ed().undo()} disabled={!canUndo} title="undo" aria-label="undo">
+      <button
+        className="icon-btn"
+        onClick={() => ed().undo()}
+        disabled={!canUndo}
+        aria-label="undo"
+        {...tip('undo', { keys: 'undo', off: canUndo ? null : REASON_TEXT.noUndo })}
+      >
         <Undo2 size={16} />
       </button>
-      <button className="icon-btn" onClick={() => ed().redo()} disabled={!canRedo} title="redo" aria-label="redo">
+      <button
+        className="icon-btn"
+        onClick={() => ed().redo()}
+        disabled={!canRedo}
+        aria-label="redo"
+        {...tip('redo', { keys: 'redo', off: canRedo ? null : REASON_TEXT.noRedo })}
+      >
         <Redo2 size={16} />
       </button>
       <span className="timeline-toolbar-sep" />
@@ -82,8 +96,13 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => ed().splitClips(usePlayback.getState().time)}
         disabled={!hasClips}
-        title="split at playhead (selected clips, or every clip under it)"
         aria-label="split at playhead"
+        {...tip('split', {
+          does: 'the selected clips become two at the playhead. nothing selected: every clip under it',
+          keys: 'split',
+          off: hasClips ? null : REASON_TEXT.addClip,
+          why: 'split',
+        })}
       >
         <Scissors size={16} />
       </button>
@@ -91,8 +110,13 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => trimToPlayhead('start')}
         disabled={!hasClips}
-        title="from the left: the clip starts at the playhead ([)"
-        aria-label="cut off the left side"
+        aria-label="trim start"
+        {...tip('trim start', {
+          does: 'the selected clips start at the playhead. nothing selected: the clips under it',
+          keys: 'trim-start',
+          off: hasClips ? null : REASON_TEXT.addClip,
+          why: 'trim-start',
+        })}
       >
         <PanelLeftClose size={16} />
       </button>
@@ -100,8 +124,13 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => trimToPlayhead('end')}
         disabled={!hasClips}
-        title="from the right: the clip ends at the playhead (])"
-        aria-label="cut off the right side"
+        aria-label="trim end"
+        {...tip('trim end', {
+          does: 'the selected clips end at the playhead. nothing selected: the clips under it',
+          keys: 'trim-end',
+          off: hasClips ? null : REASON_TEXT.addClip,
+          why: 'trim-end',
+        })}
       >
         <PanelRightClose size={16} />
       </button>
@@ -109,8 +138,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => ed().deleteClips(ed().selection)}
         disabled={!hasSelection}
-        title="delete selected clips"
         aria-label="delete"
+        {...tip('delete', { does: 'delete the selected clips. the gap stays', keys: 'delete', off: hasSelection ? null : REASON_TEXT.selectClip })}
       >
         <Trash2 size={16} />
       </button>
@@ -118,8 +147,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => ed().deleteClips(ed().selection, { ripple: true })}
         disabled={!hasSelection}
-        title="ripple delete: delete and close the gap"
         aria-label="ripple delete"
+        {...tip('ripple delete', { does: 'delete the selected clips and close the gap', keys: 'ripple-delete', off: hasSelection ? null : REASON_TEXT.selectClip })}
       >
         <ListEnd size={16} />
       </button>
@@ -127,17 +156,22 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => ed().duplicateClips(ed().selection)}
         disabled={!hasSelection}
-        title="duplicate selected clips"
         aria-label="duplicate"
+        {...tip('duplicate', { does: 'copies of the selected clips, right after them', keys: 'duplicate', off: hasSelection ? null : REASON_TEXT.selectClip })}
       >
-        <Copy size={16} />
+        <CopyPlus size={16} />
       </button>
       <button
         className="icon-btn"
         onClick={freezeAtPlayhead}
         disabled={!hasClips}
-        title="freeze frame (shift+f)"
         aria-label="freeze frame"
+        {...tip('freeze frame', {
+          does: 'the frame at the playhead becomes a still',
+          keys: 'freeze-frame',
+          off: hasClips ? null : REASON_TEXT.addClip,
+          why: 'freeze-frame',
+        })}
       >
         <Snowflake size={16} />
       </button>
@@ -145,9 +179,13 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       <button
         className={`icon-btn${snapping ? ' is-active' : ''}`}
         onClick={() => ed().setSnapping(!snapping)}
-        title={snapping ? 'snapping on' : 'snapping off'}
-        aria-label="toggle snapping"
+        aria-label="snapping"
         aria-pressed={snapping}
+        {...tip('snapping', {
+          does: 'clips stick to clip edges, markers and the playhead while you drag',
+          keys: 'snapping',
+          on: snapping,
+        })}
       >
         <Magnet size={16} />
       </button>
@@ -155,8 +193,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       <button
         className="icon-btn"
         onClick={() => ed().addMarker(usePlayback.getState().time)}
-        title="add marker at the playhead"
         aria-label="add marker"
+        {...tip('add marker', { does: 'a marker at the playhead', keys: 'marker-add' })}
       >
         <Flag size={16} />
       </button>
@@ -164,8 +202,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       <button
         className="icon-btn timeline-add-track"
         onClick={() => ed().addTrack('video')}
-        title="add video track"
         aria-label="add video track"
+        {...tip('add video track', { does: 'a new empty video track' })}
       >
         <Plus size={11} />
         <Video size={15} />
@@ -173,8 +211,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       <button
         className="icon-btn timeline-add-track"
         onClick={() => ed().addTrack('audio')}
-        title="add audio track"
         aria-label="add audio track"
+        {...tip('add audio track', { does: 'a new empty audio track' })}
       >
         <Plus size={11} />
         <Music size={15} />
@@ -183,8 +221,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
       <button
         className="icon-btn"
         onClick={() => ed().addCamera({ start: usePlayback.getState().time })}
-        title="add 3d camera"
         aria-label="add 3d camera"
+        {...tip('add 3d camera', { does: 'a camera clip at the playhead. 3d clips are seen through it', keys: 'add-camera' })}
       >
         <Camera size={16} />
       </button>
@@ -203,8 +241,8 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={() => onZoom(zoom / 1.4)}
         disabled={zoom <= MIN_ZOOM}
-        title="zoom out"
         aria-label="zoom out"
+        {...tip('zoom out', { keys: 'zoom-out', off: zoom <= MIN_ZOOM ? REASON_TEXT.zoomedOut : null })}
       >
         <ZoomOut size={16} />
       </button>
@@ -217,15 +255,15 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         value={zoomToSlider(zoom)}
         onChange={(e) => onZoom(sliderToZoom(Number(e.target.value)))}
         onPointerUp={(e) => e.currentTarget.blur()}
-        title="zoom"
-        aria-label="zoom"
+        aria-label="timeline zoom"
+        {...tip('timeline zoom', { does: 'ctrl + wheel over the timeline zooms too', keys: ['zoom-out', 'zoom-in'] })}
       />
       <button
         className="icon-btn"
         onClick={() => onZoom(zoom * 1.4)}
         disabled={zoom >= MAX_ZOOM}
-        title="zoom in"
         aria-label="zoom in"
+        {...tip('zoom in', { keys: 'zoom-in', off: zoom >= MAX_ZOOM ? REASON_TEXT.zoomedIn : null })}
       >
         <ZoomIn size={16} />
       </button>
@@ -233,13 +271,18 @@ export function TimelineToolbar({ onZoom, onFit, onFitSelection }: Props) {
         className="icon-btn"
         onClick={onFitSelection}
         disabled={!hasSelection}
-        title="zoom to the selected clips"
         aria-label="zoom to selection"
+        {...tip('zoom to selection', { does: 'the selected clips fill the timeline', off: hasSelection ? null : REASON_TEXT.selectClip })}
       >
         <Scan size={16} />
       </button>
-      <button className="icon-btn" onClick={onFit} title="zoom to fit (shift+z)" aria-label="zoom to fit">
-        <Maximize2 size={16} />
+      <button
+        className="icon-btn"
+        onClick={onFit}
+        aria-label="zoom to fit"
+        {...tip('zoom to fit', { does: 'the whole project fits the timeline', keys: 'zoom-fit' })}
+      >
+        <UnfoldHorizontal size={16} />
       </button>
     </div>
   );

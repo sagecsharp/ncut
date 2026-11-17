@@ -14,6 +14,8 @@ import { idsAfter, idsLike, idsOnTrack } from './selectionRules';
 import { expandGroups } from '../../lib/links';
 import { applyFollowerSpans } from './followApply';
 import { planTrimToPlayhead } from './trimPlan';
+import { hasKeyframes } from '../../lib/anim';
+import { clipEnd } from '../../lib/timelineOps';
 
 /** group the given ids (needs 2+). returns true when a group was made. */
 export function groupIdsNow(ids: string[]): boolean {
@@ -179,6 +181,16 @@ export function applyEffectsToEverything(ids: readonly string[]): void {
   if (targeted.length === 0) return;
   st.pushHistory();
   for (const c of targeted) st.updateClip(c.id, { target: null }, { skipHistory: true });
+}
+
+/** remove every keyframe of these clips, the values stay as they are at the playhead. one undo step, nothing when no clip has keys */
+export function clearKeysOf(ids: readonly string[]): void {
+  const st = useEditor.getState();
+  const withKeys = (st.project?.clips ?? []).filter((c) => ids.includes(c.id) && hasKeyframes(c));
+  if (withKeys.length === 0) return;
+  const now = usePlayback.getState().time;
+  st.pushHistory();
+  for (const c of withKeys) st.clearKeyframes(c.id, Math.min(clipEnd(c), Math.max(c.start, now)), undefined, { skipHistory: true });
 }
 
 /**

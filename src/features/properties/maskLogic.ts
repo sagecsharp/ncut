@@ -18,9 +18,9 @@ export type MaskKey = 'x' | 'y' | 'width' | 'height' | 'rotation' | 'feather' | 
 export const MASK_RANGES: Record<MaskKey, { min: number; max: number }> = {
   x: { min: -100, max: 100 },
   y: { min: -100, max: 100 },
-  width: { min: 0, max: 200 },
-  height: { min: 0, max: 200 },
-  rotation: { min: -180, max: 180 },
+  width: { min: 0, max: 300 },
+  height: { min: 0, max: 300 },
+  rotation: { min: -360, max: 360 },
   feather: { min: 0, max: 100 },
   radius: { min: 0, max: 100 },
 };

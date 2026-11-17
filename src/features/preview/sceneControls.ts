@@ -15,6 +15,7 @@
 import { create } from 'zustand';
 import type { Vec3 } from '../../engine/scene3d/math';
 import type { Orbit } from './sceneCamera';
+import type { Quad } from './overlayMath';
 
 export type SceneScheme = 'blender' | 'unity';
 export const SCENE_SCHEME_DEFAULT: SceneScheme = 'blender';
@@ -290,6 +291,24 @@ export function quadTouchesRect(p: ArrayLike<number>, r: Rect): boolean {
       const l = (k + 1) % 4;
       if (segmentsCross(p[i * 2]!, p[i * 2 + 1]!, p[j * 2]!, p[j * 2 + 1]!, corners[k * 2]!, corners[k * 2 + 1]!, corners[l * 2]!, corners[l * 2 + 1]!)) return true;
     }
+  }
+  return false;
+}
+
+/** a bent outline touches the rectangle: any of its strip rectangles (a_i, a_i+1, b_i+1, b_i) does */
+export function bentTouchesRect(q: Quad, r: Rect): boolean {
+  const b = q.bent;
+  if (!b) return quadTouchesRect(q.p, r);
+  const n = b.n;
+  const s = b.screen;
+  const p = new Array<number>(8);
+  for (let i = 0; i < n - 1; i++) {
+    const ids = [i, i + 1, 2 * n - 2 - i, 2 * n - 1 - i];
+    for (let k = 0; k < 4; k++) {
+      p[k * 2] = s[ids[k]! * 2]!;
+      p[k * 2 + 1] = s[ids[k]! * 2 + 1]!;
+    }
+    if (quadTouchesRect(p, r)) return true;
   }
   return false;
 }

@@ -338,3 +338,141 @@ describe('split / delete / duplicate / group', () => {
     await refused('move_clip', { id: 'x', where: 1 }, /not a known field/);
   });
 });
+
+async function shapeAt(track: string, x: number, parent?: string): Promise<string> {
+  const r = await call('add_shape', { kind: 'rect', track, start: 0, duration: 4, fields: { width: 200, height: 100, transform: { x }, ...(parent ? { parent } : {}) } });
+  expect(r.ok, r.text).toBe(true);
+  return r.data.id as string;
+}
+
+describe('bend_clips', () => {
+  let second = '';
+  beforeEach(() => {
+    second = ed().addTrack('video');
+  });
+
+  it('bends two cards together, groups them, one undo step', async () => {
+    const a = await shapeAt(video, -150);
+    const b = await shapeAt(second, 150);
+    const r = await oneStepOf(() => call('bend_clips', { ids: [a, b], angle: 60 }));
+    expect(r.data.together).toBe(true);
+    expect(r.data.bent.sort()).toEqual([a, b].sort());
+    expect(r.data.angle).toBe(60);
+    expect(r.data.along).toBe('width');
+    expect(r.data.group).toBeTruthy();
+    expect((clipOf(a) as any).group).toBe((clipOf(b) as any).group);
+    expect((clipOf(a) as any).bend.angle).toBe(60);
+    expect((clipOf(a) as any).bend.span).toBeGreaterThan(0);
+  });
+
+  it('angle 0 takes the bend off', async () => {
+    const a = await shapeAt(video, -150);
+    const b = await shapeAt(second, 150);
+    await refused('bend_clips', { ids: [a, b], angle: 0 }, /nothing to take off/);
+    await call('bend_clips', { ids: [a, b], angle: 60 });
+    const r = await oneStepOf(() => call('bend_clips', { ids: [a, b], angle: 0 }));
+    expect(r.data.flat.sort()).toEqual([a, b].sort());
+    expect((clipOf(a) as any).bend ?? null).toBeNull();
+    expect((clipOf(b) as any).bend ?? null).toBeNull();
+  });
+
+  it('angle 0 skips a bent clip on a locked track', async () => {
+    const a = await shapeAt(video, -150);
+    const b = await shapeAt(second, 150);
+    await call('bend_clips', { ids: [a, b], angle: 30, together: false });
+    ed().updateTrack(clipOf(b).trackId, { locked: true });
+    await refused('bend_clips', { ids: [b], angle: 0 }, /nothing to take off: .*its track is locked/);
+    const r = await call('bend_clips', { ids: [a, b], angle: 0 });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.flat).toEqual([a]);
+    expect(r.data.skipped).toEqual([{ id: b, why: 'its track is locked' }]);
+    expect((clipOf(a) as any).bend ?? null).toBeNull();
+    expect((clipOf(b) as any).bend).toBeTruthy();
+  });
+
+  it('skips solids with a why', async () => {
+    const a = await shapeAt(video, -150);
+    const b = await shapeAt(second, 150);
+    const solid = await shapeAt(ed().addTrack('video'), 0);
+    await call('update_clip', { id: solid, patch: { threeD: true, shape: 'box' } });
+    const r = await call('bend_clips', { ids: [a, b, solid], angle: 40 });
+    expect(r.ok, r.text).toBe(true);
+    expect(r.data.skipped).toEqual([{ id: solid, why: expect.stringMatching(/3d shape/) }]);
+    expect((clipOf(solid) as any).bend ?? null).toBeNull();
+    await refused('bend_clips', { ids: [solid], angle: 40 }, /nothing was bent: .*3d shape/);
+    await refused('bend_clips', { ids: [a, solid], angle: 40 }, /needs two or more clips/);
+    await refused('bend_clips', { ids: [a], angle: 400 }, /angle must be at most 360/);
+  });
+
+  it('together false bends each', async () => {
+    const a = await shapeAt(video, -150);
+    const b = await shapeAt(second, 150);
+    const r = await oneStepOf(() => call('bend_clips', { ids: [a, b], angle: 30, together: false, along: 'height' }));
+    expect(r.data.together).toBe(false);
+    expect(r.data.group).toBeNull();
+    expect((clipOf(a) as any).bend).toEqual({ angle: 30, along: 'height' });
+    expect((clipOf(b) as any).bend).toEqual({ angle: 30, along: 'height' });
+    expect((clipOf(a) as any).group).toBeUndefined();
+  });
+});
+
+describe('update_clip pivot and parent keep the place', () => {
+  let second = '';
+  beforeEach(() => {
+    second = ed().addTrack('video');
+  });
+
+  const x = (id: string): number => (clipOf(id) as any).transform.x as number;
+
+  it('pivot keeps the clip and its attached clips in place and lists them in moved', async () => {
+    const a = await shapeAt(video, 0);
+    const b = await shapeAt(second, 300, a);
+    const bx = x(b);
+    const r = await oneStepOf(() => call('update_clip', { id: a, patch: { pivot: 'left' } }));
+    expect(r.data.changed).toEqual(expect.arrayContaining(['pivot', 'transform']));
+    expect(r.data.moved).toEqual([b]);
+    expect((clipOf(a) as any).pivot).toEqual({ x: -0.5, y: 0 });
+    // the pivot is 100 px left of the middle: the clip x moves by -100 and the child offset by +100
+    expect(x(a)).toBeCloseTo(-100, 6);
+    expect(x(b)).toBeCloseTo(bx + 100, 6);
+  });
+
+  it('pivot with transform is written as given', async () => {
+    const a = await shapeAt(video, 0);
+    const r = await oneStepOf(() => call('update_clip', { id: a, patch: { pivot: 'left', transform: { x: 40 } } }));
+    expect(r.data.moved).toBeUndefined();
+    expect(x(a)).toBe(40);
+    expect((clipOf(a) as any).pivot).toEqual({ x: -0.5, y: 0 });
+  });
+
+  it('parent keeps the clip in place', async () => {
+    const a = await shapeAt(video, 100);
+    const b = await shapeAt(second, 300);
+    const r = await oneStepOf(() => call('update_clip', { id: b, patch: { parent: a } }));
+    expect(r.data.changed).toEqual(expect.arrayContaining(['parent', 'transform']));
+    expect((clipOf(b) as any).parent).toBe(a);
+    // 300 on screen, the parent is at 100: 200 from it
+    expect(x(b)).toBeCloseTo(200, 6);
+  });
+
+  it('parent with transform writes the transform as given', async () => {
+    const a = await shapeAt(video, 100);
+    const b = await shapeAt(second, 300);
+    await oneStepOf(() => call('update_clip', { id: b, patch: { parent: a, transform: { x: 300 } } }));
+    expect((clipOf(b) as any).parent).toBe(a);
+    expect(x(b)).toBe(300);
+  });
+
+  it('pivot with an attached clip on a locked track is an error and changes nothing', async () => {
+    const a = await shapeAt(video, 0);
+    await shapeAt(second, 300, a);
+    ed().updateTrack(second, { locked: true });
+    await refused('update_clip', { id: a, patch: { pivot: 'left' } }, /attached to this one is on a locked track/);
+    expect((clipOf(a) as any).pivot ?? null).toBeNull();
+  });
+
+  it('pivot null on a clip without one says nothing changed', async () => {
+    const a = await shapeAt(video, 0);
+    await refused('update_clip', { id: a, patch: { pivot: null } }, /nothing changed/);
+  });
+});

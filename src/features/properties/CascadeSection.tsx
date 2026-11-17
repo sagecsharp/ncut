@@ -1,10 +1,9 @@
 import { memo, useState } from 'react';
 import { ArrowLeftToLine, ArrowRightToLine, ListEnd, Rows3 } from 'lucide-react';
-import { NumberField } from '../../components/ui/NumberField';
 import { CASCADE_ORDERS, FLY_KINDS } from './cascade';
 import type { CascadeOrder, FlyKind, StaggerMode } from './cascade';
 import { flySelection, staggerSelection } from './cascadeActions';
-import { Row, SelectRow, SliderRow } from './controls';
+import { FeelField, Row, SelectRow, SliderRow } from './controls';
 import './cascade.css';
 
 interface Remembered {
@@ -42,15 +41,11 @@ export const CascadeSection = memo(function CascadeSection({ hasVisual }: { hasV
         onChange={(v) => set({ order: v as CascadeOrder })}
       />
       <Row label="step" title="frames between two clips (0 to 120). 0 = all start together.">
-        <NumberField
-          className="props-num cascade-num"
+        <FeelField
+          local
+          feel="cascadeStep"
           title="frames between the start of one clip and the next (0 to 120)"
           value={vals.step}
-          min={0}
-          max={120}
-          step={1}
-          precision={0}
-          suffix="fr"
           onChange={(v) => set({ step: Math.round(v) })}
         />
       </Row>
@@ -95,17 +90,13 @@ export const CascadeSection = memo(function CascadeSection({ hasVisual }: { hasV
             options={FLY_KINDS.map((k) => [k.id, k.label])}
             onChange={(v) => set({ kind: v as FlyKind })}
           />
-          <SliderRow label="strength" title="how far each clip flies (%)" value={vals.strength} min={0} max={100} suffix="%" onChange={(v) => set({ strength: v })} />
+          <SliderRow label="strength" title="how far each clip flies (%)" value={vals.strength} feel="cascadeStrength" local onChange={(v) => set({ strength: v })} />
           <Row label="length" title="how long the fly lasts (seconds, never longer than the clip)">
-            <NumberField
-              className="props-num cascade-num"
+            <FeelField
+              local
+              feel="cascadeLength"
               title="how long the fly lasts (seconds)"
               value={vals.length}
-              min={0.05}
-              max={10}
-              step={0.1}
-              precision={2}
-              suffix="s"
               onChange={(v) => set({ length: v })}
             />
           </Row>

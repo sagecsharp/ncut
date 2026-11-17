@@ -4,7 +4,7 @@
  * every template fits any canvas size: sizes are in units of the shorter canvas side.
  * pure: no dom, no storage.
  */
-import type { CameraClip, Clip, EffectClip, Keyframes, Project, ShapeClip, TextClip, Track } from '../types';
+import type { CameraClip, Clip, EffectClip, Keyframes, Project, ShapeClip, TextClip, Track, Transform } from '../types';
 import { createCameraClip, createEffectClip, createShapeClip, createTextClip, createTrack } from './factory';
 
 export interface ProjectTemplate {
@@ -1062,6 +1062,110 @@ function lettersIn(project: Project): Project {
   return b.finish(project, '#0e1013');
 }
 
+function curvedWall(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 8;
+  const cw = 300 * u;
+  const ch = 420 * u;
+  const gap = 40 * u;
+  const W = 5 * cw + 4 * gap;
+  const group = 'grp-curved-wall';
+  b.camera(b.track('camera'), 0, { duration: len, keyframes: { x: ramp(-160 * u, 160 * u, len, 'linear'), pan: ramp(-8, 8, len, 'linear') } });
+  // the title is on the same tube as the cards: same angle, same span, its middle is the row's middle
+  b.text(b.track('title'), 0, {
+    duration: len,
+    name: 'title',
+    text: 'curved wall',
+    fontSize: 120 * u,
+    color: INK,
+    threeD: true,
+    group,
+    bend: { angle: 120, span: W },
+    animIn: { id: 'fade', duration: 0.8 },
+    transform: { x: 0, y: -330 * u, scale: 1, rotation: 0, opacity: 1, z: 0 },
+  });
+  const colors = ['#ff8a6b', ACCENT, '#9ad1ff', '#b4f0a8', '#d9a6ff'];
+  for (let i = 0; i < 5; i++) {
+    const x = (i - 2) * (cw + gap);
+    b.shape(b.track(`card ${i + 1}`), 0, {
+      duration: len,
+      name: `card ${i + 1}`,
+      kind: 'rect',
+      width: cw,
+      height: ch,
+      color: colors[i]!,
+      color2: '#1a1c20',
+      gradientAngle: 90,
+      radius: 0.06,
+      threeD: true,
+      group,
+      bend: { angle: 120, ...(x !== 0 ? { center: -x / W } : {}), span: W },
+      transform: { x, y: 40 * u, scale: 1, rotation: 0, opacity: 1, z: 0 },
+    });
+  }
+  // a card that rolls up like a page: flat at its left edge, the rest rolls in toward the viewer
+  b.shape(b.track('page'), 1, {
+    duration: len - 1,
+    name: 'page',
+    kind: 'rect',
+    width: 440 * u,
+    height: 200 * u,
+    color: INK,
+    threeD: true,
+    bend: { angle: 0, center: -0.5 },
+    keyframes: { 'bend.angle': [{ t: 0.5, v: 0, ease: 'ease' }, { t: 3.5, v: 330, ease: 'ease' }] },
+    transform: { x: 0, y: 400 * u, scale: 1, rotation: 0, opacity: 1, z: 0 },
+  });
+  return b.finish(project, '#0c0d10');
+}
+
+/** keys that go from a to b and back every `period` seconds, from 0 to `end` */
+function swingKeys(a: number, b: number, period: number, end: number): Keyframes[string] {
+  const out: Keyframes[string] = [];
+  for (let i = 0; (i * period) / 2 <= end + 1e-9; i++) out.push({ t: Math.round(((i * period) / 2) * 1000) / 1000, v: i % 2 === 0 ? a : b, ease: 'ease' });
+  return out;
+}
+
+function pivots(project: Project): Project {
+  const b = new Builder(project);
+  const u = b.u;
+  const len = 6;
+  const at = (x: number, y: number, more: Partial<Transform> = {}): Transform => ({ x: x * u, y: y * u, scale: 1, rotation: 0, opacity: 1, ...more });
+  const left = { x: -0.5, y: 0 };
+  const bottom = { x: 0, y: 0.5 };
+
+  b.text(b.track('title'), 0, { duration: len, name: 'title', text: 'every part rotates around its own pivot', fontSize: 40 * u, fontWeight: 400, color: DIM, transform: at(0, -440) });
+  // the door: 3d, hinged on its left edge, a knob attached near its right edge
+  const knobTrack = b.track('knob');
+  const door = b.shape(b.track('door'), 0, {
+    duration: len, name: 'door', kind: 'rect', width: 280 * u, height: 500 * u, color: ACCENT, threeD: true, pivot: left,
+    transform: at(-140, 60, { z: 0 }),
+    keyframes: { rotY: [{ t: 0, v: 0, ease: 'ease' }, { t: 1.5, v: -100, ease: 'ease' }, { t: 3.5, v: -100, ease: 'ease' }, { t: 5, v: 0, ease: 'ease' }] },
+  });
+  b.shape(knobTrack, 0, { duration: len, name: 'knob', kind: 'ellipse', width: 28 * u, height: 28 * u, color: INK, threeD: true, parent: door.id, transform: at(245, 0, { z: -6 }) });
+  b.shape(b.track('frame'), 0, { duration: len, name: 'frame', kind: 'rect', width: 300 * u, height: 520 * u, filled: false, color: DIM, stroke: { color: DIM, width: 6 * u }, threeD: true, transform: at(0, 60, { z: 4 }) });
+  // the clock: hands attached to the face, each pivoted at its bottom end on the face's middle
+  const hubTrack = b.track('hub');
+  const minuteTrack = b.track('minute hand');
+  const hourTrack = b.track('hour hand');
+  const face = b.shape(b.track('clock face'), 0, { duration: len, name: 'clock face', kind: 'ellipse', width: 340 * u, height: 340 * u, filled: false, color: DIM, stroke: { color: DIM, width: 6 * u }, transform: at(600, 60) });
+  b.shape(hubTrack, 0, { duration: len, name: 'hub', kind: 'ellipse', width: 26 * u, height: 26 * u, color: INK, parent: face.id, transform: at(0, 0) });
+  b.shape(minuteTrack, 0, { duration: len, name: 'minute hand', kind: 'rect', width: 10 * u, height: 150 * u, color: ACCENT, parent: face.id, pivot: bottom, transform: at(0, 0), keyframes: { rotation: ramp(0, 720, len, 'linear') } });
+  b.shape(hourTrack, 0, { duration: len, name: 'hour hand', kind: 'rect', width: 16 * u, height: 100 * u, color: INK, parent: face.id, pivot: bottom, transform: at(0, 0), keyframes: { rotation: ramp(0, 60, len, 'linear') } });
+  // the arm: a body, an upper arm on its right edge, a forearm on the upper arm's end, a hand on the forearm's end
+  const handTrack = b.track('hand');
+  const forearmTrack = b.track('forearm');
+  const upperTrack = b.track('upper arm');
+  const headTrack = b.track('head');
+  const body = b.shape(b.track('body'), 0, { duration: len, name: 'body', kind: 'rect', width: 150 * u, height: 300 * u, color: DIM, radius: 0.3, transform: at(-620, 60) });
+  b.shape(headTrack, 0, { duration: len, name: 'head', kind: 'ellipse', width: 110 * u, height: 110 * u, color: DIM, parent: body.id, transform: at(0, -220) });
+  const upper = b.shape(upperTrack, 0, { duration: len, name: 'upper arm', kind: 'rect', width: 200 * u, height: 50 * u, color: INK, parent: body.id, pivot: left, transform: at(75, -110), keyframes: { rotation: swingKeys(40, -60, 3, len) } });
+  const fore = b.shape(forearmTrack, 0, { duration: len, name: 'forearm', kind: 'rect', width: 170 * u, height: 44 * u, color: ACCENT, parent: upper.id, pivot: left, transform: at(200, 0), keyframes: { rotation: swingKeys(10, -70, 1.5, len) } });
+  b.shape(handTrack, 0, { duration: len, name: 'hand', kind: 'ellipse', width: 64 * u, height: 64 * u, color: INK, parent: fore.id, pivot: left, transform: at(170, 0), motionLoop: { id: 'swing', duration: 1 } });
+  return b.finish(project, '#0e1013');
+}
+
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'title-3d', name: 'title in space', description: 'a 3d title with shapes at different depths and a camera that flies in', build: titleInSpace },
   { id: 'solids-3d', name: '3d shapes', description: 'a box, a ball and a can turning on a floor while the camera passes by', build: solids },
@@ -1073,10 +1177,12 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   { id: 'winter', name: 'snow title', description: 'a block title in falling snow and mist over an evening sky', build: winter },
   { id: 'carousel', name: 'carousel', description: 'eight cards on a turning ring in 3d: they are attached to the pole in the middle', build: carousel },
   { id: 'rack-focus', name: 'rack focus', description: 'three cards at different depths while the camera pulls the focus from one to the next', build: rackFocus },
+  { id: 'curved-wall', name: 'curved wall', description: 'five cards bent into one wall, a title bent on the same tube and a card that rolls up like a page', build: curvedWall },
   { id: 'block-title', name: 'block title', description: 'thick 3d letters that turn, with a star, a heart and a hexagon spinning around them', build: blockTitle },
   { id: 'tunnel', name: 'tunnel', description: 'a row of frames into the distance, each turned a little more, and a camera that flies through them', build: tunnel },
   { id: 'letter-ring', name: 'letter ring', description: 'a sentence standing in a circle, every letter its own 3d clip, turning around a hub', build: letterRing },
   { id: 'orbit', name: 'orbit', description: 'balls circling a sun on paths of their own, one with a moon attached, under a flat title', build: orbit },
+  { id: 'pivots', name: 'pivots', description: 'an arm that waves from the shoulder, the elbow and the wrist, a 3d door on its hinge and a clock: every part rotates around its own pivot', build: pivots },
   { id: 'letters-in', name: 'letters fly in', description: 'a word whose letters fly in one after the other and fall out together', build: lettersIn },
   { id: 'timer', name: 'timer', description: 'a ten second count down written as m:ss, with a bar that runs out', build: timer },
 ];

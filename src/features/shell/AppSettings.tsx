@@ -5,7 +5,7 @@ import { UpdateSettings } from '../../components/ui/UpdateSettings';
 import { useUi } from '../../store/ui';
 import { resetLayout } from '../editor/layoutReset';
 import { useSceneControls } from '../preview/sceneControls';
-import { Switch } from '../properties/controls';
+import { Switch } from '../../components/ui/Switch';
 import './shell.css';
 
 /** the settings of the app itself (not of a project). shown in the editor dialog and on the projects screen. */

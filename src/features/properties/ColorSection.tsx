@@ -7,13 +7,14 @@ import { resetWithKeys } from './animEdit';
 import { ColorField, Row, Section, Switch } from './controls';
 import { patchClip } from './edit';
 import type { AdjustKey } from './colorLogic';
+import type { FeelKey } from './fieldFeel';
 
-const ROWS: { key: AdjustKey; label: string; title: string; scale: number; max: number; suffix: string }[] = [
-  { key: 'brightness', label: 'brightness', title: 'brightness (-100 darker, 100 brighter). double click to reset.', scale: 100, max: 100, suffix: '' },
-  { key: 'contrast', label: 'contrast', title: 'contrast (-100 flat, 100 strong). double click to reset.', scale: 100, max: 100, suffix: '' },
-  { key: 'saturation', label: 'saturation', title: 'saturation (-100 gray, 100 vivid). double click to reset.', scale: 100, max: 100, suffix: '' },
-  { key: 'temperature', label: 'warmth', title: 'warmth (-100 cool, 100 warm). double click to reset.', scale: 100, max: 100, suffix: '' },
-  { key: 'hue', label: 'hue', title: 'turn the colors around the color wheel (degrees). double click to reset.', scale: 1, max: 180, suffix: 'deg' },
+const ROWS: { key: AdjustKey; label: string; title: string; feel: FeelKey }[] = [
+  { key: 'brightness', label: 'brightness', title: 'brightness (-100 darker, 100 brighter).', feel: 'brightness' },
+  { key: 'contrast', label: 'contrast', title: 'contrast (-100 flat, 100 strong).', feel: 'contrast' },
+  { key: 'saturation', label: 'saturation', title: 'saturation (-100 gray, 100 vivid).', feel: 'saturation' },
+  { key: 'temperature', label: 'warmth', title: 'warmth (-100 cool, 100 warm).', feel: 'warmth' },
+  { key: 'hue', label: 'hue', title: 'turn the colors around the color wheel (degrees).', feel: 'hue' },
 ];
 
 const ADJUST_PROPS = ROWS.map((r) => 'adjust.' + r.key);
@@ -40,22 +41,8 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
 
   return (
     <Section id="color" title="color">
-      {ROWS.map(({ key: k, label, title, scale, max, suffix }) => (
-        <AnimField
-          key={k}
-          id={id}
-          prop={'adjust.' + k}
-          label={label}
-          title={title}
-          scale={scale}
-          suffix={suffix}
-          min={-max}
-          max={max}
-          step={1}
-          precision={0}
-          slider
-          reset={0}
-        />
+      {ROWS.map(({ key: k, label, title, feel }) => (
+        <AnimField key={k} id={id} prop={'adjust.' + k} label={label} title={title} feel={feel} />
       ))}
       <div className="props-buttons">
         <button type="button" className="btn btn-sm" title="set every color value back to 0" disabled={!adjustActive(clip)} onClick={() => resetWithKeys(id, ADJUST_PROPS, { adjust: null })}>
@@ -89,39 +76,21 @@ export const ColorSection = memo(function ColorSection({ clip }: { clip: VisualC
                 prop="chromaKey.tolerance"
                 label="range"
                 title="how far from the color still gets removed (%)"
-                scale={100}
-                suffix="%"
-                min={0}
-                max={100}
-                step={1}
-                precision={0}
-                slider
+                feel="keyRange"
               />
               <AnimField
                 id={id}
                 prop="chromaKey.softness"
                 label="soft edge"
                 title="how soft the edge of the cut out is (%)"
-                scale={100}
-                suffix="%"
-                min={0}
-                max={100}
-                step={1}
-                precision={0}
-                slider
+                feel="keySoftness"
               />
               <AnimField
                 id={id}
                 prop="chromaKey.spill"
                 label="clean edges"
                 title="take the leftover color out of the edges (%)"
-                scale={100}
-                suffix="%"
-                min={0}
-                max={100}
-                step={1}
-                precision={0}
-                slider
+                feel="keySpill"
               />
             </>
           ) : null}

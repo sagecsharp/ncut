@@ -84,7 +84,7 @@ export const ClipEffectsSection = memo(function ClipEffectsSection({ clip }: { c
               <Trash2 size={14} />
             </button>
           </div>
-          <AnimField slider id={e.id} prop="amount" label="strength" title="how strong the effect is on this clip (%)" scale={100} min={0} max={100} step={1} precision={0} suffix="%" fallback={1} />
+          <AnimField id={e.id} prop="amount" label="strength" title="how strong the effect is on this clip (%)" feel="effectAmount" fallback={1} />
         </div>
       ))}
       {list.length === 0 ? <div className="props-hint">no effects on this clip</div> : null}

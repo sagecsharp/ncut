@@ -81,17 +81,9 @@
 .props-pair .number-field {
   width: 100%;
 }
-.props-range {
-  flex: 1;
-  min-width: 0;
-}
 .props-num {
   flex: 0 0 82px;
   width: 82px;
-}
-.props-num-wide {
-  flex: 0 0 96px;
-  width: 96px;
 }
 
 .props-color {
@@ -136,6 +128,47 @@
   height: 16px;
   margin: 0 4px;
   background: var(--border-soft);
+}
+.pivot-dots {
+  display: grid;
+  grid-template-columns: repeat(3, 14px);
+  grid-template-rows: repeat(3, 14px);
+  gap: 2px;
+}
+.pivot-dot {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+}
+.pivot-dot::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  background: var(--text-faint);
+}
+.pivot-dot:hover {
+  background: var(--surface-4);
+}
+.pivot-dot.is-active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+.pivot-dot.is-active::after {
+  background: var(--accent);
+}
+.props-section-body .btn.is-active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+.pivot-dot:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .props-stat {

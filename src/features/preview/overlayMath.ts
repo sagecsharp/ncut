@@ -2,7 +2,8 @@
 import { type ClipBox, getClipBox, normalizeCrop } from '../../engine/draw';
 import { clipLookPoint } from '../../engine/parent';
 import { type Camera3D, type CameraRig, cameraAt, cameraRig, projectPoint } from '../../engine/scene3d/camera';
-import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, translation } from '../../engine/scene3d/math';
+import { type Mat4, type Vec3, cross, dot, mul, scaling, sub, transformPoint, translation } from '../../engine/scene3d/math';
+import { bendInWorld, bendLocal, bendOutline, isBent, planeBend } from '../../engine/scene3d/bend';
 import { clipModelMatrix, clipWorldModel, planeCorners } from '../../engine/scene3d/model';
 import { resolveClip } from '../../lib/anim';
 import { resolveShown, worldClip } from './attached';
@@ -25,6 +26,18 @@ export function projectRig(project: Project, time: number): CameraRig {
   return rigValue;
 }
 
+/** points per edge of a bent outline in the overlays, minus one */
+export const BEND_OUTLINE_STEPS = 24;
+
+export interface BentOutline {
+  /** points per edge (BEND_OUTLINE_STEPS + 1) */
+  n: number;
+  /** the outline projected to canvas px, x y pairs: edge a forward, then edge b back (a closed polygon of 2n points) */
+  screen: Float32Array;
+  /** the same points in the world */
+  world: Vec3[];
+}
+
 export interface Quad {
   /** projected corners tl, tr, br, bl in canvas pixels (x0 y0 x1 y1 ...) */
   p: [number, number, number, number, number, number, number, number];
@@ -36,6 +49,8 @@ export interface Quad {
   world: [Vec3, Vec3, Vec3, Vec3];
   cx: number;
   cy: number;
+  /** a bent plane: its outline. null / missing = flat */
+  bent?: BentOutline | null;
 }
 
 /**
@@ -65,7 +80,8 @@ export function usesParentFrame(clip: VisualClip): boolean {
 /** the center of a real 3d clip in the world, through its parent chain (canvas px) */
 export function worldCenter3d(project: Project, raw: VisualClip, time: number): Vec3 {
   const clip = resolveShown(raw, time);
-  const m = clipWorldModel(project, clip, time, getClipBox(project, clip), [0, 0, 0]);
+  // the position (the pivot): a box without px / py, so the model's translation is the frame's
+  const m = clipWorldModel(project, clip, time, { ...getClipBox(project, clip), px: 0, py: 0 }, [0, 0, 0]);
   return [m[12]!, m[13]!, m[14]!];
 }
 
@@ -73,14 +89,40 @@ export function worldCenter3d(project: Project, raw: VisualClip, time: number): 
 export function clipQuad(project: Project, raw: VisualClip, time: number, rig: CameraRig, out?: Quad): Quad {
   // an attached clip is drawn at its pose in the world: outline and handles sit there too
   const framed = usesParentFrame(raw);
-  const clip = framed ? resolveShown(raw, time) : worldClip(project, raw, time);
+  let clip = framed ? resolveShown(raw, time) : worldClip(project, raw, time);
+  // a bent 2d clip is drawn flat (no shape, z, tilt or turn) after its keys resolve: the outline does the same
+  if (flatPlanes.has(raw) && clip.bend && isBent({ bend: clip.bend })) {
+    clip = { ...clip, shape: undefined, transform: { ...clip.transform, z: 0, rotX: 0, rotY: 0 } } as VisualClip;
+  }
   const box = getClipBox(project, clip);
   const base = framed
     ? clipWorldModel(project, clip, time, box, rig.eye)
     : clipModelMatrix(box, clip.transform, clip.lookAt, rig.eye, null, clip.lookAt === 'clip' ? clipLookPoint(project, clip, time) : null);
   const model = keptPlaneModel(base, clip.crop, clip.shape);
-  const world = planeCorners(model);
-  const q: Quad = out ?? { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world, cx: 0, cy: 0 };
+  // a bent plane: the bend of the shown clip, with a 2d parent's scale folded into the span (worldClip put it in the box)
+  let bend = clip.bend && isBent(clip) ? clip.bend : null;
+  if (bend && !framed && raw.parent) {
+    const own = resolveShown(raw, time).transform.scale;
+    if (own !== 0) bend = bendInWorld(bend, clip.transform.scale / own) ?? null;
+  }
+  let pb: ReturnType<typeof planeBend> = null;
+  if (bend && (clip.shape ?? 'plane') === 'plane') {
+    const tall = bend.along === 'height';
+    const c = normalizeCrop(clip.crop);
+    const lo = c ? (tall ? c.top : c.left) : 0;
+    const size = c ? (tall ? 1 - c.top - c.bottom : 1 - c.left - c.right) : 1;
+    const len = tall ? box.height : box.width;
+    pb = planeBend(bend, len, len, lo, size);
+  }
+  // only a bent plane walks its points through the bend: a flat one is just the model's corners
+  const p3: [number, number, number] = [0, 0, 0];
+  const through = (x: number, y: number): Vec3 => {
+    if (pb) bendLocal(pb, x, y, p3);
+    const w = transformPoint(model, p3[0], p3[1], p3[2]);
+    return [w[0], w[1], w[2]];
+  };
+  const world: [Vec3, Vec3, Vec3, Vec3] = pb ? [through(-0.5, -0.5), through(0.5, -0.5), through(0.5, 0.5), through(-0.5, 0.5)] : planeCorners(model);
+  const q: Quad = out ?? { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world, cx: 0, cy: 0, bent: null };
   q.world = world;
   q.visible = true;
   let sx = 0;
@@ -96,9 +138,75 @@ export function clipQuad(project: Project, raw: VisualClip, time: number, rig: C
   }
   q.cx = sx / 4;
   q.cy = sy / 4;
-  const c = framed ? projectPoint(rig, base[12]!, base[13]!, base[14]!, project.width, project.height) : projectPoint(rig, box.cx, box.cy, clip.transform.z ?? 0, project.width, project.height);
-  q.depth = c.depth;
+  if (pb) {
+    // the outline through the model, projected. the depth is the bent middle's, measured on the picture
+    const raw3 = bendOutline(pb, BEND_OUTLINE_STEPS);
+    const n = BEND_OUTLINE_STEPS + 1;
+    const bo: BentOutline = out?.bent && out.bent.n === n ? out.bent : { n, screen: new Float32Array(n * 4), world: [] };
+    for (let i = 0; i < n * 2; i++) {
+      const w = transformPoint(model, raw3[i * 3]!, raw3[i * 3 + 1]!, raw3[i * 3 + 2]!);
+      const pt: Vec3 = [w[0], w[1], w[2]];
+      bo.world[i] = pt;
+      const r = projectPoint(rig, pt[0], pt[1], pt[2], project.width, project.height);
+      if (!r.visible) q.visible = false;
+      bo.screen[i * 2] = r.x;
+      bo.screen[i * 2 + 1] = r.y;
+    }
+    q.bent = bo;
+    const mid = through(0, 0);
+    q.depth = projectPoint(rig, mid[0], mid[1], mid[2], project.width, project.height).depth;
+  } else {
+    q.bent = null;
+    // the model's translation is the picture's middle (the same point as the position without a pivot)
+    const c = projectPoint(rig, base[12]!, base[13]!, base[14]!, project.width, project.height);
+    q.depth = c.depth;
+  }
   return q;
+}
+
+/** the svg points of a quad at overlay scale f: 4 corners, or the bent outline */
+export function quadPoints(q: Quad, f: number): string {
+  const parts: string[] = [];
+  if (q.bent) {
+    const s = q.bent.screen;
+    for (let i = 0; i < q.bent.n * 2; i++) parts.push(`${s[i * 2]! * f},${s[i * 2 + 1]! * f}`);
+  } else {
+    for (let i = 0; i < 4; i++) parts.push(`${q.p[i * 2] * f},${q.p[i * 2 + 1] * f}`);
+  }
+  return parts.join(' ');
+}
+
+/** a canvas point inside the projected bent strip: any of its n - 1 quads (the same ones rayBent tests); a flat quad uses pointInQuad */
+export function pointInBent(q: Quad, x: number, y: number): boolean {
+  if (!q.bent) return pointInQuad(q.p, x, y);
+  const s = q.bent.screen;
+  const n = q.bent.n;
+  const quad = [0, 0, 0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < n - 1; i++) {
+    const idx = [i, i + 1, 2 * n - 2 - i, 2 * n - 1 - i];
+    for (let k = 0; k < 4; k++) {
+      quad[k * 2] = s[idx[k]! * 2]!;
+      quad[k * 2 + 1] = s[idx[k]! * 2 + 1]!;
+    }
+    if (pointInQuad(quad, x, y)) return true;
+  }
+  return false;
+}
+
+/**
+ * distance along a ray to the bent strip, or null. the outline cuts it into n - 1 rectangles (a_i, a_i+1, b_i+1, b_i),
+ * each flat: the nearest rayQuad hit. b_i = world[2n - 1 - i].
+ */
+export function rayBent(origin: Vec3, dir: Vec3, q: Quad): number | null {
+  const b = q.bent;
+  if (!b) return rayQuad(origin, dir, q.world);
+  const n = b.n;
+  let best: number | null = null;
+  for (let i = 0; i < n - 1; i++) {
+    const t = rayQuad(origin, dir, [b.world[i]!, b.world[i + 1]!, b.world[2 * n - 2 - i]!, b.world[2 * n - 1 - i]!]);
+    if (t !== null && (best === null || t < best)) best = t;
+  }
+  return best;
 }
 
 /** point inside a convex quad given as 8 numbers, either winding */

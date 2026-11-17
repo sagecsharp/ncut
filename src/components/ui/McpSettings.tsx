@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { shell } from '../../lib/shell';
 import type { McpCopyKind, McpState } from '../../lib/shell';
-import { Switch } from '../../features/properties/controls';
+import { Switch } from './Switch';
 import { useMcpCursors } from '../../store/mcpCursors';
 import { useUi } from '../../store/ui';
 import { mcpAddress, mcpCopyButtons, mcpStatusText } from './mcpText';

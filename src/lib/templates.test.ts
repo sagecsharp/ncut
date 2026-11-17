@@ -5,6 +5,10 @@ import { TEXT_ANIMS_IN, TEXT_ANIMS_LOOP, TEXT_ANIMS_OUT } from '../engine/textAn
 import type { Clip, Project } from '../types';
 import { isVisualClip } from '../types';
 import { CANVAS_PRESETS, createProject } from './factory';
+import { getClipBox } from '../engine/draw';
+import { pictureBox } from '../engine/pivot';
+import { bendMembers, fitBend } from '../features/properties/bendGroup';
+import { worldClip } from '../features/preview/attached';
 import { PROJECT_TEMPLATES, getTemplate } from './templates';
 import { projectDuration } from './timelineOps';
 
@@ -129,6 +133,89 @@ describe('project templates', () => {
       const a = t.build(createProject('a'));
       const b = t.build(createProject('b'));
       expect(strip(a)).toBe(strip(b));
+    }
+  });
+
+  it('curved wall: five cards share one group and span, center -x / W', () => {
+    const p = getTemplate('curved-wall')!.build(createProject('x'));
+    const u = Math.min(p.width, p.height) / 1080;
+    const W = 5 * 300 * u + 4 * 40 * u;
+    const cards = p.clips.filter((c) => c.name.startsWith('card '));
+    expect(cards).toHaveLength(5);
+    const group = cards[0]!.group;
+    expect(group).toBeTruthy();
+    for (const c of cards) {
+      if (!isVisualClip(c)) throw new Error('card is not visual');
+      expect(c.group).toBe(group);
+      expect(c.bend?.angle).toBe(120);
+      expect(c.bend?.span).toBeCloseTo(W, 9);
+      expect(c.bend?.center ?? 0).toBeCloseTo(-c.transform.x / W, 9);
+    }
+    // the title is on the same tube, and the page keeps its own bend keys
+    const title = p.clips.find((c) => c.name === 'title')!;
+    expect(isVisualClip(title) && title.group).toBe(group);
+    expect(isVisualClip(title) && title.bend?.span).toBeCloseTo(W, 9);
+    const page = p.clips.find((c) => c.name === 'page')!;
+    expect(page.keyframes?.['bend.angle']).toHaveLength(2);
+    // the same numbers 'bend together' fits
+    const fit = fitBend(bendMembers(p, cards.filter(isVisualClip), 0), 'width', 0)!;
+    expect(fit.onePlane).toBe(true);
+    for (const c of cards) {
+      const f = fit.per.get(c.id)!;
+      expect(f.span).toBeCloseTo(W, 6);
+      expect(f.center).toBeCloseTo(isVisualClip(c) ? (c.bend?.center ?? 0) : 0, 9);
+    }
+  });
+
+  it('pivots: every joint holds while the arm moves', () => {
+    const p = getTemplate('pivots')!.build(createProject('x'));
+    const named = (n: string) => p.clips.find((c) => c.name === n)!;
+    const visual = (n: string) => {
+      const c = named(n);
+      if (!isVisualClip(c)) throw new Error(`${n} is not visual`);
+      return c;
+    };
+    const boxAt = (n: string, t: number) => getClipBox(p, worldClip(p, visual(n), t));
+    // the middle of the right edge of a picture
+    const rightEnd = (n: string, t: number) => {
+      const pb = pictureBox(boxAt(n, t));
+      const a = (pb.rotation * Math.PI) / 180;
+      return { x: pb.cx + (Math.cos(a) * pb.width) / 2, y: pb.cy + (Math.sin(a) * pb.width) / 2 };
+    };
+    for (let t = 0; t <= 5.75; t += 0.25) {
+      const fore = boxAt('forearm', t);
+      const upperEnd = rightEnd('upper arm', t);
+      expect(fore.cx).toBeCloseTo(upperEnd.x, 6);
+      expect(fore.cy).toBeCloseTo(upperEnd.y, 6);
+      const hand = boxAt('hand', t);
+      const foreEnd = rightEnd('forearm', t);
+      expect(hand.cx).toBeCloseTo(foreEnd.x, 6);
+      expect(hand.cy).toBeCloseTo(foreEnd.y, 6);
+    }
+  });
+
+  it('pivots: the minute hand rotates around the face middle', () => {
+    const p = getTemplate('pivots')!.build(createProject('x'));
+    const named = (n: string) => {
+      const c = p.clips.find((x) => x.name === n)!;
+      if (!isVisualClip(c)) throw new Error(`${n} is not visual`);
+      return c;
+    };
+    const u = Math.min(p.width, p.height) / 1080;
+    for (const t of [0, 0.5, 1.5, 3, 4.25, 6]) {
+      const face = getClipBox(p, worldClip(p, named('clock face'), t));
+      for (const [n, len] of [['minute hand', 150], ['hour hand', 100]] as const) {
+        const box = getClipBox(p, worldClip(p, named(n), t));
+        // the pivot stays on the face middle
+        expect(box.cx).toBeCloseTo(face.cx, 6);
+        expect(box.cy).toBeCloseTo(face.cy, 6);
+        // the picture middle is half the hand away from it, along the hand's own axis
+        const pb = pictureBox(box);
+        expect(Math.hypot(pb.cx - face.cx, pb.cy - face.cy)).toBeCloseTo((len * u) / 2, 6);
+        const a = (box.rotation * Math.PI) / 180;
+        expect(pb.cx - face.cx).toBeCloseTo((len * u) / 2 * Math.sin(a), 6);
+        expect(pb.cy - face.cy).toBeCloseTo(-(len * u) / 2 * Math.cos(a), 6);
+      }
     }
   });
 });

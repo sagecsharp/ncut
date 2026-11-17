@@ -120,8 +120,6 @@
   padding: 0 2px 0 8px;
   color: var(--text-faint);
   font-size: var(--font-size-sm);
-  cursor: ew-resize;
-  touch-action: none;
 }
 .number-field-input {
   flex: 1;
@@ -149,6 +147,23 @@
   color: var(--text-faint);
   font-size: var(--font-size-xs);
 }
+
+.slider-field { position: relative; contain: layout paint; cursor: ew-resize; touch-action: pan-y; user-select: none; }
+.slider-field > * { position: relative; }
+.slider-field .number-field-input { cursor: inherit; }
+.slider-field.is-typing, .slider-field.is-typing .number-field-input { cursor: text; }
+.slider-field::before { content: ''; position: absolute; top: 0; bottom: 0; left: calc(var(--a, 0) * 100%); width: calc((var(--b, 0) - var(--a, 0)) * 100%); background: var(--accent-muted); pointer-events: none; }
+.slider-field::after { content: ''; position: absolute; top: 0; bottom: 0; left: calc(var(--v, 0) * 100% - 0.5px); width: 1px; background: var(--accent); pointer-events: none; }
+.slider-field.is-over::after { left: calc(100% - 3px); width: 3px; }
+.slider-field.is-under::after { left: 0; width: 3px; }
+.slider-field.is-typing::before { opacity: 0.35; }
+.slider-field.is-typing::after,
+.slider-field.is-jog::before, .slider-field.is-jog::after,
+.slider-field.is-mixed::before, .slider-field.is-mixed::after,
+.slider-field.is-disabled::before, .slider-field.is-disabled::after { display: none; }
+.slider-field.is-disabled { cursor: default; }
+.slider-field .number-field-input::placeholder { color: var(--text-faint); }
+html.is-scrubbing, html.is-scrubbing * { cursor: ew-resize !important; user-select: none !important; }
 
 /* mcp server section (McpSettings.tsx), same look as the settings headings */
 .mcp-heading {
@@ -203,3 +218,26 @@
   height: 100%;
   background: var(--accent);
 }
+
+/* the one tooltip (components/ui/tips.ts). a solid token, so a wallpaper never shows through. no transition, on purpose */
+.tip {
+  position: fixed;
+  z-index: 300;
+  max-width: 280px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--solid-4);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  pointer-events: none;
+}
+.tip[hidden],
+.tip [hidden] { display: none; }
+.tip-head { display: flex; align-items: center; gap: 8px; }
+.tip-keys { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--text-dim); }
+.tip .kbd { min-width: 16px; height: 16px; background: var(--solid-1); }
+.tip-or { color: var(--text-faint); }
+.tip-does { color: var(--text-dim); }
+.tip-off { color: var(--warn); }

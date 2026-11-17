@@ -17,6 +17,7 @@ import type { SourceResolver } from '../../engine/draw';
 import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
+import { tip } from '../shell/tip';
 import { INSET_SETTLE_MS, insetBackingSize, insetCssSize, insetDelay, useCameraInset } from './insetState';
 import { usePreviewQuality } from './quality';
 
@@ -116,7 +117,7 @@ function InsetBody({ getResolve, onSkyReady }: { getResolve: () => SourceResolve
 
   if (!hasProject) return null;
   return (
-    <button type="button" className="scene-inset" title="what the output looks like: click to leave the scene view" aria-label="camera view: leave the scene view" onClick={leaveSceneView}>
+    <button type="button" className="scene-inset" {...tip('output inset', { does: 'what the export shows. click to go back to the output' })} aria-label="output inset: leave the scene view" onClick={leaveSceneView}>
       <canvas ref={canvasRef} className="scene-inset-canvas" />
       <span className="scene-inset-label">camera</span>
     </button>

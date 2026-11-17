@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Orbit } from './sceneCamera';
+import type { Quad } from './overlayMath';
 import {
   MIN_ORBIT_DISTANCE,
   SCENE_HINTS,
   SCENE_SCHEME_DEFAULT,
   VIEW_STEP_DEG,
+  bentTouchesRect,
   blenderCommand,
   blenderPress,
   blenderView,
@@ -361,6 +363,42 @@ describe('the selection box', () => {
     expect(quadTouchesRect([Number.NaN, 0, 1, 1, 2, 2, 3, 3], rectOf(-10, -10, 10, 10))).toBe(false);
     expect(quadTouchesRect([0, 0, Number.POSITIVE_INFINITY, 1, 2, 2, 3, 3], rectOf(-10, -10, 10, 10))).toBe(false);
     expect(quadTouchesRect([0, 0, 1, 1], rectOf(-10, -10, 10, 10))).toBe(false);
+  });
+});
+
+describe('bentTouchesRect', () => {
+  // a strip with its ends dropped: edge a runs left to right from y 140 up to 100 and down again, edge b back 100 lower
+  const n = 5;
+  const screen = new Float32Array(n * 4);
+  const world: [number, number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const x = 100 + i * 50;
+    const bow = Math.abs(i - 2) * 20;
+    screen[i * 2] = x;
+    screen[i * 2 + 1] = 100 + bow;
+    world[i] = [x, 100 + bow, 0];
+  }
+  for (let i = 0; i < n; i++) {
+    const x = 300 - i * 50;
+    const bow = Math.abs(n - 1 - i - 2) * 20;
+    screen[(n + i) * 2] = x;
+    screen[(n + i) * 2 + 1] = 200 + bow;
+    world[n + i] = [x, 200 + bow, 0];
+  }
+  const q = { p: [100, 100, 300, 100, 300, 200, 100, 200], visible: true, depth: 1, world: [world[0]!, world[4]!, world[5]!, world[9]!], cx: 200, cy: 150, bent: { n, screen, world } } as Quad;
+  it('picks the strip a box lies in or crosses', () => {
+    expect(bentTouchesRect(q, rectOf(190, 140, 210, 160))).toBe(true);
+    expect(bentTouchesRect(q, rectOf(50, 50, 120, 150))).toBe(true);
+    expect(bentTouchesRect(q, rectOf(190, 0, 210, 400))).toBe(true);
+  });
+  it('leaves what is next to the strip alone', () => {
+    expect(bentTouchesRect(q, rectOf(0, 0, 90, 90))).toBe(false);
+    expect(bentTouchesRect(q, rectOf(310, 100, 400, 300))).toBe(false);
+  });
+  it('misses where the flat quad was but the strip is not', () => {
+    // the strip at x 100..150 only reaches y 140..240, the flat quad ran from y 100
+    expect(bentTouchesRect(q, rectOf(100, 100, 110, 110))).toBe(false);
+    expect(quadTouchesRect(q.p, rectOf(100, 100, 110, 110))).toBe(true);
   });
 });
 

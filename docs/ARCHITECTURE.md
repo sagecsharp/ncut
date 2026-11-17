@@ -58,6 +58,7 @@ engine/shapeTrim.ts      draw on: flatten an outline and cut it to a share of it
 engine/textDepth.ts      block text in 3d: how many side layers a text gets, where they sit, how they are shaded
 engine/clipAnim.ts       ready-made motions for whole clips (in / out / loop), some only for 3d clips
 engine/parent.ts         attached clips: world pose of a clip under its parents (2d, 3d, camera parents)
+engine/pivot.ts          a clip's pivot: the nine spots, the pivot offset of a box, pictureBox (pure)
 engine/clipLook.ts       per-clip color correction + green screen (one small webgl2 program per channel)
 engine/mask.ts           clip masks (box, oval, half, strip, star, heart) with a soft edge
 engine/clipFx.ts         which effect clips sit on which clip (EffectClip.target), cached per clips array
@@ -66,11 +67,11 @@ engine/effects/          effect registry + defs (glsl, one file per pack) + the 
 engine/transitions/      transition registry + defs (glsl) + the webgl2 runner
 engine/scene3d/          3d math, camera rig, model matrices, the webgl2 scene renderer (unlit, or lit by light.ts), the skybox (sky.ts, skyLight.ts, skyFit.ts), depth of field (focus.ts),
                          meshes.ts (plane, box, ball ... and solids pushed out of a 2d outline: outline2d.ts)
-components/ui/           Dialog, NumberField, Toasts, FpsCounter, AppearanceSettings
+components/ui/           Dialog, SliderField (the one number control: drag, type, double click) + sliderMath.ts (its pure rules), tips (the one tooltip layer), Toasts, FpsCounter, AppearanceSettings
 features/editor/         EditorLayout (header, media | preview | properties, timeline) with splitters
 features/projects/       ProjectsScreen
 features/mcp/            McpCursors (the fixed layer that draws the cursors) + locate.ts (a target -> a point on the screen)
-features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k)
+features/shell/          Header, ProjectSettingsDialog, ShortcutsDialog, useShortcuts, the command palette (ctrl+k), tip() and reasons (why an action does nothing now)
 features/media/          MediaPanel (media, text, shapes, effects, transitions, layers tabs), captions tools,
                          favorites.ts (starred effects / transitions, kept in localStorage), transitionBatch.ts
                          (a transition on every cut of a track, shuffle, same length) + transitionApply.ts
@@ -87,7 +88,10 @@ features/preview/        Preview. SceneOverlay (the scene view tools), sceneGizm
                          typed numbers, the selection box; the choice is kept in localStorage),
                          sceneHelpers.ts (focus plane, floor grid, readouts). scrubFeed.ts + scrubPlan.ts: decoded
                          frames for the paused preview while the playhead is dragged forward through a video
-features/properties/     PropertiesPanel. arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
+features/properties/     PropertiesPanel. fieldFeel.ts (the usual range, hard range, step, snap and rest of every number in the
+                         panel; a test pins it to lib/anim.ts), multiEdit.ts + MultiField.tsx (one field for many clips),
+                         pivotPlan.ts + attachPlan.ts (pivot and attach keep the clip in place), bendGroup.ts + bendActions.ts
+                         (several clips bent as one). arrange3d.ts (layouts), place3d.ts + placeActions.ts (in front of the camera,
                          frame with the camera, floor), FocusSection (depth of field), splitLayout.ts + splitActions.ts
                          (split screen: the canvas cut into cells, every selected clip fitted into one),
                          repeat.ts + repeatActions.ts (a row of copies, each a step further), keyTools.ts +
@@ -157,6 +161,19 @@ numbers at draw time (effects get a per-clip `seed`).
   a camera parent pins a 3d clip to the lens (a hud). when ui code attaches or detaches a clip it writes
   the transform from `reparentTransform` in the same undo step so the clip stays where it is on screen.
   drags convert pointer deltas with `worldDeltaToLocal`.
+- pivots: a clip's pivot (`Spatial.pivot`, box fractions) is its position: transform x / y / z say where the pivot is
+  and attached clips count from it, so `engine/parent.ts` never sees it. only the picture hangs off it: `getClipBox`
+  gives px / py, `pictureBox` moves a flat box to its middle, `clipModelMatrix` adds T(-px, -py, 0) after the spin.
+  ui and mcp change a pivot through features/properties/pivotPlan.ts, which keeps the clip and its children in
+  place; attaching goes through attachPlan.ts the same way.
+- bend (`Spatial.bend`): a clip on a plane rolls round a tube of its own, along its width or height. the
+  angle is keyable (`bend.angle`). the renderer draws a bent plane as a strip of 64 quads (`scene3d/meshes.ts`
+  `bendStrip`) with one bent program (`scene3d/bend.ts` puts the bend in the vertex shader, the lit and the unlit
+  plane share it), and every program keeps its own uniforms: a render without a bent plane makes the same calls as
+  before. a 2d clip with a bend goes through the same renderer in its own layer place, seen from the home camera with
+  no fog or light (`draw.ts` `drawBent2d`: bent 2d neighbours share one render, in track order). several clips bend as
+  one when they have the same angle, keys and along, and a center and span fitted to the group
+  (`features/properties/bendGroup.ts`). nothing is shared at draw time.
 - a clip's picture goes through, in this order: the clip look (`clip.adjust`, `clip.chromaKey`), the mask
   (`clip.mask`), then crop / corners / placement / blend. both helpers return a canvas that is only valid
   until the next call on the same channel ('preview' or 'export'), so cache keys for textures include
@@ -299,7 +316,7 @@ scrubbing, dragging clips and zooming, with dozens of clips.
   labels must truncate with ellipsis instead of overflowing. 12px base text, compact 28px controls, small radii, lowercase copy, no emojis.
 - reuse the classes from `styles/base.css` and the components in `components/ui/` before writing new control styles.
 - icons: `lucide-react`, 14-16px. check an icon exists in the installed version before using it.
-- every interactive control has a `title` (tooltip) and works with the keyboard. focus ring = the global 1px accent outline.
+- every interactive control says what it is and works with the keyboard: icon only controls, handles and anything with a key use `tip()` (features/shell/tip.ts, drawn by components/ui/tips.ts); others may keep a `title`. an element with `tip()` never also gets a `title`, and no component sets `aria-describedby` on it. keys in a tip or a menu come from shortcuts.ts, never typed by hand. words follow the word list in docs/FEATURES.md. focus ring = the global 1px accent outline.
 
 ## feature css
 
@@ -419,7 +436,7 @@ the exe is the built web app (`dist/`) in one electron window. the only code in 
 
 ## dev hook
 
-in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, fx }` is available for testing.
+in dev builds `window.__ncut = { useEditor, usePlayback, useUi, session, importFiles, mcp, rig, fx }` is available for testing.
 `fx` has the effect and transition registries plus `checkEffects()` / `checkTransitions()`, which compile
 every shader in the browser and return the ones that fail (an empty list = all good).
 

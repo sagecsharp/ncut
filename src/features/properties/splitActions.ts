@@ -1,5 +1,6 @@
 import { getClipBox } from '../../engine/draw';
 import { resolveCounter } from '../../engine/counter';
+import { pivotOf } from '../../engine/pivot';
 import { resolveClip } from '../../lib/anim';
 import { clamp } from '../../lib/time';
 import { useEditor } from '../../store/editorStore';
@@ -60,8 +61,13 @@ export function splitScreen(ids: readonly string[], kind: SplitKind, gap = 0): v
       had = true;
     }
     if (had) unkeyed++;
-    st.setClipValue(w.id, 'x', t, w.x, skip);
-    st.setClipValue(w.id, 'y', t, w.y, skip);
+    // a pivoted clip is placed by its pivot: the pivot's step from the picture middle (no turn, rotation is 0) is added
+    const src = sources.find((s) => s.id === w.id);
+    const pv = pivotOf(clip);
+    const dx = src ? pv.x * src.width * w.scale : 0;
+    const dy = src ? pv.y * src.height * w.scale : 0;
+    st.setClipValue(w.id, 'x', t, w.x + dx, skip);
+    st.setClipValue(w.id, 'y', t, w.y + dy, skip);
     st.setClipValue(w.id, 'scale', t, w.scale, skip);
     st.setClipValue(w.id, 'rotation', t, 0, skip);
     if (clip.type === 'video' || clip.type === 'image') st.updateClip(w.id, { crop: w.crop }, skip);

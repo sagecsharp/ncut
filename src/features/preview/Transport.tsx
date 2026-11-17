@@ -4,6 +4,8 @@ import { formatTimecode } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { useEditor } from '../../store/editorStore';
 import { useFloatingMenu } from '../timeline/menuBehavior';
+import { REASON_TEXT } from '../shell/reasons';
+import { tip } from '../shell/tip';
 import { usePlayback } from '../../store/playback';
 import './transport.css';
 
@@ -14,24 +16,16 @@ const rateLabel = (n: number) => `${+n.toFixed(2)}x`;
 function SpeedMenu({ x, y, onClose }: { x: number; y: number; onClose(): void }) {
   const ref = useRef<HTMLDivElement>(null);
   const speed = usePlayback((s) => s.speed);
-  const pos = useFloatingMenu(ref, x, y, onClose);
-  // keyboard: focus the current choice on open, arrows move, escape closes (useFloatingMenu)
+  const pos = useFloatingMenu(ref, x, y, onClose, { focusFirst: true });
+  // keyboard: focus the current choice on open (useFloatingMenu does the arrows and escape)
   useEffect(() => {
     const items = ref.current?.querySelectorAll<HTMLButtonElement>('button');
     const i = SPEEDS.indexOf(speed);
     items?.[i >= 0 ? i : 2]?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
-    const items = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next = (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-    items[next]?.focus();
-  };
   return (
-    <div ref={ref} className="menu preview-speed-menu" style={{ left: pos.x, top: pos.y }} role="menu" onKeyDown={onKeyDown}>
+    <div ref={ref} className="menu preview-speed-menu" style={{ left: pos.x, top: pos.y }} role="menu">
       {SPEEDS.map((v) => (
         <button
           key={v}
@@ -96,27 +90,27 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
 
   return (
     <div className="preview-transport">
-      <button className="icon-btn" title="jump to start" aria-label="jump to start" onClick={() => { pb().pause(); pb().seek(0); }}>
+      <button className="icon-btn" {...tip('jump to start', { keys: 'seek-start' })} aria-label="jump to start" onClick={() => { pb().pause(); pb().seek(0); }}>
         <SkipBack size={16} />
       </button>
-      <button className="icon-btn" title="previous frame" aria-label="previous frame" onClick={() => pb().stepFrames(-1)}>
+      <button className="icon-btn" {...tip('previous frame', { keys: 'frame-back' })} aria-label="previous frame" onClick={() => pb().stepFrames(-1)}>
         <StepBack size={16} />
       </button>
       <button
         className="btn btn-primary preview-play"
-        title={playing ? 'pause' : 'play'}
+        {...tip(playing ? 'pause' : 'play', { keys: 'play-pause', off: hasClips ? null : REASON_TEXT.addClip })}
         aria-label={playing ? 'pause' : 'play'}
         disabled={!hasClips}
         onClick={() => pb().toggle()}
       >
         {playing ? <Pause size={16} /> : <Play size={16} />}
       </button>
-      <button className="icon-btn" title="next frame" aria-label="next frame" onClick={() => pb().stepFrames(1)}>
+      <button className="icon-btn" {...tip('next frame', { keys: 'frame-forward' })} aria-label="next frame" onClick={() => pb().stepFrames(1)}>
         <StepForward size={16} />
       </button>
       <button
         className="icon-btn"
-        title="jump to end"
+        {...tip('jump to end', { keys: 'seek-end' })}
         aria-label="jump to end"
         onClick={() => {
           const p = useEditor.getState().project;
@@ -128,7 +122,7 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
       </button>
       <button
         className={`icon-btn${loop ? ' is-active' : ''}`}
-        title={loop ? 'loop on' : 'loop off'}
+        {...tip('loop', { does: 'start again at the end', on: loop })}
         aria-label="toggle loop"
         aria-pressed={loop}
         onClick={() => pb().setLoop(!loop)}
@@ -138,7 +132,7 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
 
       <button
         className={`btn preview-speed mono${rate !== speed ? ' is-shuttle' : ''}`}
-        title="preview speed (export is not affected)"
+        {...tip('preview speed', { does: 'how fast the preview plays. the export is not affected', keys: ['shuttle-back', 'pause', 'shuttle-forward'] })}
         aria-label={`preview speed ${rateLabel(rate)}`}
         aria-haspopup="menu"
         aria-expanded={speedMenu !== null}
@@ -152,7 +146,7 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
       </button>
       {speedMenu && <SpeedMenu x={speedMenu.x} y={speedMenu.y} onClose={closeSpeed} />}
 
-      <div className="preview-time mono" title="current time / total duration">
+      <div className="preview-time mono" title="playhead position / project length">
         <span ref={timeRef}>{formatTimecode(0, fps)}</span>
         <span className="preview-time-sep">/</span>
         <span className="preview-time-total">{totalText}</span>
@@ -162,8 +156,9 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
 
       <button
         className="icon-btn"
-        title={shownVolume === 0 ? 'unmute' : 'mute'}
-        aria-label="toggle mute"
+        {...tip('mute the preview', { does: 'only the preview. the export keeps its sound', on: muted })}
+        aria-label="mute the preview"
+        aria-pressed={muted}
         onClick={() => {
           if (muted && pb().volume === 0) pb().setVolume(1);
           pb().setMuted(!muted);
@@ -178,8 +173,8 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
         max={1}
         step={0.01}
         value={shownVolume}
-        title="master volume"
-        aria-label="master volume"
+        {...tip('preview volume', { does: 'only the preview. the export keeps its sound' })}
+        aria-label="preview volume"
         onChange={(e) => {
           const v = Number(e.target.value);
           // never store 0: keep the last audible volume so the mute button can bring it back
@@ -191,7 +186,7 @@ export const Transport = memo(function Transport({ fullscreen, onToggleFullscree
       />
       <button
         className="icon-btn"
-        title={fullscreen ? 'exit fullscreen' : 'fullscreen'}
+        {...tip(fullscreen ? 'exit fullscreen' : 'fullscreen')}
         aria-label="toggle fullscreen"
         onClick={onToggleFullscreen}
       >

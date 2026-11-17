@@ -4,7 +4,7 @@
  * always was. one webgl2 context per channel, like the effects runner. the result is a transparent canvas
  * (premultiplied alpha) that the 2d frame renderer draws on top of what is already there. a render with a sky
  * (renderScene `sky`) first draws the sky with a program of its own (SKY_VS / SKY_FS), a render without one makes the
- * calls it always made.
+ * calls it always made. a render with a bent plane (bend.ts) draws those planes with a third program (BENT_VS / LIT_FS).
  */
 import type { SceneFog, Shape3D } from '../../types';
 import { createCanvas } from '../../lib/canvas';
@@ -13,7 +13,8 @@ import { mulInto } from './math';
 import { fogOn, writeFogUniforms } from './fog';
 import { type FocusRig, MAX_BLUR, blurReach, boundFocus, meshNeedsBlur } from './focus';
 import { type LightRig, planeLight } from './light';
-import { type MeshGroup, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
+import { type PlaneBend, bentVertex } from './bend';
+import { type MeshGroup, bendStrip, interleave, interleaveLit, knownShape, litShapeMesh, shapeMesh } from './meshes';
 import { paintOrder } from './order';
 import { solidOutline } from './outline3d';
 import type { SkyDraw } from './sky';
@@ -71,6 +72,8 @@ export interface Plane3D {
    * a plane gets one light (its normal turned to the eye, light.ts planeLight); a solid is lit per vertex.
    */
   lit?: number;
+  /** a bent plane (bend.ts planeBend): drawn with the bent program and the strip of its axis. planes only */
+  bend?: PlaneBend;
   /**
    * key-less pictures only: the same number on two renders means the same pixels in the same image object (the copies of
    * one motion blur), so the upload of the earlier render may be kept. missing = upload as usual.
@@ -308,6 +311,12 @@ export function litFragment(src: string): string {
   return src.replace(decl, 'uniform vec4 u_light;\nin vec3 v_light;\n' + decl).replace(fog, LIGHT_LINE + fog);
 }
 const LIT_FS = litFragment(PLANE_FS);
+/** LIT_VS with the bend in it (bend.ts bentVertex): the one program of every bent plane, lit or not */
+export const BENT_VS = bentVertex(LIT_VS);
+/** what lightUniform gets as the env of a render that is not lit (it never reads it without a lit amount) */
+const NO_ENV = new Float32Array(15);
+/** dev counters (bench.sceneStats): renders, program switches inside renders, bent planes drawn. never read by the app */
+export const sceneStats = { renders: 0, switches: 0, bent: 0 };
 /** the sky: one triangle over the whole frame, the cube direction of each pixel from u_ray (sky.ts skyRay) */
 export const SKY_VS = `#version 300 es
 uniform mat3 u_ray;
@@ -396,9 +405,10 @@ export function canReuseScratch(prevImage: unknown, prevSerial: number | undefin
 
 /**
  * what u_light holds for one plane of a lit render (see LIT_VS): unlit (1, 1, 1, 0); a lit solid (1, 1, 1, k), lit in
- * the vertex shader; a lit plane (its light, 0), one normal worked out here. k = lit clamped to 0..1.
+ * the vertex shader; a lit plane (its light, 0), one normal worked out here. k = lit clamped to 0..1. a bent plane is lit
+ * per vertex like a solid: its normals bend with it (`bent`).
  */
-export function lightUniform(lit: number | undefined, shape: Shape3D, model: ArrayLike<number>, eye: ArrayLike<number>, env: ArrayLike<number>, out: Float32Array): void {
+export function lightUniform(lit: number | undefined, shape: Shape3D, model: ArrayLike<number>, eye: ArrayLike<number>, env: ArrayLike<number>, out: Float32Array, bent = false): void {
   const k = lit !== undefined && lit > 0 ? (lit < 1 ? lit : 1) : 0;
   if (!(k > 0)) {
     out[0] = 1;
@@ -407,7 +417,7 @@ export function lightUniform(lit: number | undefined, shape: Shape3D, model: Arr
     out[3] = 0;
     return;
   }
-  if (shape !== 'plane') {
+  if (shape !== 'plane' || bent) {
     out[0] = 1;
     out[1] = 1;
     out[2] = 1;
@@ -472,6 +482,22 @@ export function planeNeedsBlur(model: ArrayLike<number>, viewProj: ArrayLike<num
   return dc - ext < f.distance - f.range || dc + ext > f.distance + f.range;
 }
 
+/**
+ * can any part of a bent plane be out of focus? the clip space w is linear in the unit point, so its extremes over the
+ * bent box (bend.ts PlaneBend.box) are exact. for a flat box (-0.5..0.5, -0.5..0.5, 0..0) it is planeNeedsBlur.
+ */
+export function bentNeedsBlur(model: ArrayLike<number>, box: ArrayLike<number>, viewProj: ArrayLike<number>, f: FocusRig | null): boolean {
+  if (!f) return false;
+  const w = (x: number, y: number, z: number) => viewProj[3]! * x + viewProj[7]! * y + viewProj[11]! * z;
+  const wx = w(model[0]!, model[1]!, model[2]!);
+  const wy = w(model[4]!, model[5]!, model[6]!);
+  const wz = w(model[8]!, model[9]!, model[10]!);
+  const w0 = w(model[12]!, model[13]!, model[14]!) + viewProj[15]!;
+  const lo = w0 + Math.min(wx * box[0]!, wx * box[1]!) + Math.min(wy * box[2]!, wy * box[3]!) + Math.min(wz * box[4]!, wz * box[5]!);
+  const hi = w0 + Math.max(wx * box[0]!, wx * box[1]!) + Math.max(wy * box[2]!, wy * box[3]!) + Math.max(wz * box[4]!, wz * box[5]!);
+  return lo < f.distance - f.range || hi > f.distance + f.range;
+}
+
 /** one run of indices of a faced solid with the picture it shows */
 interface FaceRun {
   tex: WebGLTexture;
@@ -519,11 +545,28 @@ interface PlaneLocs {
   underUv: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
   env: WebGLUniformLocation | null;
+  /** the bend (k, c, s, o) and (axis, lift): only on the bent program */
+  bend: WebGLUniformLocation | null;
+  bendMore: WebGLUniformLocation | null;
 }
 
 interface PlaneProgram {
   program: WebGLProgram;
   loc: PlaneLocs;
+  /** the render (this.frame) whose per-render uniforms this program holds (frameUniforms). -1 = none yet */
+  frame: number;
+  /** the u_light this program holds now. NaN = unknown */
+  lastLight: Float32Array;
+}
+
+/** what the per-render uniforms of a program are made from (one record, reused by every render) */
+interface FrameState {
+  fogging: boolean;
+  eye: Vec3;
+  /** light rig env when the render is lit, else null */
+  env: Float32Array | null;
+  focus: FocusRig | null;
+  h: number;
 }
 
 class SceneRenderer {
@@ -535,10 +578,16 @@ class SceneRenderer {
   private lit: PlaneProgram | null = null;
   private litState: 'none' | 'started' | 'ready' | 'failed' = 'none';
   private litPending: { program: WebGLProgram; vs: WebGLShader; fs: WebGLShader } | null = null;
+  private bent: PlaneProgram | null = null;
+  private bentState: 'none' | 'started' | 'ready' | 'failed' = 'none';
+  private bentPending: { program: WebGLProgram; vs: WebGLShader; fs: WebGLShader } | null = null;
+  /** the strips of bent planes, by bend axis (bend.ts / meshes.ts bendStrip) */
+  private strips: [Mesh | null, Mesh | null] = [null, null];
+  private frameState: FrameState = { fogging: false, eye: [0, 0, 0], env: null, focus: null, h: 0 };
+  /** the order of a render that paints in the given order (render `ordered`): 0..n-1, reused */
+  private orderBuf: number[] = [];
   private litMeshes = new Map<Shape3D, Mesh>();
   private lightBuf = new Float32Array(4);
-  /** the u_light the program holds now (nan = not sent yet in this render): an equal one is not sent again */
-  private lastLight = new Float32Array(4);
   private lineProg: WebGLProgram;
   private outlineProg: WebGLProgram;
   private oMvp: WebGLUniformLocation | null;
@@ -596,7 +645,7 @@ class SceneRenderer {
     this.canvas = canvas;
     this.gl = gl;
     const basep = this.link(PLANE_VS, PLANE_FS);
-    this.base = { program: basep, loc: this.locate(basep) };
+    this.base = { program: basep, loc: this.locate(basep), frame: -1, lastLight: new Float32Array(4).fill(NaN) };
     this.prog = this.base;
     // only enables it: the lit program is compiled and linked without asking for the status (startLit)
     gl.getExtension('KHR_parallel_shader_compile');
@@ -664,6 +713,12 @@ class SceneRenderer {
         for (const b of m.buffers) gl.deleteBuffer(b);
       }
       this.litMeshes.clear();
+      for (const m of this.strips) {
+        if (!m) continue;
+        gl.deleteVertexArray(m.vao);
+        for (const b of m.buffers) gl.deleteBuffer(b);
+      }
+      this.strips = [null, null];
       for (const o of this.outlines.values()) this.freeOutline(o);
       this.outlines.clear();
       gl.deleteVertexArray(this.lineVao);
@@ -675,6 +730,13 @@ class SceneRenderer {
         gl.deleteShader(this.litPending.vs);
         gl.deleteShader(this.litPending.fs);
         this.litPending = null;
+      }
+      if (this.bent) gl.deleteProgram(this.bent.program);
+      if (this.bentPending) {
+        gl.deleteProgram(this.bentPending.program);
+        gl.deleteShader(this.bentPending.vs);
+        gl.deleteShader(this.bentPending.fs);
+        this.bentPending = null;
       }
       gl.deleteProgram(this.lineProg);
       gl.deleteProgram(this.outlineProg);
@@ -728,6 +790,8 @@ class SceneRenderer {
       underUv: at('u_underUv'),
       light: at('u_light'),
       env: at('u_env'),
+      bend: at('u_bend'),
+      bendMore: at('u_bendMore'),
     };
   }
 
@@ -773,9 +837,56 @@ class SceneRenderer {
       this.litState = 'failed';
       return null;
     }
-    this.lit = { program: pend.program, loc: this.locate(pend.program) };
+    this.lit = { program: pend.program, loc: this.locate(pend.program), frame: -1, lastLight: new Float32Array(4).fill(NaN) };
     this.litState = 'ready';
     return this.lit;
+  }
+
+  /**
+   * start compiling the bent program (BENT_VS / LIT_FS), without asking for any status, like startLit. the first render
+   * with a bent plane asks (bentProgram). no-op once started or when the context is gone.
+   */
+  startBent(): void {
+    if (this.bentState !== 'none' || this.isLost()) return;
+    const gl = this.gl;
+    try {
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, BENT_VS);
+      gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, LIT_FS);
+      gl.compileShader(fs);
+      const program = gl.createProgram()!;
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      this.bentPending = { program, vs, fs };
+      this.bentState = 'started';
+    } catch {
+      this.bentState = 'failed';
+    }
+  }
+
+  /** the bent program, once it is linked. null = it failed (bent planes are drawn flat) */
+  private bentProgram(): PlaneProgram | null {
+    if (this.bentState === 'ready') return this.bent;
+    if (this.bentState === 'failed') return null;
+    this.startBent();
+    const pend = this.bentPending;
+    if (!pend) return null;
+    this.bentPending = null;
+    const gl = this.gl;
+    if (!gl.getProgramParameter(pend.program, gl.LINK_STATUS)) {
+      console.warn('[ncut] the bent 3d program failed, bent clips are drawn flat', gl.getProgramInfoLog(pend.program), gl.getShaderInfoLog(pend.vs), gl.getShaderInfoLog(pend.fs));
+      gl.deleteProgram(pend.program);
+      gl.deleteShader(pend.vs);
+      gl.deleteShader(pend.fs);
+      this.bentState = 'failed';
+      return null;
+    }
+    this.bent = { program: pend.program, loc: this.locate(pend.program), frame: -1, lastLight: new Float32Array(4).fill(NaN) };
+    this.bentState = 'ready';
+    return this.bent;
   }
 
   private link(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -957,6 +1068,66 @@ class SceneRenderer {
     const mesh: Mesh = { vao, count: data.indices.length, groups: data.groups, buffers: [vbo, ibo] };
     this.litMeshes.set(shape, mesh);
     return mesh;
+  }
+
+  /** the gpu strip of a bent plane (position and uv like mesh()), built on first use per bend axis */
+  private strip(axis: 0 | 1): Mesh {
+    const hit = this.strips[axis];
+    if (hit) return hit;
+    const gl = this.gl;
+    const data = bendStrip(axis);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, interleave(data), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    const mesh: Mesh = { vao, count: data.indices.length, groups: data.groups, buffers: [vbo, ibo] };
+    this.strips[axis] = mesh;
+    return mesh;
+  }
+
+  /** 0..n-1, in a reused array (the order of a render that paints in the given order) */
+  private inOrder(n: number): number[] {
+    const o = this.orderBuf;
+    if (o.length > n) o.length = n;
+    for (let i = o.length; i < n; i++) o.push(i);
+    return o;
+  }
+
+  /**
+   * the per-render uniforms of a program: the picture under a side, fog, the eye, the light env and the focus. a render
+   * sends them once per program, the first time that program is used (render()).
+   */
+  private frameUniforms(p: PlaneProgram, f: FrameState): void {
+    const gl = this.gl;
+    const loc = p.loc;
+    p.frame = this.frame;
+    p.lastLight.fill(NaN);
+    // the picture under a side's picture reads texture unit 1: it always holds a texture (the blank one between solids)
+    gl.uniform1i(loc.under, 1);
+    gl.uniform1f(loc.underOn, 0);
+    // fog: set once per render. off = one uniform at 0, the shader skips it.
+    gl.uniform1f(loc.fogOn, f.fogging ? 1 : 0);
+    if (f.fogging) {
+      gl.uniform3f(loc.fogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
+      gl.uniform3f(loc.fogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
+    }
+    // the bent program reads the eye in its vertex shader (the normal of a lit bent plane): always, not only with fog
+    if (f.fogging || loc.bend !== null) gl.uniform3f(loc.eye, f.eye[0], f.eye[1], f.eye[2]);
+    if (f.env) gl.uniform3fv(loc.env, f.env);
+    // depth of field: set once per render. off = one uniform at 0 for every mesh.
+    if (f.focus) {
+      gl.uniform4f(loc.focus, f.focus.distance, f.focus.range, blurReach(f.focus), f.focus.strength * MAX_BLUR);
+      gl.uniform1f(loc.frameH, f.h);
+    } else gl.uniform1f(loc.focusOn, 0);
   }
 
   private freeOutline(o: OutlineGpu | null): void {
@@ -1282,7 +1453,7 @@ class SceneRenderer {
     }
   }
 
-  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null, light: LightRig | null = null, sky: SkyDraw | null = null): GLCanvas | null {
+  render(planes: Plane3D[], lines: Lines3D[], viewProj: Mat4, eye: Vec3, w: number, h: number, fog: SceneFog | null = null, focus: FocusRig | null = null, light: LightRig | null = null, sky: SkyDraw | null = null, ordered = false): GLCanvas | null {
     const gl = this.gl;
     if (this.isLost()) return null;
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -1290,6 +1461,7 @@ class SceneRenderer {
       this.canvas.height = h;
     }
     this.frame++;
+    sceneStats.renders++;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, w, h);
     gl.clearColor(0, 0, 0, 0);
@@ -1310,38 +1482,38 @@ class SceneRenderer {
     // each plane is drawn twice: its solid pixels write depth, which sorts out planes that cut
     // through each other; its see-through pixels (soft edges, shadows, fades) only test depth, so
     // they never punch a hole into a plane that is painted after them.
-    const order = paintOrder(planes, viewProj, eye);
+    // ordered (the bent 2d route): the given order, and no depth test between planes (the depth is cleared per plane)
+    const order = ordered ? this.inOrder(planes.length) : paintOrder(planes, viewProj, eye);
 
     // a render with a lit plane runs the lit program for all its planes (an unlit one gets a light of 1), any other render
     // the plane program exactly as before
     const litProg = light ? this.litProgram() : null;
     const lighting = litProg !== null;
-    this.prog = litProg ?? this.base;
-    const loc = this.prog.loc;
-    gl.useProgram(this.prog.program);
-    this.lastLight.fill(NaN);
-    // the picture under a side's picture reads texture unit 1: it always holds a texture (the blank one between solids)
-    gl.uniform1i(loc.under, 1);
-    gl.uniform1f(loc.underOn, 0);
-    this.bindUnder(null);
-    gl.activeTexture(gl.TEXTURE0);
+    // the bent program is only asked for (and compiled) when a plane of this render is bent
+    let anyBent = false;
+    for (let i = 0; i < planes.length; i++) {
+      if (planes[i]!.bend) {
+        anyBent = true;
+        break;
+      }
+    }
+    const bentProg = anyBent ? this.bentProgram() : null;
+    const main = litProg ?? this.base;
     this.eyeNow = eye;
-    // fog: set once per render. off = one uniform at 0, the shader skips it.
     const fogging = fogOn(fog);
     this.fogging = fogging;
     writeFogUniforms(fog, this.fogBuf);
-    gl.uniform1f(loc.fogOn, fogging ? 1 : 0);
-    if (fogging) {
-      gl.uniform3f(loc.fogColor, this.fogBuf[0]!, this.fogBuf[1]!, this.fogBuf[2]!);
-      gl.uniform3f(loc.fogRange, this.fogBuf[3]!, this.fogBuf[4]!, this.fogBuf[5]!);
-      gl.uniform3f(loc.eye, eye[0], eye[1], eye[2]);
-    }
-    if (lighting) gl.uniform3fv(loc.env, light!.env);
-    // depth of field: set once per render. off = one uniform at 0 for every mesh.
-    if (focus) {
-      gl.uniform4f(loc.focus, focus.distance, focus.range, blurReach(focus), focus.strength * MAX_BLUR);
-      gl.uniform1f(loc.frameH, h);
-    } else gl.uniform1f(loc.focusOn, 0);
+    const fs = this.frameState;
+    fs.fogging = fogging;
+    fs.eye = eye;
+    fs.env = lighting ? light!.env : null;
+    fs.focus = focus;
+    fs.h = h;
+    this.prog = main;
+    gl.useProgram(main.program);
+    this.frameUniforms(main, fs);
+    this.bindUnder(null);
+    gl.activeTexture(gl.TEXTURE0);
     // the key-less picture that was uploaded last, and whether it got mips: the next plane with the same image object
     // (the planes of a stack share their picture) binds that texture again instead of uploading it once more
     this.slot = 0;
@@ -1357,6 +1529,22 @@ class SceneRenderer {
       const offsetUnits = -4 * (plane.layer ?? index);
       gl.polygonOffset(0, offsetUnits);
       const shape = knownShape(plane.shape);
+      // a bent plane: its program and strip. without the bent program (failed) it is drawn flat
+      const bend = shape === 'plane' && bentProg !== null ? (plane.bend ?? null) : null;
+      const want = bend ? bentProg! : main;
+      if (want !== this.prog) {
+        gl.useProgram(want.program);
+        // drawOutline gives back this.prog.program: it must be the program in use now
+        this.prog = want;
+        sceneStats.switches++;
+        if (want.frame !== this.frame) this.frameUniforms(want, fs);
+      }
+      const loc = this.prog.loc;
+      if (ordered) {
+        // clear depth respects the depth mask: open it first
+        gl.depthMask(true);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+      }
       // a line around a solid (nothing to draw for empty pieces, a zero width or a see-through color)
       const ol = plane.outline;
       const line = shape !== 'plane' && ol && ol.width > 0 && ol.color[3] > 0 ? this.outlineGpu(shape, ol) : null;
@@ -1367,12 +1555,14 @@ class SceneRenderer {
         this.drawOutline(plane, shape, line!, offsetUnits, this.mesh(shape).vao);
         continue;
       }
-      const blurred = focus !== null && (shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
+      const blurred = focus !== null && (bend ? bentNeedsBlur(plane.model, bend.box, viewProj, focus) : shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
       const ownTex = this.ownTexture(plane, blurred);
       if (!ownTex) continue;
-      if (lighting) lightUniform(plane.lit, shape, plane.model, eye, light!.env, this.lightBuf);
-      const litSolid = lighting && this.lightBuf[3]! > 0;
-      const mesh = litSolid ? this.litMesh(shape) : this.mesh(shape);
+      if (lighting || bend) lightUniform(lighting ? plane.lit : undefined, shape, plane.model, eye, lighting ? light!.env : NO_ENV, this.lightBuf, bend !== null);
+      // lit in the vertex shader: a lit solid, or a lit bent plane
+      const perVertex = (lighting || bend !== null) && this.lightBuf[3]! > 0;
+      const litSolid = perVertex && !bend;
+      const mesh = bend ? this.strip(bend.axis) : litSolid ? this.litMesh(shape) : this.mesh(shape);
       // pictures on single sides: set up before anything is drawn (they change the bound texture)
       const runs = shape !== 'plane' && plane.faces ? this.faceRuns(plane, mesh, ownTex, blurred) : null;
       if (hollow && !runs) {
@@ -1389,14 +1579,19 @@ class SceneRenderer {
       }
       // uniformMatrix4fv copies the numbers at the call, so one buffer serves every plane
       gl.uniformMatrix4fv(loc.mvp, false, mulInto(this.mvpBuf, viewProj, plane.model));
-      if (fogging || litSolid) gl.uniformMatrix4fv(loc.model, false, plane.model);
-      if (lighting) {
+      if (fogging || perVertex) gl.uniformMatrix4fv(loc.model, false, plane.model);
+      if (lighting || bend) {
         const lb = this.lightBuf;
-        const ll = this.lastLight;
+        const ll = this.prog.lastLight;
         if (lb[0] !== ll[0] || lb[1] !== ll[1] || lb[2] !== ll[2] || lb[3] !== ll[3]) {
           gl.uniform4f(loc.light, lb[0]!, lb[1]!, lb[2]!, lb[3]!);
           ll.set(lb);
         }
+      }
+      if (bend) {
+        gl.uniform4f(loc.bend, bend.k, bend.c, bend.s, bend.o);
+        gl.uniform2f(loc.bendMore, bend.axis, bend.lift);
+        sceneStats.bent++;
       }
       gl.uniform1f(loc.alpha, Math.min(1, plane.alpha));
       // the stack correction runs on the final texel alpha, so the solid / see-through pass test below it sees the corrected
@@ -1553,22 +1748,30 @@ export function renderScene(
   light: LightRig | null = null,
   /** the sky behind the planes (sky.ts skyDrawFor). null = none. a render with only a sky draws the sky alone */
   sky: SkyDraw | null = null,
+  /** paint in the given order, no depth test between planes (bent 2d clips) */
+  ordered = false,
 ): GLCanvas | null {
   if (width < 1 || height < 1 || (planes.length === 0 && lines.length === 0 && !sky)) return null;
   let r = getRenderer(channel);
   if (!r) return null;
   const fo = focus === undefined ? boundFocus(viewProj) : focus;
-  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky);
+  const out = r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky, ordered);
   if (out || !r.isLost()) return out;
   // the context was lost: try once more on a fresh renderer (getRenderer drops the lost one)
   r = getRenderer(channel);
-  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky) : null;
+  return r ? r.render(planes, lines, viewProj, eye, width, height, fog, fo, light, sky, ordered) : null;
 }
 
 /** start compiling the lit program of a channel's renderer before its first lit frame. no renderer yet = nothing to do. */
 export function warmSceneLight(channel: string): void {
   const r = renderers.get(channel);
   if (r) r.startLit();
+}
+
+/** start compiling the bent program of a channel's renderer before its first bent frame. makes the renderer when there is none (a 2d only project has no 3d clip to make it) */
+export function warmSceneBend(channel: string): void {
+  const r = getRenderer(channel);
+  if (r) r.startBent();
 }
 
 /** give back the sky cube of a channel's renderer (the sky was taken off). no renderer = nothing to do */

@@ -1,6 +1,5 @@
 import { roundShown } from '../../components/ui/numberFormat';
 import { memo, useMemo } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import {
   CLIP_MOTIONS_IN,
   CLIP_MOTIONS_LOOP,
@@ -11,10 +10,11 @@ import {
 } from '../../engine/clipAnim';
 import { MOTION_BLUR_STYLES } from '../../types';
 import type { ClipAnim, MotionBlurStyle, VisualClip } from '../../types';
-import { Row, Section, SliderRow, Switch } from './controls';
+import { FeelField, Row, Section, SliderRow, Switch } from './controls';
+import type { FeelKey } from './fieldFeel';
 import { DEFAULT_MOTION_BLUR, setBlurStyle, setBlurValue } from './colorLogic';
 import { visibleMotions } from './motionLogic';
-import { beginEdit, patchClip } from './edit';
+import { patchClip } from './edit';
 
 interface AnimRowProps {
   label: string;
@@ -23,12 +23,14 @@ interface AnimRowProps {
   value: ClipAnim | null | undefined;
   defaultDuration: number;
   durationTitle: string;
+  /** the duration field's feel: the in and out time or the loop time */
+  feel: Extract<FeelKey, 'motionDuration' | 'motionLoop'>;
   /** live = the duration field is being scrubbed (one undo step per gesture) */
   onChange: (next: ClipAnim | null, live: boolean) => void;
 }
 
 /** none + a list of ready-made motions, with a duration field once one is picked. shared by text and clip motion. */
-export function MotionRow({ label, title, list, value, defaultDuration, durationTitle, onChange }: AnimRowProps) {
+export function MotionRow({ label, title, list, value, defaultDuration, durationTitle, feel, onChange }: AnimRowProps) {
   const known = value ? list.some((a) => a.id === value.id) : true;
   return (
     <Row label={label} title={title}>
@@ -48,16 +50,12 @@ export function MotionRow({ label, title, list, value, defaultDuration, duration
         ))}
       </select>
       {value ? (
-        <NumberField
+        <FeelField
           className="props-num"
-          suffix="s"
+          feel={feel}
+          rest={defaultDuration}
           title={durationTitle}
           value={value.duration}
-          min={0.1}
-          max={10}
-          step={0.1}
-          precision={2}
-          onStart={beginEdit}
           onChange={(v) => onChange({ id: value.id, duration: v }, true)}
         />
       ) : null}
@@ -87,6 +85,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
         value={clip.motionIn}
         defaultDuration={DEFAULT_CLIP_MOTION_IN}
         durationTitle="how long the entrance takes (seconds)"
+        feel="motionDuration"
         onChange={set('motionIn')}
       />
       <MotionRow
@@ -96,6 +95,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
         value={clip.motionOut}
         defaultDuration={DEFAULT_CLIP_MOTION_OUT}
         durationTitle="how long the exit takes (seconds)"
+        feel="motionDuration"
         onChange={set('motionOut')}
       />
       <MotionRow
@@ -105,6 +105,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
         value={clip.motionLoop}
         defaultDuration={DEFAULT_CLIP_MOTION_LOOP}
         durationTitle="seconds per cycle"
+        feel="motionLoop"
         onChange={set('motionLoop')}
       />
       <Row label="motion blur" title="blur how the clip moves" wide>
@@ -136,20 +137,17 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
             </div>
           </Row>
           <SliderRow
-            label="amount"
+            label="shutter"
             title="how long the shutter stays open, as a share of one frame (%)"
             value={roundShown(clip.motionBlur.shutter * 100, 0)}
-            min={0}
-            max={200}
-            suffix="%"
+            feel="blurAmount"
             onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'shutter', v / 100) }, true)}
           />
           <SliderRow
             label="smoothness"
             title="how many copies are mixed. more is smoother and slower."
             value={clip.motionBlur.samples}
-            min={2}
-            max={32}
+            feel="blurSmoothness"
             onChange={(v) => patchClip(id, { motionBlur: setBlurValue(clip.motionBlur, 'samples', v) }, true)}
           />
         </>

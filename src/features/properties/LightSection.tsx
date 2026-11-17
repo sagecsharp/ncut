@@ -66,9 +66,7 @@ export const LightSection = memo(function LightSection({ light }: { light: Scene
             label="sun"
             title="share of the sun in the light (%)"
             value={roundShown(light.sun * 100, 0)}
-            min={0}
-            max={100}
-            suffix="%"
+            feel="sun"
             onChange={(v) => setLight(setSunPercent(light, v), true)}
           />
           <Row label="sun color" title="color of the sun">
@@ -78,20 +76,14 @@ export const LightSection = memo(function LightSection({ light }: { light: Scene
             label="sun turn"
             title="where the sun stands around the scene (deg). 0 = behind the camera"
             value={light.sunTurn}
-            min={-180}
-            max={180}
-            precision={1}
-            suffix="deg"
+            feel="sunTurn"
             onChange={(v) => setLight(setSunTurn(light, v), true)}
           />
           <SliderRow
             label="sun height"
             title="how high the sun stands (deg). 90 = straight above"
             value={light.sunHeight}
-            min={0}
-            max={90}
-            precision={1}
-            suffix="deg"
+            feel="sunHeight"
             onChange={(v) => setLight(setSunHeight(light, v), true)}
           />
         </>

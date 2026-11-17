@@ -1,12 +1,11 @@
 import { roundShown } from '../../components/ui/numberFormat';
 import { memo } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import { skyLightOf } from '../../engine/scene3d/light';
 import { useEditor } from '../../store/editorStore';
 import type { SceneFog } from '../../types';
-import { ColorField, Row, Section, SliderRow, Switch } from './controls';
-import { beginEdit, liveOpts } from './edit';
-import { FOG_GAP, FOG_MAX, defaultFog, setFogAmount, setFogFar, setFogNear } from './fogLogic';
+import { ColorField, FeelField, Row, Section, SliderRow, Switch } from './controls';
+import { liveOpts } from './edit';
+import { FOG_GAP, defaultFog, setFogAmount, setFogFar, setFogNear } from './fogLogic';
 
 const setFog = (fog: SceneFog | null, live = false) => useEditor.getState().updateProject({ fog }, live ? liveOpts() : undefined);
 
@@ -27,28 +26,19 @@ export const FogSection = memo(function FogSection({ fog, background }: { fog: S
             <ColorField title="fog color" value={fog.color} onChange={(c) => setFog({ ...fog, color: c }, true)} />
           </Row>
           <Row label="starts at" title="distance from the camera where the fog starts (px)" wide>
-            <NumberField
-              className="props-grow"
-              suffix="px"
+            <FeelField
+              feel="fogNear"
               title="fog starts at (px)"
               value={fog.near}
-              min={0}
-              max={FOG_MAX - FOG_GAP}
-              precision={0}
-              onStart={beginEdit}
               onChange={(v) => setFog(setFogNear(fog, v), true)}
             />
           </Row>
           <Row label="full at" title="distance from the camera where the fog is at full strength (px)" wide>
-            <NumberField
-              className="props-grow"
-              suffix="px"
+            <FeelField
+              feel="fogFar"
+              min={fog.near + FOG_GAP}
               title="fog is full at (px)"
               value={fog.far}
-              min={fog.near + FOG_GAP}
-              max={FOG_MAX}
-              precision={0}
-              onStart={beginEdit}
               onChange={(v) => setFog(setFogFar(fog, v), true)}
             />
           </Row>
@@ -56,9 +46,7 @@ export const FogSection = memo(function FogSection({ fog, background }: { fog: S
             label="strength"
             title="the most the fog covers (%)"
             value={roundShown(fog.amount * 100, 0)}
-            min={0}
-            max={100}
-            suffix="%"
+            feel="fogAmount"
             onChange={(v) => setFog(setFogAmount(fog, v), true)}
           />
         </>

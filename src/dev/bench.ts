@@ -6,18 +6,22 @@
  * - `export`  runs the real exporter and reports where the time went
  * - `litScene` a lit 3d scene (sky, floor, cards, solids, a video screen) with options; { lit: false } is the same scene with no lit field
  * - `skyScene` litScene in front of a labelled skybox ({ alone } keeps a 2d clip under everything, { sky: false } is the baseline)
+ * - `bendScene` a bent 3d and 2d scene (cards on one tube, a bent text, a rolling page); { bend: false } is the same scene flat. `sceneStats` counts renders, program switches and bent planes
  * - `coldFrame` the first frame on a fresh renderer against the second: what the lit shader compile costs
  * - `golden`  stores frames in indexeddb ('ncut-bench') and compares later builds against them, so a
  *             speedup can prove that it did not change a single pixel
  */
 import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, EncodedPacketSink, EncodedVideoPacketSource, Input, Mp4OutputFormat, Output, VideoSampleSink } from 'mediabunny';
-import type { Clip, ImageClip, MediaAsset, Project, SceneLight, VideoClip } from '../types';
+import type { Clip, ClipBend, ImageClip, MediaAsset, Project, SceneLight, TextClip, VideoClip } from '../types';
 import { CANVAS_PRESETS, createCameraClip, createClipFromAsset, createEffectClip, createProject, createShapeClip, createTextClip, createTrack } from '../lib/factory';
 import { PROJECT_TEMPLATES, getTemplate } from '../lib/templates';
 import { ensureProjectFonts } from '../lib/fonts';
 import { projectDuration } from '../lib/timelineOps';
 import type { DrawSource, SourceResolver } from '../engine/draw';
 import { releaseRenderResources, renderFrame } from '../engine/draw';
+import { homeDistance } from '../engine/scene3d/camera';
+import { sceneStats } from '../engine/scene3d/renderer';
+import { bendMembers, fitBend } from '../features/properties/bendGroup';
 import { SKY_SIDES, type SkyPicture, skyFaceSize, sourceFaceOf } from '../engine/scene3d/sky';
 import { beginExport, endExport } from '../engine/exportState';
 import { exportProject, outputSize } from '../features/export/exporter';
@@ -498,6 +502,227 @@ function skyScene(o: SkySceneOptions = {}): Project {
   return p;
 }
 
+interface BendSceneOptions {
+  width?: number;
+  height?: number;
+  /** default 30 (preview vs export frame indices: at fps 30, 0.5 s = frame 15) */
+  fps?: number;
+  seconds?: number;
+  /** false = the same scene with no bend field and no bend keys at all */
+  bend?: boolean;
+  /** the 2d parts (default true) */
+  twoD?: boolean;
+  /** how many 2d letters bend together as one flat run (default 12) */
+  letters?: number;
+  /** default true */
+  fog?: boolean;
+}
+
+/** a bent scene: every path the bend takes. bend false is the same scene flat (the cost of bending = the difference) */
+function bendScene(o: BendSceneOptions = {}): Project {
+  const width = o.width ?? 1920;
+  const height = o.height ?? 1080;
+  const fps = o.fps ?? 30;
+  const seconds = o.seconds ?? 6;
+  const u = Math.min(width, height) / 1080;
+  const p = createProject('bench bend', preset(width, height), fps);
+  p.tracks = [];
+  const clips: Clip[] = [];
+  const add = (name: string) => {
+    const track = createTrack('video', name);
+    p.tracks.push(track);
+    return track.id;
+  };
+  /** the bend field of a clip: nothing when bend is off */
+  const bendOf = (b: ClipBend): { bend?: ClipBend } => (o.bend === false ? {} : { bend: b });
+  const at = (x: number, y: number, z = 0) => ({ x, y, scale: 1, rotation: 0, opacity: 1, z });
+
+  clips.push(
+    createCameraClip(add('camera'), 0, {
+      duration: seconds,
+      focusStrength: 0.6,
+      focusDistance: homeDistance(height) + 200 * u,
+      keyframes: {
+        x: [
+          { t: 0, v: -0.15 * width, ease: 'linear' },
+          { t: seconds, v: 0.15 * width, ease: 'linear' },
+        ],
+        pan: [
+          { t: 0, v: 10, ease: 'linear' },
+          { t: seconds, v: -10, ease: 'linear' },
+        ],
+      },
+    }),
+  );
+
+  // five cards on one tube
+  const cw = 300 * u;
+  const ch = 420 * u;
+  const gap = 40 * u;
+  const W = 5 * cw + 4 * gap;
+  const colors: [string, string][] = [
+    ['#ff8a6b', '#1a1c20'],
+    ['#ffe14d', '#1a1c20'],
+    ['#9ad1ff', '#1a1c20'],
+    ['#b4f0a8', '#1a1c20'],
+    ['#d9a6ff', '#1a1c20'],
+  ];
+  for (let i = 0; i < 5; i++) {
+    const x = (i - 2) * (cw + gap);
+    clips.push(
+      createShapeClip(add(`card ${i + 1}`), 0, {
+        duration: seconds,
+        name: `card ${i + 1}`,
+        kind: 'rect',
+        width: cw,
+        height: ch,
+        color: colors[i]![0],
+        color2: colors[i]![1],
+        gradientAngle: 90,
+        radius: 0.06,
+        threeD: true,
+        group: 'grp-bench-bend',
+        ...bendOf({ angle: 120, ...(x !== 0 ? { center: -x / W } : {}), span: W }),
+        transform: at(x, 40 * u),
+      }),
+    );
+  }
+
+  // a 3d text with a side stack
+  clips.push(
+    createTextClip(add('bent title'), 0, {
+      duration: seconds,
+      name: 'bent title',
+      text: 'bent title',
+      fontSize: 140 * u,
+      color: '#f2f2f2',
+      threeD: true,
+      extrude: { depth: 0.4, angle: 45, color: '#51618a' },
+      ...bendOf({ angle: 90 }),
+      transform: at(0, -330 * u),
+    }),
+  );
+
+  // a page that rolls up, with motion blur
+  clips.push(
+    createShapeClip(add('page'), 0, {
+      duration: seconds,
+      name: 'page',
+      kind: 'rect',
+      width: 440 * u,
+      height: 200 * u,
+      color: '#f2f2f2',
+      threeD: true,
+      motionBlur: { shutter: 0.5, samples: 8 },
+      ...(o.bend === false
+        ? {}
+        : {
+            bend: { angle: 0, center: -0.5 },
+            keyframes: {
+              'bend.angle': [
+                { t: 0.5, v: 0, ease: 'ease' as const },
+                { t: 3.5, v: 330, ease: 'ease' as const },
+              ],
+            },
+          }),
+      transform: at(0, 400 * u),
+    }),
+  );
+
+  // a cropped card bent along its height
+  clips.push(
+    createShapeClip(add('cropped'), 0, {
+      duration: seconds,
+      name: 'cropped',
+      kind: 'rect',
+      width: 300 * u,
+      height: 420 * u,
+      color: '#ff8a6b',
+      color2: '#6b2b1e',
+      gradientAngle: 90,
+      threeD: true,
+      crop: { left: 0.2, top: 0, right: 0.1, bottom: 0 },
+      ...bendOf({ angle: -80, along: 'height' }),
+      transform: at(650 * u, 0, 300 * u),
+    }),
+  );
+
+  // a lit card, lit by the same light as litScene
+  clips.push(
+    createShapeClip(add('lit card'), 0, {
+      duration: seconds,
+      name: 'lit card',
+      kind: 'rect',
+      width: 300 * u,
+      height: 420 * u,
+      color: '#9ad1ff',
+      color2: '#27408b',
+      gradientAngle: 90,
+      threeD: true,
+      lit: 0.8,
+      ...bendOf({ angle: 100 }),
+      transform: at(-650 * u, 0, 300 * u),
+    }),
+  );
+  p.light = { sky: '#8fa9d6', horizon: '#e7c9a8', ground: '#4a4038', sun: 0.5, sunColor: '#fff1d6', sunTurn: -35, sunHeight: 40 };
+
+  if (o.twoD ?? true) {
+    clips.push(
+      createTextClip(add('flat title'), 0, {
+        duration: seconds,
+        name: 'flat title',
+        text: 'flat title bent',
+        fontSize: 90 * u,
+        color: '#f2f2f2',
+        ...bendOf({ angle: 60 }),
+        transform: { x: 0, y: 380 * u, scale: 1, rotation: 0, opacity: 1 },
+      }),
+    );
+    clips.push(
+      createShapeClip(add('flat rect'), 0, {
+        duration: seconds,
+        name: 'flat rect',
+        kind: 'rect',
+        width: 1200 * u,
+        height: 260 * u,
+        color: '#2b6cff',
+        transform: { x: 0, y: 380 * u, scale: 1, rotation: 0, opacity: 1 },
+      }),
+    );
+    // letters in a row, each its own clip on consecutive tracks: one flat run, bent together
+    const n = Math.max(0, Math.round(o.letters ?? 12));
+    const letters: TextClip[] = [];
+    for (let i = 0; i < n; i++) {
+      letters.push(
+        createTextClip(add(`letter ${i + 1}`), 0, {
+          duration: seconds,
+          name: `letter ${i + 1}`,
+          text: 'abcdefghijklmnopqrstuvwxyz'[i % 26]!,
+          fontSize: 90 * u,
+          color: '#ffe14d',
+          group: 'grp-bench-bend-letters',
+          transform: { x: (i - (n - 1) / 2) * 80 * u, y: -470 * u, scale: 1, rotation: 0, opacity: 1 },
+        }),
+      );
+    }
+    if (n > 0 && o.bend !== false) {
+      p.clips = [...clips, ...letters];
+      const fit = fitBend(bendMembers(p, letters, 0), 'width', 0);
+      for (const c of letters) {
+        const f = fit?.per.get(c.id);
+        c.bend = { angle: 80, ...(f && f.center ? { center: f.center } : {}), ...(f ? { span: f.span } : {}) };
+      }
+    }
+    clips.push(...letters);
+  }
+
+  p.tracks.push(createTrack('audio', 'audio 1'));
+  p.clips = clips;
+  p.background = '#0c0d10';
+  if (o.fog ?? true) p.fog = { color: '#e7b98f', near: 1800 * u, far: 7000 * u, amount: 0.4 };
+  return p;
+}
+
 /** what the bench draws pictures with: nothing for a project without a sky (exactly as before), plus the labelled sky */
 function resolverFor(project: Project): SourceResolver {
   if (!project.sky) return nothing;
@@ -944,6 +1169,16 @@ export const bench = {
   videoProject,
   litScene,
   skyScene,
+  bendScene,
+  sceneStats: (reset = true) => {
+    const s = { ...sceneStats };
+    if (reset) {
+      sceneStats.renders = 0;
+      sceneStats.switches = 0;
+      sceneStats.bent = 0;
+    }
+    return s;
+  },
   coldFrame,
   render,
   export: exportRun,

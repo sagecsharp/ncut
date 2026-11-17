@@ -4,8 +4,8 @@ import type { ClipType } from '../../types';
 export type InspectorTab = 'basic' | 'look' | 'animate' | 'sound' | 'all';
 
 export const INSPECTOR_TABS: { id: InspectorTab; label: string; title: string }[] = [
-  { id: 'basic', label: 'basic', title: 'name, timing, the main settings, transform, speed, fades' },
-  { id: 'look', label: 'look', title: 'style, color, mask, effects, 3d, links' },
+  { id: 'basic', label: 'basic', title: 'name, timing, the main settings, transform, attach, speed, fades' },
+  { id: 'look', label: 'look', title: 'style, color, mask, effects, 3d, bend' },
   { id: 'animate', label: 'animate', title: 'keyframes, motion, path, repeat, transition' },
   { id: 'sound', label: 'sound', title: 'volume and tempo' },
   { id: 'all', label: 'all', title: 'every section in one list' },
@@ -26,6 +26,7 @@ export const SECTION_ORDER = [
   'shape',
   'transform',
   'threed',
+  'bend',
   'path',
   'repeat',
   'attach',
@@ -61,7 +62,8 @@ export const TAB_OF: Record<SectionId, Exclude<InspectorTab, 'all'>> = {
   mask: 'look',
   'clip-effects': 'look',
   threed: 'look',
-  attach: 'look',
+  bend: 'look',
+  attach: 'basic',
   animation: 'animate',
   'beat-sync': 'animate',
   motion: 'animate',
@@ -99,6 +101,7 @@ export function sectionsOf(type: ClipType, hasAudio: boolean, linked = true): Se
       case 'attach':
         return visual || linked;
       case 'threed':
+      case 'bend':
       case 'path':
       case 'repeat':
       case 'look':

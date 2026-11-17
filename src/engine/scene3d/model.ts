@@ -10,6 +10,8 @@ import { DEG, type Mat4, type Vec3, basis, cross, mul, normalize, rotationX, rot
  *   rotation = [look at camera] * turn (rotY) * tilt (rotX) * spin (rotation, in the plane)
  * user facing signs: turn > 0 faces the plane to the right (its right edge moves away),
  * tilt > 0 leans the top edge away, rotation > 0 spins clockwise.
+ * a pivot (box.px / py) shifts the plane by T(-px, -py, 0) after the spin: the unit quad point (fx, fy) is the
+ * position for any turn, tilt, spin, look, parent and scale.
  * with lookAt the plane first faces the camera, and turn / tilt / spin are applied on top of that.
  * lookAt 'clip' faces `lookPoint` (clipLookPoint) the same way as 'camera' faces the eye: the "eye" is just
  * the point to look at. without a point (or when it is the plane's own center) there is no turn.
@@ -44,6 +46,8 @@ export function clipModelMatrix(box: ClipBox, transform: Transform, lookAt: Look
   if (rotY) m = mul(m, rotationY(-rotY * DEG));
   if (rotX) m = mul(m, rotationX(-rotX * DEG));
   if (box.rotation) m = mul(m, rotationZ(box.rotation * DEG));
+  // a pivot (engine/pivot.ts): the plane hangs off its position, so it turns, tilts, faces and scales around that point
+  if (box.px || box.py) m = mul(m, translation(-(box.px ?? 0), -(box.py ?? 0), 0));
   return mul(m, scaling(box.width, box.height, 1));
 }
 

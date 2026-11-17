@@ -13,14 +13,9 @@ import { effectTargetOptions } from './parentOptions';
 import { lockedParam } from './effectBeatLogic';
 import { currentLabel } from './selectModel';
 import { Row, Section } from './controls';
+import { effectFeel } from './fieldFeel';
 
 const actions = () => useEditor.getState();
-
-/** decimals needed to show a step (0.05 -> 2) */
-function stepPrecision(step: number): number {
-  if (!(step > 0) || step >= 1) return 0;
-  return Math.min(4, Math.ceil(-Math.log10(step) - 1e-9));
-}
 
 interface EffectSectionProps {
   id: string;
@@ -92,7 +87,7 @@ function resetEffect(id: string): void {
 
 export const EffectSection = memo(function EffectSection({ id, name, effect, params, target }: EffectSectionProps) {
   const def = getEffect(effect);
-  // the param the tempo drives (lock on in "follow the tempo" and a tempo to follow)
+  // the param the tempo drives (lock on in "pulse on the beat" and a tempo to follow)
   const locked = useEditor((s) => {
     const clip = s.project?.clips.find((c) => c.id === id);
     return s.project && clip?.type === 'effect' ? lockedParam(def, clip.beat, effectBeatGrid(s.project, clip) !== null) : null;
@@ -135,23 +130,10 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
       </Row>
       <div className="props-hint">{def.description}</div>
       <AppliesTo id={id} target={target ?? null} own={def?.alpha === 'own'} />
-      <AnimField
-        slider
-        id={id}
-        prop="amount"
-        label="amount"
-        title="overall strength of the effect (%)"
-        scale={100}
-        min={0}
-        max={100}
-        step={1}
-        precision={0}
-        suffix="%"
-        fallback={1}
-      />
+      <AnimField id={id} prop="amount" label="strength" title="overall strength of the effect (%)" feel="effectAmount" fallback={1} />
       {def.params.map((p) =>
         p.key === locked ? (
-          <Row key={p.key} label={p.label} title="the tempo drives this one while the lock in follow the tempo is on">
+          <Row key={p.key} label={p.label} title="the tempo drives this one while the lock in pulse on the beat is on">
             <span className="props-hint">follows the tempo</span>
           </Row>
         ) : p.options ? (
@@ -173,16 +155,11 @@ export const EffectSection = memo(function EffectSection({ id, name, effect, par
         ) : (
           <AnimField
             key={p.key}
-            slider
             id={id}
             prop={`p.${p.key}`}
             label={p.label}
             title={p.label}
-            min={p.min}
-            max={p.max}
-            step={p.step}
-            precision={stepPrecision(p.step)}
-            suffix={p.unit}
+            feel={effectFeel(p)}
             fallback={p.default}
           />
         ),

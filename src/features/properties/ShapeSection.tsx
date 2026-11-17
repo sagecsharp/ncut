@@ -48,13 +48,13 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         options={SHAPE_LABELS}
         onChange={(v) => patchClip(id, { kind: v as ShapeKind })}
       />
-      <AnimField id={id} prop="width" label="width" title="width of the figure (px, at scale 100% and no stretch)" suffix="px" min={1} max={20000} step={1} precision={0} />
-      <AnimField id={id} prop="height" label="height" title="height of the figure (px, at scale 100% and no stretch)" suffix="px" min={1} max={20000} step={1} precision={0} />
+      <AnimField id={id} prop="width" label="width" title="width of the figure (px, at scale 100% and no stretch)" feel="shapeWidth" />
+      <AnimField id={id} prop="height" label="height" title="height of the figure (px, at scale 100% and no stretch)" feel="shapeHeight" />
       {hasPoints(clip.kind) ? (
-        <AnimField id={id} prop="points" label="points" title="number of corners (3 to 12)" min={3} max={12} step={1} precision={0} />
+        <AnimField id={id} prop="points" label="points" title="number of corners (3 to 12)" feel="points" rest={clip.kind === 'star' ? 5 : 6} />
       ) : null}
       {clip.kind === 'star' ? (
-        <AnimField id={id} prop="inner" label="inner" title="inner radius of the star (% of the outer radius)" scale={100} suffix="%" min={10} max={95} step={1} precision={0} />
+        <AnimField id={id} prop="inner" label="inner" title="inner radius of the star (% of the outer radius)" feel="inner" />
       ) : null}
 
       <Row label="fill" title="fill the figure with color">
@@ -77,7 +77,7 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
                 <Switch checked={radial} title="radial on or off" onChange={(v) => patchClip(id, { gradientRadial: v ? true : null })} />
               </Row>
               {!radial ? (
-                <AnimField id={id} prop="gradientAngle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" suffix="deg" min={-360} max={360} step={1} precision={0} />
+                <AnimField id={id} prop="gradientAngle" label="angle" title="gradient direction (degrees, 0 = left to right, 90 = top to bottom)" feel="shapeGradientAngle" />
               ) : null}
             </>
           ) : null}
@@ -93,7 +93,7 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         {stroke ? <ColorField title="outline color" value={stroke.color} onChange={(c) => set({ stroke: { ...stroke, color: c } })} /> : null}
       </Row>
       {stroke ? (
-        <AnimField id={id} prop="stroke.width" label="width" title="outline width (px)" suffix="px" min={0.5} max={500} step={0.5} precision={1} />
+        <AnimField id={id} prop="stroke.width" label="width" title="outline width (px)" feel="shapeStroke" />
       ) : null}
 
       {solidLine ? (
@@ -104,31 +104,19 @@ export const ShapeSection = memo(function ShapeSection({ clip }: { clip: ShapeCl
         <>
           <AnimField
             wide
-            slider
             id={id}
             prop="drawStart"
             label="draw from"
             title="where the drawn part of the outline starts (% of its length)"
-            scale={100}
-            suffix="%"
-            min={0}
-            max={100}
-            step={1}
-            precision={0}
+            feel="drawStart"
           />
           <AnimField
             wide
-            slider
             id={id}
             prop="drawEnd"
             label="draw to"
             title="where the drawn part of the outline ends (% of its length)"
-            scale={100}
-            suffix="%"
-            min={0}
-            max={100}
-            step={1}
-            precision={0}
+            feel="drawEnd"
           />
           <div className="props-buttons">
             <button

@@ -9,7 +9,7 @@ import type { BlendMode, Clip, ClipMotionBlur, Crop, EffectClip, ImageClip, Proj
 import { isVisualClip, stretchX, stretchY, stretchZ } from '../types';
 import { clipEnd, fadeFactor, sourceTimeAt } from '../lib/timelineOps';
 import { createCanvas } from '../lib/canvas';
-import { animatesPicture, resolveClip } from '../lib/anim';
+import { animatesPicture, noteRawClip, resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
 import { beatGridOf } from './beatFx';
 import { type BeatGrid, LINE_NUDGE, cycleLength, cyclePhase, parseEffectBeat, pulseEnvelope } from '../lib/tempo';
@@ -24,15 +24,17 @@ import { type TransitionSpan, transitionSpan } from '../lib/transitions';
 import { getEffect } from './effects/registry';
 import { releaseEffectRunner, renderEffects, renderEffectsAlpha } from './effects/runner';
 import type { EffectPass, TemporalSample } from './effects/types';
-import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance } from './scene3d/camera';
+import { type Camera3D, type CameraRig, DEFAULT_CAMERA, cameraAt, cameraClipAt, cameraFromClip, cameraRig, frustumCorners, homeDistance, homeRig } from './scene3d/camera';
+import { type PlaneBend, bendInWorld, hasBend, isBent, planeBend, sameBend, usesBend, withLift } from './scene3d/bend';
 import { mul, scaling, translation } from './scene3d/math';
 import { faceArea, faceClipId, faceColor, faceFill, faceFit, faceSource, faceSourceSet, faceWindow, filledFaces, hasSides } from './scene3d/faces';
 import { clipModelMatrix } from './scene3d/model';
 import { sceneLightAt, usesLight } from './scene3d/light';
-import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene, warmSceneLight } from './scene3d/renderer';
+import { type FacePicture, type Lines3D, type Plane3D, releaseSceneRenderer, renderScene, warmSceneBend, warmSceneLight } from './scene3d/renderer';
 import { SKY_ID, type SkyDraw, type SkyPictureOf, skyDrawFor } from './scene3d/sky';
 import { drawShape, lineOnSolid, shapeSignature, shapeSpill } from './shape';
 import { parseHexColor } from './clipLook';
+import { pictureBox, pivotFraction } from './pivot';
 import { drawText, finite, measureText, textSignature, textSpill } from './text';
 import { canTintFace, depthPixels, hasTextDepth, sideAlpha, sideOffsets, sideSignature } from './textDepth';
 import { textAnimActive } from './textAnim';
@@ -141,7 +143,10 @@ export function imagePixelSize(image: unknown, fallbackW: number, fallbackH: num
  */
 export type SourceResolver = ((clip: VideoClip | ImageClip, sourceTime: number) => DrawSource | null) & { sky?: SkyPictureOf };
 
-/** axis-aligned box of a clip before rotation, in canvas pixels. cx/cy is the center. */
+/**
+ * axis-aligned box of a clip before rotation, in canvas pixels. cx / cy is the clip's position: its pivot, the middle of
+ * the box when it has none. pictureBox (engine/pivot.ts) gives the rectangle the picture fills.
+ */
 export interface ClipBox {
   cx: number;
   cy: number;
@@ -149,6 +154,9 @@ export interface ClipBox {
   height: number;
   /** degrees */
   rotation: number;
+  /** where the pivot sits from the middle of the box, canvas px in the clip's own unturned axes (Spatial.pivot x width / height). only set when not 0 */
+  px?: number;
+  py?: number;
 }
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -187,7 +195,18 @@ export function getClipBox(project: Project, clip: VisualClip, natural?: { width
     width = fit.width * t.scale * stretchX(t);
     height = fit.height * t.scale * stretchY(t);
   }
-  return { cx: project.width / 2 + t.x, cy: project.height / 2 + t.y, width, height, rotation: t.rotation };
+  const box: ClipBox = { cx: project.width / 2 + t.x, cy: project.height / 2 + t.y, width, height, rotation: t.rotation };
+  // a pivot: the box is placed by its pivot, the picture hangs off it (engine/pivot.ts)
+  const pv = clip.pivot;
+  if (pv) {
+    const px = pivotFraction(pv.x) * width;
+    const py = pivotFraction(pv.y) * height;
+    if (px !== 0 || py !== 0) {
+      box.px = px;
+      box.py = py;
+    }
+  }
+  return box;
 }
 
 /**
@@ -1154,6 +1173,8 @@ interface SideStack {
   model: Float32Array;
   depth: number;
   planes: Plane3D[];
+  /** the bend of the face the planes were built from (null = a flat face) */
+  bend: PlaneBend | null;
 }
 const sideStacks = new Map<string, SideStack>();
 
@@ -1169,16 +1190,22 @@ function sidePlanes(clipId: string, face: Plane3D, depthPx: number, image: TexIm
   const a = sideAlpha(alpha);
   let st = sideStacks.get(clipId);
   let same = !!st && st.depth === depthPx && st.planes.length === offsets.length;
+  if (same && !sameBend(st!.bend, face.bend ?? null)) same = false;
   if (same) for (let i = 0; i < 16 && same; i++) if (st!.model[i] !== face.model[i]) same = false;
   if (!st || !same) {
+    const fb = face.bend;
     const planes: Plane3D[] = offsets.map((dz) => {
       const m = new Float32Array(face.model);
+      if (fb) {
+        // a bent face: the copies keep the face model and ride the bend as parallel surfaces (a lift along the inner normal)
+        return { image, cacheKey, model: m, alpha: a, shape: face.shape, stack: offsets.length, bend: withLift(fb, dz) };
+      }
       m[12] = m[12]! + dz * m[8]!;
       m[13] = m[13]! + dz * m[9]!;
       m[14] = m[14]! + dz * m[10]!;
       return { image, cacheKey, model: m, alpha: a, shape: face.shape, stack: offsets.length };
     });
-    st = { model: new Float32Array(face.model), depth: depthPx, planes };
+    st = { model: new Float32Array(face.model), depth: depthPx, planes, bend: fb ?? null };
     sideStacks.delete(clipId);
     sideStacks.set(clipId, st);
     if (sideStacks.size > 64) {
@@ -1467,6 +1494,14 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
   const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
   const k = clip.lit;
   if (k != null && k > 0) plane.lit = k < 1 ? k : 1;
+  // a bent plane (bend.ts): its own length without the texture room, the crop window of the mesh along the axis
+  if (shape === 'plane' && clip.bend && isBent(clip)) {
+    const tall = clip.bend.along === 'height';
+    const full = tall ? box.height : box.width;
+    const own = full - 2 * (tall ? padY : padX);
+    const pb = planeBend(clip.bend, own, full, uv ? (tall ? uv[1] : uv[0]) : 0, uv ? (tall ? uv[3] : uv[2]) : 1);
+    if (pb) plane.bend = pb;
+  }
   // a motion blur draws one video frame once per copy: the renderer may keep the first upload (renderer.ts acquire)
   if (layer.serial !== undefined && cacheKey === undefined && source && image === (source.image as TexImageSource)) plane.serial = layer.serial;
   if (clip.type === 'shape' && shape !== 'plane' && lineOnSolid(clip)) {
@@ -1575,11 +1610,17 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
     li++;
   }
   let anyLit = false;
-  for (const p of planes) if (p.lit !== undefined) { anyLit = true; break; }
+  let anyBent = false;
+  for (const p of planes) {
+    if (p.lit !== undefined) anyLit = true;
+    if (p.bend !== undefined) anyBent = true;
+  }
   // undefined keeps the focus bound to the camera rig
   const out = renderScene(planes, lines, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, project.fog ?? null, undefined, anyLit ? sceneLightAt(project, layers[0]!.time) : null, sky);
   // a project with lit clips but none in this frame: compile the lit program in the background for the first lit frame
   if (!anyLit && usesLight(project)) warmSceneLight(channel);
+  // the same for the bent program
+  if (!anyBent && usesBend(project)) warmSceneBend(channel);
   if (!out) return;
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1587,6 +1628,69 @@ function draw3d(ctx: Ctx, project: Project, layers: Layer3D[], rig: CameraRig, c
   ctx.globalCompositeOperation = op;
   ctx.drawImage(out, 0, 0, canvas.width, canvas.height);
   ctx.restore();
+}
+
+/**
+ * a 2d clip as the bent route draws it: its world pose lying on the canvas plane (z 0, no tilt or turn), no parent, no
+ * look target, a plane. threeD stays off, so a 2d text keeps its flat extrude baked in its picture (hasTextDepth needs 3d).
+ * a 2d parent's scale is in the world box, so the span (px) scales with it (bend.ts bendInWorld). the pivot stays, so the
+ * model places the bent plane where the flat clip is.
+ */
+export function bentFlatClip(project: Project, clip: VisualClip, poseTime: number): VisualClip {
+  const own = clip.transform;
+  const wt = clip.parent ? worldTransformOf(project, clip, poseTime) : own;
+  const k = own.scale !== 0 ? wt.scale / own.scale : 1;
+  const out = {
+    ...clip,
+    parent: undefined,
+    lookAt: undefined,
+    shape: undefined,
+    lit: undefined,
+    faces: undefined,
+    transform: { ...wt, z: 0, rotX: 0, rotY: 0 },
+    bend: bendInWorld(clip.bend, k),
+  } as VisualClip;
+  // the text caches read no field that changed here
+  if (clip.type === 'text') noteRawClip(out, clip);
+  // a counter text keeps its live texture (no new key per number)
+  if (counterTexts.has(clip)) counterTexts.add(out);
+  return out;
+}
+
+/**
+ * draw bent 2d clips through the home camera, in layer order, each over the last (an ordered render: no depth test
+ * between them; a bent clip still hides its own back). the flat line of each sits exactly where the flat picture is.
+ * false = no webgl2 here: the caller paints them flat.
+ */
+function drawBent2d(ctx: Ctx, project: Project, layers: Layer3D[], channel: Channel, op: GlobalCompositeOperation = 'source-over'): boolean {
+  const canvas = ctx.canvas as AnyCanvas | undefined;
+  if (!canvas) return false;
+  const rig = homeRig(project.width, project.height);
+  const planes: Plane3D[] = [];
+  let li = 0;
+  for (const layer of layers) {
+    try {
+      const p = planeFor(project, layer, rig, channel);
+      if (p) {
+        p.layer = li;
+        planes.push(p);
+      }
+    } catch (err) {
+      reportClipError(layer.clip.id, err);
+    }
+    li++;
+  }
+  if (planes.length === 0) return true;
+  // no fog, focus, light or sky reach a 2d clip. focus is null, so the home rig's bound focus is never used
+  const out = renderScene(planes, NO_LINES, rig.viewProj, rig.eye, canvas.width, canvas.height, channel, null, null, null, null, true);
+  if (!out) return false;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = op;
+  ctx.drawImage(out, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  return true;
 }
 
 /* ---------- the frame ---------- */
@@ -1741,7 +1845,7 @@ function paintFlat(ctx: Ctx, project: Project, clip0: VisualClip, source: FlatSo
     const wt = worldTransformOf(project, clip0, poseTime);
     if (wt !== clip0.transform) clip = { ...clip0, transform: wt } as VisualClip;
   }
-  const box = getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined);
+  const box = pictureBox(getClipBox(project, clip, source ? { width: source.width, height: source.height } : undefined));
   const op = blend ? blendOp(clip.blend) : null;
   const crop = normalizeCrop(clip.crop);
   ctx.save();
@@ -1825,6 +1929,24 @@ function sameNums(a: ArrayLike<number> | null, b: ArrayLike<number> | null): boo
   return true;
 }
 
+/** a bent 2d layer: the clip as drawBent2d draws it, plus the resolved 2d clip for the flat fallback */
+interface BentLayer extends Layer3D {
+  flat: VisualClip;
+}
+
+/** draw a run of bent 2d layers; without webgl2 each is painted flat the old way. blend false = like paintFlat's blend */
+function paintBent(ctx: Ctx, project: Project, run: BentLayer[], env: Env, op: GlobalCompositeOperation, blend: boolean): void {
+  if (drawBent2d(ctx, project, run, env.channel, op)) return;
+  for (const l of run) {
+    const pic = prepareFlat(project, l.flat, l.source, l.time, env.channel, l.alpha);
+    paintFlat(ctx, project, l.flat, pic, l.alpha, l.time, blend);
+  }
+}
+
+function bentLayer(project: Project, clip: VisualClip, source: DrawSource | null, alpha: number, time: number, env: Env): BentLayer {
+  return { clip: bentFlatClip(project, clip, time), flat: clip, source, alpha, time, resolve: env.resolve };
+}
+
 /** one number per motion blur frame, given to the 3d copies (Layer3D.serial) */
 let blurSerial = 0;
 
@@ -1837,8 +1959,9 @@ let blurSerial = 0;
  * `rig` = the clip is 3d: every copy is a 3d run of its own (one clip through the camera of the frame, at the pose of
  * its sample time: position, depth, tilt, parents and look target move, the camera does not) added into the same
  * accumulator (a camera parent or look target is read at the frame time: the camera is not sampled). one gpu render per copy, so it is only paid by clips that switch the blur on.
+ * `bent2d` = the clip is a bent 2d clip: every copy goes through drawBent2d (the home camera).
  */
-function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true, rig: CameraRig | null = null, beforeDraw?: () => void): boolean {
+function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatSource | null, time: number, env: Env, blend = true, rig: CameraRig | null = null, beforeDraw?: () => void, bent2d = false): boolean {
   const times = motionBlurTimes(time, project.fps || 30, raw.motionBlur, env.quality);
   if (times.length < 2) return false;
   // 'trail' / 'ghost' choose their own moments and weights; 'even' (or no style) keeps the old times and equal shares
@@ -1869,6 +1992,8 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
       // 3d only: what a parent chain or a look target does in space (worldTransformOf only knows the flat part)
       m: rig && c.parent ? parentModelMatrix(project, c, t, time) : null,
       l: rig && c.lookAt === 'clip' ? clipLookPoint(project, c, t, time) : null,
+      // the bend angle at this moment: a bend that is keyed and moving needs copies too
+      b: isBent(c) ? c.bend!.angle : 0,
     };
   };
   // still = every sample has the pose of the first one (not just the two ends: at the turning point of a
@@ -1879,11 +2004,11 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
   for (let i = times.length - 1; i >= 1 && still; i--) {
     const p = pose(times[i]!);
     poses[i] = p;
-    if (!samePose(first.w, first.a, p.w, p.a) || !sameNums(first.m, p.m) || !sameNums(first.l, p.l)) still = false;
+    if (!samePose(first.w, first.a, p.w, p.a) || !sameNums(first.m, p.m) || !sameNums(first.l, p.l) || Math.abs(first.b - p.b) >= 1e-4) still = false;
   }
   if (still) return false;
   // one number for all copies of this frame: a 3d video frame is uploaded once, not once per copy (Plane3D.serial)
-  const serial = rig ? ++blurSerial : undefined;
+  const serial = rig || bent2d ? ++blurSerial : undefined;
   const canvas = ctx.canvas as AnyCanvas | undefined;
   const copy = scratchFor(ctx, env.channel, 'mbCopy');
   const acc = scratchFor(ctx, env.channel, 'mbAcc', true);
@@ -1898,7 +2023,11 @@ function paintBlurred(ctx: Ctx, project: Project, raw: VisualClip, source: FlatS
     if (p.a <= 0.001) continue;
     clearScratch(copy);
     if (rig) draw3d(copy.ctx, project, [{ clip: p.c, source, alpha: p.a, time, poseTime: t, resolve: env.resolve, serial }], rig, env.channel);
-    else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
+    else if (bent2d) {
+      // a copy that is flat at its sample time still goes through the home camera: the same picture within sampling noise
+      const layer: Layer3D = { clip: bentFlatClip(project, p.c, t), source, alpha: p.a, time, poseTime: t, resolve: env.resolve, serial };
+      if (!drawBent2d(copy.ctx, project, [layer], env.channel)) paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
+    } else paintFlat(copy.ctx, project, p.c, source, p.a, time, false, t);
     acc.ctx.save();
     acc.ctx.setTransform(1, 0, 0, 1, 0, 0);
     acc.ctx.globalAlpha = weights ? weights[i]! : share;
@@ -2075,9 +2204,17 @@ function paintAloneRaw(ctx: Ctx, project: Project, raw: VisualClip, time: number
       if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, rig()))) draw3d(c, project, [{ clip, source, alpha, time, resolve: env.resolve }], rig(), env.channel);
     };
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
+  } else if (isBent(clip)) {
+    const layer = bentLayer(project, clip, source, alpha, time, env);
+    const run = (c: Ctx) => {
+      if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, null, undefined, true))) paintBent(c, project, [layer], env, 'source-over', false);
+    };
+    if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
   } else {
     const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
     const run = (c: Ctx) => {
+      // a keyed bend that is flat now but not at the sample times: the copies are bent
+      if (raw.motionBlur && hasBend(raw) && paintBlurred(c, project, blurRaw, source, time, env, false, null, undefined, true)) return;
       if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
     };
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
@@ -2261,6 +2398,8 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
 
   // consecutive 3d clips share one depth sorted scene. a 2d clip, a transition or an effect in between splits it.
   let bin: Layer3D[] = [];
+  // consecutive bent 2d clips share one ordered render through the home camera. at most one of the two bins holds clips
+  let flatBin: BentLayer[] | null = null;
   // the sky (project.sky) goes with the first flush: inside the first run of 3d clips (one render), or alone right
   // before the first thing that paints. every painting path calls flush3d first. a temporal blend above (first > 0)
   // has it in each of its samples already
@@ -2273,6 +2412,16 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
     bin = [];
     sky = null;
     guarded(ctx, run.length > 0 ? run[0]!.clip.id : SKY_ID, () => draw3d(ctx, project, run, getRig(), env.channel, NO_LINES, 'source-over', s));
+  };
+  const flushFlat = () => {
+    if (!flatBin || flatBin.length === 0) return;
+    const run = flatBin;
+    flatBin = null;
+    guarded(ctx, run[0]!.clip.id, () => paintBent(ctx, project, run, env, 'source-over', true));
+  };
+  const flushRuns = () => {
+    flush3d();
+    flushFlat();
   };
   // effect clips stack up until the next picture is drawn on top of them (or the frame ends),
   // then run together in one gpu round trip
@@ -2289,14 +2438,14 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
       // temporal effects were handled above (or sit too deep): effectPassAt skips them
       const pass = effectPassAt(it.clip, time, beatGridOf(project, it.clip));
       if (pass) {
-        flush3d();
+        flushRuns();
         pending.push(pass);
       }
       continue;
     }
     flushEffects();
     if (it.kind === 'transition') {
-      flush3d();
+      flushRuns();
       paintTransition(ctx, project, time, it.span, env, getRig);
       continue;
     }
@@ -2318,7 +2467,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         if (passes) {
           // a 3d clip with effects on it is a run of its own (like a blended one): its picture is rendered alone, the
           // effects run on it, then it is mixed onto the canvas. it does not depth-test against the 3d clips around it.
-          flush3d();
+          flushRuns();
           const layer: Layer3D = { clip, source, alpha, time, resolve: env.resolve };
           const run = (c: Ctx) => {
             if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, getRig()))) draw3d(c, project, [layer], getRig(), env.channel);
@@ -2331,31 +2480,57 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         if (raw.motionBlur) {
           // a 3d clip with a motion blur is a run of its own too: one render per copy, summed, then mixed onto the
           // canvas with its blend mode. a clip that does not move takes the normal paths below.
-          if (paintBlurred(ctx, project, raw, source, time, env, true, getRig(), flush3d)) return;
+          if (paintBlurred(ctx, project, raw, source, time, env, true, getRig(), flushRuns)) return;
         }
         if (bop) {
           // a blended 3d clip is a run of its own: rendered alone, then mixed onto the canvas. it does not
           // depth-test against the 3d clips around it.
-          flush3d();
+          flushRuns();
           draw3d(ctx, project, [{ clip, source, alpha, time, resolve: env.resolve }], getRig(), env.channel, NO_LINES, bop);
           return;
         }
+        flushFlat();
         bin.push({ clip, source, alpha, time, resolve: env.resolve });
         return;
       }
-      flush3d();
+      if (isBent(clip)) {
+        const layer = bentLayer(project, clip, source, alpha, time, env);
+        if (passes) {
+          flushRuns();
+          const run = (c: Ctx) => {
+            if (!(raw.motionBlur && paintBlurred(c, project, raw, source, time, env, false, null, undefined, true))) paintBent(c, project, [layer], env, 'source-over', false);
+          };
+          if (paintWithFx(ctx, project, passes, blendOp(clip.blend), env, run)) return;
+        }
+        if (raw.motionBlur && paintBlurred(ctx, project, raw, source, time, env, true, null, flushRuns, true)) return;
+        const bop = blendOp(clip.blend);
+        if (bop) {
+          // a blended bent clip is a run of its own, like a blended 3d one
+          flushRuns();
+          guarded(ctx, raw.id, () => paintBent(ctx, project, [layer], env, bop, true));
+          return;
+        }
+        flush3d();
+        (flatBin ??= []).push(layer);
+        return;
+      }
+      // a keyed bend that is flat now: compile the bent program ahead of its first bent frame
+      if (hasBend(raw)) warmSceneBend(env.channel);
+      flushRuns();
       const pic = prepareFlat(project, clip, source, time, env.channel, raw.motionBlur ? 0 : alpha);
       if (passes) {
         const run = (c: Ctx) => {
+          if (raw.motionBlur && hasBend(raw) && paintBlurred(c, project, raw, source, time, env, false, null, undefined, true)) return;
           if (!(raw.motionBlur && paintBlurred(c, project, raw, pic, time, env, false))) paintFlat(c, project, clip, pic, alpha, time, false);
         };
         if (paintWithFx(ctx, project, passes, blendOp(clip.blend), env, run)) return;
       }
+      if (raw.motionBlur && hasBend(raw) && paintBlurred(ctx, project, raw, source, time, env, true, null, undefined, true)) return;
       if (raw.motionBlur && paintBlurred(ctx, project, raw, pic, time, env)) return;
       paintFlat(ctx, project, clip, pic, alpha, time);
     });
   }
-  flush3d();
+  flushRuns();
   flushEffects();
   ctx.restore();
 }

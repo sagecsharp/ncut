@@ -23,6 +23,7 @@ import { resolveClip } from '../../lib/anim';
 import { clipEnd, fadeFactor } from '../../lib/timelineOps';
 import { applyClipMotion, hasClipMotion } from '../clipAnim';
 import { worldTransformOf } from '../parent';
+import { pivotFraction } from '../pivot';
 import { faceSourceSet } from './faces';
 import { fogOn, parseFogColor, type Rgb } from './fog';
 import { skyBrightness, skyTurn, skyUsable, wrapDeg } from './sky';
@@ -344,8 +345,9 @@ function shapeColorAt(c: ShapeClip, t: Transform, W: number, H: number, px: numb
   const dx = px - (W / 2 + t.x);
   const dy = py - (H / 2 + t.y);
   const a = -(t.rotation || 0) * (Math.PI / 180);
-  const lx = dx * Math.cos(a) - dy * Math.sin(a);
-  const ly = dx * Math.sin(a) + dy * Math.cos(a);
+  // a pivot: the shape hangs off its position (engine/pivot.ts), its middle is p away in its own axes
+  const lx = dx * Math.cos(a) - dy * Math.sin(a) + (c.pivot ? pivotFraction(c.pivot.x) * w : 0);
+  const ly = dx * Math.sin(a) + dy * Math.cos(a) + (c.pivot ? pivotFraction(c.pivot.y) * h : 0);
   if (!(Math.abs(lx) <= w / 2 && Math.abs(ly) <= h / 2)) return null;
   let cover = 0.5;
   if (c.kind === 'rect' || c.kind === 'line') cover = 1;

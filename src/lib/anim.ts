@@ -221,7 +221,7 @@ const CAMERA_KEYS = new Set(['x', 'y', 'z', 'pan', 'tilt', 'roll', 'fov', 'focus
 /* ---------- the look table: every other number of a visual clip ---------- */
 
 type VisualType = 'video' | 'image' | 'text' | 'shape';
-type ParentKey = 'crop' | 'adjust' | 'mask' | 'chromaKey' | 'stroke' | 'stroke2' | 'shadow' | 'extrude' | 'gradient';
+type ParentKey = 'crop' | 'adjust' | 'mask' | 'chromaKey' | 'stroke' | 'stroke2' | 'shadow' | 'extrude' | 'gradient' | 'bend';
 
 interface LookDef extends AnimPropInfo {
   /** the object of the clip the value lives in. missing = a field of the clip itself */
@@ -241,6 +241,7 @@ interface LookDef extends AnimPropInfo {
 }
 
 const CROP0 = { left: 0, top: 0, right: 0, bottom: 0 } as const;
+const BEND0 = { angle: 0 } as const;
 const ADJUST0 = { brightness: 0, contrast: 0, saturation: 0, hue: 0, temperature: 0 } as const;
 
 const row = (parent: ParentKey | undefined, key: string, label: string, o: Partial<LookDef> = {}): LookDef => ({
@@ -268,14 +269,16 @@ const COMMON_DEFS: LookDef[] = [
   row('chromaKey', 'spill', 'key clean edges', { min: 0, max: 1, pic: true }),
   row('mask', 'x', 'mask x', { min: -1, max: 1, pic: true }),
   row('mask', 'y', 'mask y', { min: -1, max: 1, pic: true }),
-  row('mask', 'width', 'mask width', { min: 0, max: 2, pic: true }),
-  row('mask', 'height', 'mask height', { min: 0, max: 2, pic: true }),
-  row('mask', 'rotation', 'mask turn', { min: -180, max: 180, unit: 'deg', pic: true }),
+  row('mask', 'width', 'mask width', { min: 0, max: 3, pic: true }),
+  row('mask', 'height', 'mask height', { min: 0, max: 3, pic: true }),
+  row('mask', 'rotation', 'mask rotation', { min: -360, max: 360, unit: 'deg', pic: true }),
   row('mask', 'feather', 'mask soft edge', { min: 0, max: 1, pic: true }),
   row('mask', 'radius', 'mask corners', { min: 0, max: 1, neutral: 0, pic: true }),
   row(undefined, 'shapeDepth', 'thickness', { min: 1, max: 10000, unit: 'px', seed: true }),
   // 3d only. it changes no picture of its own (no pic flag), so a texture keeps its key while lit moves
   row(undefined, 'lit', 'lit', { min: 0, max: 1, neutral: 0 }),
+  // planes only. no pic flag: a texture keeps its key while the bend moves
+  row('bend', 'angle', 'bend', { min: -360, max: 360, unit: 'deg', create: BEND0 }),
 ];
 
 const TEXT_STYLE = { pic: true, textStyle: true } as const;

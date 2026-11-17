@@ -5,6 +5,8 @@ import { Search } from 'lucide-react';
 import { paletteActions } from './paletteActions';
 import { searchItems } from './paletteSearch';
 import { closePalette, usePalette } from './paletteStore';
+import { reasonSnapshot } from './reasons';
+import { groupLabel } from './shortcuts';
 import './shell.css';
 
 function Keys({ keys }: { keys: readonly (readonly string[])[] }) {
@@ -32,6 +34,21 @@ function PaletteBody() {
   // where the pointer last really was: the list scrolling under a resting pointer also fires mousemove
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const actions = useMemo(paletteActions, []);
+  // one snapshot when the palette opens: why a row would do nothing now (it still runs on enter)
+  const whys = useMemo(() => {
+    const snap = reasonSnapshot();
+    const m = new Map<string, string>();
+    for (const a of actions) {
+      if (!a.why) continue;
+      try {
+        const w = a.why(snap);
+        if (w) m.set(a.id, w);
+      } catch {
+        // a reason is only a hint
+      }
+    }
+    return m;
+  }, [actions]);
   const results = useMemo(() => searchItems(query, actions), [query, actions]);
 
   useEffect(() => {
@@ -103,7 +120,11 @@ function PaletteBody() {
               onClick={() => run(i)}
             >
               <span className="shell-palette-title">{a.title}</span>
-              <span className="shell-palette-group">{a.group}</span>
+              {whys.get(a.id) ? (
+                <span className="shell-palette-why">{whys.get(a.id)}</span>
+              ) : (
+                <span className="shell-palette-group">{groupLabel(a.group)}</span>
+              )}
               <Keys keys={a.keys} />
             </div>
           ))}
@@ -115,8 +136,8 @@ function PaletteBody() {
 
 export function CommandPalette() {
   const open = usePalette((s) => s.open);
-  // leaving the editor with the palette open must not leave it open for the next project
-  useEffect(() => closePalette, []);
+  // closing it when the editor goes away is the host's job (Header). a cleanup here would also run in the
+  // extra mount check of react's strict mode and shut the palette the moment it opens in the dev build
   if (!open) return null;
   return createPortal(<PaletteBody />, document.body);
 }

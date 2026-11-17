@@ -3,8 +3,13 @@
  * gets which field, so the two never disagree. every call here writes with the given opts (oneStep's skipHistory).
  */
 import { getEffect } from '../../engine/effects/registry';
+import { applyAttachPlan } from '../../features/properties/attachActions';
+import { attachPlan } from '../../features/properties/attachPlan';
+import { applyPivotPlan } from '../../features/properties/pivotActions';
+import { pivotPlan } from '../../features/properties/pivotPlan';
 import { useEditor, type ActionOpts, type ClipPatch } from '../../store/editorStore';
-import type { Clip, Transform } from '../../types';
+import { usePlayback } from '../../store/playback';
+import type { Clip, Pivot, Transform } from '../../types';
 import { isTimedClip, isVisualClip, MAX_SCALE, MAX_SPEED, MIN_SCALE, MIN_SPEED } from '../../types';
 import { needClip, needProject, needTrack, needUnlocked, oneStep, ToolError } from '../helpers';
 import { checkField, checkNumber, knowsField } from './editCheck';
@@ -94,12 +99,19 @@ function touchedBy(out: string[], key: string, value: unknown): void {
   else out.push(key);
 }
 
+const lockedPivot = (child: string): ToolError => new ToolError(`pivot: the clip ${child} attached to this one is on a locked track. unlock it first, or send transform with the pivot`);
+
+/** update_clip passes one: parent and pivot keep the clip where it is. the ids of other clips moved to stay in place land in `moved` */
+export interface KeepPlace {
+  moved: string[];
+}
+
 /**
  * apply a patch to one clip. returns the names of the fields that changed (it can be empty: every value was
  * already what it is, or was clamped to it). throws a ToolError for anything that cannot be done, BEFORE the
  * first write wherever that can be told in advance; a caller inside step() takes back the rest.
  */
-export function applyPatch(id: string, patch: Record<string, unknown>, opts: ActionOpts): string[] {
+export function applyPatch(id: string, patch: Record<string, unknown>, opts: ActionOpts, keep?: KeepPlace): string[] {
   const before = needClip(id);
   needUnlocked(before);
   const st = useEditor.getState();
@@ -168,10 +180,42 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
     }
   }
 
+  // parent and pivot keep the clip where it is on screen, unless the same patch writes the transform itself
+  let parentTo: unknown;
+  let pivotTo: unknown;
+  const keepPlace = !!keep && !transform && isVisualClip(before);
+  if (keepPlace) {
+    if ('parent' in rest) {
+      parentTo = rest.parent;
+      delete rest.parent;
+    }
+    if ('pivot' in rest) {
+      pivotTo = rest.pivot;
+      delete rest.pivot;
+    }
+    // a child on a locked track would be left behind: refuse before anything is written
+    if (pivotTo !== undefined) {
+      const plan = pivotPlan(needProject(), id, pivotTo as Pivot | null, usePlayback.getState().time);
+      if (plan && plan.locked.length > 0) {
+        throw lockedPivot(plan.locked[0]!);
+      }
+    }
+  }
+
   if (transform) st.updateTransform(id, transform as Partial<Transform>, opts);
   if (params) for (const [k, v] of Object.entries(params)) useEditor.getState().setEffectParam(id, k, v as number, opts);
   if (typeof speed === 'number') useEditor.getState().setClipSpeed(id, speed, opts);
   if (Object.keys(rest).length > 0) useEditor.getState().updateClip(id, rest as ClipPatch, opts);
+  if (parentTo !== undefined) applyAttachPlan(attachPlan(needProject(), [id], parentTo as string | null, usePlayback.getState().time), opts);
+  if (pivotTo !== undefined) {
+    // planned again on the project as it is after the parent
+    const plan = pivotPlan(needProject(), id, pivotTo as Pivot | null, usePlayback.getState().time);
+    if (plan) {
+      if (plan.locked.length > 0) throw lockedPivot(plan.locked[0]!);
+      applyPivotPlan(id, plan, opts);
+      for (const c of plan.children) if (!keep!.moved.includes(c.id)) keep!.moved.push(c.id);
+    }
+  }
 
   const after = needClip(id);
   // updateClip ignores a key the clip type does not have (it is not stored, so it is not in the clip afterwards)
@@ -179,7 +223,7 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
     if (k in after) return false;
     const v = rest[k];
     // an empty value on a clip that never had the field is the same as nothing, not a mistake
-    if (k === 'faces' || k === 'beat') return !(v === null || (isObject(v) && Object.keys(v).length === 0));
+    if (k === 'faces' || k === 'beat' || k === 'pivot' || k === 'bend') return !(v === null || (isObject(v) && Object.keys(v).length === 0));
     return true;
   });
   if (ignored.length > 0) {
@@ -195,6 +239,8 @@ export function applyPatch(id: string, patch: Record<string, unknown>, opts: Act
   if (params && !same(b.params, a.params)) changed.push('params');
   if (speed !== undefined && b.speed !== a.speed) changed.push('speed');
   for (const k of Object.keys(rest)) if (!same(b[k], a[k])) changed.push(k);
+  // a kept place also writes the parent, the pivot, threeD, the transform and the keys
+  if (keepPlace) for (const k of ['parent', 'pivot', 'threeD', 'transform', 'keyframes']) if (!changed.includes(k) && !same(b[k], a[k])) changed.push(k);
   return changed;
 }
 

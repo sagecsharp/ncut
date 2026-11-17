@@ -26,6 +26,8 @@ export function Dialog({ open, title, onClose, children, footer, width, dismissa
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
+      // esc in a field drag only takes the drag back
+      if (document.documentElement.classList.contains('is-scrubbing')) return;
       if (e.key === 'Escape' && dismissableRef.current) {
         e.stopPropagation();
         onCloseRef.current();

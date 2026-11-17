@@ -18,6 +18,8 @@ import { knownShape } from './meshes';
 export interface OrderItem {
   model: Mat4;
   shape?: Shape3D;
+  /** a bent plane: its bounds in unit mesh space (bend.ts PlaneBend.box). null / missing = flat */
+  bend?: { box: ArrayLike<number> } | null;
 }
 
 interface Info {
@@ -25,6 +27,8 @@ interface Info {
   /** distance along the view direction (clip space w of the center) */
   depth: number;
   flat: boolean;
+  /** a bent plane: judged by its bent box, never the reference plane */
+  bent: boolean;
   center: Vec3;
   normal: Vec3;
   /** the box corners (4 for a plane, 8 for a solid): the first `cornerCount` of the list are the live ones */
@@ -40,6 +44,17 @@ const FLAT_PTS: readonly Vec3[] = [
   [0.5, -0.5, 0],
   [0.5, 0.5, 0],
   [-0.5, 0.5, 0],
+];
+/** the corner signs of a bent plane's box: below the middle reads the min of the box, above it the max */
+const BENT_PTS: readonly Vec3[] = [
+  [-1, -1, -1],
+  [1, -1, -1],
+  [1, 1, -1],
+  [-1, 1, -1],
+  [-1, -1, 1],
+  [1, -1, 1],
+  [1, 1, 1],
+  [-1, 1, 1],
 ];
 const SOLID_PTS: readonly Vec3[] = [
   [-0.5, -0.5, -0.5],
@@ -65,7 +80,7 @@ const product = new Float32Array(16);
 function newInfo(): Info {
   const corners: Vec3[] = [];
   for (let i = 0; i < 8; i++) corners.push([0, 0, 0]);
-  return { index: 0, depth: 0, flat: false, center: [0, 0, 0], normal: [0, 0, 1], corners, cornerCount: 0, eps: 0.5 };
+  return { index: 0, depth: 0, flat: false, bent: false, center: [0, 0, 0], normal: [0, 0, 1], corners, cornerCount: 0, eps: 0.5 };
 }
 
 function info(item: OrderItem, index: number, viewProj: Mat4, out: Info): Info {
@@ -76,22 +91,25 @@ function info(item: OrderItem, index: number, viewProj: Mat4, out: Info): Info {
   out.center[2] = m[2]! * 0 + m[6]! * 0 + m[10]! * 0 + m[14]!;
   // transformPoint(mul(viewProj, m), 0, 0, 0)[3]
   const p = mulInto(product, viewProj, m);
-  const depth = p[3]! * 0 + p[7]! * 0 + p[11]! * 0 + p[15]!;
+  let depth = p[3]! * 0 + p[7]! * 0 + p[11]! * 0 + p[15]!;
   // every solid (box, sphere, cylinder, cone, pyramid, torus) is judged by its unit box; unknown ids draw as a plane
-  const flat = knownShape(item.shape) === 'plane';
+  const plane = knownShape(item.shape) === 'plane';
+  const bb = plane && item.bend ? item.bend.box : null;
+  const flat = plane && !bb;
   const normal = out.normal;
   normal[0] = 0;
   normal[1] = 0;
   normal[2] = 1;
   let eps = 0.5;
-  const pts = flat ? FLAT_PTS : SOLID_PTS;
+  const pts = bb ? BENT_PTS : flat ? FLAT_PTS : SOLID_PTS;
   const corners = out.corners;
   for (let k = 0; k < pts.length; k++) {
     const q = pts[k]!;
     const c = corners[k]!;
-    const x = q[0];
-    const y = q[1];
-    const z = q[2];
+    // a bent plane: the 8 corners of its bent box (x0 x1 y0 y1 z0 z1), else the unit corners
+    const x = bb ? bb[q[0] > 0 ? 1 : 0]! : q[0];
+    const y = bb ? bb[q[1] > 0 ? 3 : 2]! : q[1];
+    const z = bb ? bb[q[2] > 0 ? 5 : 4]! : q[2];
     c[0] = m[0]! * x + m[4]! * y + m[8]! * z + m[12]!;
     c[1] = m[1]! * x + m[5]! * y + m[9]! * z + m[13]!;
     c[2] = m[2]! * x + m[6]! * y + m[10]! * z + m[14]!;
@@ -118,9 +136,21 @@ function info(item: OrderItem, index: number, viewProj: Mat4, out: Info): Info {
     // a thousandth of the plane's size, never less than a hundredth of a pixel
     eps = Math.max(0.01, Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz)) * 1e-3);
   }
+  if (bb) {
+    // the middle of the bent box: the center and the depth of a bent plane
+    const mx = (bb[0]! + bb[1]!) / 2;
+    const my = (bb[2]! + bb[3]!) / 2;
+    const mz = (bb[4]! + bb[5]!) / 2;
+    out.center[0] = m[0]! * mx + m[4]! * my + m[8]! * mz + m[12]!;
+    out.center[1] = m[1]! * mx + m[5]! * my + m[9]! * mz + m[13]!;
+    out.center[2] = m[2]! * mx + m[6]! * my + m[10]! * mz + m[14]!;
+    depth = p[3]! * mx + p[7]! * my + p[11]! * mz + p[15]!;
+    eps = Math.max(0.01, Math.max(Math.hypot(m[0]!, m[1]!, m[2]!), Math.hypot(m[4]!, m[5]!, m[6]!)) * 1e-3);
+  }
   out.index = index;
   out.depth = depth;
   out.flat = flat;
+  out.bent = !!bb;
   out.cornerCount = pts.length;
   out.eps = eps;
   return out;
@@ -156,12 +186,14 @@ function side(ref: Info, other: Info, eye: Vec3): 0 | 1 | -1 | null {
 function compare(a: Info, b: Info, eye: Vec3): number {
   if (a.flat) {
     const s = side(a, b, eye);
-    if (s === 0 && b.flat) return a.index - b.index;
+    if (s === 0 && (b.flat || b.bent)) return a.index - b.index;
     if (s === 1) return -1;
     if (s === -1) return 1;
   }
   if (b.flat) {
     const s = side(b, a, eye);
+    // a bent card in the plane of a flat one keeps layer order, whichever way round they are compared
+    if (s === 0 && a.bent) return a.index - b.index;
     if (s === 1) return 1;
     if (s === -1) return -1;
   }

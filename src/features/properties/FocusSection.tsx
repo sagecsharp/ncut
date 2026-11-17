@@ -1,5 +1,4 @@
 import { useEffect, useMemo } from 'react';
-import { NumberField } from '../../components/ui/NumberField';
 import { cameraFromClip, cameraRig, homeDistance } from '../../engine/scene3d/camera';
 import { focusDistanceForPoint } from '../../engine/scene3d/focus';
 import { worldCenterOf } from '../../engine/parent';
@@ -10,8 +9,8 @@ import { useUi } from '../../store/ui';
 import type { CameraClip, Clip, Project } from '../../types';
 import { isVisualClip } from '../../types';
 import { AnimField } from './AnimField';
-import { Row, Section, useSelectOpen } from './controls';
-import { beginEdit, liveOpts } from './edit';
+import { FeelField, Row, Section, useSelectOpen } from './controls';
+import { liveOpts } from './edit';
 import { targetOptions } from './targets';
 
 const actions = () => useEditor.getState();
@@ -96,17 +95,11 @@ export function FocusSection({ clip }: { clip: CameraClip }) {
     <Section id="focus" title="focus">
       <AnimField
         wide
-        slider
         id={id}
         prop="focusStrength"
         label="blur"
         title="depth of field: 3d clips go soft away from the focus distance. 0 = off."
-        scale={100}
-        suffix="%"
-        min={0}
-        max={100}
-        step={1}
-        precision={0}
+        feel="focusStrength"
       />
       {blurOn ? (
         <>
@@ -117,30 +110,19 @@ export function FocusSection({ clip }: { clip: CameraClip }) {
           ) : (
             <AnimField
               wide
-              slider
               id={id}
               prop="focusDistance"
               label="distance"
               title="how far from the camera (px) things are sharp"
-              suffix="px"
-              min={1}
-              max={Math.round(home * 6)}
-              step={10}
-              precision={0}
+              feel="focusDistance"
               fallback={Math.round(home)}
             />
           )}
           <Row label="sharp zone" title="depth around the focus distance (px) that stays sharp" wide>
-            <NumberField
-              className="props-grow"
+            <FeelField
+              feel="focusRange"
               title="sharp zone (px)"
-              suffix="px"
               value={clip.focusRange ?? 0}
-              min={0}
-              max={Math.round(home * 6)}
-              step={10}
-              precision={0}
-              onStart={beginEdit}
               onChange={(v) => actions().updateClip(id, { focusRange: v }, liveOpts())}
             />
           </Row>

@@ -9,7 +9,6 @@ import { useUi } from '../../store/ui';
 import { resolveClip } from '../../lib/anim';
 import type { SourceResolver } from '../../engine/draw';
 import { useSceneCamera } from './sceneCamera';
-import type { ViewPreset } from './sceneCamera';
 import { useSceneControls } from './sceneControls';
 import { useSceneTool, TOOL_KEYS } from './sceneTool';
 import { cameraToView, frameSelected, setViewPreset, viewThroughCamera } from './sceneViews';
@@ -23,15 +22,19 @@ import { frameFileName, movableClipsAt, nudgeDelta } from './nudge';
 import { PreviewEngine } from './PreviewEngine';
 import { QUALITIES, parseQuality, usePreviewQuality } from './quality';
 import { setPan, stepView, usePreviewView, viewMetrics } from './previewView';
+import { REASON_TEXT } from '../shell/reasons';
+import { tip } from '../shell/tip';
 import { Transport } from './Transport';
 import { TransformOverlay } from './TransformOverlay';
 import { ZoomControl } from './ZoomControl';
 import { accumulateWheel, clampPan, fitScale, percentLabel, resolveScale, wheelPixels } from './zoomMath';
 import './preview.css';
 
-const VIEW_BUTTONS: ReadonlyArray<{ label: string; title: string; run: () => void }> = [
-  ...(['front', 'top', 'side'] as ViewPreset[]).map((name) => ({ label: name, title: `${name} view`, run: () => setViewPreset(name) })),
-  { label: 'camera', title: 'look through the project camera at the playhead', run: viewThroughCamera },
+const VIEW_BUTTONS: ReadonlyArray<{ label: string; name: string; does: string; pick?: number; run: () => void }> = [
+  { label: 'front', name: 'front view', does: 'the scene from the front', pick: 0, run: () => setViewPreset('front') },
+  { label: 'top', name: 'top view', does: 'the scene from above', pick: 2, run: () => setViewPreset('top') },
+  { label: 'left', name: 'left view', does: 'the scene from the left side', run: () => setViewPreset('side') },
+  { label: 'camera', name: 'camera view', does: 'look through the camera clip at the playhead', pick: 3, run: viewThroughCamera },
 ];
 
 function readPayload(e: DragEvent): DragPayload | null {
@@ -63,6 +66,7 @@ export function Preview() {
   const guidesOn = useGuides((s) => s.on);
   const toggleGuides = useGuides((s) => s.toggle);
   const insetOn = useCameraInset((s) => s.on);
+  const scheme = useSceneControls((s) => s.scheme);
   const toggleInset = useCameraInset((s) => s.toggle);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
 
@@ -385,29 +389,35 @@ export function Preview() {
         <span className="panel-title">preview</span>
         {mode === 'scene' && (
           <>
-            <button className="icon-btn" title="reset view" aria-label="reset view" onClick={() => useSceneCamera.getState().reset()}>
+            <button className="icon-btn" {...tip('reset view', { does: 'the scene camera goes back to where it started' })} aria-label="reset view" onClick={() => useSceneCamera.getState().reset()}>
               <Focus size={14} />
             </button>
             <div className="preview-seg" role="group" aria-label="view">
-              {VIEW_BUTTONS.map(({ label, title, run }) => (
-                <button key={label} type="button" className="preview-seg-btn" title={title} onClick={run}>
+              {VIEW_BUTTONS.map(({ label, name, does, pick, run }) => (
+                <button
+                  key={label}
+                  type="button"
+                  className="preview-seg-btn"
+                  {...tip(name, { does, keys: scheme === 'blender' && pick !== undefined ? 'scene-views' : undefined, pick })}
+                  onClick={run}
+                >
                   {label}
                 </button>
               ))}
             </div>
-            <button className="icon-btn" title="frame selected (f)" aria-label="frame selected" onClick={frameSelected}>
+            <button className="icon-btn" {...tip('frame selected', { does: 'the scene camera looks at the selection', keys: 'scene-frame' })} aria-label="frame selected" onClick={frameSelected}>
               <Scan size={14} />
             </button>
             <button
               className={`icon-btn${insetOn ? ' is-active' : ''}`}
-              title={insetOn ? 'hide the camera view' : 'show the camera view (what the output looks like)'}
-              aria-label="camera view"
+              {...tip('output inset', { does: 'a small picture of what the export shows, in a corner of the scene view', on: insetOn })}
+              aria-label="output inset"
               aria-pressed={insetOn}
               onClick={toggleInset}
             >
               <PictureInPicture2 size={14} />
             </button>
-            <button className="icon-btn preview-camview" title="move the camera to this view" aria-label="move the camera to this view" onClick={cameraToView}>
+            <button className="icon-btn preview-camview" {...tip('move the camera to this view', { does: 'the camera clip at the playhead takes the view you see now' })} aria-label="move the camera to this view" onClick={cameraToView}>
               <Camera size={14} />
               <ArrowUpRight size={9} className="preview-camview-arrow" />
             </button>
@@ -415,7 +425,7 @@ export function Preview() {
         )}
         <button
           className={`icon-btn${guidesOn ? ' is-active' : ''}`}
-          title={guidesOn ? 'hide guides' : 'show guides (thirds, center, title safe)'}
+          {...tip('guides', { does: 'thirds, center and title safe lines. never exported', on: guidesOn })}
           aria-label="guides"
           aria-pressed={guidesOn}
           onClick={toggleGuides}
@@ -423,13 +433,19 @@ export function Preview() {
           <Grid3x3 size={14} />
         </button>
         {mode === 'output' && <ZoomControl />}
-        <button className="icon-btn" title="save this frame as a png" aria-label="save frame" disabled={empty} onClick={saveFrame}>
+        <button
+          className="icon-btn"
+          {...tip('save frame', { does: 'this frame as a png file', off: empty ? REASON_TEXT.addClip : null })}
+          aria-label="save frame"
+          disabled={empty}
+          onClick={saveFrame}
+        >
           <ImageDown size={14} />
         </button>
         <select
           className="select input-sm preview-quality"
           value={quality}
-          title="preview quality: lower is faster, the export is not affected"
+          {...tip('preview quality', { does: 'lower is faster. the export is not affected' })}
           aria-label="preview quality"
           onChange={(e) => setQuality(parseQuality(e.target.value))}
         >
@@ -446,7 +462,7 @@ export function Preview() {
               type="button"
               className={`preview-seg-btn${mode === m ? ' is-active' : ''}`}
               aria-pressed={mode === m}
-              title={m === 'output' ? 'what gets exported' : 'the 3d world from a free camera'}
+              {...tip(m, { does: m === 'output' ? 'what gets exported' : 'the 3d world from a free camera', keys: 'toggle-scene' })}
               onClick={() => setMode(m)}
             >
               {m}

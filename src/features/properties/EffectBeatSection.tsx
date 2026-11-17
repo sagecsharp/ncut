@@ -1,5 +1,5 @@
 /**
- * "follow the tempo" of an effect clip: the effect follows the tempo of a clip with sound. a pulse that hits on every
+ * "pulse on the beat" of an effect clip: the effect follows the tempo of a clip with sound. a pulse that hits on every
  * cycle line, and (for effects that repeat on their own) a lock that makes their rhythm one cycle per beat cycle.
  * evaluated when a frame is drawn, so it stays right when the effect or the music is moved, trimmed or split.
  */
@@ -29,7 +29,7 @@ export const EffectBeatSection = memo(function EffectBeatSection({ id, effect, b
   if (def?.temporal) return null;
 
   return (
-    <Section id="effect-beat" title="follow the tempo">
+    <Section id="effect-beat" title="pulse on the beat">
       {sources.length === 0 && !beat ? (
         <div className="props-hint">set a tempo on a clip with sound first. then the effect can hit on its beat.</div>
       ) : (
@@ -48,9 +48,7 @@ export const EffectBeatSection = memo(function EffectBeatSection({ id, effect, b
                 label="pulse"
                 title="how hard the effect hits on every cycle: full strength on the beat, falling off until the next one (%)"
                 value={Math.round(beat.pulse * 100)}
-                min={0}
-                max={100}
-                suffix="%"
+                feel="beatPulse"
                 onChange={(v) => set(changedBeat(beat, { pulse: v / 100 }), true)}
               />
               {lock ? (

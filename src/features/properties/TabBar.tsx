@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { focusedByKeyboard } from '../../lib/pressKey';
+import { tip } from '../shell/tip';
 import { INSPECTOR_TABS, arrowTab } from './clipTabs';
 import type { InspectorTab } from './clipTabs';
 
@@ -40,7 +41,7 @@ export function InspectorTabs({ tabs, active, onPick }: { tabs: readonly Inspect
           data-tab={t.id}
           aria-selected={active === t.id}
           tabIndex={active === t.id ? 0 : -1}
-          title={t.title}
+          {...tip(t.label, { does: t.title })}
           onClick={() => onPick(t.id)}
         >
           {t.label}

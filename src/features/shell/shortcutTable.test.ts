@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SHORTCUTS, SHORTCUT_GROUPS, findShortcut } from './shortcuts';
+import { GROUP_LABEL, SHORTCUTS, SHORTCUT_GROUPS, findShortcut, groupLabel } from './shortcuts';
 
 function key(k: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent {
   return { key: k, code: '', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods } as KeyboardEvent;
@@ -102,5 +102,67 @@ describe('shortcut table', () => {
     expect(findShortcut(key('w'))).toBeUndefined();
     expect(SHORTCUTS.some((s) => s.id === 'scene-tools' && s.group === 'preview')).toBe(true);
     expect(SHORTCUTS.some((s) => s.id === 'swap-media')).toBe(true);
+  });
+  it('shift+z zooms to fit and ctrl+shift+z still redoes', () => {
+    expect(findShortcut(key('Z', { shiftKey: true }))?.id).toBe('zoom-fit');
+    expect(findShortcut(key('z', { ctrlKey: true, shiftKey: true }))?.id).toBe('redo');
+    expect(findShortcut(key('z', { ctrlKey: true }))?.id).toBe('undo');
+  });
+  it('shift+f10 and the menu key open the clip menu, f10 alone does nothing', () => {
+    expect(findShortcut(key('F10', { shiftKey: true }))?.id).toBe('clip-menu');
+    expect(findShortcut(key('ContextMenu'))?.id).toBe('clip-menu');
+    expect(findShortcut(key('F10'))).toBeUndefined();
+  });
+  it('every mouse and fields row is info, and every group has a row', () => {
+    for (const s of SHORTCUTS.filter((r) => r.group === 'mouse' || r.group === 'fields')) {
+      expect(s.info, s.id).toBe(true);
+      expect(s.match(key('a'))).toBe(false);
+    }
+    for (const g of SHORTCUT_GROUPS) expect(SHORTCUTS.some((s) => s.group === g), g).toBe(true);
+    expect(SHORTCUTS.filter((s) => s.group === 'mouse').length).toBe(23);
+  });
+  it('the blender only scene rows say blender controls', () => {
+    const blender = ['scene-grab', 'scene-clear', 'scene-copy', 'scene-delete', 'scene-select-all', 'scene-views', 'scene-frame-all'];
+    for (const id of blender) expect(SHORTCUTS.find((s) => s.id === id)?.description.startsWith('scene view, blender controls:'), id).toBe(true);
+    expect(SHORTCUTS.find((s) => s.id === 'scene-frame')?.description.startsWith('scene view:')).toBe(true);
+    expect(SHORTCUTS.find((s) => s.id === 'scene-tools')?.description.startsWith('scene view, unity controls:')).toBe(true);
+  });
+  it('GROUP_LABEL has a lowercase label for every group', () => {
+    for (const g of SHORTCUT_GROUPS) {
+      expect(GROUP_LABEL[g].length).toBeGreaterThan(0);
+      expect(GROUP_LABEL[g]).toBe(GROUP_LABEL[g].toLowerCase());
+    }
+    expect(groupLabel('animation')).toBe('keyframes and 3d');
+    expect(groupLabel('preview')).toBe('preview and scene view');
+    expect(groupLabel('something else')).toBe('something else');
+  });
+  it('no description says cut off, and only the cut row says cut', () => {
+    for (const s of SHORTCUTS) {
+      expect(s.description, s.id).not.toMatch(/cut off/);
+      if (s.id !== 'cut') expect(s.description, s.id).not.toMatch(/\bcut\b/);
+    }
+    expect(SHORTCUTS.find((s) => s.id === 'trim-start')?.also).toContain('cut off the left side');
+    expect(SHORTCUTS.find((s) => s.id === 'trim-end')?.also).toContain('cut off the right side');
+  });
+  it('mouse-pivot and preview-pivot-done are info rows in mouse and preview', () => {
+    const pivot = SHORTCUTS.find((s) => s.id === 'mouse-pivot')!;
+    expect(pivot.group).toBe('mouse');
+    expect(pivot.info).toBe(true);
+    expect(pivot.keys).toEqual([['drag'], ['alt', 'drag'], ['double click']]);
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids.indexOf('mouse-pivot')).toBe(ids.indexOf('mouse-canvas') + 1);
+    const done = SHORTCUTS.find((s) => s.id === 'preview-pivot-done')!;
+    expect(done.group).toBe('preview');
+    expect(done.info).toBe(true);
+    expect(done.keys).toEqual([['esc']]);
+    expect(ids.indexOf('preview-pivot-done')).toBe(ids.indexOf('preview-no-snap') + 1);
+    expect(SHORTCUTS.find((s) => s.id === 'mouse-canvas')?.description).toContain('rotate it by the round handle');
+  });
+  it('the fields group has the eight rows in order', () => {
+    expect(SHORTCUTS.filter((s) => s.group === 'fields').map((s) => s.id)).toEqual([
+      'field-drag', 'field-fine', 'field-snap', 'field-reset', 'field-cancel', 'field-arrows', 'field-enter', 'field-tabs',
+    ]);
+    expect(SHORTCUTS.some((s) => s.id === 'field-scrub')).toBe(false);
+    for (const id of ['field-cancel', 'field-enter']) expect(SHORTCUTS.find((s) => s.id === id)!.keys.flat()).toContain('esc');
   });
 });

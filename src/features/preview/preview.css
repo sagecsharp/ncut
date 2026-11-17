@@ -287,6 +287,13 @@
   cursor: nwse-resize;
   will-change: transform;
 }
+.preview-box[data-bent='1'] {
+  border-style: dotted;
+  outline-style: dotted;
+}
+.preview-quad[data-mode='outline'] .preview-quad-handle {
+  display: none;
+}
 
 .preview-badge {
   position: absolute;
@@ -648,4 +655,76 @@
 /* the segment buttons sit in a header of their own token */
 :root[data-wallpaper='on'] .preview-seg-btn:not(.is-active):not(:hover) {
   background: transparent;
+}
+
+/* ---------- the pivot mark and the move pivot mode ---------- */
+.preview-box[data-pivoting='1'] .preview-handle,
+.preview-box[data-pivoting='1'] .preview-rotate-stem,
+.preview-quad[data-pivoting='1'] .preview-handle {
+  display: none;
+}
+.pivot-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pivot-area-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.pivot-area {
+  fill: transparent;
+  pointer-events: all;
+  cursor: crosshair;
+}
+.pivot-mark {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border: 1px solid var(--accent);
+  outline: 1px solid var(--on-accent);
+  border-radius: 50%;
+  display: none;
+  will-change: transform;
+}
+.pivot-mark[data-set='1']::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.pivot-mark.is-live {
+  pointer-events: auto;
+  cursor: move;
+}
+.pivot-spot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  background: var(--accent);
+  outline: 1px solid var(--on-accent);
+  display: none;
+  will-change: transform;
+}
+.pivot-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 1px 4px;
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--on-accent);
+  white-space: nowrap;
+  display: none;
 }

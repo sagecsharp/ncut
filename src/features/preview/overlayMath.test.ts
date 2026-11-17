@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { boxBounds, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptPlaneModel, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { BEND_OUTLINE_STEPS, asScenePlane, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptPlaneModel, projectRig, pointInBent, quadPoints, rayBent, rayQuad, rotateValue, snapAxis, unwrapStep, worldCenter3d } from './overlayMath';
+import { projectPoint, screenRay } from '../../engine/scene3d/camera';
+import { createProject, createShapeClip } from '../../lib/factory';
+import { DEFAULT_TRANSFORM } from '../../types';
+import type { ShapeClip } from '../../types';
 import { clipModelMatrix, planeCorners } from '../../engine/scene3d/model';
 import type { ClipBox } from '../../engine/draw';
 
@@ -239,5 +243,145 @@ describe('cropped 3d outline', () => {
   it('wraps and uncropped planes keep their full size', () => {
     expect(keptPlaneModel(model, { left: 0.5, top: 0, right: 0, bottom: 0 }, 'box')).toBe(model);
     expect(keptPlaneModel(model, null, 'plane')).toBe(model);
+  });
+});
+
+describe('pivoted 3d clips', () => {
+  const make = (o: Partial<ShapeClip> = {}) => {
+    const p = createProject();
+    const clip = { ...createShapeClip(p.tracks[0]!.id, 0, { duration: 10, width: 200, height: 100, threeD: true }), id: 'a', ...o };
+    p.clips = [clip];
+    return { p, clip };
+  };
+  it('worldCenter3d is the position of a pivoted 3d clip, not its picture middle', () => {
+    const { p, clip } = make({ pivot: { x: 0.5, y: 0 }, transform: { ...DEFAULT_TRANSFORM, x: 50, y: -30, z: 80, rotY: 30 } });
+    const c = worldCenter3d(p, clip, 1);
+    expect(c[0]).toBeCloseTo(p.width / 2 + 50, 3);
+    expect(c[1]).toBeCloseTo(p.height / 2 - 30, 3);
+    expect(c[2]).toBeCloseTo(80, 3);
+  });
+  it('clipQuad of a pivoted 3d clip outlines its picture', () => {
+    const { p, clip } = make({ pivot: { x: 0.5, y: 0 }, transform: { ...DEFAULT_TRANSFORM, x: 50, z: 80 } });
+    const q = clipQuad(p, clip, 1, projectRig(p, 1));
+    const cx = p.width / 2 + 50;
+    const cy = p.height / 2;
+    // the picture runs 200 px to the left of the position
+    expect(q.world[0][0]).toBeCloseTo(cx - 200, 3);
+    expect(q.world[1][0]).toBeCloseTo(cx, 3);
+    expect(q.world[0][1]).toBeCloseTo(cy - 50, 3);
+    expect(q.world[2][1]).toBeCloseTo(cy + 50, 3);
+    // the depth is the picture's middle
+    const mid = projectPoint(projectRig(p, 1), cx - 100, cy, 80, p.width, p.height);
+    expect(q.depth).toBeCloseTo(mid.depth, 3);
+  });
+});
+
+describe('bent 3d clips', () => {
+  const make = (o: Partial<ShapeClip> = {}) => {
+    const p = createProject();
+    const clip = { ...createShapeClip(p.tracks[0]!.id, 0, { duration: 10, width: 200, height: 100, threeD: true }), id: 'a', ...o };
+    p.clips = [clip];
+    return { p, clip };
+  };
+  const z80 = { ...DEFAULT_TRANSFORM, z: 80 };
+  it('clipQuad of a bent plane: bent corners, 2 x 25 outline points, the depth of the bent middle', () => {
+    const { p, clip } = make({ transform: z80, bend: { angle: 180 } });
+    const flat = make({ transform: z80 });
+    const rig = projectRig(p, 1);
+    const q = clipQuad(p, clip, 1, rig);
+    const f = clipQuad(flat.p, flat.clip, 1, rig);
+    expect(q.bent).not.toBeNull();
+    expect(q.bent!.n).toBe(BEND_OUTLINE_STEPS + 1);
+    expect(q.bent!.n).toBe(25);
+    expect(q.bent!.world.length).toBe(50);
+    expect(q.bent!.screen.length).toBe(100);
+    // the bent corners come in from the flat ones and leave the plane
+    expect(Math.abs(q.world[0][0] - p.width / 2)).toBeLessThan(Math.abs(f.world[0][0] - p.width / 2));
+    expect(Math.abs(q.world[0][2] - 80)).toBeGreaterThan(1);
+    // the middle stays in place: the depth is the projected middle
+    const mid = projectPoint(rig, p.width / 2, p.height / 2, 80, p.width, p.height);
+    expect(q.depth).toBeCloseTo(mid.depth, 3);
+  });
+  it('clipQuad of a bent plane with its center off the middle takes the bent middle depth', () => {
+    const { p, clip } = make({ transform: z80, bend: { angle: 180, center: 0.5 } });
+    const flat = make({ transform: z80 });
+    const rig = projectRig(p, 1);
+    const q = clipQuad(p, clip, 1, rig);
+    const f = clipQuad(flat.p, flat.clip, 1, rig);
+    const mid = projectPoint(rig, (q.bent!.world[12]![0] + q.bent!.world[37]![0]) / 2, (q.bent!.world[12]![1] + q.bent!.world[37]![1]) / 2, (q.bent!.world[12]![2] + q.bent!.world[37]![2]) / 2, p.width, p.height);
+    expect(q.depth).not.toBeCloseTo(f.depth, 0);
+    expect(Math.abs(q.depth - f.depth)).toBeGreaterThan(5);
+    expect(q.depth).toBeCloseTo(mid.depth, 3);
+  });
+  it('clipQuad of a flat plane sets bent null', () => {
+    const { p, clip } = make({ transform: z80 });
+    expect(clipQuad(p, clip, 1, projectRig(p, 1)).bent).toBeNull();
+    // a flat bend (angle 0) is flat too
+    const z = make({ transform: z80, bend: { angle: 0 } });
+    expect(clipQuad(z.p, z.clip, 1, projectRig(z.p, 1)).bent).toBeNull();
+  });
+  it('clipQuad of a bent pivoted plane outlines its picture', () => {
+    const { p, clip } = make({ pivot: { x: 0.5, y: 0 }, transform: { ...DEFAULT_TRANSFORM, x: 50, z: 80 }, bend: { angle: 90 } });
+    const rig = projectRig(p, 1);
+    const q = clipQuad(p, clip, 1, rig);
+    const cx = p.width / 2 + 50 - 100;
+    const cy = p.height / 2;
+    // the middle of the strip (the middle of edge a and edge b) is the middle of the picture
+    const a = q.bent!.world[12]!;
+    const b = q.bent!.world[37]!;
+    expect((a[0] + b[0]) / 2).toBeCloseTo(cx, 3);
+    expect((a[1] + b[1]) / 2).toBeCloseTo(cy, 3);
+    expect((a[2] + b[2]) / 2).toBeCloseTo(80, 3);
+    const mid = projectPoint(rig, cx, cy, 80, p.width, p.height);
+    expect(q.depth).toBeCloseTo(mid.depth, 3);
+  });
+  it('pointInBent and rayBent hit the bent strip and miss where the flat plane was', () => {
+    const { p, clip } = make({ bend: { angle: 180 } });
+    const rig = projectRig(p, 1);
+    const q = clipQuad(p, clip, 1, rig);
+    const mx = p.width / 2;
+    const my = p.height / 2;
+    // a half turn pulls the sides in to about 64 px from the middle (flat: 100)
+    expect(pointInBent(q, mx, my)).toBe(true);
+    expect(pointInBent(q, mx + 40, my)).toBe(true);
+    expect(pointInBent(q, mx + 90, my)).toBe(false);
+    const ray = (x: number, y: number) => screenRay(rig, x, y, p.width, p.height);
+    const r0 = ray(mx, my);
+    expect(rayBent(r0.origin, r0.dir, q)).not.toBeNull();
+    const r1 = ray(mx + 90, my);
+    expect(rayBent(r1.origin, r1.dir, q)).toBeNull();
+    // the flat plane was there
+    const flat = make();
+    const fq = clipQuad(flat.p, flat.clip, 1, rig);
+    expect(rayQuad(r1.origin, r1.dir, fq.world)).not.toBeNull();
+    expect(pointInBent(fq, mx + 90, my)).toBe(true);
+  });
+  it('pointInBent hits a closed tube and a card turned past 90 where the outline folds over itself', () => {
+    const tube = make({ bend: { angle: 360 } });
+    const rig = projectRig(tube.p, 1);
+    const tq = clipQuad(tube.p, tube.clip, 1, rig);
+    const mx = tube.p.width / 2;
+    const my = tube.p.height / 2;
+    for (const dx of [-25, -10, 0, 10, 25]) expect(pointInBent(tq, mx + dx, my)).toBe(true);
+    const card = make({ transform: { ...DEFAULT_TRANSFORM, rotY: 60 }, bend: { angle: 180 } });
+    const cq = clipQuad(card.p, card.clip, 1, projectRig(card.p, 1));
+    expect(pointInBent(cq, mx, my)).toBe(true);
+  });
+  it('clipQuad of a bent 2d clip flattens it like the renderer: no shape, no z, tilt or turn', () => {
+    const { p, clip } = make({ threeD: false, shape: 'box', transform: { ...DEFAULT_TRANSFORM, z: 80, rotY: 60 }, bend: { angle: 90 } } as never);
+    const rig = projectRig(p, 1);
+    const q = clipQuad(p, asScenePlane(clip), 1, rig);
+    expect(q.bent).not.toBeNull();
+    const plain = make({ threeD: false, transform: { ...DEFAULT_TRANSFORM }, bend: { angle: 90 } } as never);
+    const r = clipQuad(plain.p, asScenePlane(plain.clip), 1, rig);
+    expect(r.bent).not.toBeNull();
+    for (let i = 0; i < 100; i++) expect(q.bent!.screen[i]).toBeCloseTo(r.bent!.screen[i]!, 3);
+  });
+  it('quadPoints gives 4 points flat and 50 bent', () => {
+    const { p, clip } = make({ bend: { angle: 90 } });
+    const rig = projectRig(p, 1);
+    const flat = make();
+    expect(quadPoints(clipQuad(flat.p, flat.clip, 1, rig), 1).split(' ')).toHaveLength(4);
+    expect(quadPoints(clipQuad(p, clip, 1, rig), 1).split(' ')).toHaveLength(50);
   });
 });

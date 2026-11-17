@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Camera, Crop, Link2, Paperclip, Shapes, Sparkles, VolumeX, Wind } from 'lucide-react';
+import { Camera, Crop, Group, Paperclip, Shapes, Sparkles, VolumeX, Wind } from 'lucide-react';
 import type { Clip, MediaAsset } from '../../types';
 import { hasKeyframes } from '../../lib/anim';
 import { canBeParent } from '../../lib/links';
@@ -70,9 +70,9 @@ export const ClipView = memo(function ClipView({ clip, selected, zoom, laneH, as
       {fadeOut > 1 ? <div className="timeline-fade is-out" style={{ width: Math.min(fadeOut, w) }} /> : null}
       <div className="timeline-clip-label">
         {clip.group ? (
-          <Link2 size={11} className="timeline-clip-icon" aria-label="in a group">
+          <Group size={11} className="timeline-clip-icon" aria-label="in a group">
             <title>in a group</title>
-          </Link2>
+          </Group>
         ) : null}
         {isVisualClip(clip) && clip.parent ? <AttachMark parentId={clip.parent} /> : null}
         {muted ? <VolumeX size={11} aria-label="muted" /> : null}

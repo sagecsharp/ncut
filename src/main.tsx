@@ -7,14 +7,22 @@ import './styles/theme.css';
 import './styles/base.css';
 import './components/ui/ui.css';
 import { App } from './App';
+import { getClipBox } from './engine/draw';
 import { EFFECTS } from './engine/effects/registry';
 import { checkEffects, renderEffects } from './engine/effects/runner';
 import { drawTestPattern } from './engine/effects/testPattern';
 import { TRANSITIONS } from './engine/transitions/registry';
 import { checkTransitions, renderTransition } from './engine/transitions/runner';
+import { pictureBox } from './engine/pivot';
+import { projectPoint } from './engine/scene3d/camera';
 import { preloadEditor } from './features/editor/loadEditor';
+import { worldClip } from './features/preview/attached';
+import { projectRig } from './features/preview/overlayMath';
+import { clipSpots } from './features/preview/pivotMath';
+import { meetSpot, pivotPlan } from './features/properties/pivotPlan';
 import { attachShellOpenFile } from './features/shell/openShellFile';
 import { initAppearance } from './lib/appearance';
+import { watchTips } from './components/ui/tips';
 import { watchFocusSource } from './lib/pressKey';
 import { startUpdateNotice } from './lib/updateNotice';
 import { initWallpaper } from './lib/wallpaper';
@@ -33,6 +41,8 @@ initAppearance();
 initWallpaper();
 // from the first event on: was the focused control reached with the keyboard or clicked (space plays after a click)
 watchFocusSource(window);
+// tips on every control that opts in with tip(). after the focus source, so a keyboard focus is known when a tip asks
+watchTips(window);
 // the canvas (preview + export) can only draw a web font once it is loaded, so fetch both weights up front
 if (document.fonts) {
   void document.fonts.load('400 16px "Kode Mono"');
@@ -68,6 +78,7 @@ if (import.meta.env.DEV || import.meta.env.MODE === 'bench') {
     session,
     importFiles,
     mcp: { listTools, callTool },
+    rig: { getClipBox, pictureBox, worldClip, pivotPlan, clipSpots, meetSpot, projectRig, projectPoint },
     fx: { EFFECTS, checkEffects, renderEffects, drawTestPattern, TRANSITIONS, checkTransitions, renderTransition },
   };
 }

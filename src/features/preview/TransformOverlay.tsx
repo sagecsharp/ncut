@@ -11,8 +11,10 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip, stretchX, stretchY } from '../../types';
 import { getClipBox, visibleClipsAt } from '../../engine/draw';
+import { pictureBox, pivotOf } from '../../engine/pivot';
+import { isBent } from '../../engine/scene3d/bend';
 import { faceSourceSet } from '../../engine/scene3d/faces';
-import { cameraClipAt, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
+import { cameraClipAt, homeRig, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
 import type { CameraRig } from '../../engine/scene3d/camera';
 import { resolveClip } from '../../lib/anim';
 import { clipEnd } from '../../lib/timelineOps';
@@ -20,10 +22,13 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { type Edge, type EdgeStart, type Quad, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, pointInQuad, projectRig, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { type Edge, type EdgeStart, type Quad, asScenePlane, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, pointInBent, pointInQuad, projectRig, quadPoints, rotateValue, snapAxis, unwrapStep } from './overlayMath';
 import { localDelta, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
 import { movableClipsAt } from './nudge';
+import { PivotLayer } from './PivotLayer';
+import { pivotFollow } from './pivotMath';
+import { usePivotMode } from './pivotMode';
 
 const SNAP_PX = 6;
 const DRAG_THRESHOLD_PX = 2;
@@ -50,8 +55,10 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
   const cornerRefs = useRef<Array<HTMLDivElement | null>>([null, null, null, null]);
   // a shape's edges change its width / height, every other clip's edges stretch it
   const isShape = useEditor((s) => s.project?.clips.find((c) => c.id === clipId)?.type === 'shape');
-  const wTitle = isShape ? 'width' : 'stretch';
-  const hTitle = isShape ? 'height' : 'stretch';
+  const wTitle = isShape ? 'width' : 'scale x (width only)';
+  const hTitle = isShape ? 'height' : 'scale y (height only)';
+  // the move pivot mode hides the handles: the pivot is the only thing to grab
+  const pivoting = usePivotMode((s) => s.on);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -67,7 +74,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
     let lh = '';
     let lt = '';
     let lp = '';
-    const scratch: Quad = { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world: [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], cx: 0, cy: 0 };
+    const scratch: Quad = { p: [0, 0, 0, 0, 0, 0, 0, 0], visible: true, depth: 0, world: [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], cx: 0, cy: 0, bent: null };
 
     const inRange = (c: Clip, time: number) => time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
     const hide = () => {
@@ -115,7 +122,11 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
           quadEl.style.display = 'block';
           shown3d = true;
         }
-        const pts = `${q.p[0] * f},${q.p[1] * f} ${q.p[2] * f},${q.p[3] * f} ${q.p[4] * f},${q.p[5] * f} ${q.p[6] * f},${q.p[7] * f}`;
+        const pts = quadPoints(q, f);
+        if (quadEl.dataset.mode) {
+          quadEl.dataset.mode = '';
+          lp = '';
+        }
         if (pts !== lp) {
           lp = pts;
           poly.setAttribute('points', pts);
@@ -129,17 +140,40 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         return;
       }
 
-      if (shown3d) {
+      // a bent 2d clip also shows its bent outline (the css box stays the handle frame)
+      const shown = worldClip(project, clip, time);
+      const bentNow = isBent(shown);
+      const bentFlag = bentNow ? '1' : '0';
+      if (bentNow) {
+        const q = clipQuad(project, asScenePlane(clip), time, homeRig(project.width, project.height), scratch);
+        if (q.visible) {
+          if (!shown3d) {
+            quadEl.style.display = 'block';
+            shown3d = true;
+          }
+          const pts = quadPoints(q, f);
+          if (quadEl.dataset.mode !== 'outline') quadEl.dataset.mode = 'outline';
+          if (pts !== lp) {
+            lp = pts;
+            poly.setAttribute('points', pts);
+            under.setAttribute('points', pts);
+          }
+          quadEl.dataset.locked = locked;
+        } else if (shown3d) {
+          quadEl.style.display = 'none';
+          shown3d = false;
+        }
+      } else if (shown3d) {
         quadEl.style.display = 'none';
         shown3d = false;
       }
       // the outline hugs the kept rectangle of a cropped clip
       // (the crop as it is at this time: it may be keyed)
-      const shown = worldClip(project, clip, time);
-      const box = keptBox(getClipBox(project, shown), shown.crop);
+      const box = keptBox(pictureBox(getClipBox(project, shown)), shown.crop);
       // edge handles: a plain shape's own width / height, a stretch for anything else. not on a cropped clip.
       const edges = edgeMode(shown) ? '1' : '0';
       if (el.dataset.edges !== edges) el.dataset.edges = edges;
+      if (el.dataset.bent !== bentFlag) el.dataset.bent = bentFlag;
       const w = box.width * f;
       const h = box.height * f;
       const ws = `${w}px`;
@@ -173,7 +207,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
 
   return (
     <>
-      <div ref={ref} className="preview-box" style={{ display: 'none' }}>
+      <div ref={ref} className="preview-box" data-pivoting={pivoting ? '1' : undefined} style={{ display: 'none' }}>
         <div className="preview-handle preview-handle-nw" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-ne" data-handle="scale" data-clip={clipId} title="scale" />
         <div className="preview-handle preview-handle-sw" data-handle="scale" data-clip={clipId} title="scale" />
@@ -185,7 +219,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         <div className="preview-rotate-stem" />
         <div className="preview-handle preview-handle-rotate" data-handle="rotate" data-clip={clipId} title="rotate (shift = 15 degree steps)" />
       </div>
-      <div ref={quadRef} className="preview-quad" style={{ display: 'none' }}>
+      <div ref={quadRef} className="preview-quad" data-pivoting={pivoting ? '1' : undefined} style={{ display: 'none' }}>
         <svg className="preview-quad-svg" aria-hidden="true">
           <polygon ref={underRef} className="preview-quad-under" />
           <polygon ref={polyRef} className="preview-quad-line" />
@@ -287,6 +321,9 @@ type Gesture =
       start: EdgeStart;
       /** a stretch drag (not a shape's own size): the prop it writes and its value at the grab */
       stretch: { prop: 'scaleX' | 'scaleY'; s0: number } | null;
+      /** the pivot as fractions of the box: the pivot moves with the picture's edge */
+      fx: number;
+      fy: number;
       x0: number;
       y0: number;
       started: boolean;
@@ -329,7 +366,8 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
       i--;
       if (locked(clip)) continue;
       const shown = worldClip(project, clip, time);
-      if (hitTestKept(keptBox(getClipBox(project, shown), shown.crop), px, py, minHit)) return clip;
+      // a bent clip is the bent strip, a flat one its kept picture box
+      if (isBent(shown) ? pointInBent(clipQuad(project, asScenePlane(clip), time, homeRig(project.width, project.height)), px, py) : hitTestKept(keptBox(pictureBox(getClipBox(project, shown)), shown.crop), px, py, minHit)) return clip;
       continue;
     }
     let best: VisualClip | null = null;
@@ -339,7 +377,7 @@ function hitTest(project: Project, time: number, rig: CameraRig, px: number, py:
       i--;
       if (locked(c)) continue;
       const q = clipQuad(project, c, time, rig);
-      if (q.visible && pointInQuad(q.p, px, py) && q.depth < bestDepth) {
+      if (q.visible && (q.bent ? pointInBent(q, px, py) : pointInQuad(q.p, px, py)) && q.depth < bestDepth) {
         best = c;
         bestDepth = q.depth;
       }
@@ -502,8 +540,14 @@ function OutputOverlay() {
       // the stretch follows the pointer (new box side / side at the grab); x / y move so the opposite edge stays put
       const r = edgeStretch(g.start, g.edge, g.stretch.s0, px, py, MIN_SHAPE_PX);
       store.setClipValue(g.id, g.stretch.prop, time, r.value, { skipHistory: true });
+      // the new sides of the box (the grab stretch as edgeStretch reads it), for the pivot
+      const s0 = Math.max(1e-6, Number.isFinite(g.stretch.s0) && g.stretch.s0 > 0 ? g.stretch.s0 : 1);
+      const horizontal = g.edge === 'l' || g.edge === 'r';
+      const w1 = horizontal ? (g.start.bw * r.value) / s0 : g.start.bw;
+      const h1 = horizontal ? g.start.bh : (g.start.bh * r.value) / s0;
+      const d = pivotFollow(g.start.rotation, g.fx, g.fy, g.start.bw, g.start.bh, w1, h1, r.dx, r.dy);
       const rawClip = project.clips.find((c) => c.id === g.id);
-      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, r.dx, r.dy) : { x: r.dx, y: r.dy };
+      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, d.dx, d.dy) : { x: d.dx, y: d.dy };
       store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
       store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
       return;
@@ -511,11 +555,16 @@ function OutputOverlay() {
     if (g.kind === 'edge') {
       const r = edgeResize(g.start, g.edge, px, py, MIN_SHAPE_PX);
       // width / height go through setClipValue like x / y: a keyed size gets its key at the playhead
-      if (r.width !== undefined) store.setClipValue(g.id, 'width', time, Math.round(r.width * 100) / 100, { skipHistory: true });
-      if (r.height !== undefined) store.setClipValue(g.id, 'height', time, Math.round(r.height * 100) / 100, { skipHistory: true });
-      // the opposite edge stays fixed in canvas space: the center follows
+      const width = r.width !== undefined ? Math.round(r.width * 100) / 100 : undefined;
+      const height = r.height !== undefined ? Math.round(r.height * 100) / 100 : undefined;
+      if (width !== undefined) store.setClipValue(g.id, 'width', time, width, { skipHistory: true });
+      if (height !== undefined) store.setClipValue(g.id, 'height', time, height, { skipHistory: true });
+      // the opposite edge stays fixed in canvas space: the center follows, and the pivot with it
+      const w1 = width !== undefined ? width * g.start.scale : g.start.bw;
+      const h1 = height !== undefined ? height * g.start.scale : g.start.bh;
+      const d = pivotFollow(g.start.rotation, g.fx, g.fy, g.start.bw, g.start.bh, w1, h1, r.dx, r.dy);
       const rawClip = project.clips.find((c) => c.id === g.id);
-      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, r.dx, r.dy) : { x: r.dx, y: r.dy };
+      const l = rawClip && isVisualClip(rawClip) ? localDelta(project, rawClip, time, d.dx, d.dy) : { x: d.dx, y: d.dy };
       store.setClipValue(g.id, 'x', time, Math.round((g.x0 + l.x) * 100) / 100, { skipHistory: true });
       store.setClipValue(g.id, 'y', time, Math.round((g.y0 + l.y) * 100) / 100, { skipHistory: true });
       return;
@@ -583,6 +632,9 @@ function OutputOverlay() {
           const mode = edge ? edgeMode(clip) : null;
           if (!edge || !mode) return;
           const horizontal = edge === 'l' || edge === 'r';
+          // the picture's middle, not the position (the pivot), is what the edges measure from
+          const pic = pictureBox(box);
+          const pv = pivotOf(raw);
           gestureRef.current = {
             kind: 'edge',
             pointerId: e.pointerId,
@@ -593,19 +645,36 @@ function OutputOverlay() {
             // (the box of a shape that is stretched as well is its size x scale x that stretch: the new size is the new
             // side divided by all of it)
             start: {
-              cx: box.cx,
-              cy: box.cy,
+              cx: pic.cx,
+              cy: pic.cy,
               rotation: box.rotation,
               bw: box.width,
               bh: box.height,
               scale: world.transform.scale * (mode === 'size' ? (horizontal ? stretchX(world.transform) : stretchY(world.transform)) : 1),
             },
             stretch: mode === 'stretch' ? { prop: horizontal ? 'scaleX' : 'scaleY', s0: horizontal ? stretchX(clip.transform) : stretchY(clip.transform) } : null,
+            fx: pv.x,
+            fy: pv.y,
             x0: clip.transform.x,
             y0: clip.transform.y,
             started: false,
           };
         } else if (handle.dataset.handle === 'scale') {
+          // a grab on the pivot itself would give a ratio of nothing: measure from the picture's middle there.
+          // the scale still happens around the pivot.
+          if (Math.hypot(px - cx, py - cy) < 16 / f) {
+            if (clip.threeD) {
+              const q = clipQuad(project, raw, time, rig);
+              if (q.visible) {
+                cx = q.cx;
+                cy = q.cy;
+              }
+            } else {
+              const pic = pictureBox(box);
+              cx = pic.cx;
+              cy = pic.cy;
+            }
+          }
           gestureRef.current = {
             kind: 'scale',
             pointerId: e.pointerId,
@@ -667,13 +736,14 @@ function OutputOverlay() {
       let ox = 0;
       let oy = 0;
       if (!raw.threeD) {
-        const full = getClipBox(project, world);
+        // the kept picture snaps, not the position (the pivot): ox / oy is the step from the position to its middle
+        const full = pictureBox(getClipBox(project, world));
         const kept = keptBox(full, world.crop);
         const b = boxBounds(kept);
         hw = b.hw;
         hh = b.hh;
-        ox = kept.cx - full.cx;
-        oy = kept.cy - full.cy;
+        ox = kept.cx - (project.width / 2 + world.transform.x);
+        oy = kept.cy - (project.height / 2 + world.transform.y);
       }
       items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, wx: world.transform.x, wy: world.transform.y, clip: raw, threeD: !!raw.threeD, hw, hh, ox, oy, p0, z });
     }
@@ -724,6 +794,17 @@ function OutputOverlay() {
       <div ref={guideV} className="preview-guide preview-guide-v" />
       <div ref={guideH} className="preview-guide preview-guide-h" />
       <CameraBadge />
+      <PivotLayer
+        kind="output"
+        getF={() => viewRef.current.f}
+        getRig={projectRig}
+        register={(fn) => {
+          viewRef.current.fns.add(fn);
+          return () => {
+            viewRef.current.fns.delete(fn);
+          };
+        }}
+      />
     </div>
   );
 }

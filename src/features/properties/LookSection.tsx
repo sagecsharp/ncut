@@ -6,15 +6,16 @@ import { AnimField } from './AnimField';
 import { resetWithKeys } from './animEdit';
 import { SelectRow, Section } from './controls';
 import { patchClip } from './edit';
-import { BLEND_LABELS, MAX_CROP_EDGE } from './look';
+import { BLEND_LABELS } from './look';
 import { copyLook, pasteLook, useLookClipboard } from './lookClipboard';
 
 const EDGES = [
-  { edge: 'left', label: 'crop left', title: 'cut off the left edge (%)' },
-  { edge: 'top', label: 'crop top', title: 'cut off the top edge (%)' },
-  { edge: 'right', label: 'crop right', title: 'cut off the right edge (%)' },
-  { edge: 'bottom', label: 'crop bottom', title: 'cut off the bottom edge (%)' },
+  { edge: 'left', label: 'crop left', title: 'crop the left edge (%)' },
+  { edge: 'top', label: 'crop top', title: 'crop the top edge (%)' },
+  { edge: 'right', label: 'crop right', title: 'crop the right edge (%)' },
+  { edge: 'bottom', label: 'crop bottom', title: 'crop the bottom edge (%)' },
 ] as const;
+const CROP_FEEL = { left: 'cropLeft', top: 'cropTop', right: 'cropRight', bottom: 'cropBottom' } as const;
 const CROP_PROPS = EDGES.map((e) => 'crop.' + e.edge);
 
 /** the crop has something to reset: an edge is cut, or an edge is animated */
@@ -75,12 +76,7 @@ export const LookSection = memo(function LookSection({ clip }: { clip: VisualCli
           prop="radius"
           label="corners"
           title="round the corners (0 square, 100 fully round)"
-          scale={100}
-          suffix="%"
-          min={0}
-          max={100}
-          step={1}
-          precision={0}
+          feel="corners"
         />
       ) : null}
       {!isText ? (
@@ -92,12 +88,7 @@ export const LookSection = memo(function LookSection({ clip }: { clip: VisualCli
               prop={'crop.' + edge}
               label={label}
               title={title}
-              scale={100}
-              suffix="%"
-              min={0}
-              max={MAX_CROP_EDGE}
-              step={1}
-              precision={0}
+              feel={CROP_FEEL[edge]}
             />
           ))}
           <div className="props-buttons">

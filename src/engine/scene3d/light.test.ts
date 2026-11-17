@@ -521,3 +521,18 @@ describe('shape colors in the auto light', () => {
     expect(sky('#ff0000', 'banana').sky).toBe('#ff0000');
   });
 });
+
+describe('pivoted backdrop shape', () => {
+  it('a pivoted backdrop shape lights from where its picture is', () => {
+    const { p, top, bottom } = twoTracks();
+    const r = createShapeClip(bottom, 0, { duration: 10, width: 400, height: 200, color: '#ffffff' });
+    r.pivot = { x: 0.5, y: 0 };
+    p.clips = [r, threeD(top)];
+    const shapes = backdropShapes(p, 1);
+    const cx = p.width / 2;
+    const cy = p.height / 2;
+    // the position is the right edge of the picture: it spans 400 px to the left of it
+    expect(backdropColorAt(p, shapes, cx - 300, cy)).toEqual([1, 1, 1]);
+    expect(backdropColorAt(p, shapes, cx + 300, cy)).toEqual([0, 0, 0]);
+  });
+});

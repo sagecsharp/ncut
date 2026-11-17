@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { meshNeedsBlur } from './focus';
 import { identity, mul, scaling, translation } from './math';
 import { LIGHT_GAMMA, planeLight } from './light';
-import { LIGHT_LINE, LIT_VS, OUTLINE_CACHE_LIMIT, PLANE_FS, SKY_FS, SKY_VS, canReuseScratch, lightUniform, litFragment, lruOverflow, outlineKey, planeNeedsBlur, skyCubeSize, skyLevels, stackedTexelAlpha, uvWrapsU } from './renderer';
+import { BENT_VS, LIGHT_LINE, LIT_VS, OUTLINE_CACHE_LIMIT, PLANE_FS, SKY_FS, SKY_VS, bentNeedsBlur, canReuseScratch, lightUniform, litFragment, lruOverflow, outlineKey, planeNeedsBlur, skyCubeSize, skyLevels, stackedTexelAlpha, uvWrapsU } from './renderer';
 
 // a camera at the origin looking down +z: depth = z (w = z), no perspective needed for the depth test
 const viewProj = (() => {
@@ -184,5 +184,62 @@ describe('sky', () => {
     expect(skyLevels(1000)).toBe(10);
     expect(skyLevels(1)).toBe(1);
     expect(skyLevels(0)).toBe(1);
+  });
+});
+
+describe('bent program', () => {
+  it('BENT_VS reads bp for both positions and bn for the normal', () => {
+    expect(BENT_VS).toContain('vec3 bp = bendPos(a_pos, bn);');
+    // v_world, gl_Position and the eye test of the normal
+    expect(BENT_VS.split('vec4(bp, 1.0)').length - 1).toBe(3);
+    expect(BENT_VS).not.toContain('vec4(a_pos, 1.0)');
+    expect(BENT_VS).toContain('* bn *');
+    expect(BENT_VS).not.toContain('* a_normal *');
+    expect(BENT_VS).toContain('uniform vec4 u_bend;');
+    // the fragment shader is the lit one: it still links with the same varyings
+    expect(LIT_VS).not.toContain('bendPos');
+  });
+});
+
+describe('lightUniform with a bent plane', () => {
+  const env = new Float32Array([0.3, 0.4, 0.6, 0.5, 0.45, 0.4, 0.1, 0.1, 0.1, 0, -1, 0, 0.2, 0.2, 0.1]);
+  const model = identity();
+  const eye = [0, 0, -10];
+  it('gives a bent plane (1, 1, 1, k) and a flat one planeLight', () => {
+    const bent = new Float32Array(4);
+    lightUniform(0.5, 'plane', model, eye, env, bent, true);
+    expect([...bent]).toEqual([1, 1, 1, 0.5]);
+    const flat = new Float32Array(4);
+    lightUniform(0.5, 'plane', model, eye, env, flat);
+    const want = new Float32Array(4);
+    planeLight(model, eye, 0.5, env, want);
+    want[3] = 0;
+    expect([...flat]).toEqual([...want]);
+    // unlit stays unlit, bent or not
+    lightUniform(undefined, 'plane', model, eye, new Float32Array(15), bent, true);
+    expect([...bent]).toEqual([1, 1, 1, 0]);
+  });
+});
+
+describe('bentNeedsBlur', () => {
+  const flatBox = [-0.5, 0.5, -0.5, 0.5, 0, 0];
+  it('equals planeNeedsBlur for a flat box', () => {
+    for (const z of [800, 940, 1000, 1040, 1200]) {
+      for (const [w, h] of [[100, 100], [400, 300], [20, 20]]) {
+        const model = mul(translation(0, 0, z), scaling(w!, h!, 1));
+        expect(bentNeedsBlur(model, flatBox, viewProj, focus)).toBe(planeNeedsBlur(model, viewProj, focus));
+      }
+    }
+    expect(bentNeedsBlur(identity(), flatBox, viewProj, null)).toBe(false);
+  });
+  it('sees bent ends that leave the sharp range', () => {
+    const model = mul(translation(0, 0, 1000), scaling(400, 300, 1));
+    expect(bentNeedsBlur(model, flatBox, viewProj, focus)).toBe(false);
+    // the ends come 80 px toward the viewer (z is px, the model keeps z at scale 1): out of the range of 50
+    expect(bentNeedsBlur(model, [-0.5, 0.5, -0.5, 0.5, -80, 0], viewProj, focus)).toBe(true);
+    // 30 px stays inside
+    expect(bentNeedsBlur(model, [-0.5, 0.5, -0.5, 0.5, -30, 0], viewProj, focus)).toBe(false);
+    // and away from the viewer
+    expect(bentNeedsBlur(model, [-0.5, 0.5, -0.5, 0.5, 0, 80], viewProj, focus)).toBe(true);
   });
 });

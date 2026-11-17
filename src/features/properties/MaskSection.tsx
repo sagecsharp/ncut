@@ -6,8 +6,19 @@ import { AnimField } from './AnimField';
 import { Row, Section, Switch } from './controls';
 import { resetWithKeys } from './animEdit';
 import { patchClip } from './edit';
-import { MASK_PROPS, MASK_RANGES, MASK_SHAPE_LABELS, maskFields, newMask, setMaskShape } from './maskLogic';
+import { MASK_PROPS, MASK_SHAPE_LABELS, maskFields, newMask, setMaskShape } from './maskLogic';
 import type { MaskKey } from './maskLogic';
+import type { FeelKey } from './fieldFeel';
+
+const MASK_FEEL: Record<MaskKey, FeelKey> = {
+  x: 'maskX',
+  y: 'maskY',
+  width: 'maskWidth',
+  height: 'maskHeight',
+  rotation: 'maskTurn',
+  feather: 'maskFeather',
+  radius: 'maskCorners',
+};
 
 const SHAPE_ICONS: Record<MaskShape, LucideIcon> = {
   rect: Square,
@@ -32,25 +43,9 @@ export const MaskSection = memo(function MaskSection({ clip }: { clip: VisualCli
   const mask = clip.mask ?? null;
   const fields = mask ? maskFields(mask.shape) : null;
 
-  const slider = (key: MaskKey, label: string, title: string, suffix = '%') => {
+  const slider = (key: MaskKey, label: string, title: string) => {
     if (!mask) return null;
-    const { min, max } = MASK_RANGES[key];
-    const deg = key === 'rotation';
-    return (
-      <AnimField
-        id={id}
-        prop={'mask.' + key}
-        label={label}
-        title={title}
-        scale={deg ? 1 : 100}
-        min={min}
-        max={max}
-        precision={deg ? 1 : 0}
-        step={deg ? 0.5 : 1}
-        suffix={suffix}
-        slider
-      />
-    );
+    return <AnimField id={id} prop={'mask.' + key} label={label} title={title} feel={MASK_FEEL[key]} />;
   };
 
   return (
@@ -84,7 +79,7 @@ export const MaskSection = memo(function MaskSection({ clip }: { clip: VisualCli
           {slider('y', 'y', 'move the mask up or down (% of the picture)')}
           {fields.width ? slider('width', 'width', 'width of the mask (% of the picture)') : null}
           {fields.height ? slider('height', mask.shape === 'band' ? 'thickness' : 'height', 'height of the mask (% of the picture)') : null}
-          {slider('rotation', 'turn', 'turn the mask (degrees)', 'deg')}
+          {slider('rotation', 'rotation', 'rotate the mask (degrees)')}
           {slider('feather', 'soft edge', 'how soft the edge is (%)')}
           {fields.radius ? slider('radius', 'corners', 'round the corners of the box (%)') : null}
           <Row label="flip" title="show the outside instead" wide>

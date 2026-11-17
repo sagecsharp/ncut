@@ -5,8 +5,6 @@ import { clamp } from '../../lib/time';
 import { projectDuration } from '../../lib/timelineOps';
 import { MAX_ZOOM, MIN_ZOOM, useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
-import { useUi } from '../../store/ui';
-import { isTypingTarget } from '../shell/useShortcuts';
 import { ClipMenu } from './ClipMenu';
 import { PlayheadLine } from './Playhead';
 import { Ruler } from './Ruler';
@@ -21,6 +19,8 @@ import type { MarkerMenuRequest } from './MarkerUi';
 import { createGestures } from './gestures';
 import type { MenuRequest } from './gestures';
 import { HEADER_W, RULER_H, TAIL_MIN_PX, ZONE_H, laneHeight } from './layout';
+import { timelineCommands } from './commands';
+import type { ClipMenuOpen, TrackMenuOpen } from './commands';
 import { LinkMarks } from './LinkMarks';
 import { Overlays } from './overlays';
 import { FIT_PAD, rangeOf, zoomForRange } from './zoomMath';
@@ -109,7 +109,7 @@ function TimelineInner() {
       const el = e.target as HTMLElement;
       const onClip = el.closest('[data-clip-id], [data-transition-clip]');
       const trackId = el.closest<HTMLElement>('[data-track-id]')?.dataset.trackId;
-      if (!onClip && trackId && !el.closest('input, button')) {
+      if (!onClip && trackId && !el.closest('input, button:not(.timeline-head-kind)')) {
         e.preventDefault();
         setMenu(null);
         setMarkerMenu(null);
@@ -238,21 +238,51 @@ function TimelineInner() {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== 'z' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.defaultPrevented || isTypingTarget(e.target)) return;
-      if (useUi.getState().dialog !== null || document.querySelector('.dialog-backdrop')) return;
-      e.preventDefault();
-      fit();
-    };
-    window.addEventListener('keydown', onKey);
-
     return () => {
       el.removeEventListener('wheel', onWheel);
-      window.removeEventListener('keydown', onKey);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [applyZoom, fit]);
+  }, [applyZoom]);
+
+  // what the rest of the editor can ask of the timeline (the shortcut table, the palette, the header buttons)
+  useEffect(() => {
+    timelineCommands.fit = fit;
+    timelineCommands.fitSelection = fitSelection;
+    timelineCommands.openClipMenu = (r?: ClipMenuOpen) => {
+      const clipId = r?.clipId ?? useEditor.getState().selection[0];
+      if (!clipId) return;
+      let x = r?.x;
+      let y = r?.y;
+      if (x === undefined || y === undefined) {
+        const sc = scrollerRef.current;
+        if (!sc) return;
+        const box = sc.getBoundingClientRect();
+        const lanesLeft = box.left + HEADER_W;
+        const cr = sc.querySelector<HTMLElement>(`[data-clip-id="${CSS.escape(clipId)}"]`)?.getBoundingClientRect();
+        if (cr && cr.right > lanesLeft && cr.left < box.right && cr.bottom > box.top && cr.top < box.bottom) {
+          x = Math.max(cr.left, lanesLeft);
+          y = cr.bottom;
+        } else {
+          x = box.left + box.width / 2;
+          y = box.top + box.height / 2;
+        }
+      }
+      setMarkerMenu(null);
+      setTrackMenu(null);
+      setMenu({ x, y, clipId, focusFirst: r?.focusFirst });
+    };
+    timelineCommands.openTrackMenu = (r: TrackMenuOpen) => {
+      setMenu(null);
+      setMarkerMenu(null);
+      setTrackMenu(r);
+    };
+    return () => {
+      timelineCommands.fit = undefined;
+      timelineCommands.fitSelection = undefined;
+      timelineCommands.openClipMenu = undefined;
+      timelineCommands.openTrackMenu = undefined;
+    };
+  }, [fit, fitSelection]);
 
   const contentW = Math.max(viewW, Math.ceil(duration * zoom + Math.max(TAIL_MIN_PX, viewW * 0.25)));
   const rootVars = {
@@ -338,7 +368,7 @@ function TimelineInner() {
       {markerMenu ? <MarkerMenu {...markerMenu} onClose={closeMarkerMenu} onRename={startRename} /> : null}
       {renaming ? <MarkerRename {...renaming} onDone={closeRename} /> : null}
       {trackMenu ? <TrackMenu {...trackMenu} onClose={closeTrackMenu} /> : null}
-      {menu ? <ClipMenu x={menu.x} y={menu.y} clipId={menu.clipId} onClose={closeMenu} /> : null}
+      {menu ? <ClipMenu x={menu.x} y={menu.y} clipId={menu.clipId} focusFirst={menu.focusFirst} onClose={closeMenu} /> : null}
     </div>
   );
 }

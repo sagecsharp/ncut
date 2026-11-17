@@ -1,4 +1,5 @@
 import { getClipBox } from '../../engine/draw';
+import { pictureBox } from '../../engine/pivot';
 import { resolveClip, valueAt } from '../../lib/anim';
 import { resolveCounter } from '../../engine/counter';
 import { clamp } from '../../lib/time';
@@ -26,7 +27,8 @@ function boxOf(project: Project, clip: VisualClip): AlignBox {
   const t = timeIn(clip);
   const shown = resolveClip(clip, t);
   // a running number is measured as it is drawn right now
-  const b = getClipBox(project, shown.type === 'text' ? resolveCounter(shown, t) : shown);
+  // a pivoted clip is measured where its picture is, not where its pivot is. the moves are deltas, so x / y stay right
+  const b = pictureBox(getClipBox(project, shown.type === 'text' ? resolveCounter(shown, t) : shown));
   return { id: clip.id, cx: b.cx, cy: b.cy, width: b.width, height: b.height };
 }
 

@@ -30,3 +30,6 @@ export function roundShown(v: number, precision = 0): number {
   const n = Number(v.toFixed(Math.max(0, Math.min(10, Math.round(precision))) + EXTRA_DECIMALS));
   return n === 0 ? 0 : n;
 }
+
+/** a fraction shown in percent without float noise */
+export const percentOf = (fraction: number): number => Math.round(fraction * 1e6) / 1e4;

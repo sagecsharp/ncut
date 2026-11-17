@@ -5,6 +5,9 @@ import { useUi } from '../../store/ui';
 import { lastTransition } from '../media/transitionApply';
 import { cutsOnTrack, planRemoveTransitions, planTrackTransitions } from '../media/transitionBatch';
 import type { TransitionPatch } from '../media/transitionBatch';
+import { MenuKeys } from '../shell/MenuKeys';
+import { REASON_TEXT } from '../shell/reasons';
+import { tip } from '../shell/tip';
 import { closeGapsOnTrack, insertGapAt, selectAfterPlayhead, selectTrackClips } from './actions';
 import { useFloatingMenu } from './menuBehavior';
 
@@ -61,6 +64,8 @@ export interface TrackMenuRequest {
   x: number;
   y: number;
   trackId: string;
+  /** a menu opened from the keyboard puts the focus on its first item */
+  focusFirst?: boolean;
 }
 
 interface Props extends TrackMenuRequest {
@@ -68,36 +73,43 @@ interface Props extends TrackMenuRequest {
 }
 
 /** right click menu of a track header or an empty spot of a lane. */
-export function TrackMenu({ x, y, trackId, onClose }: Props) {
+export function TrackMenu({ x, y, trackId, focusFirst, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const pos = useFloatingMenu(ref, x, y, onClose);
+  const pos = useFloatingMenu(ref, x, y, onClose, { focusFirst });
   const track = useEditor((s) => s.project?.tracks.find((t) => t.id === trackId));
   if (!track) return null;
+  const lockedOff = track.locked ? REASON_TEXT.trackLocked : null;
   const run = (fn: () => void) => () => {
     fn();
     onClose();
   };
   return (
     <div ref={ref} className="menu timeline-menu" style={{ left: pos.x, top: pos.y }} role="menu">
-      <button className="menu-item" role="menuitem" title="select every clip on this track" onClick={run(() => selectTrackClips(trackId))}>
+      <button
+        className="menu-item"
+        role="menuitem"
+        {...tip('select everything on this track', { does: 'select every clip on this track', side: 'right' })}
+        onClick={run(() => selectTrackClips(trackId))}
+      >
         <ListChecks size={14} />
         select everything on this track
       </button>
       <button
         className="menu-item"
         role="menuitem"
-        title="select every clip that starts at or after the playhead (ctrl+shift+a)"
+        {...tip('select everything after the playhead', { does: 'select every clip that starts at or after the playhead', side: 'right', keys: 'select-after' })}
         onClick={run(() => selectAfterPlayhead())}
       >
         <ArrowRightToLine size={14} />
         select everything after the playhead
+        <MenuKeys id="select-after" />
       </button>
       <div className="menu-sep" />
       <button
         className="menu-item"
         role="menuitem"
         disabled={track.locked}
-        title="move the clips of this track left so they sit end to end"
+        {...tip('close gaps on this track', { does: 'move the clips of this track left so they sit end to end', side: 'right', off: lockedOff })}
         onClick={run(() => closeGapsOnTrack(trackId))}
       >
         <ChevronsRightLeft size={14} />
@@ -106,7 +118,7 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
       <button
         className="menu-item"
         role="menuitem"
-        title="push every clip that starts at or after the playhead right by 1 second, on all unlocked tracks"
+        {...tip('insert gap here', { does: 'push every clip that starts at or after the playhead right by 1 second, on all unlocked tracks', side: 'right' })}
         onClick={run(() => insertGapAt())}
       >
         <MoveHorizontal size={14} />
@@ -116,7 +128,7 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
         className="menu-item"
         role="menuitem"
         disabled={track.locked}
-        title="the same, but only for the clips of this track"
+        {...tip('insert gap on this track', { does: 'the same, but only for the clips of this track', side: 'right', off: lockedOff })}
         onClick={run(() => insertGapAt(undefined, trackId))}
       >
         <MoveHorizontal size={14} />
@@ -127,7 +139,7 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
         className="menu-item"
         role="menuitem"
         disabled={track.locked}
-        title="put the transition used last on every cut of this track that has none"
+        {...tip('transition on every cut', { does: 'put the transition used last on every cut of this track that has none', side: 'right', off: lockedOff })}
         onClick={run(() => addEverywhere(trackId, false))}
       >
         <Layers size={14} />
@@ -137,7 +149,7 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
         className="menu-item"
         role="menuitem"
         disabled={track.locked}
-        title="put the transition used last on every cut of this track, replacing the ones there"
+        {...tip('replace every transition', { does: 'put the transition used last on every cut of this track, replacing the ones there', side: 'right', off: lockedOff })}
         onClick={run(() => addEverywhere(trackId, true))}
       >
         <Replace size={14} />
@@ -147,7 +159,7 @@ export function TrackMenu({ x, y, trackId, onClose }: Props) {
         className="menu-item"
         role="menuitem"
         disabled={track.locked}
-        title="take every transition off the clips of this track"
+        {...tip('remove every transition', { does: 'remove the transition from every clip of this track', side: 'right', off: lockedOff })}
         onClick={run(() => removeEverywhere(trackId))}
       >
         <Eraser size={14} />

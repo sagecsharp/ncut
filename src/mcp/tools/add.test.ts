@@ -158,3 +158,16 @@ describe('no project', () => {
     expect(r.text).toMatch(/no project is open/);
   });
 });
+
+describe('fields pivot', () => {
+  it('fields pivot is stored as given', async () => {
+    const r = await oneStepOf(() => call('add_shape', { kind: 'rect', start: 0, duration: 2, fields: { pivot: 'left' } }));
+    expect((clipOf(r.data.id) as any).pivot).toEqual({ x: -0.5, y: 0 });
+    expect((clipOf(r.data.id) as any).transform.x).toBe(0);
+    expect((clipOf(r.data.id) as any).transform.y).toBe(0);
+    const t = await call('add_text', { text: 'x', start: 5, fields: { pivot: { x: 0, y: 0.5 } } });
+    expect((clipOf(t.data.id) as any).pivot).toEqual({ x: 0, y: 0.5 });
+    expect((clipOf(t.data.id) as any).transform.x).toBe(0);
+    expect((clipOf(t.data.id) as any).transform.y).toBe(0);
+  });
+});
