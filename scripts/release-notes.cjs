@@ -14,6 +14,24 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.0': [
+    'every number in the properties is a slider: drag it sideways (shift is finer, ctrl lands on round steps), click to type, double click for the rest value. the properties are split in tabs (basic, look, animate, sound, all), and with several clips selected a drag changes all of them',
+    'bend: roll a picture clip like a cinema screen or a page, or bend several clips as one surface, up to a closed ring. keyable',
+    'pivot: give a clip the point it rotates and scales around, on one of nine spots, by dragging it on the preview, or where it meets the clip it is attached to. with attach this builds a rig (shoulder, elbow, wrist)',
+    'trim mode (y): ripple, roll, slip, slide and stretch by dragging, q / w ripple trim to the playhead, u picks the edit and , . trim it by frames. the preview shows both sides while you trim',
+    'in and out: i and o mark a range on the timeline, ; lifts it, \' extracts it, shift+space plays it, the export can render just it. the keyframe key is shift+k now',
+    'source view: a click on a media card shows it with its own playhead (shift+v), i and o mark the part to use. insert (f9), overwrite (f10), replace, fit to the range and append put it on the timeline',
+    'separate the sound of a video from its picture, timecode in the transport (click the time or press g to type one)',
+    'scopes (shift+w): waveform, parade, vectorscope and histogram next to the preview',
+    'grade: four wheels and seven curves on every picture clip, copy and paste a grade, a grade effect clip for everything below it. luts: import a .cube and put it on a grade, or save a grade as a .cube',
+    'mixer (shift+6): fader, pan, mute and solo per track, meters, and a loudness strip (momentary, short term, integrated, range, true peak). the export has a loudness target and a peak limit',
+    'tracks: change the height of a track, drag a header to reorder, sync lock per track',
+    'audio crossfades (shift+t) with equal power, linear and smooth shapes, and the same shapes on fades',
+    'keyframe panel (shift+u) with one row per animated value, and a graph (shift+g) with value and speed graphs, handles for a custom ease and easy ease',
+    'matte: one clip shows through another, by alpha or luma',
+    'advanced export (ctrl+shift+e): video codec, bitrate, key frame interval, size, see-through background, audio codec, audio bitrate and sample rate, and five new presets. every default is the file the export always made',
+    'mcp: 66 tools now. new ones crossfade the sound, move, ease, copy and sample keyframes, save a grade as a lut and measure the loudness, and update_clip, update_track, set_keyframe and export_video take the new settings',
+  ],
   '0.3.3': [
     'skyboxes: import a cube map under project > sky (a cross, a strip or six pictures named like px, posx, right or rt), or press "use as sky" after importing one. it is drawn behind every layer, turns with the camera, and lit 3d clips take their light from it. mcp: update_project takes sky',
     'effects on a clip now move its outline with the picture (shake, zoom, blur, glitch and the like), before the picture moved inside the old outline',
