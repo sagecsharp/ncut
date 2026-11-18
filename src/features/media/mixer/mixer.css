@@ -319,8 +319,12 @@
   width: 64px;
   height: 10px;
 }
+/* relative, not static: the bigger hit area (::before, absolute) has to stay on the dot. with static it took the
+   next positioned box, the whole preview pane, and the dot swallowed every click on the preview */
 .mixer-meter.is-horizontal .mixer-over {
-  position: static;
+  position: relative;
+  top: auto;
+  left: auto;
   margin: 0;
 }
 

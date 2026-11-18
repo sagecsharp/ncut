@@ -14,6 +14,9 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.1': [
+    'fix: in 0.4.0 no click reached the preview, so a clip could not be selected, moved, scaled or rotated there. the over light of the meter in the transport took every click',
+  ],
   '0.4.0': [
     'every number in the properties is a slider: drag it sideways (shift is finer, ctrl lands on round steps), click to type, double click for the rest value. the properties are split in tabs (basic, look, animate, sound, all), and with several clips selected a drag changes all of them',
     'bend: roll a picture clip like a cinema screen or a page, or bend several clips as one surface, up to a closed ring. keyable',
