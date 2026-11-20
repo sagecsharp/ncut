@@ -14,6 +14,11 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.2': [
+    'crop in the preview: drag an edge handle of a picture, video or text to cut that edge off, the picture stays where it is. ctrl+drag stretches it instead, as the edges did before',
+    'a transparent canvas: pick it for a new project, or switch it on and off in the project panel or the settings. the preview shows a checkerboard where it is see-through, and the export starts as a webm or png with a see-through background',
+    'an effect on several clips at once: with more than one clip selected, "add effect" in the properties (or alt+drop on one of them) puts it on each, in one undo step',
+  ],
   '0.4.1': [
     'fix: in 0.4.0 no click reached the preview, so a clip could not be selected, moved, scaled or rotated there. the over light of the meter in the transport took every click',
   ],
