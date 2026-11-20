@@ -45,6 +45,12 @@ export function evenSide(n: number): number {
   return Math.max(2, Math.round(n / 2) * 2);
 }
 
+/** the container a transparent canvas starts the dialog on: the one that keeps the see-through part, else the same */
+export function seeThroughTwin(c: ExportContainer, transparent: boolean): ExportContainer {
+  if (!transparent) return c;
+  return c === 'mp4' ? 'webm' : c === 'jpg' ? 'png' : c;
+}
+
 export function canBeTransparent(c: ExportContainer): boolean {
   return c === 'webm' || c === 'png';
 }

@@ -23,6 +23,7 @@ import { effectDropTarget, pickEffectTrack } from './effectTarget';
 import { lutDropTarget, lutGhostLabel } from './lutDrop';
 import { putLutOn } from '../properties/lutActions';
 import { showGrade } from '../properties/gradeActions';
+import { addEffectToClips } from '../properties/clipEffectActions';
 import { createEffectClip } from '../../lib/factory';
 import { durationOfPayload, ghostLabel, kindOfPayload, takeOf } from './dropPayload';
 import { insertMedia } from './insertMedia';
@@ -425,6 +426,11 @@ export function createDnd(env: DndEnv) {
     }
 
     if (effectOn && payload?.kind === 'effect') {
+      // alt + effect on one of several selected clips: the effect goes on each selected clip (one undo step)
+      if (st.selection.length > 1 && st.selection.includes(effectOn.clip.id)) {
+        if (addEffectToClips(st.selection, payload.effect) === 0) useUi.getState().toast('could not put the effect on those clips');
+        return;
+      }
       // alt + effect on a visual clip: a new effect clip that is put on that clip only (one undo step)
       const def = getEffect(payload.effect);
       if (!def) return;

@@ -71,6 +71,10 @@
 .shell-settings-hex {
   width: 96px;
 }
+.shell-settings-check {
+  cursor: pointer;
+  margin-bottom: var(--space-3);
+}
 .shell-settings-hex.is-invalid {
   border-color: var(--danger);
 }

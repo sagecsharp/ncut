@@ -63,9 +63,11 @@ export function createTrack(kind: TrackKind, name: string): Track {
   return { id: uid('trk'), kind, name, muted: false, hidden: false, locked: false };
 }
 
-export function createProject(name = 'untitled project', preset: CanvasPreset = CANVAS_PRESETS[0]!, fps = 30): Project {
+/** transparent: start with a transparent canvas (Project.transparent) */
+export function createProject(name = 'untitled project', preset: CanvasPreset = CANVAS_PRESETS[0]!, fps = 30, transparent = false): Project {
   const now = Date.now();
   return {
+    ...(transparent ? { transparent: true } : {}),
     id: uid('prj'),
     name,
     createdAt: now,

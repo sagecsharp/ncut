@@ -397,10 +397,56 @@ export function edgeResize(s: EdgeStart, edge: Edge, px: number, py: number, min
   return { width, height, dx: shiftX * c - shiftY * sn, dy: shiftX * sn + shiftY * c };
 }
 
-/** what the edge handles of a 2d clip do: change a plain shape's own size, stretch anything else, or nothing (cropped, 3d) */
-export function edgeMode(clip: { type: string; threeD?: boolean; crop?: Crop | null }): 'size' | 'stretch' | null {
-  if (clip.threeD || hasCrop(clip.crop)) return null;
-  return clip.type === 'shape' ? 'size' : 'stretch';
+/** what a drag on an edge handle does */
+export type EdgeMode = 'size' | 'stretch' | 'crop';
+
+/**
+ * what the edge handles of a 2d clip do: a shape changes its own size, every other clip is cropped. with ctrl held
+ * any clip stretches instead. 3d clips have no edge handles (null).
+ */
+export function edgeMode(clip: { type: string; threeD?: boolean }, ctrl = false): EdgeMode | null {
+  if (clip.threeD) return null;
+  if (ctrl) return 'stretch';
+  return clip.type === 'shape' ? 'size' : 'crop';
+}
+
+/** the crop property an edge handle writes */
+export const CROP_PROP: Record<Edge, 'crop.left' | 'crop.right' | 'crop.top' | 'crop.bottom'> = { l: 'crop.left', r: 'crop.right', t: 'crop.top', b: 'crop.bottom' };
+
+/**
+ * drag one edge of a picture to crop it: the share of the whole (uncropped) picture box `pic` cut from that edge so the
+ * edge lands on the canvas point (px, py). 0 when the pointer is past the picture's own edge, never more than `max`.
+ * the picture itself never moves (crop keeps its place), so nothing else is written.
+ * `grab` = { at: edgeCropRaw at the press, crop: the edge's crop then }: the crop moves by as much as the pointer did, so
+ * a press a little off the edge does not make it jump.
+ */
+export function edgeCrop(pic: ClipBox, edge: Edge, px: number, py: number, max = 0.99, grab?: { at: number; crop: number }): number {
+  const now = edgeCropRaw(pic, edge, px, py);
+  const raw = grab && Number.isFinite(grab.at) && Number.isFinite(grab.crop) ? grab.crop + now - grab.at : now;
+  const v = Number.isFinite(raw) ? Math.min(Math.max(0, max), Math.max(0, raw)) : 0;
+  return Math.round(v * 10000) / 10000;
+}
+
+/** where a canvas point is as a crop of one edge of the whole picture box, unclamped (< 0 outside the picture) */
+export function edgeCropRaw(pic: ClipBox, edge: Edge, px: number, py: number): number {
+  const rad = (pic.rotation * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const sn = Math.sin(rad);
+  const lx = (px - pic.cx) * c + (py - pic.cy) * sn;
+  const ly = -(px - pic.cx) * sn + (py - pic.cy) * c;
+  const w = Math.max(1e-6, pic.width);
+  const h = Math.max(1e-6, pic.height);
+  return edge === 'l' ? (lx + w / 2) / w : edge === 'r' ? (w / 2 - lx) / w : edge === 't' ? (ly + h / 2) / h : (h / 2 - ly) / h;
+}
+
+/** how much of the picture's width (x) and height (y) a crop keeps, 0..1 (1 = uncropped). the same clamps as keptBox */
+export function keptShare(crop: Crop | null | undefined): { x: number; y: number } {
+  if (!hasCrop(crop)) return { x: 1, y: 1 };
+  const l = clamp01(crop.left);
+  const t = clamp01(crop.top);
+  const r = clamp01(crop.right);
+  const b = clamp01(crop.bottom);
+  return { x: Math.max(MIN_KEPT, 1 - l - r), y: Math.max(MIN_KEPT, 1 - t - b) };
 }
 
 export interface StretchResult {

@@ -914,8 +914,14 @@ export interface Project {
   width: number;
   height: number;
   fps: number;
-  /** css color drawn behind everything */
+  /** css color drawn behind everything (unless the canvas is transparent) */
   background: string;
+  /**
+   * true = a transparent canvas: no background, see-through where nothing is drawn. the preview shows a checkerboard
+   * there and the export dialog starts with a see-through background (webm / png; a file that cannot be see-through
+   * gets the background color). missing = false: the background color, as always.
+   */
+  transparent?: boolean;
   assets: MediaAsset[];
   tracks: Track[];
   clips: Clip[];

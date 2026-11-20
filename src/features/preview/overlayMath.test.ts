@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BEND_OUTLINE_STEPS, asScenePlane, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptPlaneModel, projectRig, pointInBent, quadPoints, rayBent, rayQuad, rotateValue, snapAxis, unwrapStep, worldCenter3d } from './overlayMath';
+import { BEND_OUTLINE_STEPS, asScenePlane, boxBounds, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptShare, keptPlaneModel, projectRig, pointInBent, quadPoints, rayBent, rayQuad, rotateValue, snapAxis, unwrapStep, worldCenter3d } from './overlayMath';
 import { projectPoint, screenRay } from '../../engine/scene3d/camera';
 import { createProject, createShapeClip } from '../../lib/factory';
 import { DEFAULT_TRANSFORM } from '../../types';
@@ -104,16 +104,61 @@ describe('edgeResize', () => {
 });
 
 describe('edgeMode', () => {
-  it('sizes a plain shape and stretches everything else', () => {
+  it('sizes a plain shape and crops everything else', () => {
     expect(edgeMode({ type: 'shape' })).toBe('size');
-    expect(edgeMode({ type: 'image' })).toBe('stretch');
-    expect(edgeMode({ type: 'video', crop: null })).toBe('stretch');
-    expect(edgeMode({ type: 'text', crop: { left: 0, top: 0, right: 0, bottom: 0 } })).toBe('stretch');
+    expect(edgeMode({ type: 'image' })).toBe('crop');
+    expect(edgeMode({ type: 'video' })).toBe('crop');
+    expect(edgeMode({ type: 'text' })).toBe('crop');
   });
-  it('has no edge handles on a cropped or a 3d clip', () => {
-    expect(edgeMode({ type: 'image', crop: { left: 0.1, top: 0, right: 0, bottom: 0 } })).toBeNull();
-    expect(edgeMode({ type: 'shape', crop: { left: 0, top: 0, right: 0, bottom: 0.2 } })).toBeNull();
+  it('stretches any clip with ctrl', () => {
+    expect(edgeMode({ type: 'shape' }, true)).toBe('stretch');
+    expect(edgeMode({ type: 'image' }, true)).toBe('stretch');
+    expect(edgeMode({ type: 'video' }, true)).toBe('stretch');
+  });
+  it('has no edge handles on a 3d clip', () => {
     expect(edgeMode({ type: 'image', threeD: true })).toBeNull();
+    expect(edgeMode({ type: 'image', threeD: true }, true)).toBeNull();
+  });
+});
+
+describe('edgeCrop', () => {
+  const pic = { cx: 500, cy: 300, width: 400, height: 200, rotation: 0 };
+  it('cuts the share of the picture between its edge and the pointer', () => {
+    expect(edgeCrop(pic, 'l', 400, 300)).toBeCloseTo(0.25);
+    expect(edgeCrop(pic, 'r', 600, 300)).toBeCloseTo(0.25);
+    expect(edgeCrop(pic, 't', 500, 250)).toBeCloseTo(0.25);
+    expect(edgeCrop(pic, 'b', 500, 350)).toBeCloseTo(0.25);
+  });
+  it('is 0 past the edge and never more than the max', () => {
+    expect(edgeCrop(pic, 'l', 100, 300)).toBe(0);
+    expect(edgeCrop(pic, 'l', 2000, 300)).toBeCloseTo(0.99);
+    expect(edgeCrop(pic, 'l', 2000, 300, 0.5)).toBeCloseTo(0.5);
+    expect(edgeCrop(pic, 'l', NaN, 300)).toBe(0);
+  });
+  it('measures in the clip axes of a turned picture', () => {
+    // turned 90 degrees: the clip's left edge is at the top of the screen
+    expect(edgeCrop({ ...pic, rotation: 90 }, 'l', 500, 200)).toBeCloseTo(0.25);
+  });
+  it('with a grab the crop moves by as much as the pointer did (no jump on the press)', () => {
+    // pressed 4 px inside the right edge of a picture already cut 10% there
+    const grab = { at: edgeCropRaw(pic, 'r', 656, 300), crop: 0.1 };
+    expect(edgeCrop(pic, 'r', 656, 300, 0.99, grab)).toBeCloseTo(0.1);
+    expect(edgeCrop(pic, 'r', 616, 300, 0.99, grab)).toBeCloseTo(0.2);
+    expect(edgeCrop(pic, 'r', 900, 300, 0.99, grab)).toBe(0);
+  });
+  it('the cut edge lands under the pointer (kept box)', () => {
+    const v = edgeCrop(pic, 'r', 650, 300);
+    const k = keptBox(pic, { left: 0, top: 0, right: v, bottom: 0 });
+    expect(k.cx + k.width / 2).toBeCloseTo(650);
+  });
+});
+
+describe('keptShare', () => {
+  it('is what the crop keeps of each axis', () => {
+    expect(keptShare(null)).toEqual({ x: 1, y: 1 });
+    const s = keptShare({ left: 0.1, right: 0.2, top: 0.5, bottom: 0 });
+    expect(s.x).toBeCloseTo(0.7);
+    expect(s.y).toBeCloseTo(0.5);
   });
 });
 

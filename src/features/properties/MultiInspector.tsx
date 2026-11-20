@@ -9,6 +9,8 @@ import { isVisualClip } from '../../types';
 import { canGrade } from '../../lib/gradeData';
 import { hasSoundApart, muteTargets } from '../../lib/soundPair';
 import { PairSection } from './PairSection';
+import { AddEffect } from './ClipEffectsSection';
+import { takesEffect } from './clipEffectActions';
 import { tip } from '../shell/tip';
 import { openClipMenuAt } from '../timeline/commands';
 import { AlignButtons } from './AlignButtons';
@@ -149,6 +151,8 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
   // the selected ids as a Set, built once per selection: filters below are O(clips) instead of O(clips * selected)
   const want = useMemo(() => new Set(ids), [ids]);
   const gradable = useEditor((s) => (s.project?.clips ?? []).filter((c) => want.has(c.id) && canGrade(c)).length);
+  // the selected clips an effect can be put on (video, image, text, shape)
+  const fxTargets = useEditor((s) => (s.project?.clips ?? []).filter((c) => want.has(c.id) && takesEffect(c)).length);
 
   // useShallow: the same list of ids keeps its identity, so the button groups below do not re-render on every drag frame
   const visualIds = useEditor(useShallow((s) => visualIdsOf(s.project?.clips, want)));
@@ -229,9 +233,16 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
         </Section>
       ) : null}
       {sum.video + sum.audio > 0 ? <PairSection ids={ids} /> : null}
-      {sum.effect > 0 ? (
+      {sum.effect > 0 || fxTargets > 0 ? (
         <Section id="m-effects" title="effects">
-          <MultiField want={want} label="strength" title="how strong every selected effect clip is (%)" feel="effectAmount" prop="amount" pick={(c) => c.type === 'effect'} />
+          {sum.effect > 0 ? (
+            <MultiField want={want} label="strength" title="how strong every selected effect clip is (%)" feel="effectAmount" prop="amount" pick={(c) => c.type === 'effect'} />
+          ) : null}
+          {fxTargets > 0 ? (
+            <Row label="add effect" title="put the same effect on each selected clip (one effect clip per clip, one undo step)" wide>
+              <AddEffect clipIds={ids} title={`put an effect on each of the ${fxTargets} selected clips`} />
+            </Row>
+          ) : null}
         </Section>
       ) : null}
       {seqCount > 1 ? (

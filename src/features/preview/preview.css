@@ -49,6 +49,12 @@
   display: block;
   background: var(--surface-0);
 }
+/* a transparent canvas: a checkerboard where the picture is see-through (the scene view paints its own background) */
+.preview-frame[data-transparent='1'] .preview-canvas {
+  background-color: #2b2b2b;
+  background-image: conic-gradient(#3d3d3d 25%, transparent 0 50%, #3d3d3d 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
 
 .preview-overlay {
   position: absolute;

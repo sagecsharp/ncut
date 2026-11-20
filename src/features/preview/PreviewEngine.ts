@@ -203,7 +203,9 @@ export class PreviewEngine implements MeterSource {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const ctx = canvas.getContext('2d', { alpha: false });
+    // with alpha: a transparent canvas (Project.transparent) shows the checkerboard behind it. every other frame
+    // is filled with the background, so it stays opaque
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) throw new Error('2d canvas is not available');
     this.ctx = ctx;
 
@@ -445,13 +447,13 @@ export class PreviewEngine implements MeterSource {
     if (this.disposed) return null;
     if (yieldToExport && isExporting()) return null;
     const canvas = new OffscreenCanvas(project.width, project.height);
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d', { alpha: !!project.transparent });
     if (!ctx) return null;
     let ok = false;
     try {
       this.elementsOnly = true;
       try {
-        renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1 });
+        renderFrame(ctx, project, usePlayback.getState().time, this.resolve, { quality: 1, transparent: !!project.transparent });
       } finally {
         this.elementsOnly = false;
       }
@@ -507,7 +509,7 @@ export class PreviewEngine implements MeterSource {
       renderSceneView(ctx, project, time, this.resolve, cam, this.sceneLineColor());
     } else {
       // while playing, motion blur uses fewer samples so the preview stays smooth
-      renderFrame(ctx, project, time, this.resolve, { quality: playing ? 0.5 : 1 });
+      renderFrame(ctx, project, time, this.resolve, { quality: playing ? 0.5 : 1, transparent: !!project.transparent });
       // the scopes and the probe measure this picture (nothing listens while they are closed)
       tapFrame(canvas, canvas.width, canvas.height, 'output', !playing);
     }

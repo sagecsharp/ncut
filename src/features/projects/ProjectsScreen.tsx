@@ -234,6 +234,7 @@ export function ProjectsScreen() {
   const [presetId, setPresetId] = useState(CANVAS_PRESETS[0]!.id);
   const [templateId, setTemplateId] = useState('');
   const [fps, setFps] = useState(30);
+  const [transparent, setTransparent] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const mounted = useRef(true);
@@ -436,7 +437,7 @@ export function ProjectsScreen() {
     const preset = CANVAS_PRESETS.find((p) => p.id === presetId) ?? CANVAS_PRESETS[0]!;
     setCreating(true);
     try {
-      await createAndOpenProject(newName.trim() || 'untitled project', preset, fps, templateId || null);
+      await createAndOpenProject(newName.trim() || 'untitled project', preset, fps, templateId || null, transparent);
     } catch (e) {
       fail(e, 'could not create the project');
     }
@@ -614,6 +615,21 @@ export function ProjectsScreen() {
                 {p.label}
               </option>
             ))}
+          </select>
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="projects-new-background">
+            background
+          </label>
+          <select
+            id="projects-new-background"
+            className="select"
+            value={transparent ? 'transparent' : 'color'}
+            title="a black background, or a transparent canvas (see-through where nothing is drawn, for a webm or png with alpha). you can change it later in the project panel"
+            onChange={(e) => setTransparent(e.target.value === 'transparent')}
+          >
+            <option value="color">black</option>
+            <option value="transparent">transparent</option>
           </select>
         </div>
         <div className="field">

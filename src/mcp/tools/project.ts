@@ -46,6 +46,7 @@ function projectBrief(p: Project): Record<string, unknown> {
     fps: p.fps,
     duration: round(projectDuration(p)),
     background: p.background,
+    transparent: !!p.transparent,
     tracks: p.tracks.length,
     clips: p.clips.length,
     media: p.assets.length,
@@ -338,13 +339,14 @@ export const projectTools: ToolDef[] = [
         width: { type: 'integer', minimum: 16, maximum: 7680, description: 'canvas width in pixels, replaces the preset width' },
         height: { type: 'integer', minimum: 16, maximum: 7680, description: 'canvas height in pixels, replaces the preset height' },
         fps: { type: 'number', minimum: 1, maximum: MAX_FPS, description: 'frames per second, default 30' },
+        transparent: { type: 'boolean', description: 'true = a transparent canvas: no background, see-through where nothing is drawn (export webm or png to keep it). default false' },
       },
     },
     async run(args) {
       refuseWhileBusy('create a project');
       const name = cleanName(args.name, 'name');
       const preset = CANVAS_PRESETS.find((p) => p.id === args.preset);
-      const made = await createAndOpenProject(name, preset, optNumber(args.fps));
+      const made = await createAndOpenProject(name, preset, optNumber(args.fps), null, args.transparent === true);
       let open = useEditor.getState().project;
       if (!open || open.id !== made.id) throw new ToolError('the project was made but could not be opened');
       const width = optNumber(args.width);
@@ -445,6 +447,7 @@ export const projectTools: ToolDef[] = [
         height: { type: 'integer', minimum: 16, maximum: 7680 },
         fps: { type: 'number', minimum: 1, maximum: MAX_FPS },
         background: { type: 'string', maxLength: 9, description: 'hex color: #rgb, #rrggbb or #rrggbbaa' },
+        transparent: { type: 'boolean', description: 'true = a transparent canvas: no background, see-through where nothing is drawn (the background color is still used by an mp4, jpg or gif export). false = the background color again' },
         // no type here: the validator refuses null for an object, and null switches the fog off
         fog: {
           description: 'haze over the 3d space, or null for none. an object may be given in part',
@@ -504,6 +507,7 @@ export const projectTools: ToolDef[] = [
         if (!COLOR.test(args.background)) throw new ToolError('background must be a hex color like #101010');
         patch.background = args.background;
       }
+      if (typeof args.transparent === 'boolean') patch.transparent = args.transparent;
       const sameFog = args.fog !== undefined ? layFog(before, args.fog, patch) : false;
       const sameLight_ = args.light !== undefined ? layLight(before, args.light, patch, usePlayback.getState().time) : false;
       if (args.output !== undefined) {

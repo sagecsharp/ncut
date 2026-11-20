@@ -151,7 +151,9 @@ describe('projects', () => {
     expect(project().width).toBe(1000);
     const plain = await call('create_project', {});
     expect(plain.json).toMatchObject({ width: 1920, height: 1080, fps: 30 });
-    expect(session.createAndOpenProject).toHaveBeenLastCalledWith(undefined, undefined, undefined);
+    expect(session.createAndOpenProject).toHaveBeenLastCalledWith(undefined, undefined, undefined, null, false);
+    await call('create_project', { transparent: true });
+    expect(session.createAndOpenProject).toHaveBeenLastCalledWith(undefined, undefined, undefined, null, true);
   });
 
   it('create_project refuses unknown presets, bad sizes and an empty name', async () => {

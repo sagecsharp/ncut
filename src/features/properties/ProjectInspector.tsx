@@ -7,7 +7,7 @@ import { useUi } from '../../store/ui';
 import type { Project } from '../../types';
 import { tip } from '../shell/tip';
 import { handFocusTo, takesFocus } from './focusHandoff';
-import { ColorField, FeelField, Pair, Row, Section } from './controls';
+import { ColorField, FeelField, Pair, Row, Section, Switch } from './controls';
 import { even, liveOpts } from './edit';
 import { FeelContext, useCanvasFeelCtx } from './feelContext';
 import { FogSection } from './FogSection';
@@ -20,7 +20,8 @@ const ProjectSettings = memo(function ProjectSettings({
   height,
   fps,
   background,
-}: Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background'>) {
+  transparent,
+}: Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'transparent'>) {
   const presetId = CANVAS_PRESETS.find((p) => p.width === width && p.height === height)?.id ?? 'custom';
   const fpsOptions = FPS_OPTIONS.includes(fps) ? FPS_OPTIONS : [...FPS_OPTIONS, fps].sort((a, b) => a - b);
   const update = useEditor.getState().updateProject;
@@ -102,9 +103,13 @@ const ProjectSettings = memo(function ProjectSettings({
           ))}
         </select>
       </Row>
-      <Row label="background" title="canvas background color">
+      <Row label="transparent" wide title="a transparent canvas: no background, see-through where nothing is drawn (a checkerboard in the preview). export as webm or png to keep it">
+        <Switch checked={!!transparent} title="transparent canvas on or off" onChange={(on) => update({ transparent: on })} />
+      </Row>
+      <Row label="background" title={transparent ? 'the background color of a file that cannot be see-through (mp4, jpg, gif)' : 'canvas background color'}>
         <ColorField title="background color" value={background} onChange={(c) => update({ background: c }, liveOpts())} />
       </Row>
+      {transparent ? <div className="props-hint">the canvas is see-through. an mp4, jpg or gif export gets the background color instead</div> : null}
     </Section>
   );
 });
@@ -174,6 +179,7 @@ export function ProjectInspector({ back = false }: { back?: boolean }) {
             height={project.height}
             fps={project.fps}
             background={project.background}
+            transparent={project.transparent}
           />
           <SkySection sky={project.sky} />
           <FogSection fog={project.fog} background={project.background} />

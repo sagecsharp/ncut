@@ -93,6 +93,8 @@ export function Preview() {
   const scheme = useSceneControls((s) => s.scheme);
   const toggleInset = useCameraInset((s) => s.toggle);
   const empty = useEditor((s) => (s.project ? s.project.clips.length === 0 : true));
+  // a transparent canvas: the checkerboard behind the picture shows where it is see-through
+  const transparent = useEditor((s) => !!s.project?.transparent);
 
   // engine + layout: the canvas is the largest project-aspect rect that fits the stage
   useEffect(() => {
@@ -613,7 +615,7 @@ export function Preview() {
               }}
               onKeyDown={onStageKeyDown}
               onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
-              <div ref={frameRef} className="preview-frame">
+              <div ref={frameRef} className="preview-frame" data-transparent={transparent ? '1' : undefined}>
                 <canvas ref={canvasRef} className="preview-canvas" />
                 <GuidesOverlay />
                 <TransformOverlay />

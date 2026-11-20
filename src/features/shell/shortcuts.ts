@@ -1380,6 +1380,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
       [['drag'], ['alt', 'drag'], ['double click']],
       'the pivot mark of the selected clip in the preview: drag it to move the pivot, the clip stays where it is. alt: no snapping. double click: back to the middle',
     ],
+    ['mouse-pv-crop', [['drag'], ['ctrl', 'drag']], 'an edge handle of the selected clip in the preview: crop it (a shape: its width or height). ctrl+drag stretches it instead (scale x or y)'],
     ['mouse-splitter', [['double click']], 'the line between two panels: back to its default size'],
     ['mouse-fader', [['drag'], ['double click']], 'a fader in the mixer: drag up or down to change the level (shift: finer, ctrl: whole db). double click: 0 db'],
     ['mouse-solo-only', [['alt', 'click']], 'the solo button of a track: solo only that track'],

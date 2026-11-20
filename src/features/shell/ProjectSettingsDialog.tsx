@@ -51,6 +51,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
   const [height, setHeight] = useState(initial?.height ?? 1080);
   const [fps, setFps] = useState(initial?.fps ?? 30);
   const [hex, setHex] = useState(() => toHex(initial?.background ?? '#000000'));
+  const [transparent, setTransparent] = useState(!!initial?.transparent);
 
   const presetId = useMemo(
     () => CANVAS_PRESETS.find((p) => p.width === width && p.height === height)?.id ?? 'custom',
@@ -73,6 +74,7 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
     if (fps !== initial.fps) patch.fps = fps;
     const bg = toHex(hex);
     if (bg !== toHex(initial.background)) patch.background = bg;
+    if (transparent !== !!initial.transparent) patch.transparent = transparent;
     // one call = one undo step
     if (Object.keys(patch).length > 0) useEditor.getState().updateProject(patch);
     onClose();
@@ -150,8 +152,13 @@ function SettingsForm({ onClose }: { onClose: () => void }) {
         </select>
       </label>
 
+      <label className="field-row shell-settings-check" title="a transparent canvas: no background, see-through where nothing is drawn. export as webm or png to keep it">
+        <input type="checkbox" className="checkbox" checked={transparent} onChange={(e) => setTransparent(e.target.checked)} />
+        <span>transparent canvas</span>
+      </label>
+
       <div className="field">
-        <span className="field-label">background color</span>
+        <span className="field-label">{transparent ? 'background color (mp4, jpg, gif)' : 'background color'}</span>
         <div className="field-row">
           <input
             className="input"

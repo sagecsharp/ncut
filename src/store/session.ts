@@ -105,8 +105,8 @@ async function doOpen(id: string): Promise<boolean> {
 }
 
 /** template: id of a starter timeline in lib/templates.ts. unknown / missing = an empty project. */
-export async function createAndOpenProject(name?: string, preset?: CanvasPreset, fps?: number, template?: string | null): Promise<Project> {
-  const empty = createProject(name, preset, fps);
+export async function createAndOpenProject(name?: string, preset?: CanvasPreset, fps?: number, template?: string | null, transparent = false): Promise<Project> {
+  const empty = createProject(name, preset, fps, transparent);
   const project = getTemplate(template)?.build(empty) ?? empty;
   await saveProject(project);
   await openProjectById(project.id);

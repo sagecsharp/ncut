@@ -143,7 +143,7 @@ describe('shortcut table', () => {
       expect(s.match(key('a'))).toBe(false);
     }
     for (const g of SHORTCUT_GROUPS) expect(SHORTCUTS.some((s) => s.group === g), g).toBe(true);
-    expect(SHORTCUTS.filter((s) => s.group === 'mouse').length).toBe(52);
+    expect(SHORTCUTS.filter((s) => s.group === 'mouse').length).toBe(53);
   });
   it('the blender only scene rows say blender controls', () => {
     const blender = ['scene-grab', 'scene-clear', 'scene-copy', 'scene-delete', 'scene-select-all', 'scene-views', 'scene-frame-all'];

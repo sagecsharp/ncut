@@ -10,9 +10,9 @@ import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { Clip, Project, VisualClip } from '../../types';
 import { isVisualClip, stretchX, stretchY } from '../../types';
-import { getClipBox, visibleClipsAt } from '../../engine/draw';
+import { type ClipBox, getClipBox, visibleClipsAt } from '../../engine/draw';
 import { selectedMattesAt } from '../../engine/matte';
-import { pictureBox, pivotOf } from '../../engine/pivot';
+import { pictureBox } from '../../engine/pivot';
 import { isBent } from '../../engine/scene3d/bend';
 import { faceSourceSet } from '../../engine/scene3d/faces';
 import { cameraClipAt, homeRig, projectPoint, rayPlane, screenRay } from '../../engine/scene3d/camera';
@@ -23,7 +23,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { type Edge, type EdgeStart, type Quad, asScenePlane, boxBounds, clipQuad, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, pointInBent, pointInQuad, projectRig, quadPoints, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { CROP_PROP, type Edge, type EdgeStart, type Quad, asScenePlane, boxBounds, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, keptShare, pointInBent, pointInQuad, projectRig, quadPoints, rotateValue, snapAxis, unwrapStep } from './overlayMath';
 import { localDelta, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
 import { movableClipsAt } from './nudge';
@@ -46,6 +46,9 @@ interface View {
   fns: Set<() => void>;
 }
 
+/** the crop of one edge, 0 when there is no crop */
+const cropOf = (crop: VisualClip['crop'], edge: Edge): number => (crop ? (edge === 'l' ? crop.left : edge === 'r' ? crop.right : edge === 't' ? crop.top : crop.bottom) : 0);
+
 const inRangeAt = (c: Clip, time: number) => time >= c.start - 1e-6 && time < clipEnd(c) - 1e-6;
 
 const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: View }) {
@@ -54,10 +57,10 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
   const polyRef = useRef<SVGPolygonElement>(null);
   const underRef = useRef<SVGPolygonElement>(null);
   const cornerRefs = useRef<Array<HTMLDivElement | null>>([null, null, null, null]);
-  // a shape's edges change its width / height, every other clip's edges stretch it
+  // a shape's edges change its width / height, every other clip's edges crop it. ctrl stretches either
   const isShape = useEditor((s) => s.project?.clips.find((c) => c.id === clipId)?.type === 'shape');
-  const wTitle = isShape ? 'width' : 'scale x (width only)';
-  const hTitle = isShape ? 'height' : 'scale y (height only)';
+  const wTitle = isShape ? 'width (ctrl: scale x, a stretch)' : 'crop (ctrl: scale x, a stretch)';
+  const hTitle = isShape ? 'height (ctrl: scale y, a stretch)' : 'crop (ctrl: scale y, a stretch)';
   // the move pivot mode hides the handles: the pivot is the only thing to grab
   const pivoting = usePivotMode((s) => s.on);
 
@@ -171,7 +174,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
       // the outline hugs the kept rectangle of a cropped clip
       // (the crop as it is at this time: it may be keyed)
       const box = keptBox(pictureBox(getClipBox(project, shown)), shown.crop);
-      // edge handles: a plain shape's own width / height, a stretch for anything else. not on a cropped clip.
+      // edge handles: a plain shape's own width / height, a crop for anything else (ctrl: a stretch). not on a 3d clip.
       const edges = edgeMode(shown) ? '1' : '0';
       if (el.dataset.edges !== edges) el.dataset.edges = edges;
       if (el.dataset.bent !== bentFlag) el.dataset.bent = bentFlag;
@@ -322,6 +325,8 @@ type Gesture =
       start: EdgeStart;
       /** a stretch drag (not a shape's own size): the prop it writes and its value at the grab */
       stretch: { prop: 'scaleX' | 'scaleY'; s0: number } | null;
+      /** a crop drag: the crop edge it writes, the whole (uncropped) picture box and where the press was (edgeCrop's grab) */
+      crop: { prop: (typeof CROP_PROP)[Edge]; pic: ClipBox; grab: { at: number; crop: number } } | null;
       /** the pivot as fractions of the box: the pivot moves with the picture's edge */
       fx: number;
       fy: number;
@@ -548,6 +553,12 @@ function OutputOverlay() {
       g.started = true;
       store.pushHistory();
     }
+    if (g.kind === 'edge' && g.crop) {
+      // the picture stays where it is: only the dragged crop edge follows the pointer (the store keeps the
+      // opposite edges from cutting everything away)
+      store.setClipValue(g.id, g.crop.prop, time, edgeCrop(g.crop.pic, g.edge, px, py, 0.99, g.crop.grab), { skipHistory: true });
+      return;
+    }
     if (g.kind === 'edge' && g.stretch) {
       // the stretch follows the pointer (new box side / side at the grab); x / y move so the opposite edge stays put
       const r = edgeStretch(g.start, g.edge, g.stretch.s0, px, py, MIN_SHAPE_PX);
@@ -641,12 +652,21 @@ function OutputOverlay() {
         }
         if (handle.dataset.handle === 'edge') {
           const edge = handle.dataset.edge as Edge | undefined;
-          const mode = edge ? edgeMode(clip) : null;
+          // ctrl (cmd on a mac) at the grab: a stretch instead of a crop / a shape's size
+          const mode = edge ? edgeMode(clip, e.ctrlKey || e.metaKey) : null;
           if (!edge || !mode) return;
           const horizontal = edge === 'l' || edge === 'r';
-          // the picture's middle, not the position (the pivot), is what the edges measure from
+          // the picture's middle, not the position (the pivot), is what the edges measure from. a cropped clip measures
+          // from what is left of it: the kept box is what the handles sit on, and it grows with a stretch or a size
           const pic = pictureBox(box);
-          const pv = pivotOf(raw);
+          const kept = keptBox(pic, clip.crop);
+          const share = keptShare(clip.crop);
+          // the position as fractions of the kept box, in the clip's own axes (the pivot spot when nothing is cropped)
+          const rad = (box.rotation * Math.PI) / 180;
+          const ddx = box.cx - kept.cx;
+          const ddy = box.cy - kept.cy;
+          const fx = (ddx * Math.cos(rad) + ddy * Math.sin(rad)) / Math.max(1e-6, kept.width);
+          const fy = (-ddx * Math.sin(rad) + ddy * Math.cos(rad)) / Math.max(1e-6, kept.height);
           gestureRef.current = {
             kind: 'edge',
             pointerId: e.pointerId,
@@ -656,17 +676,19 @@ function OutputOverlay() {
             edge,
             // (the box of a shape that is stretched as well is its size x scale x that stretch: the new size is the new
             // side divided by all of it)
+            // (a cropped shape: times the share the crop keeps, so the new size is the size of the whole shape)
             start: {
-              cx: pic.cx,
-              cy: pic.cy,
+              cx: kept.cx,
+              cy: kept.cy,
               rotation: box.rotation,
-              bw: box.width,
-              bh: box.height,
-              scale: world.transform.scale * (mode === 'size' ? (horizontal ? stretchX(world.transform) : stretchY(world.transform)) : 1),
+              bw: kept.width,
+              bh: kept.height,
+              scale: world.transform.scale * (mode === 'size' ? (horizontal ? stretchX(world.transform) * share.x : stretchY(world.transform) * share.y) : 1),
             },
             stretch: mode === 'stretch' ? { prop: horizontal ? 'scaleX' : 'scaleY', s0: horizontal ? stretchX(clip.transform) : stretchY(clip.transform) } : null,
-            fx: pv.x,
-            fy: pv.y,
+            crop: mode === 'crop' ? { prop: CROP_PROP[edge], pic, grab: { at: edgeCropRaw(pic, edge, px, py), crop: cropOf(clip.crop, edge) } } : null,
+            fx,
+            fy,
             x0: clip.transform.x,
             y0: clip.transform.y,
             started: false,

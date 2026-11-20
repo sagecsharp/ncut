@@ -27,7 +27,7 @@ import {
   gifSizeWarning,
 } from './gifPlan';
 import { loadExportSettings, saveAdvancedOpen, saveExportSettings, savedDelivery } from './settings';
-import { AUDIO_HOLDS, DEFAULT_DELIVERY, TEXT, changedCount, deliverySize, estimateBytes, formatBitrate, isDefaultDelivery, resolveDelivery } from './delivery';
+import { AUDIO_HOLDS, DEFAULT_DELIVERY, TEXT, changedCount, seeThroughTwin, deliverySize, estimateBytes, formatBitrate, isDefaultDelivery, resolveDelivery } from './delivery';
 import type { ExportDelivery, VideoCodecChoice } from './delivery';
 import { AdvancedExport } from './AdvancedExport';
 import { LoudnessRow } from './LoudnessRow';
@@ -131,13 +131,18 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
   const [fileName, setFileName] = useState('');
   // the last used choices come back (the dialog mounts fresh every time it opens)
   const [saved] = useState(loadExportSettings);
-  const [container, setContainer] = useState<ExportContainer>(saved.container ?? 'mp4');
+  // a transparent canvas starts on the see-through twin of a file that cannot be see-through (mp4 -> webm, jpg -> png)
+  const [container, setContainer] = useState<ExportContainer>(() => seeThroughTwin(saved.container ?? 'mp4', !!project?.transparent));
   const [scale, setScale] = useState(saved.container === 'gif' ? (saved.gif?.scale ?? GIF_DEFAULT_SCALE) : (saved.scale ?? 1));
   const [fps, setFps] = useState(() => (groupOf(saved.container ?? 'mp4') === 'gif' ? (saved.gif?.fps ?? GIF_DEFAULT_FPS) : 30));
   const [quality, setQuality] = useState<ExportQuality>(saved.quality ?? 'medium');
   const [includeAudio, setIncludeAudio] = useState(true);
   // the advanced choices and whether that part is open come back with the rest
-  const [delivery, setDelivery] = useState<ExportDelivery>(() => savedDelivery(saved, project?.width ?? 0, project?.height ?? 0));
+  // (a transparent canvas starts with a see-through background)
+  const [delivery, setDelivery] = useState<ExportDelivery>(() => {
+    const d = savedDelivery(saved, project?.width ?? 0, project?.height ?? 0);
+    return project?.transparent ? { ...d, transparent: true } : d;
+  });
   const [advancedOpen, setAdvancedOpen] = useState(saved.advanced === true);
   const exportAsk = useUi((s) => s.exportAsk);
   /** the row a search row asked for: scrolled to and focused once the dialog shows it */
@@ -459,7 +464,9 @@ function ExportDialogInner({ open, onClose }: ExportDialogProps) {
     setProgress({ phase: isStill ? 'video' : sendLoud ? 'loudness' : 'audio', progress: 0, frame: 0, totalFrames });
     setPhase('exporting');
     const name = `${sanitizeName(fileName || project.name)}.${container}`;
-    saveExportSettings({ container, quality, fps, scale, delivery, sizeFor: { width: project.width, height: project.height } });
+    // the see-through background a transparent canvas turned on is not kept for the next project
+    const keep = project.transparent ? { ...delivery, transparent: saved.delivery?.transparent === true } : delivery;
+    saveExportSettings({ container, quality, fps, scale, delivery: keep, sizeFor: { width: project.width, height: project.height } });
     const options: ExportOptions = { container, scale, fps: effFps, quality, includeAudio: !isGif && !isStill && (includeAudio || audioOnly), range };
     if (!isDefaultDelivery(delivery)) options.delivery = delivery;
     if (sendLoud) options.loudness = loud;

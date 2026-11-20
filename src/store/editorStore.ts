@@ -211,7 +211,7 @@ export type TrimOp =
   | { kind: 'speed'; id: string; speed: number }
   | { kind: 'slip'; id: string; trimStart: number };
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'fog' | 'light' | 'sky' | 'output'>>;
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background' | 'transparent' | 'fog' | 'light' | 'sky' | 'output'>>;
 export type TrackPatch = Partial<Pick<Track, 'name' | 'muted' | 'hidden' | 'locked' | 'syncLock'>> & { volume?: number | null; pan?: number | null };
 
 export interface EditorState {
@@ -1042,6 +1042,11 @@ export const useEditor = create<EditorState>()((set, get) => {
         if (patch.fps !== undefined) next.fps = clamp(patch.fps, 1, MAX_FPS);
         if (patch.name !== undefined) next.name = patch.name.trim() || 'untitled project';
         if (patch.output !== undefined) next.output = patchOutput(p.output, patch.output);
+        // only true is stored: an opaque canvas is the missing field, as in every project made before it
+        if (patch.transparent !== undefined) {
+          if (patch.transparent) next.transparent = true;
+          else delete next.transparent;
+        }
         const before = p as unknown as Record<string, unknown>;
         const after = next as unknown as Record<string, unknown>;
         // a missing optional field and null mean the same thing
