@@ -9,6 +9,7 @@ import { isVisualClip } from '../../types';
 import { canGrade } from '../../lib/gradeData';
 import { hasSoundApart, muteTargets } from '../../lib/soundPair';
 import { PairSection } from './PairSection';
+import { MultiTextAnimSection } from './TextStyle';
 import { AddEffect } from './ClipEffectsSection';
 import { takesEffect } from './clipEffectActions';
 import { tip } from '../shell/tip';
@@ -201,6 +202,7 @@ const MultiControls = memo(function MultiControls({ ids, sum }: { ids: string[];
         </Section>
       ) : null}
       {gradable > 0 ? <MultiGradeSection ids={ids} want={want} /> : null}
+      {sum.text > 0 ? <MultiTextAnimSection ids={ids} /> : null}
       {sum.visual > 0 ? (
         <Section id="m-align" title="align">
           <AlignButtons ids={visualIds} />

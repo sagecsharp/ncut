@@ -15,6 +15,7 @@ import { AnimField } from './AnimField';
 import { ColorField, FeelField, Row, Section, SelectRow, Switch } from './controls';
 import { liveOpts } from './edit';
 import { MotionRow } from './MotionSection';
+import { type TextAnimKey, pickTextAnim, setTextAnimDuration, sharedTextAnim } from './multiTextAnim';
 import { defaultSecondColor } from './shapeLogic';
 import { SPLIT_MODES, splitPlans, splitReason, splitText } from './textSplitActions';
 import { textSignature } from '../../engine/text';
@@ -301,6 +302,47 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
 });
 
 /* ---------- text animation ---------- */
+
+const ANIM_ROWS: Array<{ key: TextAnimKey; label: string; title: string; list: { id: string; name: string }[]; def: number; durationTitle: string; feel: 'motionDuration' | 'motionLoop' }> = [
+  { key: 'animIn', label: 'in', title: 'how the texts appear', list: TEXT_ANIMS_IN, def: DEFAULT_TEXT_ANIM_IN, durationTitle: 'how long the entrance takes (seconds)', feel: 'motionDuration' },
+  { key: 'animOut', label: 'out', title: 'how the texts leave', list: TEXT_ANIMS_OUT, def: DEFAULT_TEXT_ANIM_OUT, durationTitle: 'how long the exit takes (seconds)', feel: 'motionDuration' },
+  { key: 'animLoop', label: 'loop', title: 'a motion that repeats while the texts are on screen', list: TEXT_ANIMS_LOOP, def: DEFAULT_TEXT_ANIM_LOOP, durationTitle: 'seconds per cycle', feel: 'motionLoop' },
+];
+
+/** the text animation of every selected text clip at once (the multi inspector) */
+export const MultiTextAnimSection = memo(function MultiTextAnimSection({ ids }: { ids: string[] }) {
+  const clips = useEditor((s) => s.project?.clips);
+  const texts = useMemo(() => {
+    const want = new Set(ids);
+    return (clips ?? []).filter((c): c is TextClip => c.type === 'text' && want.has(c.id));
+  }, [clips, ids]);
+  if (texts.length === 0) return null;
+  return (
+    <Section id="m-text-anim" title="text animation">
+      {ANIM_ROWS.map((r) => {
+        const shared = sharedTextAnim(texts, r.key);
+        return (
+          <MotionRow
+            key={r.key}
+            label={r.label}
+            title={`${r.title} (every selected text)`}
+            list={r.list}
+            value={shared.value}
+            mixed={shared.mixed}
+            defaultDuration={r.def}
+            durationTitle={`${r.durationTitle}, for every selected text`}
+            feel={r.feel}
+            onChange={(next, live) => {
+              if (live && next && shared.value && next.id === shared.value.id) setTextAnimDuration(ids, r.key, next.duration, true);
+              else pickTextAnim(ids, r.key, next?.id ?? null, r.def);
+            }}
+          />
+        );
+      })}
+      <div className="props-hint">a pick goes to every selected text (each keeps its own length when it had one), a drag on the length sets them all</div>
+    </Section>
+  );
+});
 
 export const TextAnimSection = memo(function TextAnimSection({ clip }: { clip: TextClip }) {
   const id = clip.id;

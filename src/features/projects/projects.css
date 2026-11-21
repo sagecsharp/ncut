@@ -210,3 +210,92 @@
 :root[data-wallpaper='on'] .projects-brand svg rect:first-child {
   fill: var(--solid-3);
 }
+
+/* folders: a card like a project's, a folder picture where the preview is */
+.projects-folder {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color var(--ease), background var(--ease);
+}
+.projects-folder:hover {
+  border-color: var(--text-faint);
+  background: var(--surface-3);
+}
+.projects-folder.is-drop,
+.projects-path-top.is-drop {
+  border-color: var(--accent);
+  background: var(--surface-3);
+  outline: 1px solid var(--accent);
+}
+.projects-folder.is-renaming {
+  cursor: default;
+}
+.projects-folder-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 150px;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.projects-folder-icon {
+  color: var(--accent);
+}
+.projects-folder-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.projects-folder:hover .projects-actions,
+.projects-folder:focus-within .projects-actions {
+  opacity: 1;
+}
+.projects-path {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.projects-path-here {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.projects-in-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+}
+.projects-move-what {
+  margin: 0 0 var(--space-3);
+}
+.projects-move-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.projects-move-item {
+  justify-content: flex-start;
+  min-width: 0;
+}
+.projects-move-item.is-current {
+  border-color: var(--accent);
+}
+.projects-move-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

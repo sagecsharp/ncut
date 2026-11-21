@@ -27,10 +27,14 @@ interface AnimRowProps {
   feel: Extract<FeelKey, 'motionDuration' | 'motionLoop'>;
   /** live = the duration field is being scrubbed (one undo step per gesture) */
   onChange: (next: ClipAnim | null, live: boolean) => void;
+  /** several clips that differ here: the list shows "mixed" until something is picked (it then goes to all of them) */
+  mixed?: boolean;
 }
 
+const MIXED = '__mixed';
+
 /** none + a list of ready-made motions, with a duration field once one is picked. shared by text and clip motion. */
-export function MotionRow({ label, title, list, value, defaultDuration, durationTitle, feel, onChange }: AnimRowProps) {
+export function MotionRow({ label, title, list, value, defaultDuration, durationTitle, feel, onChange, mixed = false }: AnimRowProps) {
   const known = value ? list.some((a) => a.id === value.id) : true;
   return (
     <Row label={label} title={title}>
@@ -38,9 +42,17 @@ export function MotionRow({ label, title, list, value, defaultDuration, duration
         className="select"
         title={title}
         aria-label={title}
-        value={value?.id ?? ''}
-        onChange={(e) => onChange(e.target.value === '' ? null : { id: e.target.value, duration: value?.duration ?? defaultDuration }, false)}
+        value={mixed ? MIXED : (value?.id ?? '')}
+        onChange={(e) => {
+          if (e.target.value === MIXED) return;
+          onChange(e.target.value === '' ? null : { id: e.target.value, duration: value?.duration ?? defaultDuration }, false);
+        }}
       >
+        {mixed ? (
+          <option value={MIXED} disabled>
+            mixed
+          </option>
+        ) : null}
         <option value="">none</option>
         {value && !known ? <option value={value.id}>{value.id}</option> : null}
         {list.map((a) => (

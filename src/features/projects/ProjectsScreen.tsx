@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Copy, Download, FolderOpen, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react';
+import { ChevronRight, Copy, Download, FolderInput, FolderOpen, FolderPlus, Pencil, Plus, Search, Settings, Trash2 } from 'lucide-react';
 import type { ProjectSummary } from '../../types';
 import { Dialog } from '../../components/ui/Dialog';
 import { CANVAS_PRESETS, FPS_OPTIONS } from '../../lib/factory';
@@ -20,6 +20,21 @@ import { AppSettings } from '../shell/AppSettings';
 import { listProjects } from '../../storage/db';
 import { loadPoster } from '../../storage/posters';
 import { PROJECT_FILE_EXT } from '../../storage/projectFile';
+import { FolderTile, MoveList, PROJECT_DRAG_MIME, useProjectDrop } from './FolderTile';
+import {
+  addFolder,
+  folderCounts,
+  folderOf,
+  getFolders,
+  moveProjects,
+  newFolderId,
+  pruneFolders,
+  removeFolder,
+  renameFolder,
+  sortedFolders,
+  updateFolders,
+  useFolders,
+} from './folders';
 import './projects.css';
 
 type SortMode = 'recent' | 'name';
@@ -61,6 +76,8 @@ function BrandMark() {
 
 interface CardProps {
   project: ProjectSummary;
+  /** the folder it is in, shown while searching (the search looks in every folder) */
+  folderName: string | null;
   now: number;
   busy: boolean;
   renaming: boolean;
@@ -71,10 +88,12 @@ interface CardProps {
   onDuplicate(id: string): void;
   onExportFile(id: string): void;
   onDelete(id: string): void;
+  onMove(id: string): void;
 }
 
 const ProjectCard = memo(function ProjectCard({
   project,
+  folderName,
   now,
   busy,
   renaming,
@@ -85,6 +104,7 @@ const ProjectCard = memo(function ProjectCard({
   onDuplicate,
   onExportFile,
   onDelete,
+  onMove,
 }: CardProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const doneRef = useRef(false);
@@ -133,6 +153,12 @@ const ProjectCard = memo(function ProjectCard({
       tabIndex={0}
       title={`open ${project.name}`}
       aria-busy={busy}
+      draggable={!renaming && !busy}
+      onDragStart={(e) => {
+        // a card dragged onto a folder (or onto "projects" in the path) moves there
+        e.dataTransfer.setData(PROJECT_DRAG_MIME, id);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
       onClick={() => {
         if (!renaming) onOpen(id);
       }}
@@ -169,6 +195,11 @@ const ProjectCard = memo(function ProjectCard({
             {project.name}
           </div>
         )}
+        {folderName ? (
+          <div className="projects-in-folder" title={`in the folder ${folderName}`}>
+            in {folderName}
+          </div>
+        ) : null}
         <div className="projects-meta mono">
           {project.width}x{project.height} / {project.fps} fps / {formatDuration(project.duration)} / {project.clipCount}{' '}
           {project.clipCount === 1 ? 'clip' : 'clips'}
@@ -184,6 +215,15 @@ const ProjectCard = memo(function ProjectCard({
               onKeyDown={(e) => e.stopPropagation()}
             >
               <Pencil size={14} />
+            </button>
+            <button
+              className="icon-btn icon-btn-sm"
+              title="move to a folder (or drag the card onto one)"
+              aria-label="move to a folder"
+              onClick={act(() => onMove(id))}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <FolderInput size={14} />
             </button>
             <button
               className="icon-btn icon-btn-sm"
@@ -236,6 +276,19 @@ export function ProjectsScreen() {
   const [fps, setFps] = useState(30);
   const [transparent, setTransparent] = useState(false);
   const [creating, setCreating] = useState(false);
+  // folders: the open one (null = the top level), the one being renamed or deleted, the project being moved
+  const folderState = useFolders();
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
+  const [moveId, setMoveId] = useState<string | null>(null);
+  const openFolder = folderId !== null ? (folderState.folders.find((f) => f.id === folderId) ?? null) : null;
+  // a folder that went away (deleted here) takes the view back to the top
+  useEffect(() => {
+    if (folderId !== null && !openFolder) setFolderId(null);
+  }, [folderId, openFolder]);
+  const folderIdRef = useRef(folderId);
+  folderIdRef.current = folderId;
 
   const mounted = useRef(true);
   const openingRef = useRef<string | null>(null);
@@ -245,6 +298,8 @@ export function ProjectsScreen() {
   const refresh = useCallback(async () => {
     try {
       const list = await listProjects();
+      // a deleted project leaves no link behind in its folder
+      updateFolders((s) => pruneFolders(s, list.map((x) => x.id)));
       if (!mounted.current) return;
       setProjects(list);
       setNow(Date.now());
@@ -362,7 +417,12 @@ export function ProjectsScreen() {
       try {
         const newId = await duplicateProject(id);
         if (!newId) useUi.getState().toast('project not found', 'error');
-        else useUi.getState().toast('project duplicated', 'success');
+        else {
+          // the copy sits next to the original
+          const fid = folderOf(getFolders(), id);
+          if (fid) updateFolders((s) => moveProjects(s, [newId], fid));
+          useUi.getState().toast('project duplicated', 'success');
+        }
       } catch (e) {
         fail(e, 'could not duplicate the project');
       }
@@ -401,7 +461,10 @@ export function ProjectsScreen() {
       let added = 0;
       for (const file of Array.from(files)) {
         try {
-          await importProjectFile(file);
+          const newId = await importProjectFile(file);
+          // an opened file lands in the folder that is open
+          const fid = folderIdRef.current;
+          if (fid) updateFolders((s) => moveProjects(s, [newId], fid));
           added++;
         } catch (e) {
           fail(e, 'could not open ' + file.name);
@@ -436,8 +499,11 @@ export function ProjectsScreen() {
     if (creating) return;
     const preset = CANVAS_PRESETS.find((p) => p.id === presetId) ?? CANVAS_PRESETS[0]!;
     setCreating(true);
+    const into = folderId;
     try {
-      await createAndOpenProject(newName.trim() || 'untitled project', preset, fps, templateId || null, transparent);
+      const made = await createAndOpenProject(newName.trim() || 'untitled project', preset, fps, templateId || null, transparent);
+      // a project made inside a folder belongs to it
+      if (into) updateFolders((s) => moveProjects(s, [made.id], into));
     } catch (e) {
       fail(e, 'could not create the project');
     }
@@ -447,13 +513,53 @@ export function ProjectsScreen() {
     void refresh();
   };
 
+  const searching = query.trim() !== '';
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects.slice();
+    // a search looks in every folder; else the open folder, or (at the top) the projects in no folder
+    const list = q
+      ? projects.filter((p) => p.name.toLowerCase().includes(q))
+      : projects.filter((p) => folderOf(folderState, p.id) === folderId);
     if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
     else list.sort((a, b) => b.updatedAt - a.updatedAt);
     return list;
-  }, [projects, query, sort]);
+  }, [projects, query, sort, folderState, folderId]);
+
+  const folderList = useMemo(() => sortedFolders(folderState), [folderState]);
+  const counts = useMemo(() => folderCounts(folderState, projects.map((p) => p.id)), [folderState, projects]);
+  const folderNameOf = (pid: string): string | null => {
+    const fid = folderOf(folderState, pid);
+    return fid ? (folderState.folders.find((f) => f.id === fid)?.name ?? null) : null;
+  };
+
+  /** a new folder at the top level, its name ready to type over. answers its id */
+  const onNewFolder = useCallback((): string => {
+    const id = newFolderId();
+    updateFolders((s) => addFolder(s, id, 'new folder', Date.now()));
+    setFolderId(null);
+    setQuery('');
+    setRenamingFolder(id);
+    return id;
+  }, []);
+  const onCommitFolderRename = useCallback((id: string, name: string) => {
+    setRenamingFolder(null);
+    updateFolders((s) => renameFolder(s, id, name));
+  }, []);
+  const onCancelFolderRename = useCallback(() => setRenamingFolder(null), []);
+  const onDropInFolder = useCallback((pid: string, fid: string | null) => {
+    updateFolders((s) => moveProjects(s, [pid], fid));
+  }, []);
+  const onAskMove = useCallback((id: string) => setMoveId(id), []);
+  const confirmDeleteFolder = () => {
+    if (!deleteFolderId) return;
+    updateFolders((s) => removeFolder(s, deleteFolderId));
+    setDeleteFolderId(null);
+  };
+  const moveTarget = moveId ? projects.find((p) => p.id === moveId) : undefined;
+  const deleteFolderTarget = deleteFolderId ? folderState.folders.find((f) => f.id === deleteFolderId) : undefined;
+  // "projects" in the path takes a dropped card out of the open folder
+  const topDrop = useProjectDrop((pid) => onDropInFolder(pid, null));
+  const showFolders = folderId === null && !searching;
 
   const deleteTarget = deleteId ? projects.find((p) => p.id === deleteId) : undefined;
   const showSearch = projects.length >= SEARCH_THRESHOLD;
@@ -499,7 +605,7 @@ export function ProjectsScreen() {
       <main className="projects-main">
         {!loaded ? (
           <div className="projects-empty">loading...</div>
-        ) : projects.length === 0 ? (
+        ) : projects.length === 0 && folderState.folders.length === 0 ? (
           <div className="projects-empty">
             <div className="projects-empty-title">no projects yet</div>
             <div>everything you make stays on this machine.</div>
@@ -512,9 +618,34 @@ export function ProjectsScreen() {
           <>
             <div className="projects-toolbar">
               <div className="projects-heading">
-                projects ({visible.length}
-                {visible.length !== projects.length ? ` of ${projects.length}` : ''})
+                {openFolder && !searching ? (
+                  <nav className="projects-path" aria-label="folder path">
+                    <button
+                      type="button"
+                      className={`btn btn-sm btn-ghost projects-path-top${topDrop.over ? ' is-drop' : ''}`}
+                      onClick={() => setFolderId(null)}
+                      title="back to all folders. drop a project here to take it out of this folder"
+                      {...topDrop.handlers}
+                    >
+                      projects
+                    </button>
+                    <ChevronRight size={14} aria-hidden="true" />
+                    <span className="projects-path-here" title={openFolder.name}>
+                      {openFolder.name} ({visible.length})
+                    </span>
+                  </nav>
+                ) : (
+                  <>
+                    projects ({searching ? `${visible.length} of ${projects.length}` : projects.length})
+                  </>
+                )}
               </div>
+              {folderId === null ? (
+                <button className="btn btn-sm" onClick={() => onNewFolder()} title="a new folder to sort projects into">
+                  <FolderPlus size={14} />
+                  new folder
+                </button>
+              ) : null}
               {showSearch ? (
                 <div className="field-row">
                   <Search size={14} />
@@ -541,14 +672,37 @@ export function ProjectsScreen() {
                 </select>
               ) : null}
             </div>
-            {visible.length === 0 ? (
-              <div className="projects-empty">no projects match "{query.trim()}"</div>
+            {visible.length === 0 && (searching || !showFolders || folderList.length === 0) ? (
+              <div className="projects-empty">
+                {searching
+                  ? `no projects match "${query.trim()}"`
+                  : openFolder
+                    ? 'this folder is empty. drag a project onto it, or use the move button on a project, or make a new one here'
+                    : 'every project is in a folder'}
+              </div>
             ) : (
               <div className="projects-grid">
+                {showFolders
+                  ? folderList.map((f) => (
+                      <FolderTile
+                        key={f.id}
+                        folder={f}
+                        count={counts.get(f.id) ?? 0}
+                        renaming={renamingFolder === f.id}
+                        onOpen={setFolderId}
+                        onStartRename={setRenamingFolder}
+                        onCommitRename={onCommitFolderRename}
+                        onCancelRename={onCancelFolderRename}
+                        onDelete={setDeleteFolderId}
+                        onDropProject={onDropInFolder}
+                      />
+                    ))
+                  : null}
                 {visible.map((p) => (
                   <ProjectCard
                     key={p.id}
                     project={p}
+                    folderName={searching ? folderNameOf(p.id) : null}
                     now={now}
                     busy={openingId === p.id}
                     renaming={renamingId === p.id}
@@ -559,6 +713,7 @@ export function ProjectsScreen() {
                     onDuplicate={onDuplicate}
                     onExportFile={onExportFile}
                     onDelete={onAskDelete}
+                    onMove={onAskMove}
                   />
                 ))}
               </div>
@@ -670,6 +825,50 @@ export function ProjectsScreen() {
             ))}
           </select>
         </div>
+      </Dialog>
+
+      <Dialog open={moveTarget !== undefined} title="move to a folder" onClose={() => setMoveId(null)} width={360}>
+        <p className="projects-move-what">
+          <span className="projects-confirm-name">{moveTarget?.name}</span>
+        </p>
+        <MoveList
+          folders={folderList}
+          current={moveTarget ? folderOf(folderState, moveTarget.id) : null}
+          onPick={(fid) => {
+            if (moveTarget) onDropInFolder(moveTarget.id, fid);
+            setMoveId(null);
+          }}
+          onNewFolder={() => {
+            const pid = moveTarget?.id;
+            const fid = onNewFolder();
+            if (pid) onDropInFolder(pid, fid);
+            setMoveId(null);
+          }}
+        />
+      </Dialog>
+
+      <Dialog
+        open={deleteFolderTarget !== undefined}
+        title="delete folder"
+        onClose={() => setDeleteFolderId(null)}
+        width={400}
+        footer={
+          <>
+            <button className="btn" onClick={() => setDeleteFolderId(null)} title="keep the folder">
+              cancel
+            </button>
+            <button className="btn btn-danger" onClick={confirmDeleteFolder} title="delete the folder, keep its projects">
+              delete folder
+            </button>
+          </>
+        }
+      >
+        <p>
+          delete the folder <span className="projects-confirm-name">{deleteFolderTarget?.name}</span>?{' '}
+          {(counts.get(deleteFolderId ?? '') ?? 0) > 0
+            ? `its ${counts.get(deleteFolderId ?? '')} ${counts.get(deleteFolderId ?? '') === 1 ? 'project stays' : 'projects stay'}, out of any folder. no project is deleted.`
+            : 'it is empty.'}
+        </p>
       </Dialog>
 
       <Dialog
