@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip } from '../../types';
-import { groupIds, idsAfter, idsLike, idsOnTrack, marqueeReplaceList, marqueeSelection, pressedSelection } from './selectionRules';
+import { groupIds, idsAfter, idsLike, idsOnTrack, marqueeReplaceList, marqueeSelection, pressedSelection, rangeSelection } from './selectionRules';
 import { planCloseGaps } from './gaps';
 
 const clip = (id: string, trackId: string, start: number, duration: number, group?: string) =>
@@ -111,5 +111,27 @@ describe('marquee in one select call', () => {
   });
   it('group members that are in the base are not doubled', () => {
     expect(marqueeReplaceList(project, ['b', 'c'], ['a'])).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('rangeSelection (shift+click)', () => {
+  const c = (id: string, trackId: string, start: number, duration: number) => ({ id, trackId, start, duration }) as unknown as Clip;
+  const tracks = [{ id: 'v1' }, { id: 'v2' }, { id: 'v3' }, { id: 'a1' }] as never[];
+  const p = {
+    tracks,
+    clips: [c('x1', 'v1', 0, 2), c('x2', 'v1', 3, 2), c('x3', 'v1', 8, 2), c('y1', 'v2', 1, 2), c('y2', 'v2', 6, 1), c('z1', 'v3', 4, 3), c('s1', 'a1', 0, 9)],
+  };
+  it('one track: every clip between the two', () => {
+    expect(rangeSelection(p, ['x1'], 'x1', 'x3')).toEqual(['x1', 'x2', 'x3']);
+    expect(rangeSelection(p, ['x3'], 'x3', 'x1')).toEqual(['x3', 'x1', 'x2']);
+  });
+  it('across tracks: the box from the anchor to the clicked clip, tracks between included', () => {
+    expect(rangeSelection(p, ['x1'], 'x1', 'z1').sort()).toEqual(['x1', 'x2', 'y1', 'y2', 'z1']);
+    // the audio track below the box stays out
+    expect(rangeSelection(p, ['x1'], 'x1', 'z1')).not.toContain('s1');
+  });
+  it('no anchor: the clicked clip joins the selection', () => {
+    expect(rangeSelection(p, [], null, 'y2')).toEqual(['y2']);
+    expect(rangeSelection(p, ['x1'], 'gone', 'y2')).toEqual(['x1', 'y2']);
   });
 });

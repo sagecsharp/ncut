@@ -22,9 +22,9 @@ import { findFollowers, placeFollowers } from './effectFollow';
 import type { ClipSpan } from './effectFollow';
 import { planGroupTrim } from './groupTrim';
 import { hitKey } from './keyGeometry';
-import { groupIds, marqueeReplaceList, pressedSelection } from './selectionRules';
+import { groupIds, marqueeReplaceList, pressedSelection, rangeSelection } from './selectionRules';
 import { CLIP_INSET, HEADER_W, RULER_H, SNAP_PX, computeLayout, hitGap, hitLane } from './layout';
-import { gapForMove, singleTrack } from './moveGap';
+import { gapForMove, moveTracks } from './moveGap';
 import { hitMarker, scrubSnapPoints, timelineSnapPoints } from './markers';
 import type { MarkerMenuRequest } from './MarkerUi';
 import type { Layout } from './layout';
@@ -505,9 +505,9 @@ export function createGestures(env: GestureEnv) {
         if (valid) trackFor = (o) => tracks[o.trackIdx + di]!.id;
       }
     } else {
-      const one = singleTrack(project.tracks, m.items);
-      const kind = one?.kind;
-      if (one && ((hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio'))) zone = hit.where;
+      const from = moveTracks(project.tracks, m.items);
+      const kind = from?.kind;
+      if (from && ((hit.where === 'top' && kind === 'video') || (hit.where === 'bottom' && kind === 'audio'))) zone = hit.where;
     }
     m.zone = zone;
     m.gap = gap;
@@ -588,13 +588,18 @@ export function createGestures(env: GestureEnv) {
       if (m.deferSingle) st.select(m.deferSingle, 'replace');
       return;
     }
-    const one = m.zone || m.gap !== null ? singleTrack(st.project?.tracks ?? [], m.items) : null;
-    if (one) {
-      // the clips go to a new track (above, below or between tracks), part of the same undo step
+    const from = m.zone || m.gap !== null ? moveTracks(st.project?.tracks ?? [], m.items) : null;
+    if (from) {
+      // the clips go to new tracks (above, below or between tracks): one per track they come from, in the same order,
+      // part of the same undo step
       const index = m.gap !== null ? m.gap : m.zone === 'top' ? 0 : undefined;
-      const trackId = st.addTrack(one.kind, { skipHistory: true, index });
-      if (trackId) {
-        const lead: ClipMove[] = m.items.map((o) => ({ id: o.id, trackId, start: Math.max(0, o.start + m.delta) }));
+      const made = new Map<string, string>();
+      from.trackIds.forEach((src, i) => {
+        const id = st.addTrack(from.kind, { skipHistory: true, index: index === undefined ? undefined : index + i });
+        if (id) made.set(src, id);
+      });
+      if (made.size === from.trackIds.length) {
+        const lead: ClipMove[] = m.items.map((o) => ({ id: o.id, trackId: made.get(o.trackId)!, start: Math.max(0, o.start + m.delta) }));
         if (!(m.follow.length > 0 && st.moveClips([...lead, ...followMoves(m, lead)], { skipHistory: true }))) {
           st.moveClips(lead, { skipHistory: true });
         }
@@ -1178,6 +1183,9 @@ export function createGestures(env: GestureEnv) {
     pt.target = null;
   }
 
+  /** the clip a shift+click range starts from: the last clip clicked without shift */
+  let anchorId: string | null = null;
+
   /* ---------- entry points ---------- */
 
   function onLanesPointerDown(e: PointerLike): void {
@@ -1303,13 +1311,17 @@ export function createGestures(env: GestureEnv) {
       }
       // groups select together; alt picks the one clip; trimming (above) never expands
       let deferSingle: string[] | null = null;
+      // shift+click selects the range from the anchor: the last clip clicked without shift (or the first selected one)
+      const anchor = anchorId !== null && st.selection.includes(anchorId) ? anchorId : (st.selection[0] ?? null);
+      if (!e.shiftKey) anchorId = id;
       if (e.altKey) {
         st.select([id], 'replace');
       } else if (e.ctrlKey || e.metaKey) {
         st.select(pressedSelection(project, st.selection, id, 'toggle'), 'replace');
         if (!store().selection.includes(id)) return;
       } else if (e.shiftKey) {
-        st.select(pressedSelection(project, st.selection, id, 'add'), 'replace');
+        st.select(rangeSelection(project, st.selection, anchor, id), 'replace');
+        anchorId = anchor ?? id;
       } else if (!st.selection.includes(id)) {
         st.select(groupIds(project, id), 'replace');
       } else if (st.selection.length > 1) {

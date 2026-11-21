@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BEND_OUTLINE_STEPS, asScenePlane, boxBounds, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptShare, keptPlaneModel, projectRig, pointInBent, quadPoints, rayBent, rayQuad, rotateValue, snapAxis, unwrapStep, worldCenter3d } from './overlayMath';
+import { BEND_OUTLINE_STEPS, asScenePlane, boundsMiddle, boxBounds, groupStep, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hasCrop, hitTestKept, keptBox, keptShare, keptPlaneModel, projectRig, pointInBent, quadPoints, rayBent, rayQuad, rotateValue, snapAxis, snapAxisTo, snapLines, unwrapStep, worldCenter3d } from './overlayMath';
 import { projectPoint, screenRay } from '../../engine/scene3d/camera';
 import { createProject, createShapeClip } from '../../lib/factory';
 import { DEFAULT_TRANSFORM } from '../../types';
@@ -261,6 +261,14 @@ describe('rotation drag', () => {
     expect(rotateValue(0, 20, false)).toBeCloseTo(20);
     expect(rotateValue(720, 9, true)).toBe(735);
   });
+  it('lands on a quarter turn from up to 8 degrees away, and alt never snaps', () => {
+    expect(rotateValue(0, 83, false)).toBe(90);
+    expect(rotateValue(0, 187.5, false)).toBe(180);
+    expect(rotateValue(0, -7, false)).toBe(0);
+    expect(rotateValue(0, 81, false)).toBeCloseTo(81);
+    expect(rotateValue(0, 178, false, true)).toBeCloseTo(178);
+    expect(rotateValue(0, 178, true, true)).toBeCloseTo(178);
+  });
 });
 
 describe('cropped 3d outline', () => {
@@ -428,5 +436,55 @@ describe('bent 3d clips', () => {
     const flat = make();
     expect(quadPoints(clipQuad(flat.p, flat.clip, 1, rig), 1).split(' ')).toHaveLength(4);
     expect(quadPoints(clipQuad(p, clip, 1, rig), 1).split(' ')).toHaveLength(50);
+  });
+});
+
+describe('boundsMiddle', () => {
+  it('is the middle of the bounds of every rectangle', () => {
+    expect(boundsMiddle([])).toBeNull();
+    expect(boundsMiddle([{ minX: 0, minY: 0, maxX: 100, maxY: 50 }, { minX: 300, minY: 20, maxX: 400, maxY: 250 }])).toEqual({ x: 200, y: 125 });
+  });
+});
+
+describe('groupStep', () => {
+  it('scales a position away from the middle', () => {
+    const d = groupStep(300, 100, 200, 100, 2, 0);
+    expect(d.dx).toBeCloseTo(100);
+    expect(d.dy).toBeCloseTo(0);
+    expect(groupStep(200, 100, 200, 100, 3, 45)).toEqual({ dx: 0, dy: 0 });
+  });
+  it('turns a position clockwise around the middle (y down, like a clip rotation)', () => {
+    // right of the middle, a quarter turn clockwise ends below it
+    const d = groupStep(300, 100, 200, 100, 1, 90);
+    expect(300 + d.dx).toBeCloseTo(200);
+    expect(100 + d.dy).toBeCloseTo(200);
+  });
+  it('a turned group keeps its picture together: the step matches the turn of the clip box around the middle', () => {
+    // a clip whose box middle sits at its position: after the step, a point of its box lands where turning that point would
+    const d = groupStep(250, 160, 200, 100, 1.5, 30);
+    const a = (30 * Math.PI) / 180;
+    const vx = (250 - 200) * 1.5;
+    const vy = (160 - 100) * 1.5;
+    expect(250 + d.dx).toBeCloseTo(200 + vx * Math.cos(a) - vy * Math.sin(a));
+    expect(160 + d.dy).toBeCloseTo(100 + vx * Math.sin(a) + vy * Math.cos(a));
+  });
+});
+
+describe('snapAxisTo', () => {
+  const lines = snapLines(1000, [{ lo: 600, hi: 800 }]);
+  it('lines are the canvas middle and edges, then each box low, middle, high', () => {
+    expect(lines).toEqual([500, 0, 1000, 600, 700, 800]);
+  });
+  it('snaps an edge or the middle of the span to another clip', () => {
+    // the right edge (390 + 205 = 595) lands on the other clip's left edge
+    expect(snapAxisTo(390, 205, lines, 6)).toEqual({ adj: 5, at: 600 });
+    // the middle lands on the other clip's middle
+    expect(snapAxisTo(703, 20, lines, 6)).toEqual({ adj: -3, at: 700 });
+    // the left edge on its right edge
+    expect(snapAxisTo(822, 20, lines, 6)).toEqual({ adj: -2, at: 800 });
+  });
+  it('the closest wins and nothing beyond the threshold', () => {
+    expect(snapAxisTo(504, 300, lines, 6)).toEqual({ adj: -4, at: 500 });
+    expect(snapAxisTo(350, 20, lines, 6)).toBeNull();
   });
 });

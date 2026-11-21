@@ -14,6 +14,13 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.3': [
+    'with several clips selected, a corner or the round handle in the preview scales or rotates all of them as one, around the middle of the selection (alt: each around its own pivot)',
+    'a dragged clip snaps its edges and middle to the edges and middles of the other clips, not only to the canvas (alt: no snapping)',
+    'the round handle lands on 0, 90, 180 and 270 degrees from up to 8 degrees away (alt: no snapping)',
+    'shift+click in the timeline selects every clip from the last clicked one to the clicked one',
+    'drop several selected clips from several tracks on the line between two tracks: each track they came from gets a new track there, in the same order',
+  ],
   '0.4.2': [
     'crop in the preview: drag an edge handle of a picture, video or text to cut that edge off, the picture stays where it is. ctrl+drag stretches it instead, as the edges did before',
     'a transparent canvas: pick it for a new project, or switch it on and off in the project panel or the settings. the preview shows a checkerboard where it is see-through, and the export starts as a webm or png with a see-through background',

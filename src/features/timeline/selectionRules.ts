@@ -76,3 +76,30 @@ export function idsLike(clips: readonly Clip[], ids: readonly string[]): string[
 export function idsOnTrack(clips: readonly Clip[], trackId: string): string[] {
   return clips.filter((c) => c.trackId === trackId).map((c) => c.id);
 }
+
+/**
+ * shift+click: every clip from the anchor (the clip clicked last without shift) to the clicked one. the range is the
+ * box they span: the tracks from the higher one to the lower one and the time from the earlier start to the later
+ * end; a clip that reaches into that box is in. groups are widened like a marquee. no anchor (or one that is gone):
+ * just the clicked clip's group joins the selection, as before.
+ */
+export function rangeSelection(project: Pick<Project, 'clips' | 'tracks'>, selection: readonly string[], anchorId: string | null, id: string): string[] {
+  const anchor = anchorId ? project.clips.find((c) => c.id === anchorId) : undefined;
+  const clicked = project.clips.find((c) => c.id === id);
+  if (!anchor || !clicked) return pressedSelection(project, selection, id, 'add');
+  const ia = project.tracks.findIndex((t) => t.id === anchor.trackId);
+  const ic = project.tracks.findIndex((t) => t.id === clicked.trackId);
+  if (ia < 0 || ic < 0) return pressedSelection(project, selection, id, 'add');
+  const top = Math.min(ia, ic);
+  const bottom = Math.max(ia, ic);
+  const from = Math.min(anchor.start, clicked.start);
+  const to = Math.max(anchor.start + anchor.duration, clicked.start + clicked.duration);
+  const rows = new Set(project.tracks.slice(top, bottom + 1).map((t) => t.id));
+  const hits: string[] = [];
+  for (const c of project.clips) {
+    if (!rows.has(c.trackId)) continue;
+    if (c.start < to - 1e-9 && c.start + c.duration > from + 1e-9) hits.push(c.id);
+  }
+  // the anchor first: the range keeps it as the start of the next shift+click
+  return marqueeSelection(project, [anchor.id, ...hits.filter((h) => h !== anchor.id)]);
+}

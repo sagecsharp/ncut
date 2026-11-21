@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Clip, Track } from '../../types';
-import { gapForMove } from './moveGap';
+import { gapForMove, moveTracks } from './moveGap';
 
 const tr = (id: string, kind: 'video' | 'audio') => ({ id, kind }) as unknown as Track;
 const tracks = [tr('v1', 'video'), tr('v2', 'video'), tr('a1', 'audio'), tr('a2', 'audio')];
@@ -23,8 +23,15 @@ describe('gapForMove', () => {
     expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 2, 60, 1)).toBe(2);
     expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1')], 1, 8)).toBe(1);
   });
-  it('items from two tracks', () => {
-    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1'), item('c3', 'text', 'v2')], 2, 30)).toBeNull();
+  it('items from two tracks of one kind open tracks; both kinds never do', () => {
+    // c2 stays on v1, so this is not a swap of empty tracks
+    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1'), item('c3', 'text', 'v2')], 2, 30)).toBe(2);
+    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1'), item('c3', 'text', 'v2')], 0, -30)).toBe(0);
+    expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1'), item('s1', 'audio', 'a1')], 2, 30)).toBeNull();
+    // every clip of v1 and v2 at a border that touches them: nothing would change but the track names
+    const all = [item('c1', 'text', 'v1'), item('c2', 'text', 'v1'), item('c3', 'text', 'v2')];
+    expect(gapForMove(tracks, clips, all, 0, -30)).toBeNull();
+    expect(gapForMove(tracks, clips, all, 2, 30)).toBeNull();
   });
   it('several items of one track: pointless only when they are the whole track', () => {
     expect(gapForMove(tracks, clips, [item('c1', 'text', 'v1'), item('c2', 'text', 'v1')], 1, 30)).toBeNull();
@@ -46,5 +53,13 @@ describe('gapForMove', () => {
     const t3 = [tr('v1', 'video'), tr('v2', 'video'), tr('v3', 'video'), tr('a1', 'audio')];
     expect(gapForMove(t3, clips, [item('c3', 'text', 'v2')], 3, 30)).toBe(3);
     expect(gapForMove(t3, clips, [item('c3', 'text', 'v2')], 1, 30)).toBeNull();
+  });
+});
+
+describe('moveTracks', () => {
+  it('the tracks of the clips top to bottom, one kind only', () => {
+    expect(moveTracks(tracks, [item('c3', 'text', 'v2'), item('c1', 'text', 'v1'), item('c2', 'text', 'v1')])).toEqual({ trackIds: ['v1', 'v2'], indexes: [0, 1], kind: 'video' });
+    expect(moveTracks(tracks, [item('c1', 'text', 'v1'), item('s1', 'audio', 'a1')])).toBeNull();
+    expect(moveTracks(tracks, [])).toBeNull();
   });
 });

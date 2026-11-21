@@ -330,6 +330,28 @@ export interface Snap {
 }
 
 /**
+ * snap a span on one axis to lines: its low edge, its center or its high edge to any of `targets` (the canvas edges and
+ * middle, the edges and middles of other clips). the closest pair within `thr` wins; null when none is that close.
+ */
+export function snapAxisTo(center: number, half: number, targets: readonly number[], thr: number): Snap | null {
+  let best: Snap | null = null;
+  for (const value of [center, center - half, center + half]) {
+    for (const target of targets) {
+      const d = target - value;
+      if (Math.abs(d) <= thr && (!best || Math.abs(d) < Math.abs(best.adj))) best = { adj: d, at: target };
+    }
+  }
+  return best;
+}
+
+/** the lines a moved 2d clip snaps to on one axis: the canvas edges and middle, then the low edge, middle and high edge of every other box */
+export function snapLines(size: number, boxes: readonly { lo: number; hi: number }[]): number[] {
+  const out = [size / 2, 0, size];
+  for (const b of boxes) out.push(b.lo, (b.lo + b.hi) / 2, b.hi);
+  return out;
+}
+
+/**
  * snap a span on one canvas axis: its center to the canvas center, its low edge to 0 and its high edge to
  * `size`. returns the closest candidate within `thr`, or null.
  */
@@ -493,15 +515,20 @@ export function unwrapStep(prev: number, next: number): number {
 
 /**
  * the rotation a drag ends on: the start value plus the unwrapped pointer delta (never normalized, so a clip
- * that already turned twice stays at two turns). snaps to every 90 degrees within 3 (counted on the unwrapped value,
- * so 720 snaps to 720 and not to 0), shift snaps to 15 degree steps.
+ * that already turned twice stays at two turns). snaps to every 90 degrees (0, 90, 180, 270 ...) within ROTATE_SNAP_DEG
+ * (counted on the unwrapped value, so 720 snaps to 720 and not to 0), shift snaps to 15 degree steps, free (alt) does not snap.
  */
-export function rotateValue(r0: number, accumulated: number, shift: boolean): number {
+export function rotateValue(r0: number, accumulated: number, shift: boolean, free = false): number {
   const raw = r0 + accumulated;
-  if (shift) return Math.round(raw / 15) * 15;
-  const nearest = Math.round(raw / 90) * 90;
-  return Math.abs(raw - nearest) <= 3 ? nearest : raw;
+  if (free) return raw;
+  // + 0: a small turn back lands on 0, not -0
+  if (shift) return Math.round(raw / 15) * 15 + 0;
+  const nearest = Math.round(raw / 90) * 90 + 0;
+  return Math.abs(raw - nearest) <= ROTATE_SNAP_DEG ? nearest : raw;
 }
+
+/** how close (degrees) a turn has to come to a quarter turn (0, 90, 180, 270) to land on it */
+export const ROTATE_SNAP_DEG = 8;
 
 /** a clip as the scene view shows it: a 2d clip lies flat on the canvas plane (z = 0, no tilt or turn) */
 export function asScenePlane(clip: VisualClip): VisualClip {
@@ -526,4 +553,36 @@ export function sceneCenter(project: Project, clip: Clip, time: number): Vec3 | 
   const w = worldClip(project, asScenePlane(clip), time);
   const box = getClipBox(project, w);
   return [box.cx, box.cy, w.transform.z ?? 0];
+}
+
+/* ---------- scale / rotate several clips as one ---------- */
+
+/** the middle of the axis aligned bounds of several canvas rectangles ({ minX, minY, maxX, maxY }). null for none */
+export function boundsMiddle(rects: readonly { minX: number; minY: number; maxX: number; maxY: number }[]): { x: number; y: number } | null {
+  if (rects.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const r of rects) {
+    minX = Math.min(minX, r.minX);
+    minY = Math.min(minY, r.minY);
+    maxX = Math.max(maxX, r.maxX);
+    maxY = Math.max(maxY, r.maxY);
+  }
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
+
+/**
+ * how far a clip's position (px, py, canvas px) moves when the group it is in is scaled by k and turned by `deg`
+ * (clockwise, like a clip's rotation) around (cx, cy). the clip's own scale and rotation change by the same amount,
+ * so its whole picture is scaled and turned around that point.
+ */
+export function groupStep(px: number, py: number, cx: number, cy: number, k: number, deg: number): { dx: number; dy: number } {
+  const vx = (px - cx) * k;
+  const vy = (py - cy) * k;
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return { dx: cx + vx * c - vy * s - px, dy: cy + vx * s + vy * c - py };
 }

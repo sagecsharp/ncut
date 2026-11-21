@@ -1340,7 +1340,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     ['mouse-edge-alone', [['alt', 'drag']], 'in trim mode, a clip edge: trim only that clip, not its group or the other selected clips'],
     ['mouse-trim-cancel', [['esc']], 'while dragging in trim mode: put everything back'],
     ['mouse-marquee', [['drag']], 'an empty spot of a track: draw a box to select clips'],
-    ['mouse-add', [['shift', 'click']], 'a clip: add it to the selection'],
+    ['mouse-add', [['shift', 'click']], 'a clip: select every clip from the last clicked one to this one (the tracks and the time between them)'],
     ['mouse-toggle', [['ctrl', 'click']], 'a clip: add it to the selection or take it out'],
     ['mouse-one', [['alt', 'click']], 'a clip in a group: select only that clip (one side of a separated sound: trim it alone for a j or l cut)'],
     ['mouse-key', [['drag']], 'a keyframe diamond on a clip: move the keyframe'],
@@ -1374,7 +1374,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     ['mouse-pv-zoom', [['ctrl', 'wheel']], 'over the preview: zoom the picture'],
     ['mouse-pv-pan', [['space', 'drag'], ['middle drag']], 'over a zoomed preview: move the picture'],
     ['mouse-pv-fit', [['double click']], 'the zoom percent of the preview: fit the picture'],
-    ['mouse-canvas', [['drag']], 'the box of the selected clip in the preview: move it, scale it by a corner, rotate it by the round handle (shift: 15 degree steps)'],
+    ['mouse-canvas', [['drag']], 'the box of the selected clip in the preview: move it, scale it by a corner, rotate it by the round handle (shift: 15 degree steps). with several clips selected a corner or the round handle scales or rotates all of them around the middle of the selection (alt: each around its own pivot)'],
     [
       'mouse-pivot',
       [['drag'], ['alt', 'drag'], ['double click']],

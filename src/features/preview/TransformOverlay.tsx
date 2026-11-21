@@ -23,7 +23,7 @@ import { useEditor } from '../../store/editorStore';
 import { usePlayback } from '../../store/playback';
 import { useUi } from '../../store/ui';
 import { SceneOverlay } from './SceneOverlay';
-import { CROP_PROP, type Edge, type EdgeStart, type Quad, asScenePlane, boxBounds, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, keptShare, pointInBent, pointInQuad, projectRig, quadPoints, rotateValue, snapAxis, unwrapStep } from './overlayMath';
+import { CROP_PROP, type Edge, type EdgeStart, type Quad, asScenePlane, boundsMiddle, boxBounds, groupStep, snapAxisTo, snapLines, clipQuad, edgeCrop, edgeCropRaw, edgeMode, edgeResize, edgeStretch, hitTestKept, keptBox, keptShare, pointInBent, pointInQuad, projectRig, quadPoints, rotateValue, unwrapStep } from './overlayMath';
 import { localDelta, withoutRidingChildren, worldClip } from './attached';
 import { beginPreviewGesture, endPreviewGesture, installGestureGuard } from './gesture';
 import { movableClipsAt } from './nudge';
@@ -221,7 +221,7 @@ const SelBox = memo(function SelBox({ clipId, view }: { clipId: string; view: Vi
         <div className="preview-handle preview-handle-edge preview-handle-n" data-handle="edge" data-edge="t" data-clip={clipId} title={hTitle} />
         <div className="preview-handle preview-handle-edge preview-handle-s" data-handle="edge" data-edge="b" data-clip={clipId} title={hTitle} />
         <div className="preview-rotate-stem" />
-        <div className="preview-handle preview-handle-rotate" data-handle="rotate" data-clip={clipId} title="rotate (shift = 15 degree steps)" />
+        <div className="preview-handle preview-handle-rotate" data-handle="rotate" data-clip={clipId} title="rotate (lands on 0, 90, 180 and 270; shift = 15 degree steps, alt = no snapping)" />
       </div>
       <div ref={quadRef} className="preview-quad" data-pivoting={pivoting ? '1' : undefined} style={{ display: 'none' }}>
         <svg className="preview-quad-svg" aria-hidden="true">
@@ -314,6 +314,9 @@ type Gesture =
       primary: string;
       items: MoveItem[];
       rig: CameraRig;
+      /** the canvas x / y lines a 2d clip snaps to: canvas edges and middle, edges and middles of the clips that stay put */
+      linesX: number[];
+      linesY: number[];
     }
   | {
       kind: 'edge';
@@ -334,7 +337,7 @@ type Gesture =
       y0: number;
       started: boolean;
     }
-  | { kind: 'scale'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean }
+  | { kind: 'scale'; pointerId: number; startX: number; startY: number; id: string; cx: number; cy: number; d0: number; s0: number; started: boolean; group: GroupItem[] | null; together: boolean }
   | {
       kind: 'rotate';
       pointerId: number;
@@ -349,7 +352,22 @@ type Gesture =
       acc: number;
       r0: number;
       started: boolean;
+      group: GroupItem[] | null;
+      together: boolean;
     };
+
+/** a selected clip in a scale or turn of several clips: its own values at the grab and where its position is (canvas px) */
+interface GroupItem {
+  id: string;
+  clip: VisualClip;
+  x0: number;
+  y0: number;
+  s0: number;
+  r0: number;
+  /** the position in the world, canvas px (a 3d clip: its world x / y) */
+  px: number;
+  py: number;
+}
 
 interface PointerSnapshot {
   x: number;
@@ -467,6 +485,44 @@ function OutputOverlay() {
     }
   };
 
+  /** a clip of a group scale / turn: its position moved by a world step (dx, dy) from where it was at the grab */
+  const moveInGroup = (it: GroupItem, step: { dx: number; dy: number }, time: number) => {
+    const store = useEditor.getState();
+    const project = store.project;
+    if (!project) return;
+    const l = localDelta(project, it.clip, time, step.dx, step.dy);
+    store.setClipValue(it.id, 'x', time, Math.round((it.x0 + l.x) * 100) / 100, { skipHistory: true });
+    store.setClipValue(it.id, 'y', time, Math.round((it.y0 + l.y) * 100) / 100, { skipHistory: true });
+  };
+
+  /**
+   * the selected clips a scale or turn of the grabbed clip also changes: every selected clip on screen now (a clip that
+   * rides on a selected parent follows it), or null when that is only the grabbed one. with it the middle of their boxes.
+   */
+  const groupOf = (project: Project, grabbed: string, time: number): { items: GroupItem[]; mid: { x: number; y: number } } | null => {
+    const sel = useEditor.getState().selection;
+    if (sel.length < 2 || !sel.includes(grabbed)) return null;
+    const clips = withoutRidingChildren(project, movableClipsAt(project, sel, time));
+    if (clips.length < 2) return null;
+    const items: GroupItem[] = [];
+    const rects: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
+    for (const raw of clips) {
+      const own = resolveClip(raw, time);
+      const world = worldClip(project, raw, time);
+      const px = project.width / 2 + world.transform.x;
+      const py = project.height / 2 + world.transform.y;
+      items.push({ id: raw.id, clip: raw, x0: own.transform.x, y0: own.transform.y, s0: own.transform.scale, r0: own.transform.rotation, px, py });
+      if (raw.threeD) rects.push({ minX: px, minY: py, maxX: px, maxY: py });
+      else {
+        const kept = keptBox(pictureBox(getClipBox(project, world)), world.crop);
+        const b = boxBounds(kept);
+        rects.push({ minX: kept.cx - b.hw, minY: kept.cy - b.hh, maxX: kept.cx + b.hw, maxY: kept.cy + b.hh });
+      }
+    }
+    const mid = boundsMiddle(rects);
+    return mid ? { items, mid } : null;
+  };
+
   const apply = (snap: PointerSnapshot) => {
     const g = gestureRef.current;
     const store = useEditor.getState();
@@ -517,9 +573,10 @@ function OutputOverlay() {
             atY = project.height / 2;
           }
         } else {
-          // a 2d clip snaps its center and its edges (of the kept, rotated bounds) to the canvas center and edges
-          const sx = snapAxis(project.width / 2 + primary.wx + pd[0] + primary.ox, primary.hw, project.width, thr);
-          const sy = snapAxis(project.height / 2 + primary.wy + pd[1] + primary.oy, primary.hh, project.height, thr);
+          // a 2d clip snaps its center and its edges (of the kept, rotated bounds) to the canvas center and edges, and to the
+          // edges and middles of the other clips on screen
+          const sx = snapAxisTo(project.width / 2 + primary.wx + pd[0] + primary.ox, primary.hw, g.linesX, thr);
+          const sy = snapAxisTo(project.height / 2 + primary.wy + pd[1] + primary.oy, primary.hh, g.linesY, thr);
           if (sx) {
             adjX = sx.adj;
             atX = sx.at;
@@ -594,11 +651,31 @@ function OutputOverlay() {
     }
     if (g.kind === 'scale') {
       const d = Math.hypot(px - g.cx, py - g.cy);
+      if (g.group) {
+        // every selected clip by the same factor: together = also their positions around the middle of the selection
+        const k = d / g.d0;
+        for (const it of g.group) {
+          const scale = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, it.s0 * k)) * 1000) / 1000;
+          store.setClipValue(it.id, 'scale', time, scale, { skipHistory: true });
+          if (g.together) moveInGroup(it, groupStep(it.px, it.py, g.cx, g.cy, it.s0 > 0 ? scale / it.s0 : k, 0), time);
+        }
+        return;
+      }
       const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, (g.s0 * d) / g.d0));
       store.setClipValue(g.id, 'scale', time, Math.round(scale * 1000) / 1000, { skipHistory: true });
       return;
     }
-    const r = rotateValue(g.r0, g.acc, snap.shift);
+    // alt while turning: no snapping (as for a move)
+    const r = rotateValue(g.r0, g.acc, snap.shift, snap.alt);
+    if (g.group) {
+      // every selected clip turns by the same angle (the grabbed one snaps): together = also around the middle of the selection
+      const turn = r - g.r0;
+      for (const it of g.group) {
+        store.setClipValue(it.id, 'rotation', time, Math.round((it.r0 + turn) * 100) / 100, { skipHistory: true });
+        if (g.together) moveInGroup(it, groupStep(it.px, it.py, g.cx, g.cy, 1, turn), time);
+      }
+      return;
+    }
     store.setClipValue(g.id, 'rotation', time, Math.round(r * 100) / 100, { skipHistory: true });
   };
 
@@ -693,10 +770,19 @@ function OutputOverlay() {
             y0: clip.transform.y,
             started: false,
           };
-        } else if (handle.dataset.handle === 'scale') {
+        }
+        // several clips selected: a corner or the round handle changes all of them, around the middle of the selection.
+        // alt at the grab: each one around its own pivot (the grabbed clip measures the drag, as alone)
+        const many = handle.dataset.handle !== 'edge' ? groupOf(project, raw.id, time) : null;
+        const together = !!many && !e.altKey;
+        if (many && together) {
+          cx = many.mid.x;
+          cy = many.mid.y;
+        }
+        if (handle.dataset.handle === 'scale') {
           // a grab on the pivot itself would give a ratio of nothing: measure from the picture's middle there.
           // the scale still happens around the pivot.
-          if (Math.hypot(px - cx, py - cy) < 16 / f) {
+          if (!together && Math.hypot(px - cx, py - cy) < 16 / f) {
             if (clip.threeD) {
               const q = clipQuad(project, raw, time, rig);
               if (q.visible) {
@@ -717,11 +803,13 @@ function OutputOverlay() {
             id: clip.id,
             cx,
             cy,
-            d0: Math.max(1, Math.hypot(px - cx, py - cy)),
+            d0: Math.max(together ? 16 / f : 1, Math.hypot(px - cx, py - cy)),
             s0: clip.transform.scale,
             started: false,
+            group: many?.items ?? null,
+            together,
           };
-        } else {
+        } else if (handle.dataset.handle === 'rotate') {
           gestureRef.current = {
             kind: 'rotate',
             pointerId: e.pointerId,
@@ -734,6 +822,8 @@ function OutputOverlay() {
             acc: 0,
             r0: clip.transform.rotation,
             started: false,
+            group: many?.items ?? null,
+            together,
           };
         }
         root.setPointerCapture(e.pointerId);
@@ -782,7 +872,33 @@ function OutputOverlay() {
       items.push({ id: raw.id, x: clip.transform.x, y: clip.transform.y, wx: world.transform.x, wy: world.transform.y, clip: raw, threeD: !!raw.threeD, hw, hh, ox, oy, p0, z });
     }
     if (items.length === 0) return;
-    gestureRef.current = { kind: 'move', pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, started: false, primary: hit.id, items, rig };
+    // the clips that stay put (not dragged, not riding on a dragged clip, flat): their kept boxes are lines to snap to
+    const moving = items.map((i) => i.clip);
+    const stayX: Array<{ lo: number; hi: number }> = [];
+    const stayY: Array<{ lo: number; hi: number }> = [];
+    const movingIds = new Set(items.map((i) => i.id));
+    for (const c of visibleClipsAt(project, time)) {
+      if (c.threeD || movingIds.has(c.id) || sel.includes(c.id)) continue;
+      if (c.parent && !withoutRidingChildren(project, [...moving, c]).includes(c)) continue;
+      const w = worldClip(project, c, time);
+      if (isBent(w)) continue;
+      const kept = keptBox(pictureBox(getClipBox(project, w)), w.crop);
+      const b = boxBounds(kept);
+      stayX.push({ lo: kept.cx - b.hw, hi: kept.cx + b.hw });
+      stayY.push({ lo: kept.cy - b.hh, hi: kept.cy + b.hh });
+    }
+    gestureRef.current = {
+      kind: 'move',
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      started: false,
+      primary: hit.id,
+      items,
+      rig,
+      linesX: snapLines(project.width, stayX),
+      linesY: snapLines(project.height, stayY),
+    };
     root.setPointerCapture(e.pointerId);
     beginPreviewGesture();
   };
