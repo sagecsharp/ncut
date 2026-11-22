@@ -14,6 +14,10 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.4': [
+    'project folders: make folders on the projects screen, drag a project onto one or use its move button, rename or delete them (the projects stay). the search looks in every folder',
+    'text animation for several texts at once: with more than one text selected, in, out and loop change all of them ("mixed" where they differ)',
+  ],
   '0.4.3': [
     'with several clips selected, a corner or the round handle in the preview scales or rotates all of them as one, around the middle of the selection (alt: each around its own pivot)',
     'a dragged clip snaps its edges and middle to the edges and middles of the other clips, not only to the canvas (alt: no snapping)',
