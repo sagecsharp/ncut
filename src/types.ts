@@ -243,6 +243,17 @@ export interface ClipBend {
 export interface ClipAnim {
   id: string;
   duration: number;
+  /**
+   * the 'direction' loop only (the clip stays put, its picture drifts inside its own frame and wraps round): which way
+   * the picture drifts, degrees in the picture's own axes. 0 = right, 90 = down. missing = 0
+   */
+  angle?: number;
+  /** the 'direction' loop only: how much of the picture drifts past per cycle, percent. 100 = one whole repeat (seamless). missing = 100 */
+  distance?: number;
+  /** the 'direction' loop only: a smear along the drift, percent of the picture. 0 / missing = sharp */
+  blur?: number;
+  /** the 'direction' loop only: true = there and back smoothly, false / missing = one way on and on */
+  pingPong?: boolean;
 }
 
 /**

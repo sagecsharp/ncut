@@ -14,6 +14,9 @@ const SITE = 'https://sagecsharp.github.io/ncut/';
  * entry just has no such section.
  */
 const NEW_IN = {
+  '0.4.5': [
+    'the direction loop (motion, loop): the clip stays in place while its picture drifts inside its frame and wraps round, so a grid or a pattern slides on for ever. pick the way on eight arrows or as an angle, how much passes per cycle (100% loops without a jump), a blur along the drift, and back and forth. on a 3d or bent plane it drifts along the plane, smooth and without shimmer',
+  ],
   '0.4.4': [
     'project folders: make folders on the projects screen, drag a project onto one or use its move button, rename or delete them (the projects stay). the search looks in every folder',
     'text animation for several texts at once: with more than one text selected, in, out and loop change all of them ("mixed" where they differ)',

@@ -201,7 +201,14 @@ const PICTURE: Record<string, Check> = {
   pivot,
   motionIn: anim(CLIP_MOTIONS_IN, 'clip motion', DEFAULT_CLIP_MOTION_IN),
   motionOut: anim(CLIP_MOTIONS_IN, 'clip motion', DEFAULT_CLIP_MOTION_IN),
-  motionLoop: anim(CLIP_MOTIONS_LOOP, 'looping clip motion', DEFAULT_CLIP_MOTION_LOOP),
+  // the 'direction' loop also takes which way (angle), how much per cycle (distance, %), blur (%) and pingPong
+  motionLoop: orNull(
+    obj(
+      { id: idOf(CLIP_MOTIONS_LOOP, 'looping clip motion', 'motions'), duration: num(0.05, 60), angle: num(-360, 360), distance: num(-1000, 1000), blur: num(0, 100), pingPong: bool },
+      ['id', 'duration'],
+      { duration: DEFAULT_CLIP_MOTION_LOOP },
+    ),
+  ),
   motionBlur: orNull(obj({ shutter: num(0, 2), samples: num(2, 32, true), style: oneOf(MOTION_BLUR_STYLES) }, ['shutter', 'samples'], { shutter: 0.5, samples: 8 })),
   adjust: orNull(
     obj(

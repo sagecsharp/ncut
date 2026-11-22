@@ -13,7 +13,7 @@ import { animatesPicture, noteRawClip, resolveClip } from '../lib/anim';
 import { blurPlan } from './blurStyle';
 import { beatGridOf } from './beatFx';
 import { type BeatGrid, LINE_NUDGE, cycleLength, cyclePhase, parseEffectBeat, pulseEnvelope } from '../lib/tempo';
-import { applyClipMotion, hasClipMotion } from './clipAnim';
+import { applyClipMotion, contentDrift, hasClipMotion } from './clipAnim';
 import { type BindTarget, type OwnLayer, type TargetIndex, bindOwnLayers, clampIntoClip, effectsOnClip, isTargetedEffect, needsAlphaRun, ownLayers, targetIndex, withOwnLayers } from './clipFx';
 import { resolveCounter } from './counter';
 import { clipLookSignature, clipLookTexture, hasClipLook, isKeyActive, releaseClipLook } from './clipLook';
@@ -71,6 +71,12 @@ export function releaseRenderResources(channel: 'preview' | 'export' | 'inset'):
   releaseClipLook(lc);
   // the flat path's copies of looked / masked stills are per channel
   stillCopies.dropPrefix(glChannel + '|');
+  for (const [key, c] of driftCanvases) {
+    if (!key.startsWith(glChannel + '|')) continue;
+    c.width = 0;
+    c.height = 0;
+    driftCanvases.delete(key);
+  }
   releaseSceneRenderer(glChannel);
   releaseEffectRunner(glChannel);
   releaseTransitionRunner(glChannel as TransitionChannel);
@@ -927,6 +933,69 @@ function syncTextureCaches(project: Project): void {
 /* ---------- clip look (color correction / chroma key) ---------- */
 
 type LookChannel = 'preview' | 'export';
+/* ---------- the direction loop: the picture drifts inside its frame ---------- */
+
+/** one canvas per channel and clip for its drifted picture (the 3d path uploads several planes after building them all) */
+const driftCanvases = new Map<string, AnyCanvas>();
+/** copies averaged for a smeared drift */
+const DRIFT_COPIES = 10;
+
+/** the picture at (x, y) and its three neighbours, so it fills the frame whatever the shift (x, y in 0..w, 0..h) */
+function drawWrapped(c: Ctx, image: CanvasImageSource, x: number, y: number, w: number, h: number): void {
+  c.drawImage(image, x - w, y - h, w, h);
+  c.drawImage(image, x, y - h, w, h);
+  c.drawImage(image, x - w, y, w, h);
+  c.drawImage(image, x, y, w, h);
+}
+
+/**
+ * the clip's picture drifted by its 'direction' loop at a time: shifted inside its own w x h frame, what leaves on one
+ * side comes back in on the other, and with a blur several copies further back along the drift are averaged. null when
+ * the clip has no drift (or no canvas can be made here). the canvas is only valid until the next call for this clip
+ * and channel: draw or upload it right away.
+ */
+function driftedPicture(clip: VisualClip, image: CanvasImageSource, w: number, h: number, time: number, channel: Channel): AnyCanvas | null {
+  const d = contentDrift(clip, time);
+  if (!d || !(w > 0) || !(h > 0)) return null;
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+  const key = channel + '|' + clip.id;
+  let canvas = driftCanvases.get(key);
+  if (!canvas) {
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(W, H);
+    else if (typeof document !== 'undefined') canvas = createCanvas(W, H);
+    else return null;
+    driftCanvases.set(key, canvas);
+  }
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+  const c = canvas.getContext('2d') as Ctx | null;
+  if (!c) return null;
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.globalCompositeOperation = 'source-over';
+  c.globalAlpha = 1;
+  c.clearRect(0, 0, W, H);
+  const smear = d.sx !== 0 || d.sy !== 0;
+  const n = smear ? DRIFT_COPIES : 1;
+  const wrap = (v: number, size: number) => ((v % size) + size) % size;
+  for (let i = 0; i < n; i++) {
+    const f = n > 1 ? i / (n - 1) : 0;
+    // copy i at 1 / (i + 1) over the ones before: every copy ends up with the same share (a running average)
+    c.globalAlpha = 1 / (i + 1);
+    drawWrapped(c, image, wrap((d.x - d.sx * f) * W, W), wrap((d.y - d.sy * f) * H, H), W, H);
+  }
+  c.globalAlpha = 1;
+  return canvas;
+}
+
+/** a flat source with its picture drifted (a new object, the source is never changed), or the source itself */
+function withDrift(out: FlatSource, clip: VisualClip, time: number, channel: Channel): FlatSource {
+  const w = out.pw ?? out.width;
+  const h = out.ph ?? out.height;
+  const pic = driftedPicture(clip, out.image, w, h, time, channel);
+  return pic ? { ...out, image: pic, pw: pic.width, ph: pic.height } : out;
+}
+
 /**
  * the look and the mask keep one gl context / canvas per channel name. their types only list 'preview' and 'export'
  * but they key on any string, so 'inset' gets its own through the cast.
@@ -1070,19 +1139,22 @@ export function extrudeFades(clip: VisualClip, alpha: number): boolean {
  * either it returns null and is drawn directly.
  */
 function prepareFlat(project: Project, clip: VisualClip, source: DrawSource | null, time: number, channel: Channel, alpha = 1): FlatSource | null {
+  const drifts = clip.motionLoop?.id === 'direction';
   if (clip.type === 'text' || clip.type === 'shape') {
-    if (!hasClipLook(clip) && !hasMask(clip) && !extrudeFades(clip, alpha)) return null;
+    if (!hasClipLook(clip) && !hasMask(clip) && !extrudeFades(clip, alpha) && !drifts) return null;
     syncTextureCaches(project);
     const t = clip.type === 'text' ? textTexture(clip, time) : shapeTexture(clip);
     if (!t) return null;
     // key undefined = the picture is redrawn all the time (an animation, a counter, a drawn-on outline)
     // a look value that is keyed (adjust, key, mask) makes a new looked picture every frame: no still key to file it under
-    return processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, animatesPicture(clip) ? undefined : t.key);
+    const out = processed({ image: t.canvas, width: t.canvas.width, height: t.canvas.height, pad: t.margin }, clip, channel, animatesPicture(clip) ? undefined : t.key);
+    return drifts ? withDrift(out, clip, time, channel) : out;
   }
   if (!source) return null;
-  if (!hasClipLook(clip) && !hasMask(clip)) return source;
+  if (!hasClipLook(clip) && !hasMask(clip) && !drifts) return source;
   syncTextureCaches(project);
-  return processed(source, clip, channel, animatesPicture(clip) ? undefined : imageStillKey(clip, source));
+  const out = hasClipLook(clip) || hasMask(clip) ? processed(source, clip, channel, animatesPicture(clip) ? undefined : imageStillKey(clip, source)) : source;
+  return drifts ? withDrift(out, clip, time, channel) : out;
 }
 
 /**
@@ -1517,6 +1589,9 @@ export function planeFor(project: Project, layer: Layer3D, rig: CameraRig, chann
     model = mul(model, scaling(1, 1, solidDepth));
   }
   const plane: Plane3D = { image, cacheKey, model, alpha: layer.alpha, shape };
+  // the direction loop: the shader slides the picture (the texture keeps its key, its mipmaps and its filtering)
+  const drift = contentDrift(clip, layer.poseTime ?? layer.time);
+  if (drift) plane.drift = [drift.x, drift.y, drift.sx, drift.sy];
   const k = clip.lit;
   if (k != null && k > 0) plane.lit = k < 1 ? k : 1;
   // a bent plane (bend.ts): its own length without the texture room, the crop window of the mesh along the axis
@@ -1976,6 +2051,15 @@ function paintBent(ctx: Ctx, project: Project, run: BentLayer[], env: Env, op: G
   }
 }
 
+/**
+ * a flat clip that is drawn through the gpu at the home camera: a bent one, or one whose picture drifts (the direction
+ * loop: the shader slides the picture with its mipmaps, no picture is redrawn per frame). paintBent falls back to the
+ * flat canvas path (prepareFlat, which drifts on a canvas) when there is no gpu.
+ */
+function onGpuFlat(clip: VisualClip): boolean {
+  return isBent(clip) || clip.motionLoop?.id === 'direction';
+}
+
 function bentLayer(project: Project, clip: VisualClip, source: DrawSource | null, alpha: number, time: number, env: Env): BentLayer {
   return { clip: bentFlatClip(project, clip, time), flat: clip, source, alpha, time, resolve: env.resolve };
 }
@@ -2249,7 +2333,7 @@ function paintAloneRaw(ctx: Ctx, project: Project, raw: VisualClip, time: number
       if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, rig()))) draw3d(c, project, [{ clip, source, alpha, time, resolve: env.resolve }], rig(), env.channel);
     };
     if (!(passes && paintWithFx(ctx, project, passes, null, env, run))) run(ctx);
-  } else if (isBent(clip)) {
+  } else if (onGpuFlat(clip)) {
     const layer = bentLayer(project, clip, source, alpha, time, env);
     const run = (c: Ctx) => {
       if (!(raw.motionBlur && paintBlurred(c, project, blurRaw, source, time, env, false, null, undefined, true))) paintBent(c, project, [layer], env, 'source-over', false);
@@ -2605,7 +2689,7 @@ function paintLayers(ctx: Ctx, project: Project, time: number, env: Env, above: 
         bin.push({ clip, source, alpha, time, resolve: env.resolve });
         return;
       }
-      if (isBent(clip)) {
+      if (onGpuFlat(clip)) {
         const layer = bentLayer(project, clip, source, alpha, time, env);
         if (passes) {
           flushRuns();

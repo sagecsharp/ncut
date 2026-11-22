@@ -40,6 +40,13 @@ export interface Plane3D {
    */
   uv?: [number, number, number, number];
   /**
+   * the direction loop (clipAnim contentDrift): the picture slides inside the mesh and wraps round, [x, y, sx, sy] in
+   * fractions of the picture window. x, y = how far it moved, sx, sy = a smear back along the way it came (0 = sharp).
+   * sampled with the gradients of the unwrapped place, so the mip level and the anisotropy stay right across the wrap.
+   * missing = no drift. ignored on a solid with pictures on single sides.
+   */
+  drift?: [number, number, number, number];
+  /**
    * rounded corners (plane only): radius in pixels of the plane, with the plane's own size in pixels.
    * the alpha is cut by a rounded rectangle with a ~1 screen pixel soft edge. missing / 0 = square.
    */
@@ -179,6 +186,9 @@ uniform vec4 u_clip;
 uniform sampler2D u_under;
 uniform float u_underOn;
 uniform vec4 u_underUv;
+// the direction loop: 1 = the picture drifts by u_drift.xy (window fractions) and smears back along u_drift.zw
+uniform float u_driftOn;
+uniform vec4 u_drift;
 out vec4 outColor;
 // 1 inside the real part of the picture, 0 outside (always 1 while u_clipOn is 0)
 float clipMask(vec2 p) {
@@ -209,15 +219,34 @@ vec4 discBlur(vec2 tc, vec2 dx, vec2 dy, float r) {
   }
   return sum / 13.0;
 }
+// one read of the drifted picture at the unwrapped place st (mesh uv minus the drift): wrapped into the window, with the
+// gradients of the unwrapped place (a fract would jump at the seam and pick the smallest mip there)
+vec4 driftTap(vec2 st, vec2 gx, vec2 gy) {
+  vec2 p = u_uv.xy + fract(st) * u_uv.zw;
+  return textureGrad(u_tex, p, gx, gy) * clipMask(p);
+}
+// the picture at this pixel: plain, drifted, or drifted with a smear (16 reads spread back along the way it came)
+vec4 pick(vec2 tc, vec2 st, vec2 gx, vec2 gy) {
+  if (u_driftOn < 0.5) return texture(u_tex, tc) * clipMask(tc);
+  if (u_drift.z == 0.0 && u_drift.w == 0.0) return driftTap(st, gx, gy);
+  vec4 s = vec4(0.0);
+  for (int i = 0; i < 16; i++) s += driftTap(st + u_drift.zw * ((float(i) + 0.5) / 16.0), gx, gy);
+  return s / 16.0;
+}
 void main() {
-  vec2 tc = u_uv.xy + v_uv * u_uv.zw;
+  // st: where in the picture this pixel reads before the window, unwrapped (the drift moves the picture by +u_drift.xy)
+  vec2 st = u_driftOn > 0.5 ? v_uv - u_drift.xy : v_uv;
+  vec2 tcRaw = u_uv.xy + st * u_uv.zw;
+  vec2 tc = u_driftOn > 0.5 ? u_uv.xy + fract(st) * u_uv.zw : tcRaw;
+  // derivatives first, outside any branch that depends on the pixel (of the unwrapped place: smooth across the seam)
+  vec2 gdx = dFdx(tcRaw);
+  vec2 gdy = dFdy(tcRaw);
   vec4 c;
   // blur radius in screen pixels (0 = sharp)
   float blur = 0.0;
   if (u_focusOn > 0.0) {
-    // derivatives first, outside any branch that depends on the pixel
-    vec2 dx = dFdx(tc);
-    vec2 dy = dFdy(tc);
+    vec2 dx = gdx;
+    vec2 dy = gdy;
     vec2 gu = vec2(length(vec2(dFdx(v_uv.x), dFdy(v_uv.x))), length(vec2(dFdx(v_uv.y), dFdy(v_uv.y))));
     float dz = max(abs(v_depth - u_focus.x) - u_focus.y, 0.0);
     blur = u_focus.w * u_frameH * dz / (dz + u_focus.z);
@@ -230,10 +259,10 @@ void main() {
       }
     } else {
       blur = 0.0;
-      c = texture(u_tex, tc) * clipMask(tc);
+      c = pick(tc, st, gdx, gdy);
     }
   } else {
-    c = texture(u_tex, tc) * clipMask(tc);
+    c = pick(tc, st, gdx, gdy);
   }
   if (u_underOn > 0.5) {
     vec4 un = texture(u_under, u_underUv.xy + v_uv * u_underUv.zw);
@@ -543,6 +572,8 @@ interface PlaneLocs {
   under: WebGLUniformLocation | null;
   underOn: WebGLUniformLocation | null;
   underUv: WebGLUniformLocation | null;
+  driftOn: WebGLUniformLocation | null;
+  drift: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
   env: WebGLUniformLocation | null;
   /** the bend (k, c, s, o) and (axis, lift): only on the bent program */
@@ -788,6 +819,8 @@ class SceneRenderer {
       under: at('u_under'),
       underOn: at('u_underOn'),
       underUv: at('u_underUv'),
+      driftOn: at('u_driftOn'),
+      drift: at('u_drift'),
       light: at('u_light'),
       env: at('u_env'),
       bend: at('u_bend'),
@@ -1556,7 +1589,8 @@ class SceneRenderer {
         continue;
       }
       const blurred = focus !== null && (bend ? bentNeedsBlur(plane.model, bend.box, viewProj, focus) : shape === 'plane' ? planeNeedsBlur(plane.model, viewProj, focus) : meshNeedsBlur(plane.model, viewProj, focus));
-      const ownTex = this.ownTexture(plane, blurred);
+      // a drifting picture (a video frame without a key) also reads smaller mip levels: a slanted, moving picture would shimmer without them
+      const ownTex = this.ownTexture(plane, blurred || (plane.drift !== undefined && !plane.faces));
       if (!ownTex) continue;
       if (lighting || bend) lightUniform(lighting ? plane.lit : undefined, shape, plane.model, eye, lighting ? light!.env : NO_ENV, this.lightBuf, bend !== null);
       // lit in the vertex shader: a lit solid, or a lit bent plane
@@ -1605,6 +1639,16 @@ class SceneRenderer {
         gl.uniform1f(loc.radius, plane.radius);
         gl.uniform2f(loc.size, size[0], size[1]);
       } else gl.uniform1f(loc.radius, 0);
+      // the direction loop: the picture wraps, so the texture repeats while this plane draws (the seam then blends the
+      // two edges like any other texel instead of clamping to one of them); back to clamped after it
+      const drift = !runs && plane.drift ? plane.drift : null;
+      gl.uniform1f(loc.driftOn, drift ? 1 : 0);
+      if (drift) {
+        gl.uniform4f(loc.drift, drift[0], drift[1], drift[2], drift[3]);
+        gl.bindTexture(gl.TEXTURE_2D, ownTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      }
       gl.bindVertexArray(mesh.vao);
       if (runs && !hollow) {
         // the own picture under the pictures of single sides
@@ -1629,6 +1673,11 @@ class SceneRenderer {
         this.pinned.clear();
         // the own picture may be evicted later: unit 1 never keeps a texture that can go away
         if (!hollow) this.bindUnder(null);
+      }
+      if (drift) {
+        gl.bindTexture(gl.TEXTURE_2D, ownTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       }
       if (line) this.drawOutline(plane, shape, line, offsetUnits, mesh.vao);
     }

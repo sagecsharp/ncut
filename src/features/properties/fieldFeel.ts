@@ -134,6 +134,10 @@ export const FEEL = {
   counterHold: { unit: 's', min: 0, max: 3600, soft: [0, 10], step: 0.1, precision: 2, snap: 1, rest: 0 },
   motionDuration: { unit: 's', min: 0.05, max: 60, soft: [0.05, 3], step: 0.1, precision: 2, snap: 0.5 },
   motionLoop: { unit: 's', min: 0.05, max: 60, soft: [0.05, 6], step: 0.1, precision: 2, snap: 0.5 },
+  // the 'direction' loop: which way the picture drifts, how much of it per cycle, how much it smears
+  motionAngle: { unit: 'deg', min: -360, max: 360, soft: [-180, 180], step: 1, snap: 15, rest: 0 },
+  motionTravel: { unit: '%', min: -1000, max: 1000, soft: [0, 300], step: 1, snap: 25, rest: 100 },
+  motionSmear: { unit: '%', min: 0, max: 100, soft: [0, 10], step: 0.1, precision: 1, snap: 1, rest: 0 },
 
   // shape
   shapeWidth: { unit: 'px', min: 1, max: 20000, soft: [1, (c: FeelCtx) => Math.max(c.W, c.H)], step: 1, snap: 10, anim: { prop: 'width', types: ['shape'] } },

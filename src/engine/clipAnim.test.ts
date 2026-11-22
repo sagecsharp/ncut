@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ClipAnim, TextClip } from '../types';
 import { DEFAULT_TRANSFORM } from '../types';
-import { createTextClip } from '../lib/factory';
-import { CLIP_MOTIONS_IN, CLIP_MOTIONS_LOOP, applyClipMotion, hasClipMotion } from './clipAnim';
+import { createProject, createShapeClip, createTextClip } from '../lib/factory';
+import { CLIP_MOTIONS_IN, CLIP_MOTIONS_LOOP, applyClipMotion, contentDrift, directionTravel, driftAt, hasClipMotion } from './clipAnim';
 
 const SIZE = { width: 1920, height: 1080 };
 const make = (o: Partial<TextClip> = {}): TextClip =>
@@ -51,8 +51,8 @@ describe('applyClipMotion', () => {
       expect(out.transform, id).not.toEqual(c.transform);
     }
   });
-  it('every loop changes something at 0.55 of a cycle', () => {
-    for (const id of LOOP_IDS) {
+  it('every loop changes something at 0.55 of a cycle (direction drifts the picture, not the clip)', () => {
+    for (const id of LOOP_IDS.filter((x) => x !== 'direction')) {
       const c = make({ motionLoop: anim(id, 2) });
       const out = applyClipMotion(c, 2 + 0.55 * 2, SIZE);
       expect(out.transform, id).not.toEqual(c.transform);
@@ -254,5 +254,38 @@ describe('3d clip motions', () => {
     const snap = JSON.stringify(c);
     for (const t of [0, 2, 2.3, 4, 7.8, 9]) applyClipMotion(c, t, SIZE);
     expect(JSON.stringify(c)).toBe(snap);
+  });
+});
+
+describe('the direction loop', () => {
+  it('drifts the picture one way at an even speed: 100% is one whole repeat per cycle', () => {
+    expect(driftAt({ angle: 0 }, 0)).toEqual({ x: 0, y: 0 });
+    expect(driftAt({ angle: 0 }, 0.5).x).toBeCloseTo(0.5);
+    expect(driftAt({ angle: 0, distance: 200 }, 0.5).x).toBeCloseTo(1);
+    expect(directionTravel({})).toBe(100);
+  });
+  it('the angle picks the way: 90 is down, -45 up and right', () => {
+    const d = driftAt({ angle: 90 }, 0.5);
+    expect(d.x).toBeCloseTo(0);
+    expect(d.y).toBeCloseTo(0.5);
+    const u = driftAt({ angle: -45 }, 0.5);
+    expect(u.x).toBeCloseTo(0.3536);
+    expect(u.y).toBeCloseTo(-0.3536);
+  });
+  it('ping pong goes there and back, slow at the ends', () => {
+    const a = { angle: 0, pingPong: true };
+    expect(driftAt(a, 0).x).toBeCloseTo(0);
+    expect(driftAt(a, 0.5).x).toBeCloseTo(1);
+    expect(driftAt(a, 1).x).toBeCloseTo(0);
+  });
+  it('the clip itself stays put; contentDrift has the shift and the smear', () => {
+    const p = createProject('d');
+    const c = { ...createShapeClip(p.tracks[0]!.id, 0), duration: 10, motionLoop: { id: 'direction', duration: 2, angle: 180, blur: 10 } };
+    expect(applyClipMotion(c, 1, { width: 1920, height: 1080 })).toBe(c);
+    const d = contentDrift(c, 1)!;
+    expect(d.x).toBeCloseTo(-0.5);
+    expect(d.y).toBeCloseTo(0);
+    expect(d.sx).toBeCloseTo(-0.1);
+    expect(contentDrift({ ...c, motionLoop: { id: 'float', duration: 2 } }, 1)).toBeNull();
   });
 });

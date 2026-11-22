@@ -1,6 +1,7 @@
 import { roundShown } from '../../components/ui/numberFormat';
-import { memo, useMemo } from 'react';
+import { Fragment, memo, useMemo } from 'react';
 import {
+  directionTravel,
   CLIP_MOTIONS_IN,
   CLIP_MOTIONS_LOOP,
   CLIP_MOTIONS_OUT,
@@ -75,6 +76,68 @@ export function MotionRow({ label, title, list, value, defaultDuration, duration
   );
 }
 
+/** the eight ways a click on the compass sets: degrees, 0 = right, 90 = down (y points down on the canvas) */
+const COMPASS: Array<{ deg: number; arrow: string; name: string }> = [
+  { deg: -135, arrow: '\u2196', name: 'up left' },
+  { deg: -90, arrow: '\u2191', name: 'up' },
+  { deg: -45, arrow: '\u2197', name: 'up right' },
+  { deg: 180, arrow: '\u2190', name: 'left' },
+  { deg: 0, arrow: '\u2192', name: 'right' },
+  { deg: 135, arrow: '\u2199', name: 'down left' },
+  { deg: 90, arrow: '\u2193', name: 'down' },
+  { deg: 45, arrow: '\u2198', name: 'down right' },
+];
+
+/** the same way on the circle: -90 and 270 are one direction */
+const sameWay = (a: number, b: number) => Math.abs((((a - b) % 360) + 540) % 360 - 180) < 0.5;
+
+/** the settings of the 'direction' loop (the picture drifts inside the clip): which way, how much per cycle, blur, one way or there and back */
+function DirectionRows({ anim, onChange }: { anim: ClipAnim; onChange: (next: ClipAnim | null, live: boolean) => void }) {
+  const angle = anim.angle ?? 0;
+  const put = (patch: Partial<ClipAnim>, live: boolean) => onChange({ ...anim, ...patch }, live);
+  return (
+    <>
+      <Row label="direction" title="which way the picture drifts inside the clip: click an arrow, or drag / type the angle (0 = right, 90 = down)">
+        <div className="props-compass" role="group" aria-label="direction">
+          {COMPASS.map((c, i) => (
+            <Fragment key={c.deg}>
+              {i === 4 ? <span className="props-compass-mid" aria-hidden="true" /> : null}
+              <button
+                type="button"
+                className={`btn btn-sm props-compass-btn${sameWay(angle, c.deg) ? ' btn-primary' : ''}`}
+                title={`drift ${c.name}`}
+                aria-label={`drift ${c.name}`}
+                aria-pressed={sameWay(angle, c.deg)}
+                onClick={() => put({ angle: c.deg }, false)}
+              >
+                {c.arrow}
+              </button>
+            </Fragment>
+          ))}
+        </div>
+        <FeelField className="props-num" feel="motionAngle" title="the direction in degrees: 0 = right, 90 = down, -90 = up" value={angle} onChange={(v) => put({ angle: v }, true)} />
+      </Row>
+      <SliderRow
+        label="travel"
+        title="how much of the picture drifts past in one cycle (%). 100 = one whole repeat, so it loops without a jump; 200 = twice as fast"
+        feel="motionTravel"
+        value={directionTravel(anim)}
+        onChange={(v) => put({ distance: v }, true)}
+      />
+      <SliderRow
+        label="blur"
+        title="smear the picture along the drift (% of the picture): a sense of speed. 0 = sharp"
+        feel="motionSmear"
+        value={anim.blur ?? 0}
+        onChange={(v) => put({ blur: v }, true)}
+      />
+      <Row label="back and forth" title="on: the picture drifts there and back, slow at the ends. off: it drifts on and on" wide>
+        <Switch checked={!!anim.pingPong} title="there and back, or on and on" onChange={(on) => put({ pingPong: on }, false)} />
+      </Row>
+    </>
+  );
+}
+
 const BLUR_KINDS: Record<MotionBlurStyle, { label: string; title: string }> = {
   even: { label: 'smooth', title: 'smooth: an even smear of the whole movement' },
   trail: { label: 'trail', title: 'trail: the clip stays sharp where it is and leaves a fading tail behind it' },
@@ -120,6 +183,7 @@ export const ClipMotionSection = memo(function ClipMotionSection({ clip }: { cli
         feel="motionLoop"
         onChange={set('motionLoop')}
       />
+      {clip.motionLoop?.id === 'direction' ? <DirectionRows anim={clip.motionLoop} onChange={set('motionLoop')} /> : null}
       <Row label="motion blur" title="blur how the clip moves" wide>
         <Switch
           checked={!!clip.motionBlur}

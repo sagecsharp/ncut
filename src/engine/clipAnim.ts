@@ -3,7 +3,7 @@
  * a motion never changes stored values: it is applied on top of the clip's transform (after
  * keyframes) at draw time, so preview and export always match.
  */
-import type { VisualClip } from '../types';
+import type { ClipAnim, VisualClip } from '../types';
 import { noteRawClip } from '../lib/anim';
 
 export interface ClipMotionInfo {
@@ -46,6 +46,7 @@ export const CLIP_MOTIONS_LOOP: ClipMotionInfo[] = [
   { id: 'bounce', name: 'bounce' },
   { id: 'blink', name: 'blink' },
   { id: 'orbit', name: 'orbit' },
+  { id: 'direction', name: 'direction' },
   { id: 'turntable', name: 'turntable', threeD: true },
   { id: 'tumble', name: 'tumble', threeD: true },
   { id: 'sway-3d', name: 'sway 3d', threeD: true },
@@ -59,6 +60,47 @@ const THREE_D_LOOP = idsOf(CLIP_MOTIONS_LOOP);
 export const DEFAULT_CLIP_MOTION_IN = 0.5;
 export const DEFAULT_CLIP_MOTION_OUT = 0.5;
 export const DEFAULT_CLIP_MOTION_LOOP = 2;
+
+/** how much of the picture a 'direction' loop drifts past per cycle, percent (missing = 100, one whole repeat) */
+export function directionTravel(anim: Pick<ClipAnim, 'distance'>): number {
+  const d = anim.distance;
+  return typeof d === 'number' && Number.isFinite(d) ? d : 100;
+}
+
+/**
+ * the drift of a 'direction' loop at cycle phase ph (0..1), as fractions of the picture's width (x) and height (y).
+ * one way: on at an even speed (with 100% the end of a cycle is the picture again, so it never jumps). ping pong:
+ * there and back, slow at both ends.
+ */
+export function driftAt(anim: Pick<ClipAnim, 'angle' | 'distance' | 'pingPong'>, ph: number): { x: number; y: number } {
+  const t = anim.pingPong ? (1 - Math.cos(ph * TAU)) / 2 : ph;
+  const d = (directionTravel(anim) / 100) * t;
+  const a = ((Number.isFinite(anim.angle) ? anim.angle! : 0) * Math.PI) / 180;
+  return { x: d * Math.cos(a), y: d * Math.sin(a) };
+}
+
+/** what the renderer does to a clip's picture: shift it by (x, y) and smear it back along (sx, sy), fractions of its size */
+export interface ContentDrift {
+  x: number;
+  y: number;
+  sx: number;
+  sy: number;
+}
+
+/**
+ * the drift of a clip's picture at a timeline time (the 'direction' loop), or null when it has none. the clip itself
+ * does not move: the picture slides inside its frame and comes back in on the other side.
+ */
+export function contentDrift(clip: VisualClip, time: number): ContentDrift | null {
+  const ml = clip.motionLoop;
+  if (!ml || ml.id !== 'direction' || !(ml.duration > 0) || !(clip.duration > 0)) return null;
+  const local = Math.min(clip.duration, Math.max(0, time - clip.start));
+  const cycle = local / ml.duration;
+  const at = driftAt(ml, cycle - Math.floor(cycle));
+  const blur = typeof ml.blur === 'number' && Number.isFinite(ml.blur) ? Math.max(0, ml.blur) / 100 : 0;
+  const a = ((Number.isFinite(ml.angle) ? ml.angle! : 0) * Math.PI) / 180;
+  return { x: at.x, y: at.y, sx: blur * Math.cos(a), sy: blur * Math.sin(a) };
+}
 
 /** true when the clip has any motion set */
 export function hasClipMotion(clip: VisualClip): boolean {
@@ -193,9 +235,10 @@ function enter(id: string, p: number, W: number, H: number, threeD: boolean, o: 
 }
 
 /** continuous motion at cycle phase ph (0..1) */
-function loop(id: string, ph: number, W: number, H: number, o: Pose): void {
+function loop(anim: ClipAnim, ph: number, W: number, H: number, threeD: boolean, o: Pose): void {
   const a = ph * TAU;
-  switch (id) {
+  switch (anim.id) {
+    // 'direction' never moves the clip: its picture drifts (contentDrift, applied by the renderer)
     case 'pulse':
       o.s *= 1 + 0.06 * Math.sin(a);
       break;
@@ -289,9 +332,10 @@ export function applyClipMotion<T extends VisualClip>(clip: T, time: number, siz
       active = true;
     }
   }
-  if (ml && ml.duration > 0 && (threeD || !THREE_D_LOOP.has(ml.id))) {
+  // 'direction' never moves the clip: the renderer drifts its picture (contentDrift)
+  if (ml && ml.id !== 'direction' && ml.duration > 0 && (threeD || !THREE_D_LOOP.has(ml.id))) {
     const cycle = local / ml.duration;
-    loop(ml.id, cycle - Math.floor(cycle), W, H, o);
+    loop(ml, cycle - Math.floor(cycle), W, H, threeD, o);
     active = true;
   }
   if (!active) return clip;
