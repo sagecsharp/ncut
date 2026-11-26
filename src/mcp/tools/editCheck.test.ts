@@ -15,6 +15,13 @@ beforeEach(async () => {
 });
 
 describe('update_clip checks what a field may hold', () => {
+  it('takes every counter ease and refuses others', async () => {
+    for (const ease of ['linear', 'out', 'in', 'in-out', 'in-out-soft']) {
+      await call('update_clip', { id: text, patch: { counter: { from: 0, to: 10, decimals: 0, ease } } });
+      expect((clipOf(text) as { counter?: { ease?: string } }).counter?.ease).toBe(ease);
+    }
+    await refused('update_clip', { id: text, patch: { counter: { from: 0, to: 10, decimals: 0, ease: 'bounce' } } }, /ease must be one of: linear, out, in, in-out, in-out-soft/);
+  });
   it('refuses made up ids and names', async () => {
     await refused('update_clip', { id: text, patch: { blend: 'nope' } }, /blend must be one of: normal, add/);
     await refused('update_clip', { id: text, patch: { transition: { id: 'nope', duration: 1 } } }, /no transition "nope".*list_options/);

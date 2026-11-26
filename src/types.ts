@@ -595,8 +595,8 @@ export interface TextCounter {
   decimals: number;
   /** group the digits in threes: 1,234,567. missing = false. */
   separator?: boolean;
-  /** how it moves: 'linear' = steady, 'out' = fast then settling, 'in-out' = slow, fast, slow. missing = 'out'. */
-  ease?: 'linear' | 'out' | 'in-out';
+  /** how it moves: 'linear' = steady, 'out' = fast then settling, 'in' = slow then fast, 'in-out' = slow, fast, slow, 'in-out-soft' = the same but softer. missing = 'out'. */
+  ease?: 'linear' | 'out' | 'in' | 'in-out' | 'in-out-soft';
   /** seconds at the end of the clip where the final number just stays. missing = 0. */
   hold?: number;
   /**

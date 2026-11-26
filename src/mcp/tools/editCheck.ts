@@ -292,7 +292,7 @@ const TEXT: Record<string, Check> = {
         to: num(),
         decimals: num(0, 4, true),
         separator: bool,
-        ease: oneOf(['linear', 'out', 'in-out']),
+        ease: oneOf(['linear', 'out', 'in', 'in-out', 'in-out-soft']),
         hold: num(0),
         format: oneOf(['number', 'time']),
         fixedWidth: bool,

@@ -100,7 +100,7 @@ export const TEXT_FIELDS: FieldRow[] = rows<TextClip>([
   ['wrapWidth', 'number px 0..20000', 'wrap lines longer than this. 0 = only break at line breaks', 800],
   ['highlight', "{ color, mode, background? } | null", "karaoke: words light up one after another over the clip. mode 'word' | 'fill'", { color: '#ffe14d', mode: 'word' }],
   ['extrude', '{ depth, angle, color } | null', 'block letters / long shadow. depth 0.01..1 of the font size, angle 0..360 deg clockwise from right (3d text: real depth)', { depth: 0.2, angle: 45, color: '#888888' }],
-  ['counter', '{ from, to, decimals, separator?, ease?, hold?, format?, fixedWidth? } | null', "a running number: every {n} in text is replaced (no {n} = only the number). decimals 0..4, ease linear | out | in-out, hold = seconds the end value stays, format 'number' | 'time' (m:ss)", { from: 0, to: 100, decimals: 0 }],
+  ['counter', '{ from, to, decimals, separator?, ease?, hold?, format?, fixedWidth? } | null', "a running number: every {n} in text is replaced (no {n} = only the number). decimals 0..4, ease linear | out | in | in-out | in-out-soft, hold = seconds the end value stays, format 'number' | 'time' (m:ss)", { from: 0, to: 100, decimals: 0 }],
   ['underline', 'boolean', 'line under every line of text'],
   ['strike', 'boolean', 'line through the text'],
   ['hollow', 'boolean', 'only the outline shows (needs stroke, else a thin one is drawn)'],

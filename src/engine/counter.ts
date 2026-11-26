@@ -22,7 +22,16 @@ export function counterValue(counter: TextCounter, local: number, duration: numb
   const span = Math.max(1e-6, duration - Math.max(0, counter.hold ?? 0));
   const p = Number.isFinite(local) ? Math.min(1, Math.max(0, local / span)) : 0;
   const ease = counter.ease ?? 'out';
-  const e = ease === 'linear' ? p : ease === 'out' ? 1 - (1 - p) * (1 - p) * (1 - p) : p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+  const e =
+    ease === 'linear'
+      ? p
+      : ease === 'in'
+        ? p * p * p
+        : ease === 'in-out-soft'
+          ? p < 0.5 ? 2 * p * p : 1 - 2 * (1 - p) * (1 - p)
+          : ease === 'in-out'
+            ? p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2
+            : 1 - (1 - p) * (1 - p) * (1 - p);
   if (p >= 1) return counter.to;
   return counter.from + (counter.to - counter.from) * e;
 }

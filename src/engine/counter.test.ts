@@ -6,7 +6,7 @@ const c = (o: Partial<TextCounter> = {}): TextCounter => ({ from: 0, to: 100, de
 
 describe('counterValue', () => {
   it('is from at the start and to at the end', () => {
-    for (const ease of ['linear', 'out', 'in-out'] as const) {
+    for (const ease of ['linear', 'out', 'in', 'in-out', 'in-out-soft'] as const) {
       const k = c({ ease, from: 10, to: 50 });
       expect(counterValue(k, 0, 4)).toBe(10);
       expect(counterValue(k, 4, 4)).toBe(50);
@@ -26,7 +26,7 @@ describe('counterValue', () => {
     expect(counterValue(c(), Number.NaN, 4)).toBe(0);
   });
   it('is monotonic for every ease, up and down', () => {
-    for (const ease of ['linear', 'out', 'in-out'] as const) {
+    for (const ease of ['linear', 'out', 'in', 'in-out', 'in-out-soft'] as const) {
       let prev = -Infinity;
       let prevDown = Infinity;
       for (let i = 0; i <= 100; i++) {
@@ -38,6 +38,12 @@ describe('counterValue', () => {
         prevDown = down;
       }
     }
+  });
+  it('in is slow then fast (cubic) and in-out-soft is quadratic and centred', () => {
+    expect(counterValue(c({ ease: 'in' }), 2, 4)).toBeCloseTo(12.5, 6);
+    expect(counterValue(c({ ease: 'in-out-soft' }), 2, 4)).toBeCloseTo(50, 6);
+    expect(counterValue(c({ ease: 'in-out-soft' }), 1, 4)).toBeCloseTo(12.5, 6);
+    expect(counterValue(c({ ease: 'in-out-soft' }), 3, 4)).toBeCloseTo(87.5, 6);
   });
   it('defaults to the out ease', () => {
     const k: TextCounter = { from: 0, to: 100, decimals: 0 };

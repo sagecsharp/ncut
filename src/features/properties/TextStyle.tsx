@@ -211,9 +211,11 @@ export const TextStyleSection = memo(function TextStyleSection({ clip }: { clip:
             options={[
               ['linear', 'steady'],
               ['out', 'fast then slow'],
+              ['in', 'slow then fast'],
               ['in-out', 'slow fast slow'],
+              ['in-out-soft', 'soft slow fast slow'],
             ]}
-            onChange={(v) => setCounter({ ease: v === 'linear' ? 'linear' : v === 'in-out' ? 'in-out' : 'out' })}
+            onChange={(v) => setCounter({ ease: v === 'linear' || v === 'in' || v === 'in-out' || v === 'in-out-soft' ? v : 'out' })}
           />
           <Row label="hold at end" title="seconds at the end of the clip where the final number just stays">
             <FeelField
